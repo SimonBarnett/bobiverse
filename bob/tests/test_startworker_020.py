@@ -217,6 +217,18 @@ def test_defaults_and_env_overrides(monkeypatch):
     assert sw.StartGate().max_workers == 1
 
 
+def test_fr8624_commands_doc_matches_agent_cap():
+    """FR #8624: docs default is HARD_MAX_WORKERS (2) and plan does not count."""
+    doc = (REPO / "jeeves" / "docs" / "jeeves-commands.md").read_text(encoding="utf-8")
+    limits = next(line for line in doc.splitlines() if line.startswith("* **Limits**:"))
+    assert sw.HARD_MAX_WORKERS == 2
+    assert sw.DEFAULT_MAX_WORKERS == sw.HARD_MAX_WORKERS
+    assert "default 4" not in limits
+    assert "plan windows included" not in limits
+    assert "default 2" in limits
+    assert "does not count" in limits
+
+
 def test_snapshot_procs_runs_and_never_raises():
     rows = sw.snapshot_procs()
     assert isinstance(rows, list)
