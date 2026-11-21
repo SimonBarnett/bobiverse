@@ -26,7 +26,7 @@ def test_mrb3611_reverse_restart_stamps_ionos():
             body="please restart BobCallback on the chair host after the wedge",
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -37,7 +37,7 @@ def test_mrb3611_reverse_recycle_stamps_ionos():
             body="recycle BobCallback after IIS rewrite landed",
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 

@@ -206,7 +206,7 @@ def check(args, opener: Optional[Callable[..., Any]] = None):
             "findings": findings,
             "remediation": (
                 "Confirm common/scripts/intake.py repo_allowed / SimonBarnett owner gate (FR #3135); "
-                "on ionos run Sync-BobiverseFromRepo (or service restart compose) "
+                "on walrus run Sync-BobiverseFromRepo (or service restart compose) "
                 "so live ircJeeves picks up the allow rule."
             ),
         },

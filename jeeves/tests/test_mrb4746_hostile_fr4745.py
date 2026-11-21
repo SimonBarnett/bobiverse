@@ -80,7 +80,7 @@ def test_dedicated_require_machine_line_pins_harvest_lesson():
             repo="SimonBarnett/bobiverse",
             ident="#204",
         )
-        == "ionos"
+        == "walrus"
     )
 
 

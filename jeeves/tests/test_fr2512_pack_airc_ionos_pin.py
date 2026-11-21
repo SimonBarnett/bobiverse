@@ -27,7 +27,7 @@ def test_fr2512_issue_2511_blob_pins_ionos():
             repo="SimonBarnett/bobiverse",
             ident="#2511",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -36,7 +36,7 @@ def test_fr2512_hard_pin_2511():
         gitclaim._REQUIRE_MACHINE_ISSUE_PINS.get(
             ("simonbarnett/bobiverse", "#2511")
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -47,7 +47,7 @@ def test_fr2512_pack_airc_assert_install_combo_pins():
             body="Pack-Airc then Assert-ReleaseAssets and install+smoke on ionos.",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -72,7 +72,7 @@ def test_mrb2515_hard_pin_empty_blob_via_infer():
             repo="SimonBarnett/bobiverse",
             ident="#2511",
         )
-        == "ionos"
+        == "walrus"
     )
 
 

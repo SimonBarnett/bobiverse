@@ -20,7 +20,7 @@ def test_fr3129_title_ionos_sync_compose_ircjeeves_pins():
         repo="SimonBarnett/bobiverse",
         ident="#3122",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr3129_body_sync_bobiverse_from_repo_pins():
@@ -47,7 +47,7 @@ def test_fr3129_hard_pin_issue_3122():
         repo="SimonBarnett/bobiverse",
         ident="#3122",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr3129_offer_gap_issue_itself_not_forced_ionos_without_cues():

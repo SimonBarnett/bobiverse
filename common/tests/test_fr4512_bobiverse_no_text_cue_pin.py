@@ -56,7 +56,7 @@ def test_fr4512_needs_ionos_label_still_pins():
             repo="SimonBarnett/bobiverse",
             ident="9994340",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -69,7 +69,7 @@ def test_fr4512_dedicated_body_pin_line_still_pins():
             repo="SimonBarnett/bobiverse",
             ident="999001",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -100,7 +100,7 @@ def test_fr4512_stale_stamp_kept_when_needs_label():
         "require_machine": "ionos",
     }
     gitclaim._stamp_require_machine(row)
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert gitclaim.row_require_machine(row) == "walrus"
 
 
 def test_fr4512_other_repo_title_cue_still_pins():
@@ -113,5 +113,5 @@ def test_fr4512_other_repo_title_cue_still_pins():
             repo="SimonBarnett/a-search",
             ident="1",
         )
-        == "ionos"
+        == "walrus"
     )

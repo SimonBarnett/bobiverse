@@ -40,7 +40,7 @@ def test_row_machine_mismatch_infers_wp0_without_stamp(tmp_path, monkeypatch):
         "line": "ops",
         "labels": ["feature-request", "needs-ionos"],
     }
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert gitclaim.row_require_machine(row) == "walrus"
     assert gitclaim.row_machine_mismatch(row, "marchhare-35600")
     assert not gitclaim.row_machine_mismatch(row, "ionos-1")
 
@@ -49,7 +49,7 @@ def test_machine_colon_label_still_pins(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest(tmp_path, {"marchhare": [5], "ionos": [5]})
     row = {"labels": ["machine:ionos"], "title": "x", "body": "", "line": "x"}
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert gitclaim.row_require_machine(row) == "walrus"
     assert gitclaim.row_machine_mismatch(row, "marchhare-5")
     assert not gitclaim.row_machine_mismatch(row, "ionos-5")
 

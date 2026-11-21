@@ -76,11 +76,11 @@ def test_offer_accepts_needs_mrb1_under_focus(tmp_path, monkeypatch):
 def test_bobcallback_principal_cues_require_ionos():
     title = "BobCallback task runs as SYSTEM against Administrator .bobiverse home"
     body = "Scheduled task BobCallback Principal SYSTEM while --home Admin .bobiverse"
-    assert gitclaim.infer_require_machine(title=title, body=body) == "ionos"
+    assert gitclaim.infer_require_machine(title=title, body=body) == "walrus"
     assert gitclaim.infer_require_machine(
         title="fix BobCallback principal vs home owner",
         body="re-register Interactive",
-    ) == "ionos"
+    ) == "walrus"
     # needs-mrb1 alone still must not become require_machine=mrb1
     assert gitclaim.infer_require_machine(labels=["needs-mrb1", "feature-request"]) in (None, "")
 

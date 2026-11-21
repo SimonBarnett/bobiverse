@@ -17,7 +17,7 @@ def test_fr1899_1739_body_reverse_proxy_bobcallback_stamps_ionos():
             body=body,
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -28,7 +28,7 @@ def test_fr1899_title_intake_bobcallback_502_stamps_ionos():
             body="labels were only via-intake",
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -39,7 +39,7 @@ def test_fr1899_bobcallback_7700_listen_stamps_ionos():
             body="no LISTEN on 127.0.0.1:7700; heal BobCallback",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -50,7 +50,7 @@ def test_fr1899_arr_intake_stamps_ionos():
             body="IIS ARR reverse proxy fronts /bob/v1/intake to BobCallback",
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 

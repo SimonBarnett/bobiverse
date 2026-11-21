@@ -41,5 +41,5 @@ def test_mrb3130_hard_pin_3122_on_main():
             repo="SimonBarnett/bobiverse",
             ident="#3122",
         )
-        == "ionos"
+        == "walrus"
     )

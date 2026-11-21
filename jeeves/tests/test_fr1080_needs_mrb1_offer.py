@@ -15,7 +15,7 @@ def test_needs_mrb1_is_not_skip_but_not_require_machine():
     assert "needs-mrb1" not in gitclaim.SKIP_FR_LABELS
     assert gitclaim.issue_skip_fr_reason(title="FR: something", labels=("needs-mrb1", "via-intake")) is None
     assert gitclaim.infer_require_machine(labels=["needs-mrb1", "feature-request"]) in (None, "")
-    assert gitclaim.infer_require_machine(labels=["needs-ionos"]) == "ionos"
+    assert gitclaim.infer_require_machine(labels=["needs-ionos"]) == "walrus"
     # Corrupt stamp ignored
     row = {"require_machine": "mrb1", "labels": ["feature-request"], "title": "x", "body": "", "task": "FR"}
     assert not gitclaim.row_require_machine(row)

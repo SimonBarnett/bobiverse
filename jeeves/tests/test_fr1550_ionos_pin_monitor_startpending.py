@@ -9,7 +9,7 @@ def test_fr1550_title_idle_ungated_after_startpending_pins_ionos():
         title="idle seats + ungated offerable #1545/#1546/#1547 after ircJeeves StartPending",
         body="",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr1550_title_startpending_ircjeeves_either_order():
@@ -18,14 +18,14 @@ def test_fr1550_title_startpending_ircjeeves_either_order():
             title="ircJeeves StartPending left seats idle",
             body="",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
             title="StartPending on ircJeeves after recycle",
             body="",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -35,14 +35,14 @@ def test_fr1550_body_monitor_check_and_no_shop_offer_pin_ionos():
             title="FR: seats idle after chair flap",
             body="Invoke-JeevesMonitorCheck -Check idle_seats showed ungated_offerable>0",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
             title="FR: keep the flow",
             body="chair-outbox has GIT announces but no shop OFFER lines to #marchhare",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -53,7 +53,7 @@ def test_fr1559_title_infer_pin_pins_ionos():
             title="infer_require_machine: pin ionos for ircJeeves StartPending / chair-outbox monitor findings",
             body="",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -66,7 +66,7 @@ def test_fr1550_exact_issue_blob_pins_ionos():
         repo="SimonBarnett/bobiverse",
         ident="#1550",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr1550_does_not_pin_unrelated_idle_prose():
