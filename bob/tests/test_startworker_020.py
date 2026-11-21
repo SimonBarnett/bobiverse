@@ -283,6 +283,32 @@ def test_ear_bob_peer_in_bobiverse_names_the_machine(bob):
     assert bob.sent == []                                            # someone else's machine: silent
 
 
+def test_local_outbox_startworker_queues_without_irc_echo(bob):
+    """FR #8622: ear outbox !startworker is decided locally; inbound self-echo stays ignored."""
+    bob.chan = "#bobiverse"
+    line = "PRIVMSG #bobiverse :!startworker agent marchhare"
+    irc_agent.Client._maybe_local_outbox_startworker(bob, line)
+    reqs = list(bob.qdir.glob("req-*.json"))
+    assert len(reqs) == 1
+    assert any(s.startswith("PRIVMSG #bobiverse :ACK startworker agent on marchhare") for s in bob.sent)
+    before = len(reqs)
+    assert bob._maybe_startworker(
+        "Bob-marchhare", "#bobiverse", "!startworker agent marchhare", to_channel=True, to_me=False
+    ) is True
+    assert len(list(bob.qdir.glob("req-*.json"))) == before
+    irc_agent.Client._maybe_local_outbox_startworker(bob, "PRIVMSG #marchhare :hello")
+    assert len(list(bob.qdir.glob("req-*.json"))) == before
+
+
+def test_local_outbox_bare_line_uses_ear_account(bob):
+    """FR #8622: bare outbox text with no WHOIS account still queues as this ear."""
+    bob.chan = "#marchhare"
+    bob.acct.clear()
+    irc_agent.Client._maybe_local_outbox_startworker(bob, "!startworker agent")
+    assert len(list(bob.qdir.glob("req-*.json"))) == 1
+    assert any("ACK startworker agent on marchhare" in s for s in bob.sent)
+
+
 def test_ear_pm_gets_a_pm_reply_and_ignores_itself_and_chair_ears(bob, tmp_path):
     bob.acct["simon"] = "simon"
     assert bob._maybe_startworker("Simon", "Bob-marchhare", "!startworker marchhare", to_channel=False, to_me=True)
