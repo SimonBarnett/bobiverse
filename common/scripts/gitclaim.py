@@ -9520,14 +9520,26 @@ def is_hard_ceiling_reason(reason: str) -> bool:
     return "hard ceiling" in text or text.replace("_", "-").startswith("hard-ceiling")
 
 
+def is_stop_closed_giveup_reason(reason: str) -> bool:
+    """True for a GIVEUP because the issue was already closed (FR #8645).
+
+    The seat can be recycled. This must not stamp needs_human or block a fresh seat.
+    """
+    token = _deterministic_nack_token(reason)
+    return token == "process-exit:stop-closed" or token.startswith("process-exit:stop-closed")
+
+
 def is_infra_soft_giveup_reason(reason: str) -> bool:
     """True when a NACK/GIVEUP is infra or a soft seat fault (FR #8375).
 
     These must not increment giveup_count or stamp needs_human. A fresh seat
     must stay offerable. Covers hard-ceiling, worktree-create-failed (and the
-    other FR #6240 pre-ACK classes), holder_bored, and offer-timeout.
+    other FR #6240 pre-ACK classes), holder_bored, offer-timeout, and
+    process-exit:stop-closed (FR #8645).
     Product GIVEUPs stay on the FR #180 threshold.
     """
+    if is_stop_closed_giveup_reason(reason):
+        return True
     if is_hard_ceiling_reason(reason):
         return True
     if is_deterministic_nack_reason(reason) or is_worktree_head_mismatch_reason(reason):
