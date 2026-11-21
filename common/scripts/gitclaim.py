@@ -1605,16 +1605,27 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
     via ``clear_needs_human_from_owner_issue_comment`` so the next ``!bored``
     can offer again. Seat GIVEUP-shaped comments do not clear.
     """
-    v = row.get("needs_human")
-    if isinstance(v, bool):
-        flag = v
-    else:
-        flag = str(v or "").strip().lower() in ("1", "true", "yes")
-    if not flag:
+    if not _needs_human_flag(row):
+        return False
+    # FR #8634: a stale holder_bored / other infra-soft stamp must not black out
+    # auto-offer. Those reasons never should have set needs_human (FR #8375).
+    # Seats already in giveup_seats stay out via row_gave_up_by. A fresh nick
+    # can take the row without waiting for the monitor heal.
+    if is_infra_soft_giveup_reason(str(row.get("giveup_reason") or "")):
         return False
     if cli_exit_fresh_seat_retry(row, nick):
         return False
     return True
+
+
+def _needs_human_flag(row: dict) -> bool:
+    """Raw needs_human bit, ignoring FR #8628 / #8634 offer exceptions."""
+    if not isinstance(row, dict):
+        return False
+    v = row.get("needs_human")
+    if isinstance(v, bool):
+        return v
+    return str(v or "").strip().lower() in ("1", "true", "yes")
 
 
 # FR #4711: seat wire / board comments must not clear needs_human (same GitHub
@@ -4678,7 +4689,9 @@ def _coerce_row(row: dict) -> dict | None:
     if row.get("merged_prs"):
         mp = row.get("merged_prs")
         out["merged_prs"] = [str(x) for x in mp] if isinstance(mp, list) else [str(mp)]
-    if row_needs_human(row):
+    # Persist the raw stamp. Offer exceptions (FR #8628 / #8634) must not
+    # drop it on reload or the infra-soft heal cannot see it.
+    if _needs_human_flag(row):
         out["needs_human"] = True
     # FR #6592: operator !pin/!unpin flag must survive queue reload.
     if _is_operator_require_machine(row):
@@ -13757,7 +13770,7 @@ def row_has_false_needs_human(row: dict) -> bool:
     """
     if not isinstance(row, dict):
         return False
-    if not row_needs_human(row, ""):
+    if not _needs_human_flag(row):
         return False
     reason = str(row.get("giveup_reason") or "").strip()
     return is_infra_soft_giveup_reason(reason)
