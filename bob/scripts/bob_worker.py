@@ -5711,6 +5711,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    } catch { return $true }",
             r"}",
             r"function Try-OpencodeSwitchToPaid([string]$Current, [string]$Reason) {",
+            r"    if ($script:ocStopClosed) { return $false }",
             r"    if ($script:ocPaidSwitched) { return $false }",
             r"    if (-not (Test-OpencodeModelIsFree $Current)) { return $false }",
             r"    if (-not $script:ocPaidModel) { return $false }",
@@ -5821,6 +5822,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
             r"    $script:ocSkipFuelLog = $false",
+            r"    $script:ocStopClosed = $false",
             r"    $script:ocHasJob = -not [string]::IsNullOrWhiteSpace([string]$jobKey)",
             r"    if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_started' $turnN }",
             r"    try {",
@@ -6021,6 +6023,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    if ($stopLine -eq 'stop closed') {",
             r"                        $killReason = 'process-exit:stop-closed'",
             r"                        $script:ocSkipFuelLog = $true",
+            # FR #8645: closed issue is not fuel and must not switch a free pin to pro.
+            r"                        $script:ocStopClosed = $true",
             r"                        $teStatus = 'error'",
             r"                        $teClass = 'process-exit'",
             r"                        $teErr = 'process-exit:stop-closed'",
@@ -6119,7 +6123,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $scanIsGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
             r"    $scanFreeOk = (($scan -match $freeUsagePattern) -and (($scan -match $providerFuelCue) -or (-not $scanIsGoModel)))",
             r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or $scanFreeOk))))",
-            r"    if ($timedOut) {",
+            r"    if ($timedOut -and -not $script:ocStopClosed) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
             r"        $msg = $killReason",
@@ -6293,7 +6297,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        Invoke-OpencodeRun $line $jobKey $ocDir",
             r"        return",
             r"    }",
-            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and (($stderr + [Environment]::NewLine + $stdout) -match 'EPIPE|broken pipe'))",
+            r"    # FR #8645: a stop-closed kill can surface node EPIPE. Do not retry or switch model.",
+            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and -not $script:ocStopClosed -and (($stderr + [Environment]::NewLine + $stdout) -match 'EPIPE|broken pipe'))",
             r"    if ($epipeHit -and [int]$script:ocEpipeTries -lt 1) {",
             r"        $wtOk = (-not $ocDir) -or (Test-Path -LiteralPath $ocDir -PathType Container)",
             r"        if ($wtOk) {",
