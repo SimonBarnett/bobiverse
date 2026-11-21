@@ -296,3 +296,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - needs_human stays global except one post-cooldown auto-offer when giveup_reason is agent-cli-nonzero-exit and the nick is not in giveup_seats.
 - Infra-soft give-up reasons must not black out auto-offer. Persist the raw needs_human bit separately from the offer gate so heal can still see a false stamp.
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
+- Chair-host require_machine cues and !pin ionos fold to walrus before DIGEST_ID_FOLD. Do not retarget the ionos digest alias; that id is the renamed box, not the live chair.
