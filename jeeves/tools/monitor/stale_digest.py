@@ -7,18 +7,34 @@ import sys
 import time
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, non_chair_overlay, resolve_homes, run_check
 
 
 DEFAULT_MAX_AGE_SEC = 900  # 15 min
 
 
 def check(args):
-    _chair, digest = resolve_homes(args)
+    chair, digest = resolve_homes(args)
     path = digest / "digest.json"
-    findings = []
+    findings: list[str] = []
+    notes: list[str] = []
     if not path.is_file():
         findings.append(f"digest.json missing: {path}")
+        overlay = non_chair_overlay(chair, digest, require_missing_queue=True)
+        if overlay:
+            notes.append(f"non-chair soft-ok (live /report fresh): {findings[0]}")
+            notes.append(
+                f"FR #8579 non-chair overlay: live ts={overlay.get('live_report_ts')} "
+                f"chairNick={overlay.get('live_chair_nick')}"
+            )
+            payload = {
+                "ok": True,
+                "path": str(path),
+                "findings": [],
+                "notes": notes,
+            }
+            payload.update(overlay)
+            return (payload, EXIT_OK)
         return ({"ok": False, "findings": findings, "path": str(path)}, EXIT_FINDING)
     age = time.time() - path.stat().st_mtime
     max_age = DEFAULT_MAX_AGE_SEC
@@ -32,7 +48,7 @@ def check(args):
         elif isinstance(ts, (int, float)) and ts > 1_000_000_000:
             age = time.time() - float(ts)
         elif isinstance(ts, str) and ts.strip():
-            # FR #6100: digest.ts is ISO-8601 (…Z). File mtime can be fresh while ts is frozen.
+            # FR #6100: digest.ts is ISO-8601 (...Z). File mtime can be fresh while ts is frozen.
             from datetime import datetime, timezone
 
             raw = ts.strip()
@@ -65,17 +81,31 @@ def check(args):
         data = None
     if age > max_age:
         findings.append(f"digest stale age_sec={int(age)} max={max_age}")
+    overlay = None
+    if findings:
+        # FR #8579: local digest mtime/ts stale on non-chair while live /report is fresh.
+        overlay = non_chair_overlay(chair, digest, require_missing_queue=True)
+        if overlay:
+            for f in findings:
+                notes.append(f"non-chair soft-ok (live /report fresh): {f}")
+            notes.append(
+                f"FR #8579 non-chair overlay: live ts={overlay.get('live_report_ts')} "
+                f"age_sec={overlay.get('live_report_age_sec')} "
+                f"chairNick={overlay.get('live_chair_nick')}"
+            )
+            findings = []
     ok = not findings
-    return (
-        {
-            "ok": ok,
-            "path": str(path),
-            "age_sec": int(age),
-            "max_age_sec": max_age,
-            "findings": findings,
-        },
-        EXIT_OK if ok else EXIT_FINDING,
-    )
+    payload = {
+        "ok": ok,
+        "path": str(path),
+        "age_sec": int(age),
+        "max_age_sec": max_age,
+        "findings": findings,
+        "notes": notes,
+    }
+    if overlay:
+        payload.update(overlay)
+    return (payload, EXIT_OK if ok else EXIT_FINDING)
 
 
 def main(argv=None) -> int:

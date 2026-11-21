@@ -12,6 +12,7 @@ from _common import (
     EXIT_FINDING,
     EXIT_OK,
     iter_worker_entries,
+    non_chair_overlay,
     ops_home,
     queue_bucket_rows,
     resolve_homes,
@@ -21,7 +22,7 @@ from _common import (
     run_check,
 )
 
-# FR #2448: pin-only / gated empty offer for idle seats sustained this long → finding.
+# FR #2448: pin-only / gated empty offer for idle seats sustained this long -> finding.
 EMPTY_OFFER_STARVE_S = 10 * 60
 EMPTY_OFFER_STATE = "monitor-empty-offer-starve.json"
 
@@ -75,7 +76,7 @@ def _gate_bucket(row: dict) -> str:
         gc = _ensure_gitclaim()
         skip = gc.row_skip_fr_reason(row)
         if skip:
-            # label:skill / harvest_title → skill bucket for operator view
+            # label:skill / harvest_title -> skill bucket for operator view
             s = str(skip).lower()
             if "skill" in s or "harvest" in s:
                 return "skill"
@@ -257,6 +258,27 @@ def check(args):
     queue = _load_json(qpath)
     if queue is None:
         findings.append(f"queue.json missing at {ops} (chair={chair} digest={digest})")
+        overlay = non_chair_overlay(chair, digest, require_missing_queue=True)
+        if overlay:
+            notes.append(f"non-chair soft-ok (live /report fresh): {findings[0]}")
+            notes.append(
+                f"FR #8579 non-chair overlay: live ts={overlay.get('live_report_ts')} "
+                f"chairNick={overlay.get('live_chair_nick')} "
+                f"unaccepted={overlay.get('live_queue_unaccepted')} "
+                f"accepted={overlay.get('live_queue_accepted')}"
+            )
+            payload = {
+                "ok": True,
+                "findings": [],
+                "notes": notes,
+                "chair_home": str(chair),
+                "ops_home": str(ops),
+                "queue_path": str(qpath),
+                "unaccepted_count": overlay.get("live_queue_unaccepted"),
+                "offerable_count": None,
+            }
+            payload.update(overlay)
+            return (payload, EXIT_OK)
         return (
             {"ok": False, "findings": findings, "notes": notes, "chair_home": str(chair)},
             EXIT_FINDING,
@@ -264,7 +286,7 @@ def check(args):
     unaccepted = queue_bucket_rows(queue, "unaccepted")
     dig = _load_json(digest / "digest.json") or {}
 
-    # FR #1518: breakdown of unaccepted by gate (skill harvest usually never enqueued — count stays 0).
+    # FR #1518: breakdown of unaccepted by gate (skill harvest usually never enqueued - count stays 0).
     gated_counts = {
         "skill": 0,
         "skip_fr": 0,
@@ -279,7 +301,7 @@ def check(args):
         gated_counts[bucket] = gated_counts.get(bucket, 0) + 1
 
     # Seat-aware ungated offerable for IDLE shop seats only (FR #1116 / #1625 / #1652).
-    # Do not pass busy/doing nicks into count_offerable — that inflated offerable_n while
+    # Do not pass busy/doing nicks into count_offerable - that inflated offerable_n while
     # orphan w-mh-* ghosts made idle_seat_count>0 (false true-starve).
     offerable_n = 0
     pending_offers = 0
@@ -343,7 +365,7 @@ def check(args):
                 + detail
             )
             notes.append(
-                "skill/harvest intakes are offerable promote FRs (FR #1682); if gated empty, check other gates — open skill count may still be in unaccepted"
+                "skill/harvest intakes are offerable promote FRs (FR #1682); if gated empty, check other gates - open skill count may still be in unaccepted"
             )
     elif offerable_n > 0 and idle_seat_count > 0:
         findings.append(
@@ -387,7 +409,7 @@ def check(args):
         except Exception:
             pass
 
-    # FR #2448: sustained pin-only / gated empty while idle seats exist → finding after 10m.
+    # FR #2448: sustained pin-only / gated empty while idle seats exist -> finding after 10m.
     rm_n = int(gated_counts.get("require_machine") or 0)
     ungated_n = int(gated_counts.get("ungated") or 0)
     pin_starve = (
@@ -426,7 +448,7 @@ def check(args):
             "unaccepted_count": len(unaccepted),
             "offerable_count": offerable_n,
             "ungated_offerable_count": offerable_n,
-            # FR #1652: alias — offerable is computed against idle shop nicks only.
+            # FR #1652: alias - offerable is computed against idle shop nicks only.
             "offerable_for_idle_seats": offerable_n,
             "idle_seat_count": idle_seat_count,
             "pending_offer_count": pending_offers,

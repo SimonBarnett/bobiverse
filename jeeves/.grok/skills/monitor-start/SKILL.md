@@ -57,6 +57,15 @@ Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
 Title: short delay symptom. Body: what / where / evidence (script JSON / exit) / fix. De-dup first. Never print secrets.
 
+
+## Non-chair hosts (FR #8579)
+
+Monitor may run on a worker box (e.g. redqueen) that has no local `~/.jeeves/queue.json`
+and no ircJeeves/BobCallback services. Those local probes **soft-pass** when live
+`GET https://irc.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
+`non_chair_overlay` in the JSON. Prefer the ionos chair host for local service truth.
+Start-JeevesMonitor warns when the local queue file is absent; it does not refuse.
+
 ## Do not
 
 - Wait for a human prompt before the first check cycle
