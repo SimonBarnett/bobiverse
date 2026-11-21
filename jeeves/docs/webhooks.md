@@ -21,6 +21,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/summary?user=…&date=…` | Day totals: raw + de-overlapped minutes, overlaps |
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
+| GET | `/bob/v1/models` | Fleet agent Weights rows JSON (`{"agents":[…]}`) from digest-home `models-catalog.json` or built-in defaults (BOB-01 / FR #8707); **open, no secret** |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -72,6 +73,14 @@ Serves the validated JSON array from digest-home `builds-catalog.json` (missing 
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/builds"
+```
+
+### GET models / Weights rows (BOB-01 / FR #8707)
+
+Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (seed/valid-combos are later BOB-03/04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
+
+```bash
+curl -sS "https://bob.ntsa.uk/bob/v1/models"
 ```
 
 ### POST report (status / ops)
