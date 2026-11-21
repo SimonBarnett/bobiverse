@@ -1243,8 +1243,9 @@ INSTALLTEST_V1_RE = re.compile(
 BUILD_RUNNER_REQUIRED_IMPORTS = ("yaml",)
 
 # Fallback DIGEST_ID_FOLD when bobreport is not importable (tests / slim envs).
+# FR #8653 / #8697: ionos folds to walrus (live chair host), not win-mpre.
 _BUILD_ID_FOLD = {
-    "ionos": "win-mpre8vi4u6u",
+    "ionos": "walrus",
     "dev1": "ce-priority-dev1",
 }
 
@@ -1936,7 +1937,7 @@ def recipe_max_run_s(recipe: BuildRecipe | None, *, cap: float | None = None) ->
 
 
 def fold_build_machine(mid: str) -> str:
-    """DIGEST_ID_FOLD: ``ionos`` -> ``win-mpre8vi4u6u`` (canonical). Prefer bobreport."""
+    """DIGEST_ID_FOLD: ``ionos`` -> ``walrus`` (canonical chair host). Prefer bobreport."""
     s = str(mid or "").strip().lstrip("#").lower()
     if not s:
         return ""
