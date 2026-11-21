@@ -51,6 +51,17 @@ Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2**
 
 **Ticket closure (FR #6063 / #6064 / #6069 / #6081 / #6391 / #6400 / #6405):** `ticket_closure` reports newly closed issues / merged PRs / unmerged closed PRs on focused repos (`closed[]`). Event-first (FR #6405): BobCallback GIT webhooks call `ingest_github_webhook`; ChairJobs poll backup every `TICKET_CLOSURE_S` default 900s when `JEEVES_TICKET_CLOSURE_FIXTURE` is unset (per-repo `poll_cursors` + pagination, FR #6400). Fixture is tests-only. De-dupe state is `monitor-ticket-closure.json` (`seen` / `pending` / per-repo `poll_cursors` + legacy `poll_cursor` / `last_poll_at` / `last_wake_at` / `pending_count` / `ticket_closure_token_source`). Preferred wake: HTTPS POST to `JEEVES_TICKET_CLOSURE_WAKE_URL` (secret never logged); transport failure stays `pending` with backoff. Legacy `JEEVES_TICKET_CLOSURE_WAKE=1` without URL still uses `wake_bob` / GrokBotApi. Optional Phase-2 wait registry: `ticket-closure-waiting.json`. Never writes queue.json, never `!assign`.
 
+## Depends-on + fr-digest go-gates (BOB-D* / BOB-G*)
+
+Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `Depends-on: #N` all CLOSED, (3) `fr-digest` hold/unhold-releases + CI open-children.
+
+| Skill | When |
+|---|---|
+| `bobiverse-jeeves-agent-depends-on` | Every monitor cycle **once BOB-D offer skip is on tip** (D1/D3+); until then load on demand only |
+| `bobiverse-jeeves-agent-fr-digest` | Every cycle **after** depends-on once BOB-G1 is on tip; until then on demand only |
+
+Token-free checks (when landed): `depends_on`, `fr_digest` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies.
+
 ## Auto-start (FR #954)
 
 On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md first-turn rule). Do not wait for a human prompt. Skills are under `.grok\skills` only (no top-level `.\skills`). The Start Menu shortcut / `monitor_prompt` tells the agent to run `monitor-start` now.

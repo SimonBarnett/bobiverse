@@ -50,8 +50,12 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Open PR stale base | `open_pr_stale_base` | open PRs whose base.ref is not main/master (FR #8333; fixture JEEVES_OPEN_PR_STALE_BASE_FIXTURE) |
 | Open PR missing MRB/FIX | `open_pr_mrb_missing` | open non-draft non-receipt PRs with no MRB/FIX queue row (FR #8377; fixture JEEVES_OPEN_PR_MRB_MISSING_FIXTURE) |
 | Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
+| Depends-on gate | `depends_on` | **when BOB-D live** — offered/accepted while Depends-on still OPEN (see `bobiverse-jeeves-agent-depends-on`) |
+| FR digest go-gate | `fr_digest` | **when BOB-G live** — child offered while `fr-digest` still has `hold` (see `bobiverse-jeeves-agent-fr-digest`) |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
+
+After the script checks, if BOB-D / BOB-G product is on tip, open and follow `.grok/skills/bobiverse-jeeves-agent-depends-on/SKILL.md` then `.grok/skills/bobiverse-jeeves-agent-fr-digest/SKILL.md` (go-gate after Depends-on). Until those ship, skip the two checks (missing check name = soft skip / do not EXIT 2).
 
 ## Report format (intake)
 
