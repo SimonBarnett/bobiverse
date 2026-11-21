@@ -298,3 +298,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
 - When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
+- FR #7000/#8785 seat prompt: run skill-dag only via seat .cursor/mcp.json mcpServers.skill-dag command+args (splat), then --once resolve|get_skill; never invent Path(worker).parent\bob\scripts\skill_dag_mcp.py
