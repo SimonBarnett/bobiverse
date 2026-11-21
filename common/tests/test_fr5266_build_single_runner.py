@@ -16,7 +16,7 @@ def test_build_v1_single_runner_per_machine(tmp_path: Path):
     chair_q = tmp_path / "chair-q"
     ear_q = tmp_path / "ear-q"
     ok_chair = bb.consume_build_v1(
-        line, "win-mpre8vi4u6u", "ionos",
+        line, "walrus", "ionos",
         queue_dir=chair_q, route_marker_dir=routes,
     )
     ok_ear = bb.consume_build_v1(
