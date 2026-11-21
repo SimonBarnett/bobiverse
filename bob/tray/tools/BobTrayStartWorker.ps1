@@ -192,6 +192,37 @@ function ConvertTo-BobTrayStartWorkerExpires {
     catch { return $null }
 }
 
+
+function Resolve-BobTrayOpencodeSlotModel {
+  <#
+  FR #8610 / #6429: resolve free|paid OpenCode model id for !startworker slot pins.
+  #>
+  param([string]$Root, [Parameter(Mandatory)][string]$Slot)
+  $slot = ([string]$Slot).Trim().ToLowerInvariant()
+  $freeDef = 'opencode/deepseek-v4.1-flash-free'
+  $paidDef = 'opencode/claude-sonnet-4'
+  $free = $freeDef
+  $paid = $paidDef
+  if (Get-Command Get-BobTrayClickModelConfigPaths -ErrorAction SilentlyContinue) {
+    foreach ($path in @(Get-BobTrayClickModelConfigPaths -Root $Root)) {
+      if (-not (Test-Path -LiteralPath $path)) { continue }
+      try {
+        $doc = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($doc.models) {
+          if ($doc.models.opencodeFree) { $free = ([string]$doc.models.opencodeFree).Trim() }
+          if ($doc.models.opencodePaid) { $paid = ([string]$doc.models.opencodePaid).Trim() }
+        }
+      } catch { }
+    }
+  }
+  if ($slot -eq 'paid') {
+    if ($paid -and $paid -notmatch '\$') { return $paid }
+    return $paidDef
+  }
+  if ($free -and $free -notmatch '\$') { return $free }
+  return $freeDef
+}
+
 function Invoke-BobTrayStartWorkerQueue {
     <#
     .SYNOPSIS
@@ -222,21 +253,35 @@ function Invoke-BobTrayStartWorkerQueue {
             $mode = [string]$req.mode
             $agent = ''
             if ($req.PSObject.Properties.Name -contains 'agent') { $agent = ([string]$req.agent).Trim().ToLowerInvariant() }
+            # FR #8610: optional free|paid OpenCode slot -> child-only BOB_OPENCODE_MODEL.
+            $slot = ''
+            if ($req.PSObject.Properties.Name -contains 'slot') { $slot = ([string]$req.slot).Trim().ToLowerInvariant() }
+            $model = ''
+            if ($agent -eq 'opencode' -and $slot -in @('free', 'paid')) {
+                if (Get-Command Resolve-BobTrayOpencodeSlotModel -ErrorAction SilentlyContinue) {
+                    $model = [string](Resolve-BobTrayOpencodeSlotModel -Root $script:RepoRoot -Slot $slot)
+                }
+                elseif ((Get-Command Get-BobTrayClickedLaunchModel -ErrorAction SilentlyContinue) -and $slot -eq 'free') {
+                    $model = [string](Get-BobTrayClickedLaunchModel -Root $script:RepoRoot -Kind 'opencode')
+                }
+            }
             # FR #8517: never throw on expires; always leave a res-*.json reason.
             $expires = ConvertTo-BobTrayStartWorkerExpires -Raw $req.expires
             if ($null -eq $expires) { $reason = 'bad-expires' }
             elseif ($mode -notin @('agent', 'plan')) { $reason = 'bad-mode' }
             elseif ($agent -and $agent -notin @('auto', 'grok', 'cursor', 'opencode')) { $reason = 'bad-agent' }
+            elseif ($slot -and $slot -notin @('free', 'paid')) { $reason = 'bad-slot' }
+            elseif ($slot -and $agent -ne 'opencode') { $reason = 'bad-slot' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
             elseif ($mode -eq 'agent' -and (Test-BobTraySeatsOff)) { $reason = 'seats-off' }
             elseif ((Get-BobTrayWorkerCapRefusal -Mode $mode)) { $reason = 'cap' }
             else {
                 try {
                     if ($agent -and $agent -ne 'auto') {
-                        $pidOut = [int](@(& $Launch $mode $agent)[-1])
+                        $pidOut = [int](@(& $Launch $mode $agent $model)[-1])
                     }
                     else {
-                        $pidOut = [int](@(& $Launch $mode)[-1])
+                        $pidOut = [int](@(& $Launch $mode '' '')[-1])
                     }
                     if ($pidOut -gt 0) { $ok = $true } else { $reason = 'launch-failed' }
                 }

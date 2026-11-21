@@ -53,11 +53,21 @@ def ask(q, body="!startworker", nick="Simon", account="simon", channel="#marchha
 
 # ------------------------------------------------------------------------------------------------ syntax
 @pytest.mark.parametrize("body,want", [
-    ("!startworker", ("agent", None)), ("!startworker agent", ("agent", None)), ("!StartWorker PLAN", ("plan", None)),
-    ("!startworker marchhare", ("agent", "marchhare")), ("!startworker plan marchhare", ("plan", "marchhare")),
-    ("!startworker marchhare plan", ("plan", "marchhare")), (":!startworker agent #marchhare", ("agent", "marchhare")),
-    ("!startworker a b c", "usage"), ("!startworker agent plan", "usage"), ("!startworker rm -rf /", "usage"),
-    ("!startworkers", None), ("hello !startworker", None), ("", None),
+    ("!startworker", ("agent", None, "", "")),
+    ("!startworker agent", ("agent", None, "", "")),
+    ("!StartWorker PLAN", ("plan", None, "", "")),
+    ("!startworker marchhare", ("agent", "marchhare", "", "")),
+    ("!startworker plan marchhare", ("plan", "marchhare", "", "")),
+    ("!startworker marchhare plan", ("plan", "marchhare", "", "")),
+    (":!startworker agent #marchhare", ("agent", "marchhare", "", "")),
+    ("!startworker opencode flamingo", ("agent", "flamingo", "opencode", "")),
+    ("!startworker opencode free flamingo", ("agent", "flamingo", "opencode", "free")),
+    ("!startworker a b c", "usage"),
+    ("!startworker agent plan", "usage"),
+    ("!startworker rm -rf /", "usage"),
+    ("!startworkers", None),
+    ("hello !startworker", None),
+    ("", None),
 ])
 def test_syntax(body, want):
     assert sw.parse(body) == want
@@ -368,8 +378,8 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     w = (TRAY_TOOLS / "Watch-BobTray.ps1").read_text(encoding="utf-8")
     assert "'BobTrayStartWorker.ps1'" in w
     assert "Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir" in w
-    # Queue launch is the same function as a menu click, and it forwards the requested agent.
-    assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet" in w
+    # Queue launch is the same function as a menu click, and it forwards agent + optional model (FR #8610).
+    assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet" in w
     assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in w
     assert "$startWorkerTimer.Start()" in w and "$startWorkerTimer.Stop()" in w
     assert "Write-BobTrayAlive" in w and "'tray.alive'" in w                   # heartbeat removed on exit => ear NACKs at once
