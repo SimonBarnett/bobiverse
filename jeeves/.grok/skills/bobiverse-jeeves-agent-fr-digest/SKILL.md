@@ -47,6 +47,7 @@ Run **after** `bobiverse-jeeves-agent-depends-on` each cycle once BOB-G1 is on t
 4. **Not a finding:** child correctly skipped with `depends-held`; or digest unheld and child offered while digest still OPEN (go-gate working).
 5. **CI:** if build-jeeves fails open-children gate, comment on #8839/#8841 with PR number; do not invent a twin FR.
 6. Prefer script when present: `Invoke-JeevesMonitorCheck.ps1 -Check fr_digest` (FR filed with this skill).
+7. CAST IRON point 5: when the fr-digest monitor playbook is proven, FR the durable check into the token-less chair (`tools\monitor\fr_digest.py` + wrapper + chair go-gate) so it runs without an LLM.
 
 ## Until BOB-G is live
 

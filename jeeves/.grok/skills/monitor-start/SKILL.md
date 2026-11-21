@@ -13,6 +13,8 @@ description: >
 > 2. Use `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` with what/where/evidence/fix; never put secrets in a filing. Bobiverse filings use `-Repo SimonBarnett/bobiverse`.
 > 3. Before finishing a monitoring session run `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...`, then `-Flush`.
 > 4. Monitoring observes and reports; it never acts as chair, assigns seats, or edits the queue.
+> 5. Prefer deterministic fixes. When tested, FR them into the Jeeves token-less service so what we learn becomes
+>    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 

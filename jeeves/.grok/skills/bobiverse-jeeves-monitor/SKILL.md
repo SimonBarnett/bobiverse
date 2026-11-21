@@ -23,6 +23,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
+>    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
+>    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -38,7 +41,7 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 
 ## Prefer token-free scripts (t865u)
 
-Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorOpencodeSeats`, `Test-JeevesMonitorSkillPromoteBacklog`, `Test-JeevesMonitorIntakeAllowlist`, `Test-JeevesMonitorGithubResyncFocus`, `Test-JeevesMonitorOpenPrStaleBase`, `Test-JeevesMonitorOpenPrMrbMissing`, `Test-JeevesMonitorTicketClosure` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1729 / FR #3117 / FR #3146 / FR #8333 / FR #8377 / FR #6063 / FR #8583). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
+Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorOpencodeSeats`, `Test-JeevesMonitorSkillPromoteBacklog`, `Test-JeevesMonitorIntakeAllowlist`, `Test-JeevesMonitorGithubResyncFocus`, `Test-JeevesMonitorOpenPrStaleBase`, `Test-JeevesMonitorOpenPrMrbMissing`, `Test-JeevesMonitorTicketClosure` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1729 / FR #3117 / FR #3146 / FR #8333 / FR #8377 / FR #6063 / FR #8583). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). When a monitor playbook is proven, promote it into the token-less chair the same way: FR + PR into `jeeves.exe` / `common/scripts` / `jeeves/checks` so the learning survives without a monitoring LLM. Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
 **OpenCode seats (FR #8583):** `opencode_seats` probes live `GET /bob/v1/report` for flamingo `kind=opencode` (stuck age, model_mismatch, week-exhausted while busy). Local digest `seats_stuck_doing` alone misses remote OpenCode. Report only (harvest #1967).
 **Skill promote backlog (FR #1729):** after #1682 offer-all, `skill_promote_backlog` reports `open_skill_without_promote_pr` when open skill/harvest receipts exceed `BOB_SKILL_PROMOTE_THRESHOLD` (default 15) with no open `harvest/*` promote PR and no queued skill FR. Needs `GH_TOKEN`/`GITHUB_TOKEN` on the monitor host for the GitHub count (queue-only without token). Live chair verify is **walrus** (ionos deprecated).
 **Intake allowlist (FR #3117):** `intake_allowlist` POSTs do-not-file probes for each required `DEFAULT_ALLOW_REPOS` entry (a-search, trutex, …). HTTP 403 `repo_not_allowed` is EXIT 1 — Sync/compose ircJeeves on **walrus** after allowlist PRs.
@@ -68,7 +71,7 @@ On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md 
 
 ## Self-harvest loop (t865u)
 
-After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest - do not keep private notes.
+After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest - do not keep private notes. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
 
 ## Architecture (chair is deterministic)
 

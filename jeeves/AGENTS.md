@@ -15,6 +15,9 @@
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
+>    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
+>    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
 
 ## First turn (FR #954) â€” do this NOW
 
@@ -35,7 +38,7 @@ Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` �
 
 ## Prefer token-free monitor scripts (t865u)
 
-Prefer **deterministic scripts that run without tokens** over reasoning. Run them first; only reason about failures (exit 1 findings / exit 2 errors). One JSON line on stdout. **Any repeated manual check becomes such a script** (file an FR / PR that adds it under `tools\monitor\` + a `scripts\Test-JeevesMonitor*.ps1` wrapper).
+Prefer **deterministic scripts that run without tokens** over reasoning. Run them first; only reason about failures (exit 1 findings / exit 2 errors). One JSON line on stdout. **Any repeated manual check becomes such a script** (file an FR / PR that adds it under `tools\monitor\` + a `scripts\Test-JeevesMonitor*.ps1` wrapper). When a monitor playbook is proven, promote it into the token-less chair the same way: FR + PR into `jeeves.exe` / `common/scripts` / `jeeves/checks`, so the learning survives without a monitoring LLM.
 
 | Check | Script | Python |
 |---|---|---|
@@ -71,7 +74,7 @@ When `jeeves.exe --heal` still fails, ONE rate-limited maintenance agent starts 
 
 ## Self-harvest loop (t865u)
 
-The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn.
+The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
 
 ## What you are looking at
 

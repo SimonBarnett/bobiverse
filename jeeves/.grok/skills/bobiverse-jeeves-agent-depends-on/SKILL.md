@@ -48,6 +48,7 @@ After token-free checks, if BOB-D offer skip is deployed (chair stamps `depends-
 3. Rows correctly skipped with reason `depends-open` are **not** starve — do not file empty-queue / idle+ungated for them.
 4. `hold` alone without Depends-on is gate 1 — leave parked; do not treat as Depends-on bug.
 5. Prefer deterministic script when present: `Invoke-JeevesMonitorCheck.ps1 -Check depends_on` (FR filed with this skill). Until the script lands, use `gh issue view` on offered ids + body parse (ASCII).
+6. CAST IRON point 5: when the Depends-on monitor playbook is proven, FR the durable check into the token-less chair (`tools\monitor\depends_on.py` + wrapper + chair skip stamps) so it runs without an LLM.
 
 ## Until BOB-D is live
 
