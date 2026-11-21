@@ -256,6 +256,17 @@ FR_HOLD_BODY_RE = re.compile(
     r"(?im)^\s*(?:\*\*)?HOLD\b(?:\s*\([^)]*\))?(?:\*\*)?\s*:"
 )
 
+# FR #8741: park-only anti-omnibus FRs must not be offered until a human dispatch stamp.
+# Park cues (any one): explicit park-only / do-not-bob-job until human dispatch.
+FR_PARK_ONLY_RE = re.compile(
+    r"(?is)(?:\bpark-only\b|park:\s*park-only|"
+    r"do\s+not\s+bob-job\s+until\s+human\s+dispatch|"
+    r"park-only\s+until\s+human\s+dispatch)"
+)
+# Dispatch clear: body ``(dispatched)`` (BOB pack stamp) or label dispatched / human-dispatch.
+FR_DISPATCH_BODY_RE = re.compile(r"(?i)\(\s*dispatched\s*\)")
+FR_DISPATCH_LABELS = frozenset({"dispatched", "human-dispatch", "bob-dispatched"})
+
 
 def pr_hold_reason(
     *,
@@ -317,6 +328,47 @@ def row_fr_hold_reason(row: dict) -> str | None:
         body=str(row.get("body") or ""),
         labels=tuple(str(x) for x in labels),
     )
+
+
+def fr_park_only_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #8741: why a park-only anti-omnibus FR must not be offered, else None.
+
+    Park cues in title/body block offer until a human dispatch stamp clears them:
+    body ``(dispatched)`` or label ``dispatched`` / ``human-dispatch`` / ``bob-dispatched``.
+    """
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    blob = f"{title or ''}\n{body or ''}"
+    if labs & FR_DISPATCH_LABELS or FR_DISPATCH_BODY_RE.search(blob):
+        return None
+    m = FR_PARK_ONLY_RE.search(blob)
+    if m:
+        return f"park-only: {m.group(0).strip()[:80]}"
+    return None
+
+
+def row_fr_park_only_reason(row: dict) -> str | None:
+    """FR #8741: park-only gate for a queue FR row; None for non-FR or clear/dispatched."""
+    if _canon_task(row) != "FR":
+        return None
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    return fr_park_only_reason(
+        title=title,
+        body=str(row.get("body") or ""),
+        labels=tuple(str(x) for x in labels),
+    )
+
+
+def row_fr_skip_offer_reason(row: dict) -> str | None:
+    """FR #4009 + #8741: hold or park-only reason to skip offering an FR row."""
+    return row_fr_hold_reason(row) or row_fr_park_only_reason(row)
 
 
 @dataclass(frozen=True)
@@ -3417,6 +3469,17 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     # FR #4009: never enqueue FR for issues on hold (label or owner HOLD body stamp).
     # Drop any already-queued twin so webhook edited / resync clears the offer path.
     if claim.task == "FR" and fr_hold_reason(
+        title=claim.title, body=claim.body, labels=claim.labels
+    ):
+        store_repo = canonical_queue_repo(claim.repo)
+        doc["unaccepted"] = [
+            r
+            for r in (doc.get("unaccepted") or [])
+            if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
+        ]
+        return "skipped"
+    # FR #8741: never enqueue park-only anti-omnibus FRs until human dispatch stamp.
+    if claim.task == "FR" and fr_park_only_reason(
         title=claim.title, body=claim.body, labels=claim.labels
     ):
         store_repo = canonical_queue_repo(claim.repo)
@@ -11302,9 +11365,11 @@ def offer_focus_top(
                     return None  # legacy hook; row_awaits_mrb1 always False (op 2026-10-04)
                 if row_skip_fr_reason(cand):
                     return None
-                # FR #4009: hold-labeled / HOLD-stamped FR — skip offer; purge so it leaves unaccepted.
-                if row_fr_hold_reason(cand):
-                    if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
+                # FR #4009 / #8741: hold or park-only FR — skip offer; purge so it leaves unaccepted.
+                skip_why = row_fr_skip_offer_reason(cand)
+                if skip_why:
+                    kind = "fr-park-only" if skip_why.startswith("park-only") else "fr-hold"
+                    if _drop_unaccepted_row(doc, cand, kind=kind, reason=skip_why):
                         purged = True
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
@@ -11743,9 +11808,11 @@ def offer_top(
                 ):
                     i += 1
                     continue
-                # FR #4009: hold-labeled / HOLD-stamped FR — skip and purge from unaccepted.
-                if row_fr_hold_reason(row):
-                    if _drop_unaccepted_row(doc, row, kind="fr-hold", reason=row_fr_hold_reason(row)):
+                # FR #4009 / #8741: hold or park-only FR — skip and purge from unaccepted.
+                skip_why = row_fr_skip_offer_reason(row)
+                if skip_why:
+                    kind = "fr-park-only" if skip_why.startswith("park-only") else "fr-hold"
+                    if _drop_unaccepted_row(doc, row, kind=kind, reason=skip_why):
                         purged = True
                         continue
                     i += 1
@@ -15055,9 +15122,10 @@ def assign_row(
                 return "refused", "row is on GIVEUP/NACK cooldown"
             if row_skip_fr_reason(cand):
                 return "refused", f"row skipped: {row_skip_fr_reason(cand)}"
-            hold_why = row_fr_hold_reason(cand)
+            hold_why = row_fr_skip_offer_reason(cand)
             if hold_why:
-                return "refused", f"row on hold: {hold_why}"
+                prefix = "row park-only" if hold_why.startswith("park-only") else "row on hold"
+                return "refused", f"{prefix}: {hold_why}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
@@ -15246,9 +15314,11 @@ def prune_unassignable_queue(home: Path) -> dict:
                 if task == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue
-                # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
-                if task == "FR" and row_fr_hold_reason(row):
-                    dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
+                # FR #4009 / #8741: drop hold or park-only FR rows.
+                if task == "FR" and row_fr_skip_offer_reason(row):
+                    why = row_fr_skip_offer_reason(row) or ""
+                    tag = "fr_park_only" if why.startswith("park-only") else "fr_hold"
+                    dropped_detail.append(f"{_row_drop_label(row)} {tag}")
                     continue
                 # FR #846: drop FR rows whose URL is a pull request.
                 if task == "FR" and not fr_row_offerable(row):
@@ -16620,9 +16690,11 @@ def resync_from_github(
                 if task_u == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk
-                if task_u == "FR" and row_fr_hold_reason(row):
-                    dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
-                    continue  # FR #4009: hold label / HOLD body stamp
+                if task_u == "FR" and row_fr_skip_offer_reason(row):
+                    why = row_fr_skip_offer_reason(row) or ""
+                    tag = "fr_park_only" if why.startswith("park-only") else "fr_hold"
+                    dropped_detail.append(f"{_row_drop_label(row)} {tag}")
+                    continue  # FR #4009 / #8741: hold or park-only
                 if task_u == "FR" and not fr_row_offerable(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_not_offerable")
                     continue  # FR #846: /pull/ URL is never an FR
