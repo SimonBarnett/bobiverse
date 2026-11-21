@@ -24,15 +24,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Only allowlisted hotpatches (bobreport, opencode_fuel FR #6263) load from InstallRoot\\scripts. Putting that
-# directory on sys.path also shadowed gitclaim and every other ear import with
-# whatever old file was still on disk (reader AttributeError on
-# shop_line_resets_bored_clock). Other modules stay in the frozen embed.
-FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel")
+# Only allowlisted hotpatches load from InstallRoot\\scripts (bobreport,
+# opencode_fuel FR #6263, startworker FR #8613). Putting that directory on
+# sys.path also shadowed gitclaim and every other ear import with whatever old
+# file was still on disk (reader AttributeError on shop_line_resets_bored_clock).
+# Other modules stay in the frozen embed. startworker is NOT in
+# EAR_RUNTIME_DISK_SCRIPTS so tip hotpatch works without an ear rebuild.
+FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel", "startworker")
 # FR #7548: these files ship in the ear artifact and must match provenance.
 EAR_RUNTIME_DISK_SCRIPTS = ("bobreport.py", "opencode_fuel.py")
 BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
 OPENCODE_FUEL_OVERLAY_MARKER = "GO_ZEN_USAGE_USER_AGENT"  # FR #6263
+STARTWORKER_OVERLAY_MARKER = "OPENCODE_SLOTS"  # FR #8613 / #8610 tip grammar
 
 # FR #6282: frozen/disk gitclaim must expose shop claim helpers. Fail at startup
 # when a build/hotpatch mismatch would otherwise AttributeError inside the reader.
@@ -98,6 +101,8 @@ class _InstallScriptOverlay:
         if fullname == "bobreport" and BOBREPORT_OVERLAY_MARKER not in text:
             return None
         if fullname == "opencode_fuel" and OPENCODE_FUEL_OVERLAY_MARKER not in text:
+            return None
+        if fullname == "startworker" and STARTWORKER_OVERLAY_MARKER not in text:
             return None
         import importlib.util
 
@@ -165,12 +170,13 @@ def prefer_install_scripts_path(
     executable: str | Path | None = None,
     path_list: list | None = None,
 ) -> str | None:
-    """When frozen, overlay a compatible on-disk bobreport.py (FR #6237).
+    """When frozen, overlay allowlisted on-disk scripts (FR #6237 / #8613).
 
-    Does not put InstallRoot\\scripts on sys.path. An older bobreport.py that
-    lacks ``opencode_install_root`` stays on disk and is not imported. Non-frozen
-    or missing bobreport.py: no-op. ``path_list`` is left unchanged. The overlay
-    finder is installed only for the real startup call (``path_list is None``).
+    Does not put InstallRoot\\scripts on sys.path. Older bobreport.py /
+    opencode_fuel.py / startworker.py that lack their overlay markers stay on
+    disk and are not imported. Non-frozen or missing bobreport.py: no-op.
+    ``path_list`` is left unchanged. The overlay finder is installed only for
+    the real startup call (``path_list is None``).
     """
     e = os.environ if env is None else env
     is_frozen = (
@@ -3243,7 +3249,7 @@ class Client:
 
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
-        """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
+        """t810u: ``!startworker [agent|plan|grok|cursor|opencode] [free|paid] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
 
         Replies ACK/NACK on the channel it was asked in (PM when asked by PM). Another machine's ear stays silent.
         """
