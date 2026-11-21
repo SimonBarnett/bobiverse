@@ -27,7 +27,7 @@ def test_fresh_nick_passes_once_after_cooldown():
 
 def test_other_reason_and_used_flag_stay_blocked():
     now = 1.8e9
-    other = _row(giveup_reason="holder_bored")
+    other = _row(giveup_reason="cannot review")
     assert gitclaim.cli_exit_fresh_seat_retry(other, "flamingo-24392", now) is False
     assert gitclaim.row_needs_human(other, "flamingo-24392") is True
     used = _row(cli_exit_retry_used=True)
