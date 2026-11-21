@@ -53,6 +53,19 @@ def test_opencode_no_recycle_when_recent_move():
     assert reason == ""
 
 
+def test_ack_open_digest_stale_without_progress_clock_recycles():
+    """FR #8637: frozen worker.updated and no log/turn clock still recycles."""
+    reason = bw.opencode_frozen_recycle_reason(
+        kind="opencode",
+        out_of_fuel=False,
+        ack_open=True,
+        digest_doing_age_s=939.0,
+        progress_moved_age_s=None,
+        threshold_s=900.0,
+    )
+    assert reason == "opencode-frozen-progress"
+
+
 def test_week_limited_alone_is_not_out_of_fuel_for_gate():
     """Partial fuel (week limited, rolling rem>0) must not skip recycle (FR #8596)."""
     # Helper does not take week.limited; out_of_fuel must stay False for that case.

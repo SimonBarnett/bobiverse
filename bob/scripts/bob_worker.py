@@ -12137,6 +12137,16 @@ def opencode_frozen_recycle_reason(
     moved_age = float(progress_moved_age_s) if progress_moved_age_s is not None else None
     if digest_age is not None and digest_age >= thr and not ack_open:
         return "opencode-lost-ack-stale"
+    # FR #8637: digest doing frozen and no true progress clock yet (ACK open,
+    # LOST_ACK / accepted_silent). Week-limited with rolling fuel stays
+    # out_of_fuel=False so this recycle is allowed. A recent real move still wins.
+    if (
+        digest_age is not None
+        and digest_age >= thr
+        and ack_open
+        and moved_age is None
+    ):
+        return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
         return "opencode-frozen-progress"
     if (
