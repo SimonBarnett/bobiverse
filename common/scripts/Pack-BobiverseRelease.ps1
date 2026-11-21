@@ -94,6 +94,25 @@ function Stage-BobAgentFolders([string]$Stage) {
     # FR #1481: also stage scripts\bob-ear.exe (frozen irc_agent) so ircBob does not need system Python for the ear.
     $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
     if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
+    # FR #8700 / BOB-49: bob-ear (bob product) MSI must include Plan agent build (plan\ layout).
+    $planDir = Join-Path $Stage 'plan'
+    $planAgents = Join-Path $planDir 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $planDir -PathType Container)) {
+        throw 'BOB-49: bob MSI stage missing plan\ (Plan agent build)'
+    }
+    if (-not (Test-Path -LiteralPath $planAgents -PathType Leaf)) {
+        throw 'BOB-49: bob MSI stage plan\ missing AGENTS.md'
+    }
+    $marker = Join-Path $Stage 'plan\BOB-49-PLAN-IN-MSI.txt'
+    $markerBody = @(
+        'bob=BOB-49'
+        'fr=8700'
+        'slice=bob-ear-msi-include-plan'
+        'path=plan\'
+        'heat=include-plan'
+    ) -join [Environment]::NewLine
+    [IO.File]::WriteAllText($marker, $markerBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
+    Write-Host 'INFO bob staged plan\ for bob-ear MSI (BOB-49 / FR #8700)'
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
     } else {
