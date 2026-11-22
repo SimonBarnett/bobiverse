@@ -5006,7 +5006,6 @@ def report_agent_cli_nonzero_exit(
         or missing_query_noise
         or unsigned_exit_stderr_is_noise(evidence)
     )
-    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
