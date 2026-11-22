@@ -922,7 +922,10 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            miJeeves.Click += delegate { TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves"); };
+            miJeeves.Click += delegate {
+                TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
+                StartWorker("agent", "grok");
+            };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
             menu.Items.Add(miAgents);
