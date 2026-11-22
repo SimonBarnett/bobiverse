@@ -82,14 +82,14 @@ Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / 
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/models"
+```
 
 ### PUT models / Weights rows (BOB-02 / FR #8708)
 
 Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged.
 
-`ash
+```bash
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
-`
 ```
 
 ### POST report (status / ops)
