@@ -4395,6 +4395,10 @@ $poll.Add_Tick({
                 # FR #7579: stamp engine.alive before any step that can block; log each step.
                 Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'cycle-start name=poll'
                 [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
+                # FR #8971: seat paint file stays fresh even when the digest GET is slow.
+                if (Get-Command Update-BobTrayStatusHeartbeat -ErrorAction SilentlyContinue) {
+                    [void](Update-BobTrayStatusHeartbeat -Root $RepoRoot)
+                }
                 $engine = [bool](Test-BobTrayEngineMode)
                 if (-not $engine) {
                     Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=clear-grok-session'

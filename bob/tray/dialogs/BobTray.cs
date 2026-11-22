@@ -937,6 +937,7 @@ namespace BobDialogs
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
         System.Threading.Timer aliveTimer;
         System.Threading.Timer digestPoolsTimer; // FR #7510: digest pool refresh independent of engine
+        int digestPoolsPid; // FR #8971: one pools child; a slow GET must not stack processes
         readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
         DateTime lastWrite = DateTime.MinValue; long lastLen = -1;
@@ -2239,6 +2240,16 @@ namespace BobDialogs
                     if (File.Exists(alt)) script = alt;
                     else return;
                 }
+                int already = System.Threading.Interlocked.CompareExchange(ref digestPoolsPid, 0, 0);
+                if (already > 0)
+                {
+                    try
+                    {
+                        Process prior = Process.GetProcessById(already);
+                        if (prior != null && !prior.HasExited) return;
+                    }
+                    catch { }
+                }
                 string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
                 ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + root + "\"");
                 psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
@@ -2246,10 +2257,23 @@ namespace BobDialogs
                 {
                     if (p != null)
                     {
-                        if (!p.WaitForExit(25000))
+                        System.Threading.Interlocked.Exchange(ref digestPoolsPid, p.Id);
+                        // FR #8971: 15s hard cap. A slow digest must not stall the tray or stack children.
+                        if (!p.WaitForExit(15000))
                         {
                             try { p.Kill(); } catch { }
+                            try
+                            {
+                                ProcessStartInfo kill = new ProcessStartInfo("taskkill.exe", "/T /F /PID " + p.Id);
+                                kill.CreateNoWindow = true; kill.UseShellExecute = false;
+                                using (Process killer = Process.Start(kill))
+                                {
+                                    if (killer != null) killer.WaitForExit(3000);
+                                }
+                            }
+                            catch { }
                         }
+                        System.Threading.Interlocked.Exchange(ref digestPoolsPid, 0);
                     }
                 }
                 MaybeReportDigestFetchFail();
