@@ -4854,6 +4854,16 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_un:
             out["offer_unanswered"] = clean_un
+    # FR #8924: refusal waves and the one escalation survive reload.
+    try:
+        waves = int(row.get("offer_refusal_waves") or 0)
+    except (TypeError, ValueError):
+        waves = 0
+    if waves:
+        out["offer_refusal_waves"] = waves
+    escalated = str(row.get("offer_escalate_reason") or "").strip()
+    if escalated:
+        out["offer_escalate_reason"] = escalated
     # FR #8428: last seat that timed out. Idle push tries a different seat first.
     last_to = (canonical_worker_nick(str(row.get("offer_last_timeout_seat") or "")) or "").strip()
     if last_to:
@@ -5713,6 +5723,9 @@ GIVEUP_OFFER_EXTRA_S = 90.0
 OFFER_STICKY_MAX = 3
 # FR #7966: unanswered offers to one seat (timeout, no ACK/NACK/GIVEUP) stop at this count.
 OFFER_UNANSWERED_MAX = 3
+# FR #8924: one cooldown expiry may clear an offer-timeout refusal. The next
+# expiry escalates once and leaves the seat refused.
+OFFER_REFUSAL_EXPIRE_MAX = 1
 # Sticky via values that get the extended offer window (harvest hold / seat turn end).
 _RELEASE_OFFER_VIA = frozenset({"giveup", "done", "nack"})
 
@@ -5821,6 +5834,7 @@ def live_seat_can_take_unanswered(
     """
     if not isinstance(row, dict):
         return False
+    expire_offer_timeout_refusals(row, time.time())
     repo = str(row.get("repo") or "")
     for raw in live or ():
         nick = str(raw or "").strip()
@@ -5878,17 +5892,119 @@ def seat_submit_verify_in_flight(home: Path, nick: str) -> bool:
     return False
 
 
-def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
+def offer_timeout_reason(home: Path, nick: str) -> str:
+    """Why a live seat missed ACK (FR #8924). Idle with no job is idle-no-ack."""
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not want:
+        return "offer-timeout"
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return "offer-timeout:idle-no-ack"
+    for ent in (doc.get("machines") or {}).values():
+        if not isinstance(ent, dict):
+            continue
+        for wrow in bobreport._coerce_worker_list(ent.get("worker_list")):
+            if not isinstance(wrow, dict):
+                continue
+            got = (canonical_worker_nick(str(wrow.get("nick") or "")) or "").strip().lower()
+            if got != want:
+                continue
+            state = str(wrow.get("state") or "").strip().lower()
+            jobs = wrow.get("jobs")
+            work = str(wrow.get("work") or "").strip()
+            if isinstance(jobs, list) and jobs:
+                return "offer-timeout:busy-jobs"
+            if work:
+                return "offer-timeout:busy-jobs"
+            if state and state != "idle":
+                return "offer-timeout:state-" + state[:40]
+            return "offer-timeout:idle-no-ack"
+    return "offer-timeout:idle-no-ack"
+
+
+def expire_offer_timeout_refusals(row: dict, now_f: float) -> bool:
+    """Clear an offer-timeout refusal after cooldown (FR #8924).
+
+    One wave may be re-offered. A later expiry stamps offer-timeout-cap and
+    leaves the seat refused. Real giveup_reason rows keep giveup_seats.
+    """
+    if not isinstance(row, dict):
+        return False
+    until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
+    if until is None or float(now_f) < until:
+        return False
+    refused = [str(x).strip() for x in (row.get("offer_refused_by") or []) if str(x).strip()]
+    if not refused:
+        return False
+    latest: dict[str, str] = {}
+    for item in row.get("offer_outcomes") or []:
+        if not isinstance(item, dict):
+            continue
+        seat = str(item.get("seat") or "").strip().lower()
+        if seat:
+            latest[seat] = str(item.get("reason") or "")
+    timeout_seats = []
+    for seat in refused:
+        key = (canonical_worker_nick(seat) or seat).strip().lower()
+        reason = latest.get(key) or latest.get(seat.lower()) or ""
+        if reason.startswith("offer-timeout") and "cap" not in reason:
+            timeout_seats.append(seat)
+    if not timeout_seats:
+        return False
+    try:
+        waves = int(row.get("offer_refusal_waves") or 0)
+    except (TypeError, ValueError):
+        waves = 0
+    if waves >= int(OFFER_REFUSAL_EXPIRE_MAX):
+        if not str(row.get("offer_escalate_reason") or "").strip():
+            row["offer_escalate_reason"] = "offer-timeout-cap"
+            note_offer_outcome(row, timeout_seats[0], "escalate", "offer-timeout-cap")
+            return True
+        return False
+    drop = {(canonical_worker_nick(s) or s).strip().lower() for s in timeout_seats}
+    row["offer_refused_by"] = [
+        s for s in refused
+        if (canonical_worker_nick(s) or s).strip().lower() not in drop
+    ]
+    real = str(row.get("giveup_reason") or "").strip()
+    if not real or real.startswith("offer-timeout"):
+        kept = []
+        for raw in str(row.get("giveup_seats") or "").split(","):
+            seat = raw.strip()
+            if not seat:
+                continue
+            if (canonical_worker_nick(seat) or seat).strip().lower() in drop:
+                continue
+            kept.append(seat)
+        if kept:
+            row["giveup_seats"] = ",".join(kept)
+        else:
+            row.pop("giveup_seats", None)
+    counts = row.get("offer_unanswered")
+    if isinstance(counts, dict):
+        for key in list(counts):
+            if str(key).strip().lower() in drop:
+                counts.pop(key, None)
+        row["offer_unanswered"] = counts
+    row.pop("cooldown_until", None)
+    row["offer_refusal_waves"] = waves + 1
+    note_offer_outcome(row, timeout_seats[0], "expire", "offer-timeout-expired")
+    return True
+
+
+def note_unanswered_offer(row: dict, seat: str, now_f: float, reason: str = "offer-timeout") -> None:
     """Count a timed-out offer. After OFFER_UNANSWERED_MAX, refuse that seat (FR #7966).
 
     Sets cooldown_until and offer_refused_by. Also appends giveup_seats so
     row_on_cooldown blocks only that seat. Does not increment giveup_count
-    and does not stamp needs_human.
+    and does not stamp needs_human. FR #8924 records why the seat missed ACK.
     """
     canon = (canonical_worker_nick(seat) or seat or "").strip()
     if not canon or not isinstance(row, dict):
         return
-    note_offer_outcome(row, canon, "timeout", "offer-timeout")
+    why = str(reason or "offer-timeout").strip() or "offer-timeout"
+    note_offer_outcome(row, canon, "timeout", why)
     key = canon.lower()
     counts = row.get("offer_unanswered")
     if not isinstance(counts, dict):
@@ -11424,7 +11540,7 @@ def offer_focus_top(
                 if dead_pin or age >= offer_timeout_s(cand):
                     # FR #7966: a silent seat is a recorded refusal, not a fresh offer.
                     if not dead_pin:
-                        note_unanswered_offer(cand, to, now_f)
+                        note_unanswered_offer(cand, to, now_f, offer_timeout_reason(home, to))
                     else:
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
                     with contextlib.suppress(Exception):
@@ -11485,6 +11601,10 @@ def offer_focus_top(
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
+                if expire_offer_timeout_refusals(cand, now_f):
+                    # Cap and clear both mutate the live row. A cap does not
+                    # offer, so the empty return must still persist the stamp.
+                    purged = True
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
                 # FR #8008: agent-class exclusion after repeated hard-ceiling kills.
