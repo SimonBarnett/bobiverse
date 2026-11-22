@@ -31,6 +31,9 @@ REQUIRED_ALLOW_REPOS = (
 _PROBE_TITLE = "do-not-file probe-do-not-file intake-allowlist-monitor"
 _PROBE_BODY = "probe-shape-only intake_allowlist monitor; discard"
 _HTTP_TIMEOUT_S = 20.0
+# FR #8861: bob.ntsa.uk is behind Cloudflare; Python-urllib's default UA gets
+# HTTP 403 "error code: 1010". That is not repo_not_allowed.
+_PROBE_USER_AGENT = "BobiverseIntakeAllowlist/1.0 (+https://github.com/SimonBarnett/bobiverse)"
 
 
 def intake_url() -> str:
@@ -97,7 +100,11 @@ def probe_repo(
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": _PROBE_USER_AGENT,
+            "Accept": "application/json",
+        },
         method="POST",
     )
     open_fn = opener or urllib.request.urlopen
@@ -131,13 +138,22 @@ def probe_repo(
                 err = str(parsed.get("error") or "")
         except json.JSONDecodeError:
             parsed = {}
-        if not err and e.code == 403:
-            err = "repo_not_allowed"
+        # FR #8861: only a JSON repo_not_allowed is allowlist drift. Cloudflare
+        # 1010 / HTML 403 must not become Sync/compose findings.
+        if err == "repo_not_allowed":
+            return {
+                "repo": repo,
+                "http_status": int(e.code),
+                "error": err,
+                "allowed": False,
+            }
+        snippet = (body or "").strip().replace("\n", " ")[:120]
         return {
             "repo": repo,
             "http_status": int(e.code),
-            "error": err,
-            "allowed": int(e.code) != 403,
+            "error": f"http_{e.code}:{snippet or err or e.reason}",
+            "allowed": False,
+            "probe_error": True,
         }
     except Exception as e:
         return {
@@ -205,9 +221,10 @@ def check(args, opener: Optional[Callable[..., Any]] = None):
             "probes": probes,
             "findings": findings,
             "remediation": (
-                "Confirm common/scripts/intake.py repo_allowed / SimonBarnett owner gate (FR #3135); "
-                "on walrus run Sync-BobiverseFromRepo (or service restart compose) "
-                "so live ircJeeves picks up the allow rule."
+                "JSON error=repo_not_allowed: confirm common/scripts/intake.py repo_allowed / "
+                "SimonBarnett owner gate (FR #3135) and Sync/compose ircJeeves on the chair. "
+                "HTTP 403 without that JSON (e.g. Cloudflare error code 1010): edge/WAF blocked "
+                "the probe — not an allowlist drift (FR #8861)."
             ),
         },
         EXIT_OK if ok else EXIT_FINDING,

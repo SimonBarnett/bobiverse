@@ -1,0 +1,406 @@
+{
+  "version": 1,
+  "provenance": {
+    "captured_at": "2026-11-22T01:30:00Z",
+    "note": "BOB-04 S1 seed. Not invented: each CLI row traces to a capture below. contexts/efforts use CLI-reported values; 'default' context means CLI has no separate context flag (BOB-03 N/A form).",
+    "clis": {
+      "grok": {
+        "source": "~/.grok/models_cache.json",
+        "cli_version": "1.0.88",
+        "also": "grok models (1.0.88)",
+        "fetched_at": "2026-11-22T01:44:22.319394300Z"
+      },
+      "cursor": {
+        "source": "cursor-agent `agent --help` --model examples (gpt-5, sonnet-4-thinking)",
+        "cli_version": "cursor-agent 2026.10.19",
+        "note": "agent --list-models requires login on this seat; help examples used until refresh (#8820) or Simon seed expands the list"
+      },
+      "opencode": {
+        "source": "opencode models",
+        "cli_version": "1.19.5",
+        "note": "Native opencode/* and opencode-go/* rows only (openrouter/* omitted from initial seed)"
+      }
+    }
+  },
+  "clis": {
+    "grok": [
+      {
+        "model": "grok-4.7",
+        "contexts": [
+          "256000",
+          "500000"
+        ],
+        "efforts": [
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      {
+        "model": "grok-4.7-build-fast",
+        "contexts": [
+          "256000",
+          "500000"
+        ],
+        "efforts": [
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      {
+        "model": "grok-4.6",
+        "contexts": [
+          "256000",
+          "500000"
+        ],
+        "efforts": [
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      {
+        "model": "grok-4.5",
+        "contexts": [
+          "256000",
+          "500000"
+        ],
+        "efforts": [
+          "high",
+          "medium",
+          "low"
+        ]
+      }
+    ],
+    "cursor": [
+      {
+        "model": "gpt-5",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "sonnet-4-thinking",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      }
+    ],
+    "opencode": [
+      {
+        "model": "opencode/beam-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/big-pickle",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/deepseek-v4.1-flash-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/flint-40b-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/hy4-flash-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/iceman-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/longcat-2.5-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/mimo-v2.6-flash-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/nemotron-3.5-lightning-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/nemotron-3.5-super-vl-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode/tidepool-alpha-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/beam-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/claude-haiku-5-5",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/deepseek-v4-pro",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/gemini-4-argon",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/glm-5.3",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/glm-5.3-flash",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/gpt-5.6-luna",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/gpt-6-luna",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/grok-4.7",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/hy3",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/hy4",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/hy4-flash-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/hy4-preview",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/iceman-contributor-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/kimi-k2.7-code",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/kimi-k3",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/kimi-k3.1-pro",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/longcat-2.0",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/longcat-2.5-free",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/mimo-v2.5",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/mimo-v2.5-pro",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/mimo-v2.6-flash",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/mimo-v2.6-pro",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/minimax-m3",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/minimax-m3.1-flash",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/muse-spark-1.2-contributor",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/muse-spark-1.3-contributor",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/qwen3.7-plus",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/qwen3.8-flash",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/qwen3.8-max",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/qwen4-max",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      },
+      {
+        "model": "opencode-go/step-5-preview",
+        "contexts": [
+          "default"
+        ],
+        "efforts": []
+      }
+    ]
+  }
+}

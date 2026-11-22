@@ -39,8 +39,9 @@ def test_fr6477_flamingo_fold_matches_local_id():
     assert bb.is_recipe_build_machine("flamingo", "fl") is False
     assert bb.is_recipe_build_machine("flamingo", "ionos") is False
     assert bb.is_recipe_build_machine("flamingo", "win-mpre8vi4u6u") is False
-    # Historical ionos alias remains for other recipes / tests.
-    assert bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u") is True
+    # FR #8697: historical ionos alias folds to walrus (not win-mpre).
+    assert bb.is_recipe_build_machine("ionos", "walrus") is True
+    assert bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u") is False
 
 
 def test_fr6477_decide_build_dry_run_targets_flamingo(tmp_path: Path):

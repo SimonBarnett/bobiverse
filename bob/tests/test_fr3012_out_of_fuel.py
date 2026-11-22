@@ -232,13 +232,18 @@ def test_post_digest_out_of_fuel_posts_json(tmp_path: Path, monkeypatch):
         evidence="402 Payment Required: Grok Build usage balance exhausted",
     )
     assert ok is True
-    assert len(posted) == 1
+    # FR #8494: machine status POST + nick worker-work state=out_of_fuel
+    assert len(posted) == 2
     url, body = posted[0]
     assert url.endswith("/bob/v1/report")
     assert body.get("id") == "marchhare"
     assert body.get("status") == "out_of_fuel"
     assert "out-of-fuel" in str(body.get("working_on") or "").lower()
     assert body.get("out_of_tokens") is True
+    _url2, row = posted[1]
+    assert row.get("op") == "worker-work"
+    assert row.get("nick") == "marchhare-7720"
+    assert row.get("state") == "out_of_fuel"
 
 
 def test_skill_fr3012_contiguous():

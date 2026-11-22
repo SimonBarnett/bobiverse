@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
-  (report, digest, git, intake, jira, hours, jeeves appliance). Site default: irc-ntsa.
+  (report, digest, git, intake, jira, hours, models, jeeves appliance). Site default: irc-ntsa.
 #>
 [CmdletBinding()]
 param(
@@ -11,10 +11,16 @@ param(
     [string]$Backend = 'http://127.0.0.1:7700',
     # FR #7414: override www source (tests / alternate trees). Default: jeeves/www/irc-ntsa beside this script.
     [string]$WwwSource = '',
+    # FR #8887: backups live under BackupRoot\_backup-www-<site leaf>, never inside the web root.
+    [string]$BackupRoot = '',
     [switch]$WhatIf,
     # FR #7465: publish the site kit only. Do not call appcmd and do not touch the Jeeves service.
-    [switch]$SiteKit
+    [switch]$SiteKit,
+    # FR #8803: www/assets publish is opt-in. -SiteKit implies publish. Default run is rules-only.
+    [switch]$PublishWww
 )
+# FR #8803: SiteKit is the site-kit deploy path; it always publishes www.
+$doPublishWww = [bool]($PublishWww -or $SiteKit)
 
 $ErrorActionPreference = 'Stop'
 $appcmd = Join-Path $env:SystemRoot 'system32\inetsrv\appcmd.exe'
@@ -33,11 +39,12 @@ if (-not (Test-Path -LiteralPath $PhysicalPath)) {
 
 $rules = @(
     @{ Name = 'BobReportWebhook'; Match = '^bob/v1/report$'; Url = "$Backend/bob/v1/report" },
-    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = "$Backend/bob/v1/digest" },
+    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = '/bob/v1/report'; Redirect = $true },
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
     @{ Name = 'BobHoursWebhook'; Match = '^bob/v1/hours'; Url = "$Backend/bob/v1/hours" },
+    @{ Name = 'BobModelsWebhook'; Match = '^bob/v1/models'; Url = "$Backend/bob/v1/models" },
     @{ Name = 'BobJeevesAppliance'; Match = '^jeeves(/.*)?$'; Url = "$Backend/jeeves" }
 )
 
@@ -54,7 +61,7 @@ $rewriteXml = @"
         </rule>
         <rule name="BobDigestWebhook" stopProcessing="true">
           <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/digest" />
+          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
         </rule>
         <rule name="BobGitWebhook" stopProcessing="true">
           <match url="^bob/v1/git$" ignoreCase="true" />
@@ -72,6 +79,13 @@ $rewriteXml = @"
           <match url="^bob/v1/hours(.*)" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
         </rule>
+        <rule name="BobModelsWebhook" stopProcessing="true">
+          <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+          </conditions>
+          <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
+        </rule>
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
           <conditions>
@@ -87,7 +101,15 @@ $rewriteXml = @"
         <fileExtensions allowUnlisted="true">
           <add fileExtension=".ico" allowed="true" />
           <add fileExtension=".png" allowed="true" />
+          <remove fileExtension=".bak" />
+          <add fileExtension=".bak" allowed="false" />
         </fileExtensions>
+        <denyUrlSequences>
+          <remove sequence="_backup-" />
+          <add sequence="_backup-" />
+          <remove sequence=".bak/" />
+          <add sequence=".bak/" />
+        </denyUrlSequences>
         <hiddenSegments><clear /></hiddenSegments>
       </requestFiltering>
     </security>
@@ -137,6 +159,311 @@ function Ensure-IcoStaticContent {
     return ($Cfg2 + $block)
 }
 
+
+function Test-BobPathIsUnder {
+    # FR #8887: true when Child equals Parent or is a descendant (separator-boundary, case-insensitive).
+    param(
+        [Parameter(Mandatory = $true)][string]$Child,
+        [Parameter(Mandatory = $true)][string]$Parent
+    )
+    $c = [IO.Path]::GetFullPath($Child).TrimEnd('\', '/').ToLowerInvariant()
+    $p = [IO.Path]::GetFullPath($Parent).TrimEnd('\', '/').ToLowerInvariant()
+    if ($c -eq $p) { return $true }
+    $sep = [string][IO.Path]::DirectorySeparatorChar
+    return $c.StartsWith($p + $sep)
+}
+
+function Ensure-BackupRequestFiltering {
+    # FR #8887: deny .bak extension and _backup- / .bak/ URL sequences. Never edit <rewrite>.
+    # Idempotent: if already valid, return unchanged.
+    param([Parameter(Mandatory = $true)][string]$Cfg)
+    $nl = [Environment]::NewLine
+    $bakOk = [regex]::IsMatch($Cfg, '(?i)<add\s+fileExtension="\.bak"\s+allowed="false"\s*/>')
+    $seq1 = [regex]::IsMatch($Cfg, '(?i)<add\s+sequence="_backup-"\s*/>')
+    $seq2 = [regex]::IsMatch($Cfg, '(?i)<add\s+sequence="\.bak/"\s*/>')
+    $rfCount = ([regex]::Matches($Cfg, '(?i)<requestFiltering\b')).Count
+    if ($bakOk -and $seq1 -and $seq2 -and $rfCount -eq 1) {
+        return $Cfg
+    }
+
+    $bakRemove = '<remove fileExtension=".bak" />'
+    $bakAdd = '<add fileExtension=".bak" allowed="false" />'
+    $defSeq = (
+        '        <denyUrlSequences>' + $nl +
+        '          <remove sequence="_backup-" />' + $nl +
+        '          <add sequence="_backup-" />' + $nl +
+        '          <remove sequence=".bak/" />' + $nl +
+        '          <add sequence=".bak/" />' + $nl +
+        '        </denyUrlSequences>'
+    )
+
+    # Expand self-closing requestFiltering so children can be added.
+    if ($Cfg -match '(?is)<requestFiltering\b[^>]*/>') {
+        $Cfg = [regex]::Replace(
+            $Cfg,
+            '(?is)<requestFiltering\b([^>]*)/>',
+            ('<requestFiltering$1>' + $nl +
+             '        <fileExtensions allowUnlisted="true">' + $nl +
+             '          <add fileExtension=".ico" allowed="true" />' + $nl +
+             '          <add fileExtension=".png" allowed="true" />' + $nl +
+             '          ' + $bakRemove + $nl +
+             '          ' + $bakAdd + $nl +
+             '        </fileExtensions>' + $nl +
+             $defSeq + $nl +
+             '        <hiddenSegments><clear /></hiddenSegments>' + $nl +
+             '      </requestFiltering>'),
+            1
+        )
+        return $Cfg
+    }
+
+    $feSelf = '(?is)<fileExtensions\b[^>]*/>'
+    if ($Cfg -match $feSelf) {
+        $Cfg = [regex]::Replace(
+            $Cfg,
+            $feSelf,
+            ('<fileExtensions allowUnlisted="true">' + $nl +
+             '          <add fileExtension=".ico" allowed="true" />' + $nl +
+             '          <add fileExtension=".png" allowed="true" />' + $nl +
+             '          ' + $bakRemove + $nl +
+             '          ' + $bakAdd + $nl +
+             '        </fileExtensions>'),
+            1
+        )
+    } elseif ($Cfg -match '(?is)<fileExtensions\b[^>]*>') {
+        $Cfg = [regex]::Replace(
+            $Cfg,
+            '(?is)(<fileExtensions\b[^>]*>)(.*?)(</fileExtensions>)',
+            {
+                param($m)
+                $inner = $m.Groups[2].Value
+                $inner = [regex]::Replace($inner, '(?im)^\s*<remove\s+fileExtension="\.bak"\s*/>\s*', '')
+                $inner = [regex]::Replace($inner, '(?im)^\s*<add\s+fileExtension="\.bak"[^/]*/>\s*', '')
+                $inner = $inner.TrimEnd() + $nl + '          ' + $bakRemove + $nl + '          ' + $bakAdd + $nl + '        '
+                return $m.Groups[1].Value + $inner + $m.Groups[3].Value
+            },
+            1
+        )
+    } elseif ($Cfg -match '(?is)<requestFiltering\b[^>]*>') {
+        $block = '        <fileExtensions allowUnlisted="true">' + $nl +
+            '          <add fileExtension=".ico" allowed="true" />' + $nl +
+            '          <add fileExtension=".png" allowed="true" />' + $nl +
+            '          ' + $bakRemove + $nl +
+            '          ' + $bakAdd + $nl +
+            '        </fileExtensions>' + $nl
+        $Cfg = [regex]::Replace($Cfg, '(?is)(<requestFiltering\b[^>]*>)', ('${1}' + $nl + $block), 1)
+    } elseif ($Cfg -match '(?is)<security\b[^>]*>') {
+        $block = '      <requestFiltering allowDoubleEscaping="true">' + $nl +
+            '        <fileExtensions allowUnlisted="true">' + $nl +
+            '          <add fileExtension=".ico" allowed="true" />' + $nl +
+            '          <add fileExtension=".png" allowed="true" />' + $nl +
+            '          ' + $bakRemove + $nl +
+            '          ' + $bakAdd + $nl +
+            '        </fileExtensions>' + $nl +
+            $defSeq + $nl +
+            '        <hiddenSegments><clear /></hiddenSegments>' + $nl +
+            '      </requestFiltering>' + $nl
+        $Cfg = [regex]::Replace($Cfg, '(?is)(<security\b[^>]*>)', ('${1}' + $nl + $block), 1)
+        return $Cfg
+    } elseif ($Cfg -match '(?is)</system\.webServer>') {
+        $block = '    <security>' + $nl +
+            '      <requestFiltering allowDoubleEscaping="true">' + $nl +
+            '        <fileExtensions allowUnlisted="true">' + $nl +
+            '          <add fileExtension=".ico" allowed="true" />' + $nl +
+            '          <add fileExtension=".png" allowed="true" />' + $nl +
+            '          ' + $bakRemove + $nl +
+            '          ' + $bakAdd + $nl +
+            '        </fileExtensions>' + $nl +
+            $defSeq + $nl +
+            '        <hiddenSegments><clear /></hiddenSegments>' + $nl +
+            '      </requestFiltering>' + $nl +
+            '    </security>' + $nl
+        $Cfg = [regex]::Replace($Cfg, '(?is)</system\.webServer>', ($block + '  </system.webServer>'), 1)
+        return $Cfg
+    }
+
+    # denyUrlSequences: replace existing (consume leading indent) or insert before </requestFiltering>.
+    if ($Cfg -match '(?is)<denyUrlSequences\b') {
+        $Cfg = [regex]::Replace(
+            $Cfg,
+            '(?im)^[ \t]*<denyUrlSequences\b[^>]*>.*?</denyUrlSequences>',
+            $defSeq,
+            1
+        )
+    } elseif ($Cfg -match '(?is)</requestFiltering>') {
+        $Cfg = [regex]::Replace(
+            $Cfg,
+            '(?im)^[ \t]*</requestFiltering>',
+            ($defSeq + $nl + '      </requestFiltering>'),
+            1
+        )
+    }
+    return $Cfg
+}
+
+function Get-BobOwnedRuleXml {
+    # FR #8803: owned rewrite rules only (never websocket / foreign rules).
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$BackendUrl
+    )
+    switch ($Name) {
+        'BobReportWebhook' {
+            return @"
+        <rule name="BobReportWebhook" stopProcessing="true">
+          <match url="^bob/v1/report$" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/report" />
+        </rule>
+"@
+        }
+        'BobDigestWebhook' {
+            return @"
+        <rule name="BobDigestWebhook" stopProcessing="true">
+          <match url="^bob/v1/digest$" ignoreCase="true" />
+          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
+        </rule>
+"@
+        }
+        'BobGitWebhook' {
+            return @"
+        <rule name="BobGitWebhook" stopProcessing="true">
+          <match url="^bob/v1/git$" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/git" />
+        </rule>
+"@
+        }
+        'BobIntakeWebhook' {
+            return @"
+        <rule name="BobIntakeWebhook" stopProcessing="true">
+          <match url="^bob/v1/intake(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/intake{R:1}" />
+        </rule>
+"@
+        }
+        'BobJiraWebhook' {
+            return @"
+        <rule name="BobJiraWebhook" stopProcessing="true">
+          <match url="^bob/v1/jira(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/jira{R:1}" />
+        </rule>
+"@
+        }
+        'BobHoursWebhook' {
+            return @"
+        <rule name="BobHoursWebhook" stopProcessing="true">
+          <match url="^bob/v1/hours(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/hours{R:1}" />
+        </rule>
+"@
+        }
+        'BobModelsWebhook' {
+            # FR #8708: public IIS rewrite is GET|HEAD only (PUT stays direct/LAN).
+            return @"
+        <rule name="BobModelsWebhook" stopProcessing="true">
+          <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+          </conditions>
+          <action type="Rewrite" url="$BackendUrl/bob/v1/models{R:1}" />
+        </rule>
+"@
+        }
+        'BobJeevesAppliance' {
+            return @"
+        <rule name="BobJeevesAppliance" stopProcessing="true">
+          <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="$BackendUrl/jeeves{R:1}" />
+        </rule>
+"@
+        }
+        default { throw "unknown Bob owned rule: $Name" }
+    }
+}
+
+function Format-BobOwnedRuleBlock {
+    # Stable nested indent matching the fresh $rewriteXml template (FR #8803 / #8934).
+    # Base rule line at 8 spaces; each open element nest +2. Flat 8-on-every-line
+    # rewrote template children on the second install and failed byte-stability.
+    param([Parameter(Mandatory = $true)][string]$RuleXml)
+    $lines = New-Object System.Collections.Generic.List[string]
+    $depth = 0
+    foreach ($line in (($RuleXml.Trim()) -split "`r?`n")) {
+        $t = $line.Trim()
+        if (-not $t) { continue }
+        if ($t.StartsWith('</')) {
+            $depth = [Math]::Max(0, $depth - 1)
+        }
+        [void]$lines.Add((' ' * (8 + (2 * $depth))) + $t)
+        $isOpen = $t.StartsWith('<') -and -not $t.StartsWith('</') -and -not $t.StartsWith('<?')
+        $selfClose = $t.EndsWith('/>') -or ($t.Contains('</') -and -not $t.StartsWith('</'))
+        if ($isOpen -and -not $selfClose) {
+            $depth++
+        }
+    }
+    return [string]::Join("`n", $lines.ToArray())
+}
+
+function Set-BobOwnedRewriteRule {
+    # Replace or insert one owned rule by name. Leaves every other rule untouched.
+    param(
+        [Parameter(Mandatory = $true)][string]$Cfg,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$RuleXml
+    )
+    # Include leading indent on the line so replace does not stack spaces each run.
+    $pattern = '(?ms)^[ \t]*<rule\s+name="' + [regex]::Escape($Name) + '"[^>]*>.*?</rule>'
+    $formatted = Format-BobOwnedRuleBlock -RuleXml $RuleXml
+    if ([regex]::IsMatch($Cfg, $pattern)) {
+        $existing = [regex]::Match($Cfg, $pattern).Value
+        # FR #8934: skip rewrite when the owned rule is already the canonical block.
+        if ($existing -eq $formatted) {
+            return $Cfg
+        }
+        return [regex]::Replace($Cfg, $pattern, $formatted, 1)
+    }
+    # Replace the whole </rules> line (including indent) so inserts do not stack spaces.
+    if ([regex]::IsMatch($Cfg, '(?m)^[ \t]*</rules>')) {
+        return [regex]::Replace($Cfg, '(?m)^[ \t]*</rules>', ($formatted + "`n" + '      </rules>'), 1)
+    }
+    return $Cfg
+}
+
+function Write-BobWebhooksRollback {
+    param(
+        [Parameter(Mandatory = $true)][string]$WebConfigPath,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$RollbackPath
+    )
+    $bakEsc = $BackupPath.Replace("'", "''")
+    $cfgEsc = $WebConfigPath.Replace("'", "''")
+    $body = @"
+#Requires -Version 5.1
+# FR #8803: restore web.config from Install-BobWebhooks backup.
+`$ErrorActionPreference = 'Stop'
+`$bak = '$bakEsc'
+`$cfg = '$cfgEsc'
+if (-not (Test-Path -LiteralPath `$bak)) { throw "backup missing: `$bak" }
+Copy-Item -LiteralPath `$bak -Destination `$cfg -Force
+Write-Host "INFO restored `$cfg from `$bak"
+"@
+    [IO.File]::WriteAllText($RollbackPath, $body, [Text.UTF8Encoding]::new($false))
+}
+
+$script:BobOwnedRuleNames = @(
+    'BobReportWebhook',
+    'BobDigestWebhook',
+    'BobGitWebhook',
+    'BobIntakeWebhook',
+    'BobJiraWebhook',
+    'BobHoursWebhook',
+    'BobModelsWebhook',
+    'BobJeevesAppliance'
+)
+
 # FR #7517: extracted kits ship www/ beside the installer; checkouts keep ..\www\irc-ntsa.
 $kitWww = Join-Path $PSScriptRoot 'www'
 $wwwSrcDefault = if ((-not $WwwSource) -and (Test-Path -LiteralPath (Join-Path $kitWww 'index.html'))) {
@@ -145,100 +472,66 @@ $wwwSrcDefault = if ((-not $WwwSource) -and (Test-Path -LiteralPath (Join-Path $
     Join-Path $PSScriptRoot '..\www\irc-ntsa'
 }
 $wwwSrc = if ($WwwSource) { $WwwSource } else { $wwwSrcDefault }
+
+# FR #8887: one off-root backup directory for site snapshot + web.config copy.
+if (-not $BackupRoot) {
+    $BackupRoot = Split-Path -Parent $PhysicalPath
+}
+$backupDir = Join-Path $BackupRoot ('_backup-www-' + (Split-Path -Leaf $PhysicalPath))
+$siteKitBak = Join-Path $backupDir 'site'
+$configBak = Join-Path $backupDir 'web.config'
+$physFull = [IO.Path]::GetFullPath($PhysicalPath)
+$wwwFull = [IO.Path]::GetFullPath($wwwSrc)
+$bakFull = [IO.Path]::GetFullPath($backupDir)
+if (Test-BobPathIsUnder -Child $bakFull -Parent $physFull) {
+    throw "FR #8887 BackupRoot/backup dir must not be inside PhysicalPath: $bakFull"
+}
+if ((Test-Path -LiteralPath $wwwSrc) -and (Test-BobPathIsUnder -Child $bakFull -Parent $wwwFull)) {
+    throw "FR #8887 BackupRoot/backup dir must not be inside WwwSource: $bakFull"
+}
+if (Test-BobPathIsUnder -Child $physFull -Parent $bakFull) {
+    throw "FR #8887 PhysicalPath must not be inside backup dir: $physFull under $bakFull"
+}
+
 if ($WhatIf) {
-    Write-Host "WhatIf would write rewrite rules to $webConfig backend=$Backend"
-    Write-Host "WhatIf FR #7414/#7442 www publish from $wwwSrc -> $PhysicalPath : site.css, favicon.ico, downloads/, jeeves/commands/, docs/, index.html"
+    Write-Host "WhatIf would write Bob* rewrite rules in $webConfig backend=$Backend (websocket rules untouched)"
+    Write-Host "WhatIf FR #8887 backup dir $bakFull (site + web.config)"
+    if ($doPublishWww) {
+        Write-Host "WhatIf FR #7414/#7442 www publish from $wwwSrc -> $PhysicalPath : site.css, favicon.ico, downloads/, jeeves/commands/, docs/, index.html"
+    } else {
+        Write-Host "WhatIf FR #8803 skipping www publish (pass -PublishWww or -SiteKit)"
+    }
     return
 }
 
-# FR #7465: backup the published tree before this run so a failed site-kit deploy can roll back.
-$siteKitBak = Join-Path (Split-Path -Parent $PhysicalPath) ((Split-Path -Leaf $PhysicalPath) + '.site-kit-bak')
-if (Test-Path -LiteralPath $siteKitBak) {
-    Remove-Item -LiteralPath $siteKitBak -Recurse -Force
-}
-if (Test-Path -LiteralPath $PhysicalPath) {
-    Copy-Item -LiteralPath $PhysicalPath -Destination $siteKitBak -Recurse -Force
-} else {
-    New-Item -ItemType Directory -Force -Path $siteKitBak | Out-Null
+# FR #7465 / #8887: full tree backup only when publishing www/site-kit (off-root).
+if ($doPublishWww) {
+    if (Test-Path -LiteralPath $siteKitBak) {
+        Remove-Item -LiteralPath $siteKitBak -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $PhysicalPath) {
+        Copy-Item -LiteralPath $PhysicalPath -Destination $siteKitBak -Recurse -Force
+    } else {
+        New-Item -ItemType Directory -Force -Path $siteKitBak | Out-Null
+    }
 }
 try {
 if ($env:BOB_WEBHOOKS_FAIL_AFTER_BACKUP -eq '1') {
     throw 'FR #7465 forced site-kit failure'
 }
 
+$rollbackPs1 = Join-Path $PhysicalPath 'ROLLBACK-BobWebhooks.ps1'
 if (Test-Path -LiteralPath $webConfig) {
     $raw = Get-Content -LiteralPath $webConfig -Raw -ErrorAction Stop
-    # Force backend port alignment away from ephemeral 19781
-    $updated = $raw -replace '127\.0\.0\.1:\d+', ([uri]$Backend).Authority
-    if ($updated -notmatch 'bob/v1/intake') {
-        # Insert intake/jira rules before closing </rules> if rewrite exists
-        if ($updated -match '</rules>') {
-            $extra = @"
-        <rule name="BobIntakeWebhook" stopProcessing="true">
-          <match url="^bob/v1/intake(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/intake{R:1}" />
-        </rule>
-        <rule name="BobJiraWebhook" stopProcessing="true">
-          <match url="^bob/v1/jira(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/jira{R:1}" />
-        </rule>
-"@
-            $updated = $updated -replace '</rules>', ($extra + '</rules>')
-        } else {
-            $updated = $rewriteXml
+    # FR #8803: never blanket-replace 127.0.0.1:<port> (that retargeted WsircWebSocket7999 / IrcWebSocket7999).
+    $updated = $raw
+    if ($updated -notmatch '<rewrite>' -or $updated -notmatch '</rules>') {
+        $updated = $rewriteXml
+    } else {
+        foreach ($rn in $script:BobOwnedRuleNames) {
+            $ruleXml = Get-BobOwnedRuleXml -Name $rn -BackendUrl $Backend
+            $updated = Set-BobOwnedRewriteRule -Cfg $updated -Name $rn -RuleXml $ruleXml
         }
-    }
-    if ($updated -notmatch 'bob/v1/digest' -and $updated -match '</rules>') {
-        # Public GET /bob/v1/digest (same body as /bob/v1/report). Idempotent: only added when missing.
-        $digestRule = @"
-        <rule name="BobDigestWebhook" stopProcessing="true">
-          <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/digest" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($digestRule + '</rules>')
-    }
-    if ($updated -notmatch 'bob/v1/hours' -and $updated -match '</rules>') {
-        # FR #3450: hours webhook (create/list/summary/export + heartbeat/close/withdraw).
-        $hoursRule = @"
-        <rule name="BobHoursWebhook" stopProcessing="true">
-          <match url="^bob/v1/hours(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($hoursRule + '</rules>')
-    }
-    if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
-        # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).
-        # FR #7414 / #7413: skip static /jeeves/commands (and assets) for IIS.
-        $jeevesRule = @"
-        <rule name="BobJeevesAppliance" stopProcessing="true">
-          <match url="^jeeves(/.*)?$" ignoreCase="true" />
-          <conditions>
-            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
-            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
-          </conditions>
-          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($jeevesRule + '</rules>')
-    }
-    if ($updated -match 'BobJeevesAppliance' -and ($updated -notmatch 'jeeves/assets/' -or $updated -notmatch 'jeeves/commands')) {
-        $jeevesRuleUp = @"
-        <rule name="BobJeevesAppliance" stopProcessing="true">
-          <match url="^jeeves(/.*)?$" ignoreCase="true" />
-          <conditions>
-            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
-            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
-          </conditions>
-          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
-        </rule>
-"@
-        $updated = [regex]::Replace(
-            $updated,
-            '(?s)<rule name="BobJeevesAppliance".*?</rule>',
-            $jeevesRuleUp.TrimEnd()
-        )
     }
     if ($updated -notmatch 'fileExtension="\.ico"') {
         $icoAllow = '<add fileExtension=".ico" allowed="true" />'
@@ -251,33 +544,76 @@ if (Test-Path -LiteralPath $webConfig) {
         }
     }
     # FR #7442 / #7460: .ico MIME via a single <staticContent> (merge; never append a second).
-    $backup = "$webConfig.fr7460.bak"
-    Copy-Item -LiteralPath $webConfig -Destination $backup -Force
-    try {
-        $updated = Ensure-IcoStaticContent -Cfg $updated
-        $probe = New-Object System.Xml.XmlDocument
-        $probe.XmlResolver = $null
-        $probe.LoadXml($updated)
-        $sc = $probe.SelectNodes('//*[local-name()="staticContent"]')
-        if ($sc.Count -gt 1) {
-            throw "FR #7460 validation failed: $($sc.Count) staticContent sections"
+    $updated = Ensure-IcoStaticContent -Cfg $updated
+    # FR #8887: deny .bak / _backup- in requestFiltering (rewrite section untouched).
+    $updated = Ensure-BackupRequestFiltering -Cfg $updated
+    $probe = New-Object System.Xml.XmlDocument
+    $probe.XmlResolver = $null
+    $probe.LoadXml($updated)
+    $sc = $probe.SelectNodes('//*[local-name()="staticContent"]')
+    if ($sc.Count -gt 1) {
+        throw "FR #7460 validation failed: $($sc.Count) staticContent sections"
+    }
+    $icoMaps = $probe.SelectNodes('//*[local-name()="mimeMap" and @fileExtension=".ico"]')
+    if ($icoMaps.Count -gt 1) {
+        throw "FR #7460 validation failed: $($icoMaps.Count) .ico mimeMap entries"
+    }
+    $rf = $probe.SelectNodes('//*[local-name()="requestFiltering"]')
+    if ($rf.Count -ne 1) {
+        throw "FR #8887 validation failed: $($rf.Count) requestFiltering sections"
+    }
+    $bakDenied = $probe.SelectNodes('//*[local-name()="fileExtensions"]/*[local-name()="add" and @fileExtension=".bak" and @allowed="false"]')
+    if ($bakDenied.Count -ne 1) {
+        throw "FR #8887 validation failed: expected one .bak allowed=false add"
+    }
+    $seqBackup = $probe.SelectNodes('//*[local-name()="denyUrlSequences"]/*[local-name()="add" and @sequence="_backup-"]')
+    $seqBakDir = $probe.SelectNodes('//*[local-name()="denyUrlSequences"]/*[local-name()="add" and @sequence=".bak/"]')
+    if ($seqBackup.Count -ne 1 -or $seqBakDir.Count -ne 1) {
+        throw "FR #8887 validation failed: denyUrlSequences must add _backup- and .bak/"
+    }
+    # Canonicalize newlines so a second run is a no-op (FR #8803 idempotent).
+    $normText = {
+        param($t)
+        $s = [string]$t
+        $s = $s -replace "`r`n", "`n"
+        $s = $s -replace "`r", "`n"
+        # Collapse runs of spaces before newlines introduced by rule upsert formatting.
+        $s = [regex]::Replace($s, '[ \t]+\n', "`n")
+        return $s.TrimEnd() + "`n"
+    }
+    $updated = & $normText $updated
+    $rawNorm = & $normText $raw
+    if ($updated -eq $rawNorm) {
+        Write-Host "INFO web.config Bob* rules already current (no write)"
+    } else {
+        $null = New-Item -ItemType Directory -Force -Path $backupDir
+        Copy-Item -LiteralPath $webConfig -Destination $configBak -Force
+        Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $configBak -RollbackPath $rollbackPs1
+        try {
+            # Write LF-canonical text; IIS accepts LF in web.config.
+            [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
+            Write-Host "INFO updated $webConfig (backup $configBak; ROLLBACK $rollbackPs1)"
+        } catch {
+            if (Test-Path -LiteralPath $configBak) {
+                Copy-Item -LiteralPath $configBak -Destination $webConfig -Force
+                Write-Host "WARN FR #8803 rolled back web.config from backup: $($_.Exception.Message)"
+            }
+            throw
         }
-        $icoMaps = $probe.SelectNodes('//*[local-name()="mimeMap" and @fileExtension=".ico"]')
-        if ($icoMaps.Count -gt 1) {
-            throw "FR #7460 validation failed: $($icoMaps.Count) .ico mimeMap entries"
-        }
-        [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
-        Write-Host "INFO updated $webConfig"
-    } catch {
-        if (Test-Path -LiteralPath $backup) {
-            Copy-Item -LiteralPath $backup -Destination $webConfig -Force
-            Write-Host "WARN FR #7460 rolled back web.config from backup: $($_.Exception.Message)"
-        }
-        throw
     }
 } else {
-    [IO.File]::WriteAllText($webConfig, $rewriteXml, [Text.UTF8Encoding]::new($false))
-    Write-Host "INFO created $webConfig"
+    # FR #8887: template already includes backup requestFiltering; write then off-root backup.
+    # FR #8934: LF-canonicalize on create so the second install is a byte no-op.
+    $fresh = [string]$rewriteXml
+    $fresh = $fresh -replace "`r`n", "`n"
+    $fresh = $fresh -replace "`r", "`n"
+    $fresh = [regex]::Replace($fresh, '[ \t]+\n', "`n")
+    $fresh = $fresh.TrimEnd() + "`n"
+    [IO.File]::WriteAllText($webConfig, $fresh, [Text.UTF8Encoding]::new($false))
+    $null = New-Item -ItemType Directory -Force -Path $backupDir
+    Copy-Item -LiteralPath $webConfig -Destination $configBak -Force
+    Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $configBak -RollbackPath $rollbackPs1
+    Write-Host "INFO created $webConfig (backup $configBak; ROLLBACK $rollbackPs1)"
 }
 
 # Ensure ARR proxy enabled (best-effort; needs appcmd)
@@ -288,8 +624,9 @@ if ($hasAppcmd) {
         Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
     }
 }
+if ($doPublishWww) {
 # FR #6453 / #7410 / #7414 / #7442: sync static www (CSS, favicon, downloads, commands, docs) into IIS physical path.
-# Operators: re-run Install-BobWebhooks.ps1 (or compose/sync) after git pull to refresh bob.ntsa.uk www.
+# Operators: Install-BobWebhooks.ps1 -PublishWww (or -SiteKit) after git pull to refresh bob.ntsa.uk www.
 if (Test-Path -LiteralPath $wwwSrc) {
     $null = New-Item -ItemType Directory -Force -Path $PhysicalPath
     $indexSrc = Join-Path $wwwSrc 'index.html'
@@ -335,11 +672,11 @@ if (Test-Path -LiteralPath $wwwSrc) {
         }
         Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
         # FR #7643: stamp concrete PriorityAgent.exe hrefs (prerelease OK when that is where the installer is).
-        $stamp = Join-Path $PSScriptRoot 'Stamp-PriorityAgentDownloads.ps1'
+        $stampScript = Join-Path $PSScriptRoot 'Stamp-PriorityAgentDownloads.ps1'
         $paHtml = Join-Path $downloadsDst 'index.html'
-        if ((Test-Path -LiteralPath $stamp) -and (Test-Path -LiteralPath $paHtml)) {
+        if ((Test-Path -LiteralPath $stampScript) -and (Test-Path -LiteralPath $paHtml)) {
             try {
-                & $stamp -HtmlPath $paHtml
+                & $stampScript -HtmlPath $paHtml
             } catch {
                 Write-Warning ("FR #7643 stamp Priority Agent downloads failed: " + $_.Exception.Message)
             }
@@ -399,10 +736,13 @@ foreach ($src in $logoCands) {
 if (-not $logoStaged) {
     Write-Warning 'FR #7517 ntsa-gut-logo.png source not found'
 }
+} else {
+    Write-Host 'INFO FR #8803 skipping www/assets publish (pass -PublishWww or -SiteKit to enable)'
+}
 
 Write-Host 'INFO Install-BobWebhooks done'
 } catch {
-    if (Test-Path -LiteralPath $siteKitBak) {
+    if ($doPublishWww -and (Test-Path -LiteralPath $siteKitBak)) {
         if (Test-Path -LiteralPath $PhysicalPath) {
             Remove-Item -LiteralPath $PhysicalPath -Recurse -Force
         }

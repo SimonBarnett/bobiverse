@@ -201,12 +201,227 @@ def count_offerable_for_live_seats(
     return n
 
 
+# FR #8866: report-only estimate. These gates need chair files and are not applied.
+_UNVERIFIED_GATES = (
+    "focus",
+    "ignore",
+    "ledger",
+    "review-author",
+    "fr-mrb-shape",
+    "free-fuel",
+    "inferred-pins",
+)
+
+
+def _explicit_pin(row: dict) -> str:
+    return str(row.get("require_machine") or "").strip()
+
+
+def estimate_offerable_from_report(
+    rows: list,
+    idle_seats: list[dict],
+    now: float,
+) -> int | None:
+    """Rows a live idle seat could take using only fields on the public report.
+
+    Returns None when there are no idle seats (caller should not treat that as
+    a counted zero from row gates). Does not read or write the local home.
+    """
+    if not idle_seats:
+        return None
+    gc = None
+    try:
+        gc = _ensure_gitclaim()
+    except Exception:
+        gc = None
+    machines = {
+        str(s.get("machine") or "").strip().lower()
+        for s in idle_seats
+        if str(s.get("machine") or "").strip()
+    }
+    nicks = [str(s.get("nick") or "") for s in idle_seats if str(s.get("nick") or "").strip()]
+    n = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row_offer_pending(row, now=now):
+            continue
+        taken = False
+        for nick in nicks:
+            if gc is not None:
+                if gc.row_needs_human(row, nick) or gc.row_on_cooldown(row, now, nick):
+                    continue
+            elif row.get("needs_human"):
+                continue
+            pin = _explicit_pin(row)
+            if pin and pin.lower() not in machines:
+                continue
+            taken = True
+            break
+        if taken:
+            n += 1
+    return n
+
+
+def _drop_stale_worker_machines(machines: dict) -> tuple[dict, list[str]]:
+    kept = {}
+    dropped = []
+    for mid, m in machines.items():
+        if isinstance(m, dict) and m.get("workers_stale"):
+            dropped.append(str(mid))
+            continue
+        kept[mid] = m
+    return kept, dropped
+
+
+def _live_report_unusable(doc, overlay) -> bool:
+    if doc is None or overlay is None:
+        return True
+    if doc.get("stale") is True:
+        return True
+    if not isinstance(doc.get("machines"), dict):
+        return True
+    queue = doc.get("queue")
+    if not isinstance(queue, dict) or not isinstance(queue.get("unaccepted"), list):
+        return True
+    return False
+
+
+def _check_live_report(chair, digest, qpath):
+    """FR #8866: local queue absent. One live /report, no chair-home side effects."""
+    import _common as common
+
+    findings = []
+    notes = []
+    doc = common.fetch_live_report()
+    overlay = common.non_chair_overlay(
+        chair,
+        digest,
+        require_missing_queue=True,
+        report=doc,
+        fetch=False,
+    )
+    url = common.live_report_url()
+    if _live_report_unusable(doc, overlay):
+        findings.append("local queue missing; live report unavailable/stale/incomplete")
+        return (
+            {
+                "ok": False,
+                "idle_seats": [],
+                "unaccepted_count": 0,
+                "offerable_for_live_seats": 0,
+                "pending_offer_count": 0,
+                "healthy_idle_empty_offerable": False,
+                "queue_needs_human_only": False,
+                "notes": notes,
+                "digest_path": str(digest / "digest.json"),
+                "queue_path": str(qpath),
+                "findings": findings,
+                "source": "live_report",
+                "live_report_url": url,
+                "offerable_estimate": True,
+                "unverified_gates": list(_UNVERIFIED_GATES),
+            },
+            EXIT_FINDING,
+        )
+    queue = doc["queue"]
+    rows = [r for r in queue["unaccepted"] if isinstance(r, dict)]
+    machines, dropped = _drop_stale_worker_machines(doc["machines"])
+    if dropped:
+        notes.append("skipped workers_stale machines: " + ", ".join(dropped))
+    idle = collect_idle_shop_seats(machines)
+    now = time.time()
+    pending_offers = sum(1 for r in rows if row_offer_pending(r, now=now))
+    if pending_offers:
+        notes.append(
+            f"{pending_offers} unaccepted row(s) offered_to awaiting ACK (not starve offerable; FR #1625)"
+        )
+    offerable = estimate_offerable_from_report(rows, idle, now)
+    if offerable is None:
+        offerable = 0
+    if idle and offerable > 0:
+        named = ", ".join(str(x.get("nick") or "") for x in idle if x.get("nick"))
+        findings.append(
+            f"idle seat {named} with {offerable} offerable unaccepted row(s) (live report)"
+        )
+    healthy_idle = bool(idle) and offerable == 0
+    needs_human_only = False
+    if rows:
+        try:
+            gc = _ensure_gitclaim()
+            needs_human_only = all(gc.row_needs_human(r, "") for r in rows)
+        except Exception:
+            needs_human_only = all(bool(r.get("needs_human")) for r in rows)
+    if healthy_idle:
+        reason = "needs_human-only" if needs_human_only else "gated/empty offerable"
+        notes.append(
+            f"{len(idle)} idle seat(s) healthy with 0 offerable "
+            f"(unaccepted={len(rows)}; {reason}; live-report estimate)"
+        )
+    else:
+        notes.append("live-report estimate (FR #8866); unverified gates not applied")
+    ok = not findings
+    payload = {
+        "ok": ok,
+        "idle_seats": idle,
+        "unaccepted_count": len(rows),
+        "offerable_for_live_seats": int(offerable),
+        "pending_offer_count": pending_offers,
+        "healthy_idle_empty_offerable": healthy_idle,
+        "queue_needs_human_only": bool(needs_human_only),
+        "notes": notes,
+        "digest_path": str(digest / "digest.json"),
+        "queue_path": str(qpath),
+        "findings": findings,
+        "source": "live_report",
+        "offerable_estimate": True,
+        "unverified_gates": list(_UNVERIFIED_GATES),
+        "report_offerable_count": queue.get("offerable_count"),
+    }
+    if isinstance(overlay, dict):
+        payload.update(overlay)
+    return (payload, EXIT_OK if ok else EXIT_FINDING)
+
+
+def collect_under_cap(dig: dict, offerable: int, default_cap: int = 2) -> list:
+    """FR #8890: online machines with a known worker list below cap while work is offerable."""
+    if offerable < 1 or not isinstance(dig, dict):
+        return []
+    machines = dig.get("machines") or {}
+    if not isinstance(machines, dict):
+        return []
+    found = []
+    for mid, ent in machines.items():
+        if not isinstance(ent, dict) or not ent.get("online"):
+            continue
+        if "workers" not in ent:
+            continue
+        raw = ent.get("workers")
+        if isinstance(raw, dict):
+            rows = [v for v in raw.values() if isinstance(v, dict)]
+        elif isinstance(raw, list):
+            rows = [v for v in raw if isinstance(v, dict)]
+        else:
+            continue
+        cap = ent.get("seat_cap", ent.get("worker_cap", default_cap))
+        try:
+            cap_n = int(cap)
+        except (TypeError, ValueError):
+            cap_n = default_cap
+        if cap_n < 1 or len(rows) >= cap_n:
+            continue
+        found.append({"machine": str(mid), "live": len(rows), "cap": cap_n})
+    return found
+
 def check(args):
     chair, digest = resolve_homes(args)
+    qpath = resolve_queue_path(chair, digest)
+    # FR #8866: missing local queue is the non-chair case (same resolver as queue_flow).
+    if not qpath.is_file():
+        return _check_live_report(chair, digest, qpath)
     findings = []
     notes = []
     dig = _load_json(digest / "digest.json") or {}
-    qpath = resolve_queue_path(chair, digest)
     queue = _load_json(qpath) or {}
     unaccepted = queue_bucket_rows(queue, "unaccepted")
     machines = dig.get("machines") if isinstance(dig, dict) else None
@@ -222,6 +437,17 @@ def check(args):
     if qpath.parent != home:
         home = qpath.parent
     offerable = count_offerable_for_live_seats(home, unaccepted, idle_nicks)
+    queue_doc = dig.get("queue") if isinstance(dig, dict) and isinstance(dig.get("queue"), dict) else {}
+    try:
+        fleet_offerable = int(queue_doc.get("offerable_count") or 0)
+    except (TypeError, ValueError):
+        fleet_offerable = 0
+    under_cap = collect_under_cap(dig if isinstance(dig, dict) else {}, fleet_offerable)
+    for row in under_cap:
+        findings.append(
+            f"under-cap {row['machine']} live={row['live']}/{row['cap']} "
+            f"offerable={fleet_offerable}"
+        )
     if idle and offerable > 0:
         findings.append(
             f"{len(idle)} idle seat(s) with {offerable} offerable row(s) "
@@ -253,6 +479,8 @@ def check(args):
             "idle_seats": idle,
             "unaccepted_count": len(unaccepted),
             "offerable_for_live_seats": offerable,
+            "fleet_offerable_count": fleet_offerable,
+            "under_cap": under_cap,
             "pending_offer_count": pending_offers,
             "healthy_idle_empty_offerable": healthy_idle,
             "queue_needs_human_only": bool(needs_human_only),
