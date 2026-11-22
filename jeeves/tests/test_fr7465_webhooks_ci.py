@@ -63,6 +63,17 @@ def test_fr7465_single_section_config_passes(tmp_path: Path):
 <configuration><system.webServer>
   <rewrite><rules></rules></rewrite>
   <staticContent><mimeMap fileExtension=".ico" mimeType="image/x-icon" /></staticContent>
+  <security>
+    <requestFiltering allowDoubleEscaping="true">
+      <fileExtensions allowUnlisted="true">
+        <add fileExtension=".bak" allowed="false" />
+      </fileExtensions>
+      <denyUrlSequences>
+        <add sequence="_backup-" />
+        <add sequence=".bak/" />
+      </denyUrlSequences>
+    </requestFiltering>
+  </security>
 </system.webServer></configuration>
 """,
         encoding="utf-8",

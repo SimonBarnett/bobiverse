@@ -48,6 +48,79 @@ function Read-FleetJob {
     return $null
 }
 
+
+function Test-BobFrBodyDispatched {
+    <#
+      FR #8760 S3: issue body that says dispatched beats older CodeRabbit park-only comments.
+      FR #8877: dollar names were stripped on commit a1a94bd7; keep them.
+    #>
+    param([string]$Body)
+    $text = [string]$Body
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    if ($text -match '(?i)\(dispatched\)') { return $true }
+    if ($text -match '(?i)dispatched[\s.:,-]') { return $true }
+    if ($text -match '(?i)\bdispatched\b') { return $true }
+    return $false
+}
+
+function Get-BobBuildLoopStatePath {
+    param(
+        [Parameter(Mandatory)][string]$Issue,
+        [string]$RepoSlug = 'bobiverse'
+    )
+    $repo = ($RepoSlug -replace '[^a-zA-Z0-9._-]', '_').ToLowerInvariant()
+    $num = ($Issue -replace '[^0-9]', '')
+    if (-not $num) { throw 'issue required for build-loop state' }
+    $dir = Join-Path (Get-BridgeRoot) 'loops'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Join-Path $dir ('{0}-{1}.json' -f $repo, $num)
+}
+
+function Get-BobBuildLoopCurrentJob {
+    param(
+        [Parameter(Mandatory)][string]$Issue,
+        [string]$RepoSlug = 'bobiverse'
+    )
+    $path = Get-BobBuildLoopStatePath -Issue $Issue -RepoSlug $RepoSlug
+    $row = Read-JsonFile $path
+    if (-not $row) { return $null }
+    return [pscustomobject]@{
+        path         = $path
+        currentJobId = $row.currentJobId
+        machine      = $row.machine
+        updatedAt    = $row.updatedAt
+    }
+}
+
+function Set-BobBuildLoopCurrentJob {
+    <#
+      FR #8760 S2: after enqueue, loop wait_pr must track this job id (not a cancelled prior).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Issue,
+        [Parameter(Mandatory)][string]$JobId,
+        [string]$Machine,
+        [string]$RepoSlug = 'bobiverse'
+    )
+    $path = Get-BobBuildLoopStatePath -Issue $Issue -RepoSlug $RepoSlug
+    $row = [pscustomobject]@{
+        issue        = ($Issue -replace '[^0-9]', '')
+        repo         = $RepoSlug
+        currentJobId = [string]$JobId
+        machine      = $Machine
+        updatedAt    = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-JsonFile $path $row
+    return $row
+}
+
+function Resolve-BobFleetMachineRecord {
+    param([Parameter(Mandatory)][string]$Machine)
+    $id = ConvertTo-MachineId $Machine
+    $path = Join-Path (Initialize-FleetRoot) (Join-Path 'machines' ($id + '.json'))
+    return (Read-JsonFile $path)
+}
+
 function Test-CwdAllowed {
     param(
         [Parameter(Mandatory)][string]$Cwd,

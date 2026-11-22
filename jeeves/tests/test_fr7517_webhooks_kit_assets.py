@@ -34,17 +34,55 @@ def test_fr7517_kit_assets_table_paths_exist():
         assert url.startswith("/")
 
 
+def _webhook_doc_kit_paths() -> set[str]:
+    """FR #8881: expected webhook pages come from the tree, not a magic count."""
+    www = REPO / "jeeves" / "www" / "irc-ntsa" / "docs" / "webhooks"
+    pages = [p for p in www.glob("*.html") if p.is_file()]
+    assert pages, "docs/webhooks HTML pages are required"
+    return {"www/docs/webhooks/" + p.name for p in pages}
+
+
 def test_fr7517_write_site_kit_includes_assets_and_hashes(tmp_path: Path):
     out = _build_kit(tmp_path)
     data = json.loads((out / "MANIFEST.json").read_text(encoding="utf-8"))
     by_path = {e["path"]: e["sha256"] for e in data["files"]}
-    assert len(data["files"]) == 20
+    # FR #8881: manifest is the kit on disk. New docs/webhooks pages need no count edit.
+    disk = {
+        p.relative_to(out).as_posix()
+        for p in out.rglob("*")
+        if p.is_file() and p.name != "MANIFEST.json"
+    }
+    assert set(by_path) == disk
+    docs = _webhook_doc_kit_paths()
+    assert docs <= set(by_path)
+    assert "www/docs/webhooks/models-validate.html" in docs
     for src, kit_rel, _url in kit.KIT_ASSETS:
         assert kit_rel in by_path
         digest = hashlib.sha256((out / kit_rel).read_bytes()).hexdigest()
         assert digest == by_path[kit_rel]
         assert digest == hashlib.sha256((REPO / src).read_bytes()).hexdigest()
     kit.verify_site_kit(out)
+
+
+def test_fr8881_new_webhook_doc_is_in_manifest_without_count(tmp_path: Path):
+    www_src = REPO / "jeeves" / "www" / "irc-ntsa"
+    www = tmp_path / "www"
+    shutil.copytree(www_src, www)
+    extra = www / "docs" / "webhooks" / "fr8881-extra.html"
+    extra.write_text("<html><title>extra</title></html>\n", encoding="utf-8")
+    out = tmp_path / "kit"
+    installer = REPO / "jeeves" / "scripts" / "Install-BobWebhooks.ps1"
+    kit.write_site_kit(www, installer, out, "test-fr8881", repo=REPO)
+    data = json.loads((out / "MANIFEST.json").read_text(encoding="utf-8"))
+    paths = {e["path"] for e in data["files"]}
+    assert "www/docs/webhooks/fr8881-extra.html" in paths
+    assert "www/docs/webhooks/models-validate.html" in paths
+    disk = {
+        p.relative_to(out).as_posix()
+        for p in out.rglob("*")
+        if p.is_file() and p.name != "MANIFEST.json"
+    }
+    assert paths == disk
 
 
 def test_fr7517_verify_fails_when_logo_deleted(tmp_path: Path):

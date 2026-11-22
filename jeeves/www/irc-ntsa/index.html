@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <!-- bobiverse acme: FR #6453 pin; keep when regenerating webhook docs -->
+  <!-- FR #6453 webhook-docs pin; keep when regenerating (FR #8817: no obsolete acme marketing text) -->
   <title>bob.ntsa.uk — Bobiverse</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon"/>
   <link rel="stylesheet" href="site.css"/>
@@ -75,6 +75,12 @@
         <p>Grab skills from Priority MCP, then run them on instances you allowlist.</p>
         <a class="btn btn-primary" href="https://mcp.ntsa.uk">Priority MCP</a>
       </article>
+      <article class="card">
+        <span class="pill">Tray</span>
+        <h3>Agents / Workers menu</h3>
+        <p>Bob ear systray tree: Status, Agents (Plan, Priority, Jeeves), Workers (Grok, Cursor, Open Code), Weights, About, Exit.</p>
+        <a class="btn btn-primary" href="docs/tray/index.html">Tray menu docs</a>
+      </article>
     </div>
 
     <div class="section-title" style="margin-top:2rem">
@@ -91,13 +97,13 @@
       <article class="card">
         <span class="pill">Report</span>
         <h3>Digest / report</h3>
-        <p><code>GET|POST /bob/v1/report</code> — live digest JSON and docs.</p>
-        <a class="btn btn-primary" href="docs/webhooks/report.html">Report docs</a>
+        <p><code>GET|POST /bob/v1/report</code> — live digest JSON (same webhook as <code>/bob/v1/digest</code>, which 301s here).</p>
+        <a class="btn btn-primary" href="docs/webhooks/report.html">Digest / report docs</a>
       </article>
       <article class="card">
         <span class="pill">Intake</span>
         <h3>Intake / harvest</h3>
-        <p><code>POST /bob/v1/intake</code> — file issues, FRs, and harvest lessons.</p>
+        <p><code>GET|POST /bob/v1/intake</code> — file issues, FRs, and harvest lessons (GET by intake id).</p>
         <a class="btn btn-primary" href="docs/webhooks/intake.html">Intake docs</a>
       </article>
       <article class="card">
@@ -113,6 +119,30 @@
         <a class="btn btn-primary" href="docs/webhooks/hours.html">Hours docs</a>
       </article>
       <article class="card">
+        <span class="pill">Models</span>
+        <h3>Models</h3>
+        <p><code>GET /bob/v1/models</code> — Weights selections + per-CLI model/context/effort catalog (form dropdowns validate).</p>
+        <a class="btn btn-primary" href="docs/webhooks/models.html">Models docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Git</span>
+        <h3>GitHub git</h3>
+        <p><code>POST /bob/v1/git</code> — GitHub webhook into Jeeves queue.</p>
+        <a class="btn btn-primary" href="docs/webhooks/git.html">Git docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Builds</span>
+        <h3>Builds</h3>
+        <p><code>GET /bob/v1/builds</code> — published build catalogue.</p>
+        <a class="btn btn-primary" href="docs/webhooks/builds.html">Builds docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Outbound</span>
+        <h3>Stall / wake</h3>
+        <p>Outbound HTTPS wake callbacks (stall / ticket-closure).</p>
+        <a class="btn btn-primary" href="docs/webhooks/outbound-stall-wake.html">Outbound docs</a>
+      </article>
+      <article class="card">
         <span class="pill">Health</span>
         <h3>Health</h3>
         <p><code>GET /health</code> — BobCallback liveness (local; not on the public front door).</p>
@@ -120,11 +150,9 @@
       </article>
     </div>
     <p class="meta" style="margin-top:1rem;color:var(--ink-soft);font-size:0.92rem">
-      Also:
-      <a href="docs/webhooks/git.html">GitHub git</a> ·
-      <a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / wake</a> ·
-      <a href="docs/webhooks/digest-local.html">Local digest</a> ·
-      live <a href="/bob/v1/report"><code>/bob/v1/report</code></a>
+      Live <a href="/bob/v1/report"><code>/bob/v1/report</code></a> ·
+      <a href="/bob/v1/models"><code>/bob/v1/models</code></a>
+      · every <code>/bob/v1/*</code> route must have a card + docs page (FR #8835)
     </p>
 
     <footer class="site-footer">
