@@ -306,3 +306,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - BOB-57 S1 needs a verified plan.ntsa.uk MSI URL from VIS-08 before any downloads card; homepage or guessed /plan.msi is not acceptance.
 - BOB-03 combos must not reuse models-catalog.json: BOB-01 Weights rows and BOB-02 PUT own that file; ship allow-list as models-valid-combos.json + validate_combo + POST /bob/v1/models/validate
 - !build UX: put BUILD_USAGE_LINES in builds_catalog (leaf), re-export from bobiverse_build; local-first catalog before HTTP; optional recipe= on BUILD v1 only for non-default yml paths.
+- Publish backups for IIS www must use off-root BackupRoot/_backup-www-<leaf> plus requestFiltering deny for .bak and denyUrlSequences _backup-/.bak/; never write *.bak under PhysicalPath
