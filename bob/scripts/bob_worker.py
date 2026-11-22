@@ -4825,6 +4825,37 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+def grok_worker_spawn_connect_failure(text: str) -> bool:
+    """FR #8972: grok exited because its own worker_spawn could not connect.
+
+    That is a grok-internal connect blip, not a bob CLI bug. The seat still
+    recycles and GIVEUPs an accepted job. It does not open another intake issue.
+    """
+    raw = str(text or "")
+    return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
+
+def unsigned_exit_stderr_is_noise(text: str) -> bool:
+    """FR #8969 / #8970: 0xffffffff plus progress or TUI chrome is an external kill.
+
+    grok-pager info/debug and the live Grok prompt are not a CLI error. A real
+    failure word or an error/warn level stays a cli-failure.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return True
+    if re.search(
+        r'(?i)traceback|\bexception\b|\bfatal\b|\bfailed\b|\berror_kind\b|'
+        r'"lvl"\s*:\s*"(error|warn|warning|fatal)"',
+        raw,
+    ):
+        return False
+    return bool(re.search(
+        r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
+        raw,
+    ))
+
+
 def _intake_disabled_by_env() -> bool:
     """True when unit/offline harnesses ask to skip live intake posts."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -4901,10 +4932,22 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
+    # FR #8972: grok worker_spawn connect is logged by the caller and recycled.
+    # Do not open "bug: agent CLI nonzero exit" for that signature.
+    if grok_worker_spawn_connect_failure(stderr_tail) or grok_worker_spawn_connect_failure(evidence):
+        if log:
+            try:
+                log("worker: skip agent-cli-nonzero-exit intake (grok worker_spawn connect; FR #8972)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "grok-worker-spawn-connect"}
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip() or unsigned_exit_stderr_is_noise(evidence)
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
