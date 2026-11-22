@@ -11,6 +11,13 @@ using System.Web.Script.Serialization;
 
 namespace BobDialogs
 {
+    internal sealed class BobModelsComboRow
+    {
+        public string Model = "";
+        public List<string> Contexts = new List<string>();
+        public List<string> Efforts = new List<string>();
+    }
+
     internal sealed class BobModelsResult
     {
         public bool Ok;
@@ -21,6 +28,9 @@ namespace BobDialogs
         public string BodyHash = "";
         public string Method = "";
         public List<Dictionary<string, string>> Rows = new List<Dictionary<string, string>>();
+        // FR #8716 / BOB-14: webhook allow-list keyed by lowercase CLI (grok/cursor/opencode).
+        public Dictionary<string, List<BobModelsComboRow>> Clis =
+            new Dictionary<string, List<BobModelsComboRow>>(StringComparer.OrdinalIgnoreCase);
         public string RawBody = "";
     }
 
@@ -117,6 +127,7 @@ namespace BobDialogs
                     r.RawBody = ReadBody(resp);
                     r.BodyHash = Sha256Hex(r.RawBody);
                     r.Rows = ParseAgents(r.RawBody);
+                    r.Clis = ParseClis(r.RawBody);
                     r.Ok = r.Status >= 200 && r.Status < 300;
                     if (!r.Ok) r.Error = "HTTP " + r.Status;
                 }
@@ -261,6 +272,115 @@ namespace BobDialogs
                 rows.Add(row);
             }
             return rows;
+        }
+
+        public static Dictionary<string, List<BobModelsComboRow>> ParseClis(string json)
+        {
+            // FR #8716: optional ``clis`` map from GET /bob/v1/models.
+            Dictionary<string, List<BobModelsComboRow>> clis =
+                new Dictionary<string, List<BobModelsComboRow>>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(json)) return clis;
+            string text = json;
+            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1);
+            object parsed = Common.ParseJson(text);
+            Dictionary<string, object> doc = Common.Dict(parsed);
+            if (doc == null || !doc.ContainsKey("clis")) return clis;
+            Dictionary<string, object> rawClis = Common.Dict(doc["clis"]);
+            if (rawClis == null) return clis;
+            foreach (KeyValuePair<string, object> kv in rawClis)
+            {
+                string cli = (kv.Key ?? "").Trim().ToLowerInvariant();
+                if (cli.Length == 0) continue;
+                IEnumerable list = kv.Value as IEnumerable;
+                if (list == null || kv.Value is string) continue;
+                List<BobModelsComboRow> rows = new List<BobModelsComboRow>();
+                foreach (object item in list)
+                {
+                    Dictionary<string, object> raw = Common.Dict(item);
+                    if (raw == null) continue;
+                    BobModelsComboRow row = new BobModelsComboRow();
+                    row.Model = Str(raw, "model");
+                    if (row.Model.Length == 0) continue;
+                    row.Contexts = StrList(raw, "contexts");
+                    row.Efforts = StrList(raw, "efforts");
+                    rows.Add(row);
+                }
+                if (rows.Count > 0) clis[cli] = rows;
+            }
+            return clis;
+        }
+
+        static List<string> StrList(Dictionary<string, object> raw, string key)
+        {
+            List<string> outList = new List<string>();
+            if (raw == null || !raw.ContainsKey(key)) return outList;
+            IEnumerable list = raw[key] as IEnumerable;
+            if (list == null || raw[key] is string) return outList;
+            foreach (object item in list)
+            {
+                if (item == null) continue;
+                string s = Convert.ToString(item);
+                if (s == null) continue;
+                s = s.Trim();
+                if (s.Length > 0) outList.Add(s);
+            }
+            return outList;
+        }
+
+        public static List<string> ModelsForCli(Dictionary<string, List<BobModelsComboRow>> clis, string cli)
+        {
+            List<string> models = new List<string>();
+            List<BobModelsComboRow> rows = RowsForCli(clis, cli);
+            if (rows == null) return models;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                string m = rows[i].Model ?? "";
+                if (m.Length == 0) continue;
+                if (!models.Contains(m)) models.Add(m);
+            }
+            return models;
+        }
+
+        public static List<string> ContextsFor(Dictionary<string, List<BobModelsComboRow>> clis, string cli, string model)
+        {
+            return FieldFor(clis, cli, model, true);
+        }
+
+        public static List<string> EffortsFor(Dictionary<string, List<BobModelsComboRow>> clis, string cli, string model)
+        {
+            return FieldFor(clis, cli, model, false);
+        }
+
+        static List<string> FieldFor(Dictionary<string, List<BobModelsComboRow>> clis, string cli, string model, bool contexts)
+        {
+            List<string> values = new List<string>();
+            List<BobModelsComboRow> rows = RowsForCli(clis, cli);
+            if (rows == null) return values;
+            string want = (model ?? "").Trim();
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (want.Length > 0 && !string.Equals(rows[i].Model, want, StringComparison.Ordinal))
+                    continue;
+                List<string> src = contexts ? rows[i].Contexts : rows[i].Efforts;
+                if (src == null) continue;
+                for (int j = 0; j < src.Count; j++)
+                {
+                    string v = src[j] ?? "";
+                    if (v.Length == 0) continue;
+                    if (!values.Contains(v)) values.Add(v);
+                }
+            }
+            return values;
+        }
+
+        static List<BobModelsComboRow> RowsForCli(Dictionary<string, List<BobModelsComboRow>> clis, string cli)
+        {
+            if (clis == null) return null;
+            string key = (cli ?? "").Trim().ToLowerInvariant();
+            if (key.Length == 0) return null;
+            List<BobModelsComboRow> rows;
+            if (clis.TryGetValue(key, out rows)) return rows;
+            return null;
         }
 
         public static string SerializeAgents(List<Dictionary<string, string>> rows)

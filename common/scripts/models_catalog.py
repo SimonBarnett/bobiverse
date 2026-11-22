@@ -2,10 +2,12 @@
 
 Public JSON shape::
 
-    {"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}, ...]}
+    {"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}, ...],
+     "clis":{"grok":[{"model":"...","contexts":[...],"efforts":[...]}], ...}}
 
 Rows match ``bob/docs/mocks/systray-agents-workers/weights.html``. Optional
 digest-home ``models-catalog.json`` overrides defaults (PUT/PATCH is BOB-02).
+``clis`` is the BOB-03/04 allow-list (FR #8716) when seeded; omit when unavailable.
 
 BOB-03 / FR #8710: fail-closed valid ``(cli, model, context, effort)`` combinations
 live in a **separate** digest-home file ``models-valid-combos.json`` so BOB-02 PUT
@@ -125,25 +127,61 @@ def load_catalog_file(home: Path | str) -> list[dict[str, str]]:
     return default_agent_rows()
 
 
-def catalog_to_public_doc(rows: Iterable[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+def catalog_to_public_doc(rows: Iterable[dict[str, str]]) -> dict[str, Any]:
     agents: list[dict[str, str]] = []
     for row in rows:
         agents.append({k: str(row.get(k) or "") for k in _ROW_KEYS})
     return {"agents": agents}
 
 
-def catalog_to_json(rows: Iterable[dict[str, str]]) -> bytes:
+def valid_combos_public_doc(cat: "ValidCombosCatalog") -> dict[str, list[dict[str, Any]]]:
+    """FR #8716 / BOB-14: serialise allow-list for Weights valid-only dropdowns."""
+    if not cat or not cat.available:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cli, rows in (cat.clis or {}).items():
+        key = str(cli or "").strip().lower()
+        if not key:
+            continue
+        packed: list[dict[str, Any]] = []
+        for row in rows or ():
+            packed.append(
+                {
+                    "model": str(row.model or ""),
+                    "contexts": list(row.contexts or ()),
+                    "efforts": list(row.efforts or ()),
+                }
+            )
+        if packed:
+            out[key] = packed
+    return out
+
+
+def catalog_to_json(rows: Iterable[dict[str, str]], home: Path | str | None = None) -> bytes:
+    doc = catalog_to_public_doc(rows)
+    if home is not None:
+        try:
+            ensure_valid_combos_seeded(home)
+        except Exception:
+            pass
+        clis = valid_combos_public_doc(load_valid_combos(home))
+        if clis:
+            doc["clis"] = clis
     return json.dumps(
-        catalog_to_public_doc(rows),
+        doc,
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode("utf-8")
 
 
 def handle_models_get(home: Path | str) -> tuple[int, bytes]:
-    """BobCallback GET /bob/v1/models → fleet agent rows JSON (never 404)."""
+    """BobCallback GET /bob/v1/models → fleet agent rows JSON (never 404).
+
+    FR #8716: when the BOB-03/04 allow-list is available, include ``clis`` so
+    Weights dropdowns only offer valid model/context/effort values per CLI.
+    """
     rows = load_catalog_file(home)
-    return 200, catalog_to_json(rows)
+    return 200, catalog_to_json(rows, home=home)
 
 
 # --- BOB-03 / FR #8710: fail-closed valid combinations -------------------------
