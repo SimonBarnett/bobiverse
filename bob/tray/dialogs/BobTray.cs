@@ -1496,12 +1496,38 @@ namespace BobDialogs
             AddOpencodeModelSubmenu(parent, true, record);
         }
 
+        // FR #8717 / BOB-24: Workers > Cursor uses the cursor.com favicon.
+        internal static string WorkerFaviconPath(string installRoot, string id)
+        {
+            if (!string.Equals(id ?? "", "cursor", StringComparison.OrdinalIgnoreCase)) return "";
+            return Path.Combine(installRoot ?? "", "assets", "menu-favicons", "cursor.com.ico");
+        }
+
+        void ApplyWorkerFavicon(ToolStripMenuItem mi, string id)
+        {
+            string p = WorkerFaviconPath(root, id);
+            if (p.Length == 0 || mi == null) return;
+            bool ok = false;
+            try
+            {
+                if (File.Exists(p))
+                {
+                    using (Icon ico = new Icon(p, 16, 16))
+                        mi.Image = ico.ToBitmap();
+                    ok = mi.Image != null;
+                }
+            }
+            catch { ok = false; }
+            TrayLifecycle.Write("worker-favicon", "id", id, "path", p, "ok", ok ? "1" : "0");
+        }
+
         void AddAgentChoice(ToolStripMenuItem parent, string id, string text, bool enabled, bool record)
         {
             ToolStripMenuItem mi = new ToolStripMenuItem(text);
             mi.Tag = id;
             mi.Enabled = enabled;
             mi.Click += OnAgentChoiceClick;
+            ApplyWorkerFavicon(mi, id);
             parent.DropDownItems.Add(mi);
             if (record) MenuItems.Add(text);
         }
@@ -2178,6 +2204,13 @@ namespace BobDialogs
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
             // FR #8715 / BOB-12: exit-before-UI column dump for S1 tests.
+            // FR #8717 / BOB-24: exit-before-UI path of the Workers > Cursor favicon.
+            string dumpFav = Common.Arg(args, "--dump-worker-favicon");
+            if (dumpFav.Length > 0)
+            {
+                File.WriteAllText(dumpFav, TrayContext.WorkerFaviconPath(root, "cursor") + "\r\n", new UTF8Encoding(false));
+                return 0;
+            }
             string dumpWeightsCols = Common.Arg(args, "--dump-weights-columns");
             if (dumpWeightsCols.Length > 0)
             {
