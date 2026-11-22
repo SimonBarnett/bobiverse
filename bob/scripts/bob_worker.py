@@ -4825,6 +4825,27 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+def unsigned_exit_stderr_is_noise(text: str) -> bool:
+    """FR #8969 / #8970: 0xffffffff plus progress or TUI chrome is an external kill.
+
+    grok-pager info/debug and the live Grok prompt are not a CLI error. A real
+    failure word or an error/warn level stays a cli-failure.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return True
+    if re.search(
+        r'(?i)traceback|\bexception\b|\bfatal\b|\bfailed\b|\berror_kind\b|'
+        r'"lvl"\s*:\s*"(error|warn|warning|fatal)"',
+        raw,
+    ):
+        return False
+    return bool(re.search(
+        r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
+        raw,
+    ))
+
+
 def _intake_disabled_by_env() -> bool:
     """True when unit/offline harnesses ask to skip live intake posts."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -4904,7 +4925,10 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip() or unsigned_exit_stderr_is_noise(evidence)
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
