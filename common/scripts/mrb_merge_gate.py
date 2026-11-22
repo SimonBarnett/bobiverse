@@ -27,12 +27,10 @@ HOLD_CLEAR_RE = re.compile(
     r"\bhold\s+(?:is\s+)?(?:lifted|cleared|released|off)\b|"
     r"\bok\s+to\s+merge\b|\bclear(?:ed)?\s+to\s+merge\b)"
 )
-# FR #8107: full boards (Vision/Tests/Docs) often put Verdict well past 400
-# characters after ``## MRB board``. Keep a generous window and also accept
-# ``MRB PASS @ <sha>`` as an alternate marker (same cue gitclaim already uses).
-MRB_PASS_BOARD_WINDOW = 4000
+# FR #8107 / #8893: Verdict may sit anywhere after the board heading in the
+# same comment. A fixed window (400, then 4000) still missed long boards.
 MRB_PASS_BOARD_RE = re.compile(
-    rf"(?i)##\s*MRB\s+board[\s\S]{{0,{MRB_PASS_BOARD_WINDOW}}}?\*\*Verdict:\*\*\s*PASS\b"
+    r"(?is)##\s*MRB\s+board\b.*?\*\*Verdict:\*\*\s*PASS\b"
 )
 # Seats often write ``**MRB PASS @** `sha``` (markdown bold around the label).
 MRB_PASS_AT_SHA_RE = re.compile(
@@ -181,8 +179,8 @@ def find_active_owner_hold(comments: list[dict] | None) -> str | None:
 def find_mrb_pass_board(comments: list[dict] | None) -> str | None:
     """Return first comment body that looks like an MRB PASS board.
 
-    FR #8107: match ``**Verdict:** PASS`` within ``MRB_PASS_BOARD_WINDOW`` of
-    the board header, or ``MRB PASS @ <sha>`` anywhere after that header.
+    FR #8893: match ``**Verdict:** PASS`` anywhere after the board header in
+    the same comment, or ``MRB PASS @ <sha>`` anywhere after that header.
     MRB #8108: never treat a board with ``**Verdict:** FAIL`` as PASS via the
     ``MRB PASS @`` alternate marker.
     """

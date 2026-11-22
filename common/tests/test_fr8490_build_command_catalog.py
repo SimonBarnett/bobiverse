@@ -64,8 +64,18 @@ def test_fr8490_list_empty_and_populated():
     assert dec and dec.ok and dec.reason == "list"
     joined = "\n".join(dec.pm_lines)
     assert "1) Bobiverse" in joined
-    assert "yml=SimonBarnett/bobiverse:.bobiverse/build.yml" in joined
-    assert "dep=bob-ear,bob-tray,bob-worker" in joined
+    # FR #8770: list rows omit yml=/dep=/output= (those stay in dry-run).
+    assert "yml=" not in joined
+    assert "dep=" not in joined
+    assert "SimonBarnett/bobiverse" in joined
+    assert "install=fleet" in joined
+    assert dec.pm_lines[-2:] == list(bb.BUILD_USAGE_LINES)
+
+    dry = _decide("!build dry-run 1")
+    assert dry and dry.ok and dry.dry_run
+    dry_joined = "\n".join(dry.pm_lines)
+    assert "dep=bob-ear,bob-tray,bob-worker" in dry_joined
+    assert "output=" in dry_joined
 
 
 def test_fr8490_run_index_uses_catalog_defaults(tmp_path: Path):
@@ -112,7 +122,7 @@ def test_fr8490_dry_run_status_cancel_preflight(tmp_path: Path):
     dry = _decide("!build dry-run 1", lock=lock)
     assert dry and dry.ok and dry.dry_run
     assert lock.running_id("SimonBarnett/bobiverse") is None
-    assert any("machine=flamingo" in ln for ln in dry.pm_lines)
+    assert any("machine=" in ln and "build dry-run:" in ln for ln in dry.pm_lines)
 
     lock.try_acquire("SimonBarnett/bobiverse", "b-live")
     st = _decide("!build status 1", lock=lock)

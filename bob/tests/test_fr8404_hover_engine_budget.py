@@ -16,10 +16,16 @@ def _fn(text: str, name: str) -> str:
 
 
 def test_fr8404_live_grok_queries_grok_exe_only():
-    body = _fn(HOVER.read_text(encoding="utf-8"), "Get-BobLiveGrokAgents")
-    assert 'Get-CimInstance Win32_Process -Filter "Name=\'grok.exe\'"' in body
+    text = HOVER.read_text(encoding="utf-8")
+    body = _fn(text, "Get-BobLiveGrokAgents")
+    # FR #8404: grok.exe only. FR #8891: timed WMI (not bare Get-CimInstance).
+    assert "Name='grok.exe'" in body
+    assert "Get-BobWin32ProcessTimed" in body
     assert "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |" not in body
     assert "$parentByPid" in body
+    helper = _fn(text, "Get-BobWin32ProcessTimed")
+    assert "EnumerationOptions" in helper
+    assert "Timeout" in helper
 
 
 def test_fr8404_digest_http_honors_engine_timeout_env():

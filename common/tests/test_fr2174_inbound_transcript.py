@@ -101,10 +101,10 @@ def test_channel_list_sanitizes():
 
 
 def test_channel_list_folds_ionos_alias_to_win_mpre():
-    """DIGEST_ID_FOLD: ionos shop is #win-mpre8vi4u6u, never #ionos (MRB #2262)."""
-    assert it.canonical_machine_id("ionos") == "win-mpre8vi4u6u"
-    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
-    assert "win-mpre8vi4u6u" in it.FLEET_EAR_MACHINES
+    """DIGEST_ID_FOLD / FR #8697: ionos shop is #walrus, never #ionos (MRB #2262 lineage)."""
+    assert it.canonical_machine_id("ionos") == "walrus"
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#walrus"
+    assert "walrus" in it.FLEET_EAR_MACHINES
 
 
 def test_ear_recovery_absent_service():

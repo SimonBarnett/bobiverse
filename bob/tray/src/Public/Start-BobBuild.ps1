@@ -23,7 +23,8 @@ function Start-BobBuild {
         [string]$Kind = 'build',
         [string]$Model,
         [switch]$Fix,
-        [switch]$PinGitWorker
+        [switch]$PinGitWorker,
+        [string]$Issue
     )
     if (Test-PromptSecrets -Prompt $Goal) {
         return [pscustomobject]@{ ok = $false; error = 'refuse'; reason = 'goal contains password= or XAI_API_KEY' }
@@ -54,7 +55,7 @@ function Start-BobBuild {
             $sel = [pscustomobject]@{ wait = $false; machine = $pinMachine; fuel = $pinFuel; reason = $null }
         }
         else {
-            $sel = Select-BobGitWorker -Machine $pinMachine -Fuel $pinFuel -AllowOnDemand:$AllowOnDemand -AllowCopilot:$AllowCopilot -Repo $Repo -Kind $Kind
+            $sel = Select-BobGitWorker -Machine $pinMachine -Fuel $pinFuel -AllowOnDemand:$AllowOnDemand -AllowCopilot:$AllowCopilot -Repo $Repo -Cwd $Cwd -Kind $Kind
         }
         if ($sel.wait) {
             return [pscustomobject]@{
@@ -62,9 +63,10 @@ function Start-BobBuild {
                 wait    = $true
                 jobId   = $(if ($JobId) { $JobId } else { $null })
                 reason  = $(if ($sel.reason) { [string]$sel.reason } else { 'no eligible worker' })
-                machine = $null
-                fuel    = $null
+                machine = $(if ($sel.machine) { [string]$sel.machine } else { $null })
+                fuel    = $(if ($sel.fuel) { [string]$sel.fuel } else { $null })
                 lane    = 'wait'
+                error   = $(if ($sel.error) { [string]$sel.error } else { $null })
             }
         }
         $pickMachine = [string]$sel.machine
@@ -90,11 +92,19 @@ function Start-BobBuild {
     }
     try { $cwdVal = [IO.Path]::GetFullPath($cwdVal) } catch { }
 
-    $thisId = Get-ThisMachineId
-    if ($thisId -and $thisId -eq $mid) {
-        $self = Read-JsonFile (Join-Path (Get-BridgeRoot) 'machine.json')
-        if (-not (Test-CwdAllowed -Cwd $cwdVal -MachineRecord $self)) {
-            return [pscustomobject]@{ ok = $false; error = 'cwd_not_allowed'; cwd = $cwdVal }
+    # FR #8760 S1: cwd must be allowed on the *target* machine cwdRoots (not Wonderland-only paths on ce-priority-dev1).
+    $targetRec = $null
+    try { $targetRec = Resolve-BobFleetMachineRecord -Machine $mid } catch { }
+    if (-not $targetRec) {
+        try { $targetRec = Read-JsonFile (Join-Path (Get-BridgeRoot) 'machine.json') } catch { }
+    }
+    if ($targetRec -and -not (Test-CwdAllowed -Cwd $cwdVal -MachineRecord $targetRec)) {
+        return [pscustomobject]@{
+            ok      = $false
+            error   = 'cwd_not_on_machine'
+            reason  = ('cwd not under machine={0} cwdRoots' -f $mid)
+            machine = $mid
+            cwd     = $cwdVal
         }
     }
 
@@ -104,6 +114,9 @@ function Start-BobBuild {
     if ($isGit) {
         $gitHint = 'Git task: open a PR from the work branch. Never push main. Never merge. IRC verbs SPEC WAIT BUILD PUSH MRB FIX UAT (no vendor names). Do not mark ready for human UAT. Bob chairs UAT. PASS-nits merges; FAIL spawns a FIX worker.'
         if ($cons -notcontains $gitHint) { $cons = @($cons + $gitHint) }
+        # FR #8760 S3: body dispatched beats older CodeRabbit park-only comments.
+        $dispatchHint = 'Dispatch: if the GitHub issue body contains dispatched (or Feature request ...(dispatched)), implement now. Ignore older CodeRabbit park-only / Do not start until human dispatch comments; the issue body wins.'
+        if ($cons -notcontains $dispatchHint) { $cons = @($cons + $dispatchHint) }
         if ($pickFuel -eq 'cursor-models') {
             $curHint = 'Fuel cursor-models: tools/Start-BobCursor.ps1 (skill start-bob-cursor). Do not start grok.exe for this job.'
             if ($cons -notcontains $curHint) { $cons = @($cons + $curHint) }
@@ -167,6 +180,18 @@ function Start-BobBuild {
     $path = Get-FleetJobPath -Lane inbox -Machine $mid -JobId $JobId
     Write-JsonFile $path $packet
     Write-Audit -SessionId $JobId -Cwd $cwdVal -Profile $Profile -Prompt $Goal
+    # FR #8760 S2: point build-loop wait_pr at this live job id (not a cancelled prior).
+    $issueKey = $Issue
+    if (-not $issueKey -and $Goal -match '(?i)(?:issues?|pull)/(\d+)|#(\d+)') {
+        $issueKey = $(if ($Matches[1]) { $Matches[1] } else { $Matches[2] })
+    }
+    if ($isGit -and $issueKey) {
+        $repoSlug = 'bobiverse'
+        if ($Repo -and $Repo -match '([^/]+)$') { $repoSlug = $Matches[1] }
+        try {
+            $null = Set-BobBuildLoopCurrentJob -Issue $issueKey -JobId $JobId -Machine $mid -RepoSlug $repoSlug
+        } catch { }
+    }
     $reply = "queued $JobId on $mid ($Profile)"
     if ($pickFuel) { $reply = "queued $JobId on $mid fuel=$pickFuel ($Profile)" }
     Send-FleetReply -ReplyChannel $ReplyChannel -Text $reply

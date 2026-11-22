@@ -4,6 +4,12 @@
 # Protocol (common\scripts\recycleseat.py):
 #   <root>\run\recycleseat\req-<id>.json  {id, nick, by, kind, ts, expires}
 #   <root>\run\recycleseat\res-<id>.json  {id, ok, reason, old_pid, new_pid}
+# FR #8864 monitor force-recycle (do not wait for the 2s tray tick):
+#   . BobTrayStartWorker.ps1
+#   . BobTrayRecycleSeat.ps1
+#   write run\recycleseat\req-<id>.json (expires = now + 300s)
+#   Invoke-BobTrayRecycleSeatQueue -Root <install> -Dir <run\recycleseat> -Launch { param($nick, $kind, $model) Start-BobTrayWorkerExe -Mode agent -Agent $kind -Model $model -Quiet -Restore -Trigger restore-after-recycle -SeatId $nick }
+#
 # CAST IRON: if stop fails or target still alive, do NOT start a new seat.
 # FR #8403: when several reqs are pending, stop every seat first, then start the
 # replacements (serialize stop+start) so the 2-seat cap cannot leave stopped seats
@@ -250,12 +256,15 @@ function Invoke-BobTrayRecycleSeatQueue {
         while ($tries -lt 2 -and -not $row.ok) {
             $tries++
             try {
-                $newPid = [int](@(& $Launch $seatNick $clickedKind $clickedModel)[-1])
+                # FR #8864: last numeric pid; Write-Output log lines are not the pid.
+                $newPid = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $seatNick $clickedKind $clickedModel))
                 if ($newPid -gt 0) { $row.ok = $true; $row.reason = 'ok'; $row.new_pid = $newPid }
                 else {
                     # FR #8403: name the refusal (seats-off / cap / worker-exe-missing), never a bare launch-failed.
+                    # FR #8864: one beat so a just-stopped seat drops out of the cap sample before the retry.
                     $refusal = Get-BobTrayRecycleLaunchRefusal -Root $Root
                     $row.reason = if ($refusal) { $refusal } else { 'launch-failed' }
+                    if ($row.reason -eq 'cap' -and $tries -lt 2) { Start-Sleep -Milliseconds 500 }
                 }
             } catch {
                 $row.reason = 'launch-error: ' + $_.Exception.Message

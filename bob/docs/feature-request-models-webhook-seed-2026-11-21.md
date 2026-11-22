@@ -73,7 +73,12 @@ Every other backlog ID. Implementation is after park when dispatched.
 - Park-only until human dispatch
 - Cross-link index + depends-on
 
+## Seed (BOB-04 / FR #8709)
+
+Shipped: `common/defaults/models-valid-combos.seed.json` (provenance per CLI). Captured 2026-11-22 from `~/.grok/models_cache.json` + `grok models`, `opencode models` (native rows), and cursor-agent `--help` model examples. Index: `bob/docs/feature-request-systray-agents-workers-index-2026-11-21.md`. Depends-on: BOB-03 / FR #8710.
+
 ## UNKNOWN
 
-- Exact initial models matrix seed values (BOB-04) until CLI `--help` / Simon seed
+- Favicon ToS for third-party sites when applicable
+- Cursor full `--list-models` matrix (login-gated on capture seat; expand via #8820 refresh or Simon seed)
 - Favicon ToS for third-party sites when applicable
