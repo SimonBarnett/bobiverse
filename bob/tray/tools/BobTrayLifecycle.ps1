@@ -138,6 +138,25 @@ function Test-BobTrayWatchdogSuppressed {
     }
 }
 
+function Restore-BobTrayExeFromClickfixPark {
+    # FR #9044: tools\bob-tray.exe missing while tools\bob-tray.exe.clickfix-park remains.
+    # Test-Path is falsely False on that dotted name. File.Copy restores the live exe and keeps the park.
+    param([string]$Root)
+    if (-not $Root) { return $null }
+    $tools = Join-Path $Root 'tools'
+    $live = Join-Path $tools 'bob-tray.exe'
+    $park = Join-Path $tools 'bob-tray.exe.clickfix-park'
+    if ([IO.File]::Exists($live)) { return $live }
+    if (-not [IO.File]::Exists($park)) { return $null }
+    try {
+        [IO.File]::Copy($park, $live, $false)
+    } catch {
+        return $null
+    }
+    if ([IO.File]::Exists($live) -and [IO.File]::Exists($park)) { return $live }
+    return $null
+}
+
 function Test-BobTrayProcessPresent {
     # True when bob-tray.exe or Watch-BobTray / seat-wrapper is alive (FR #1642 watchdog).
     # FR #2585: Name -eq bob-tray.exe is enough (ExecutablePath may be null); already-running

@@ -4527,7 +4527,15 @@ $startWorkerTimer.Add_Tick({
                     if (Test-BobTrayEngineMode) {
                         [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
                                 -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
-                                -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'; [Environment]::Exit(0) })
+                                -ParentGone {
+                                    $restored = $null
+                                    if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
+                                        $restored = Restore-BobTrayExeFromClickfixPark -Root $RepoRoot
+                                    }
+                                    if ($restored) { Write-TrayLog 'FR #9044 restored bob-tray.exe from clickfix-park (park kept)' }
+                                    Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'
+                                    [Environment]::Exit(0)
+                                })
                     }
                 }
                 catch [System.Management.Automation.PipelineStoppedException] { return }
@@ -4643,6 +4651,10 @@ try {
 }
 catch { Write-TrayLog ('digest startup: ' + $_.Exception.Message) }
 # TipForm handle only on click - startup CreateHandle caused hover stub.
+if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
+    $restoredExe = Restore-BobTrayExeFromClickfixPark -Root $RepoRoot
+    if ($restoredExe) { Write-TrayLog 'FR #9044 restored bob-tray.exe from clickfix-park (park kept)' }
+}
 if (Test-BobTrayEngineMode) { Write-TrayLog 'engine mode: bob-tray.exe owns the icon and the menu (this process is headless)'; [void](Write-BobTrayEngineEnv -Root $RepoRoot) }
 else { $notify.Visible = $true }
 # FR #4142: headless engine — do not thrash NotifyIcon flash/pulse on a hidden icon.
