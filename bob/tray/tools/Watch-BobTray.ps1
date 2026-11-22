@@ -4105,6 +4105,12 @@ $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
+$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
+Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
+if (Test-Path -LiteralPath $planGantt) {
+    try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
+    catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
+}
 $miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Start-BobTrayPriorityExe })

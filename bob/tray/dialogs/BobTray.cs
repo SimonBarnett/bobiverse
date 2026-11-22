@@ -970,6 +970,17 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
+            // FR #8689 / BOB-48: Plan menu uses the skills-visionary GANTT asset, not a generic icon.
+            string planGantt = Path.Combine(root, "bob", "tray", "assets", "plan-gantt.ico");
+            TrayLifecycle.Write("plan", "action", "gantt icon", "path", planGantt);
+            try
+            {
+                if (File.Exists(planGantt)) miPlan.Image = new Icon(planGantt, 16, 16).ToBitmap();
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("plan", "action", "gantt icon failed", "error", ex.Message);
+            }
             miPlan.Click += delegate { StartPlanExe(); };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
