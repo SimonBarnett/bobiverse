@@ -970,7 +970,17 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            miPlan.Click += delegate { StartPlanExe(); };
+            miPlan.Click += delegate {
+                // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
+                string fuel = PlanFuelPath();
+                if (PlanFuelEmpty(fuel))
+                {
+                    TrayLifecycle.Write("plan", "action", "no tokens", "quit", "1", "path", fuel);
+                    MessageBox.Show("Plan: this box has no tokens. The Plan seat will quit instead of starting without fuel.", "Plan - no tokens", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                StartPlanExe();
+            };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
@@ -1820,6 +1830,36 @@ namespace BobDialogs
             {
                 TrayLifecycle.Write("priority", "action", "start exe failed", "error", ex.Message);
             }
+        }
+
+        // FR #8692 / BOB-46: fuel file for this box. BOB_PLAN_FUEL_FILE overrides the local default.
+        string PlanFuelPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_PLAN_FUEL_FILE");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(local, "Bobiverse", "plan-fuel.json");
+        }
+
+        bool PlanFuelEmpty(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))); }
+            catch { return false; }
+            if (doc == null) return false;
+            if (doc.ContainsKey("status") && doc["status"] != null)
+            {
+                string st = ("" + doc["status"]).Trim().ToLowerInvariant();
+                if (st == "empty" || st == "exhausted" || st == "out-of-fuel" || st == "out_of_fuel") return true;
+            }
+            foreach (string key in new string[] { "remaining_pct", "remaining", "tokens_remaining" })
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null || ("" + doc[key]).Trim().Length == 0) continue;
+                int n;
+                if (int.TryParse(("" + doc[key]).Trim(), out n)) return n <= 0;
+            }
+            return false;
         }
 
         // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.

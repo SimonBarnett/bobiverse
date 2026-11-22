@@ -2109,6 +2109,22 @@ function Start-BobTrayPriorityExe {
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
 }
 
+function Test-BobTrayPlanFuelEmpty {
+    # FR #8692 / BOB-46: true when this box's fuel file says remaining_pct <= 0 or status empty.
+    param([string]$FuelPath)
+    if ([string]::IsNullOrWhiteSpace($FuelPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $FuelPath)) { return $false }
+    try { $doc = Get-Content -Raw -LiteralPath $FuelPath | ConvertFrom-Json } catch { return $false }
+    $st = ([string]$doc.status).Trim().ToLowerInvariant()
+    if ($st -in @('empty', 'exhausted', 'out-of-fuel', 'out_of_fuel')) { return $true }
+    foreach ($k in @('remaining_pct', 'remaining', 'tokens_remaining')) {
+        $v = $doc.$k
+        if ($null -eq $v -or [string]$v -eq '') { continue }
+        return ([int]$v -le 0)
+    }
+    return $false
+}
+
 function Start-BobTrayPlanExe {
     # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
     $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
@@ -4156,7 +4172,22 @@ $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$miPlan.Add_Click({ Start-BobTrayPlanExe })
+$miPlan.Add_Click({
+        $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
+        if ([string]::IsNullOrWhiteSpace($fuel)) {
+            $fuel = Join-Path $env:LOCALAPPDATA 'Bobiverse\plan-fuel.json'
+        }
+        if (Test-BobTrayPlanFuelEmpty -FuelPath $fuel) {
+            Write-TrayLog ('Plan: no tokens; quit ' + $fuel)
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'Plan: this box has no tokens. The Plan seat will quit instead of starting without fuel.',
+                'Plan - no tokens',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        Start-BobTrayPlanExe
+    })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Start-BobTrayPriorityExe })
 $miJeeves.Add_Click({
