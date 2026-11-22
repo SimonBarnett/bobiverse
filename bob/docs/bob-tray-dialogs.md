@@ -138,6 +138,16 @@ TipForm and Status paint Copilot as a family header plus one left-aligned UsageR
 
 Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `bob/tests/test_fr6429_opencode_tray_submenu.py`, `common/tests/test_fr6301_opencode_keys.py`, `bob/tests/test_mrb6303_docs_pins.py`.
 
+## FR #8695 / BOB-53 Priority MCP (mcp.ntsa.uk)
+
+**Agents > Priority** is a submenu. **Start PriorityAgent** still launches `vendor\priority\PriorityAgent.exe` (BOB-50). **Configure MCP (mcp.ntsa.uk)** registers the Grok user-level server `priority-catalog` at `https://mcp.ntsa.uk/mcp`. The same registration is what `PriorityAgent.exe` adds; the tray also refuses a wrong URL instead of keeping it.
+
+- Compiled default `https://mcp.ntsa.uk/mcp`. Optional shipped `tray/config/default.json` key `priorityMcpUrl` is accepted only for scheme `https` and host `mcp.ntsa.uk`. Any other value is rejected and the constant is used. There is no `%LOCALAPPDATA%` override for this key.
+- Workflow: `grok mcp list`, `grok mcp add --transport http priority-catalog <url>` only when the entry is absent, then `grok mcp doctor priority-catalog`. A different URL or a `stdio` entry sets `state=wrong` and is not overwritten. `list` failure is `state=list-failed`. A missing `grok` is `state=grok-missing`.
+- Doctor is `ok` only when the exit code is 0, the output contains `handshake OK`, and it does not contain `handshake failed`.
+- Evidence file: `<root>\run\tray-priority-mcp.json` (`name`, `url`, `state`, `doctor`, `doctorMessage`, `ts`, `version`). One lifecycle line `priority-mcp` carries the same fields and no environment dump. Headless: `bob-tray.exe --priority-mcp-configure <out.json>` (no message box). The menu action shows a message box.
+- Grok resolution: `%USERPROFILE%\.grok\bin\grok.exe`, then `grok.exe` / `grok.cmd` / `grok.bat` on `PATH`.
+
 ## FR #6309 TipForm OpenCode keys menu
 
 Context menu **OpenCode keys** offers Set key (masked PasswordChar dialog), select among `config\opencode-keys\*.apikey` labels, and Remove key. Writes use SYSTEM+Administrators ACL (same as `Write-BobOpencodeGoApiKey.ps1`). Headless test flags: `--opencode-key-write|--opencode-key-select|--opencode-key-remove`. Removing the last key clears digest `opencode_account` via fuel merge `cleared[]`.
@@ -161,4 +171,4 @@ The ear must not wait on the helper: `Get-BobOpencodeFuel.ps1` runs three `openc
 Install the rebuilt `scripts\bob-ear.exe`, pinned `scripts\bobreport.py` (this head), `tools\Get-BobOpencodeFuel.ps1`, and `scripts\opencode_fuel.py`. If the on-disk `bobreport.py` is an older file without `opencode_install_root`, the embed publisher is used and the old file stays. Cache is `<BOB_INSTALL_ROOT>\run\opencode-fuel.json`. Tray sources at `014b9af` are unchanged. The reader call tolerates a `gitclaim` that has no `shop_line_resets_bored_clock`.
 
 
-**FR #7147 (digest start_model on seat list).** TipForm/Status worker lines read digest workers[].kind, start_model, and model_mismatch (ear-owned; tray never invents model ids). Format: {nick}: [{kind}/{start_model}!] {idle|work} — bang only when mismatch. Missing fields keep the legacy {nick}: {idle|work} shape. No secrets.
+**FR #7147 (digest start_model on seat list).** TipForm/Status worker lines read digest workers[].kind, start_model, and model_mismatch (ear-owned; tray never invents model ids). Format: {nick}: [{kind}/{start_model}!] {idle|work} — bang only when mismatch. Missing fields keep the legacy {nick}: {idle|work} shape. No secrets. The route from that Status nick to the chosen OpenCode model is in `bob-worker.md` (FR #8734 / BOB-29). **Open log** opens `watch_bob_tray.log`, not `logs\seat-<nick>.log`.
