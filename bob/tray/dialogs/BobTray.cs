@@ -979,7 +979,31 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
+            // BOB-40: Agents > Jeeves uses the existing butler icon.
+            string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
+            if (!File.Exists(butler))
+            {
+                DirectoryInfo parent = Directory.GetParent(root);
+                if (parent != null)
+                    butler = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
+            }
+            if (File.Exists(butler))
+            {
+                using (Icon ico = new Icon(butler))
+                    miJeeves.Image = ico.ToBitmap();
+                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico");
+            }
             miJeeves.Click += delegate {
+                if (JeevesNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_JEEVES_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(JeevesNoTokenGate.Body, JeevesNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("jeeves", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
                 string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
                 if (string.IsNullOrEmpty(hook))
                     hook = System.IO.Path.Combine(root, "run", "models-webhook.json");
@@ -993,6 +1017,7 @@ namespace BobDialogs
                     }
                 }
                 catch { }
+
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
                 StartWorker("agent", "grok");
             };

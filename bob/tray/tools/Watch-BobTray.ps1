@@ -4092,6 +4092,16 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
+# BOB-40: Agents > Jeeves uses the existing butler icon.
+$butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
+}
+if (Test-Path -LiteralPath $butler) {
+    $ico = New-Object System.Drawing.Icon $butler
+    $miJeeves.Image = $ico.ToBitmap()
+    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+}
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
 [void]$miAgents.DropDownItems.Add($miJeeves)
@@ -4123,6 +4133,22 @@ $miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Start-BobTrayPriorityExe })
 $miJeeves.Add_Click({
+        $fuelPath = $env:BOB_JEEVES_FUEL_FILE
+        if (-not $fuelPath) { $fuelPath = Join-Path $RepoRoot 'run\jeeves-fuel.json' }
+        if (Test-Path -LiteralPath $fuelPath) {
+            $doc = Get-Content -LiteralPath $fuelPath -Raw
+            if ($doc -match '"remaining_pct"\s*:\s*(-?\d+)' -and [int]$Matches[1] -le 0) {
+                Write-TrayLog 'jeeves dialog-quit reason=no-tokens'
+                try {
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        'No tokens on this box. Jeeves will quit.',
+                        'Bobiverse - Jeeves',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning)
+                } catch { }
+                return
+            }
+        }
         $hook = $env:BOB_MODELS_WEBHOOK_FILE
         if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
         if (Test-Path -LiteralPath $hook) {
