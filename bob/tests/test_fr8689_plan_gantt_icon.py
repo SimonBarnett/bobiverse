@@ -25,10 +25,12 @@ def test_tray_and_docs_name_the_gantt_path_not_a_generic_icon():
     cs = TRAY.read_text(encoding="utf-8-sig")
     ps = WATCH.read_text(encoding="utf-8-sig")
     html = HTML.read_text(encoding="utf-8")
+    # Install path first (flat MSI/sync), then repo-style fallback.
+    assert '"assets", "plan-gantt.ico"' in cs
     assert 'bob", "tray", "assets", "plan-gantt.ico"' in cs
     assert '"gantt icon"' in cs
-    assert "SystemIcons" not in cs[cs.find("plan-gantt.ico") - 400:cs.find("plan-gantt.ico") + 500]
+    assert "SystemIcons" not in cs[cs.find("plan-gantt.ico") - 400 : cs.find("plan-gantt.ico") + 500]
     assert "assets\\plan-gantt.ico" in ps
     assert "Plan: GANTT icon" in ps
     assert 'src="plan-gantt.png"' in html
-    assert "alt=\"Plan GANTT\"" in html
+    assert 'alt="Plan GANTT"' in html

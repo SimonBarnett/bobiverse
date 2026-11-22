@@ -971,7 +971,11 @@ namespace BobDialogs
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
             // FR #8689 / BOB-48: Plan menu uses the skills-visionary GANTT asset, not a generic icon.
-            string planGantt = Path.Combine(root, "bob", "tray", "assets", "plan-gantt.ico");
+            // Install sync lays tray assets at <install>\assets\ (same as bob-systray / menu-favicons).
+            // Repo checkout keeps bob\tray\assets\; try install path first.
+            string planGantt = Path.Combine(root, "assets", "plan-gantt.ico");
+            if (!File.Exists(planGantt))
+                planGantt = Path.Combine(root, "bob", "tray", "assets", "plan-gantt.ico");
             TrayLifecycle.Write("plan", "action", "gantt icon", "path", planGantt);
             try
             {
