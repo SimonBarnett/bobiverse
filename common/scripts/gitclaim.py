@@ -9832,16 +9832,22 @@ def heal_worktree_head_mismatch_row(row: dict) -> bool:
 
 
 def is_skill_dag_down_reason(reason: str) -> bool:
-    """True when a GIVEUP reason is OpenCode skill-dag preflight down (FR #7963).
+    """True when a GIVEUP reason is skill-dag preflight / MCP down (FR #7963 / #8846).
 
-    Seat fault, not job fault: ``skill_dag_down`` or ``skill_dag_down:exit-1``.
+    Seat fault, not job fault: ``skill_dag_down``, ``skill-dag-down:exit-1``,
+    or ``skill-dag-mcp-down`` (FR #8846 fail-closed when MCP + mcp.json CLI both fail).
     """
     text = (reason or "").strip().lower()
     if not text:
         return False
     norm = text.replace("_", "-").replace(" ", "-")
     token = norm.split(",", 1)[0].strip()
-    return token == "skill-dag-down" or token.startswith("skill-dag-down:")
+    return (
+        token == "skill-dag-down"
+        or token.startswith("skill-dag-down:")
+        or token == "skill-dag-mcp-down"
+        or token.startswith("skill-dag-mcp-down:")
+    )
 
 
 def is_console_closed_reason(reason: str) -> bool:
