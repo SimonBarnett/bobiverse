@@ -25,8 +25,8 @@ Theme index: BOB-G1 #8837, BOB-G2 #8838, CI-G1 #8839, CI-G2 #8841. Vision packs 
 
 | Gate | Mechanism |
 |---|---|
-| 1 | Label `hold` — manual park |
-| 2 | `Depends-on: #N` all **CLOSED** (BOB-D*) — see `bobiverse-jeeves-agent-depends-on` |
+| 1 | Label `hold` - manual park |
+| 2 | `Depends-on: #N` all **CLOSED** (BOB-D*) - see `bobiverse-jeeves-agent-depends-on` |
 | 3 | **This skill:** digest issue labeled `fr-digest` (+ usually `hold`); children `Depends-on: #digest`; while digest has `hold`, skip children (`depends-held`); **unhold alone releases** (close optional); CI fails PRs whose FR still has open children Depending-on it |
 
 ## Encoding (LOCKED)
@@ -52,14 +52,14 @@ Run **after** `bobiverse-jeeves-agent-depends-on` each cycle once BOB-G1 is on t
 ## Until BOB-G is live
 
 - Keep G*/CI-G* on `hold` until Simon unholds.
-- Do not treat missing go-gate as a chair bug yet — product is park-only.
+- Do not treat missing go-gate as a chair bug yet - product is park-only.
 - Still load this skill so the monitor is ready the turn D/G ship.
 
 ## Hard rules
 
 - No secrets. Public hosts only.
 - Never edit queue/ledger/digest by hand.
-- No chair commands unless FR #8827 is live and the action keeps the queue moving (e.g. unhold is a **human/Plan** action — monitor does not remove `hold` labels unless Si said so).
+- No chair commands unless FR #8827 is live and the action keeps the queue moving (e.g. unhold is a **human/Plan** action - monitor does not remove `hold` labels unless Si said so).
 - Do not edit parked VIS-D* / BOB-D* bodies from this skill.
 
 ## Output (required when this node runs)

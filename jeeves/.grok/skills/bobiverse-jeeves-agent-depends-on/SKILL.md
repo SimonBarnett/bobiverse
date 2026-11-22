@@ -26,18 +26,18 @@ Theme index: BOB-D1..D9 (#8805-#8813). Vision packs under `bob/docs/feature-requ
 | Gate | Mechanism | Who owns product |
 |---|---|---|
 | 1 | GitHub label `hold` (manual park) | operators / Plan |
-| 2 | Body line `Depends-on:` — every listed issue must be **CLOSED** before offer | BOB-D* chair |
-| 3 | `fr-digest` go-gate (unhold releases) | BOB-G* — see `bobiverse-jeeves-agent-fr-digest` |
+| 2 | Body line `Depends-on:` - every listed issue must be **CLOSED** before offer | BOB-D* chair |
+| 3 | `fr-digest` go-gate (unhold releases) | BOB-G* - see `bobiverse-jeeves-agent-fr-digest` |
 
 This skill owns **gate 2** (and how it differs from gate 1). Do not confuse `hold` with Depends-on CLOSED.
 
 ## Grammar (LOCKED)
 
-- `Depends-on: #N` — same repo as the FR
-- `Depends-on: owner/repo#N` — cross-repo
-- `Depends-on: (none)` — empty / no deps
+- `Depends-on: #N` - same repo as the FR
+- `Depends-on: owner/repo#N` - cross-repo
+- `Depends-on: (none)` - empty / no deps
 - Multiple refs: comma or whitespace separated on one line (implementer follows D1 parse)
-- Distinct from legacy backlog ids (`BOB-33`) in #8754 — those are not this grammar
+- Distinct from legacy backlog ids (`BOB-33`) in #8754 - those are not this grammar
 
 ## When live (monitor cycle)
 
@@ -45,8 +45,8 @@ After token-free checks, if BOB-D offer skip is deployed (chair stamps `depends-
 
 1. Scan live digest + queue for **accepted or offered** rows whose issue body still has an OPEN Depends-on ref.
 2. EXIT 1 / intake when the chair offered or accepted despite OPEN depends (product miss). De-dup against #8807 / #8754.
-3. Rows correctly skipped with reason `depends-open` are **not** starve — do not file empty-queue / idle+ungated for them.
-4. `hold` alone without Depends-on is gate 1 — leave parked; do not treat as Depends-on bug.
+3. Rows correctly skipped with reason `depends-open` are **not** starve - do not file empty-queue / idle+ungated for them.
+4. `hold` alone without Depends-on is gate 1 - leave parked; do not treat as Depends-on bug.
 5. Prefer deterministic script when present: `Invoke-JeevesMonitorCheck.ps1 -Check depends_on` (FR filed with this skill). Until the script lands, use `gh issue view` on offered ids + body parse (ASCII).
 6. CAST IRON point 5: when the Depends-on monitor playbook is proven, FR the durable check into the token-less chair (`tools\monitor\depends_on.py` + wrapper + chair skip stamps) so it runs without an LLM.
 
@@ -68,7 +68,7 @@ After token-free checks, if BOB-D offer skip is deployed (chair stamps `depends-
 | job | depend | depend state | chair action | ok? | evidence | existing issue |
 |---|---|---|---|---|---|---|
 
-- **ok?** — `yes` if skipped while OPEN or offered only when all CLOSED; `no` if offered/accepted while OPEN.
+- **ok?** - `yes` if skipped while OPEN or offered only when all CLOSED; `no` if offered/accepted while OPEN.
 - Empty table with `no Depends-on rows in flight` is valid.
 
 ## Refs
