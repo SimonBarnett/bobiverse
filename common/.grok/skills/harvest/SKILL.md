@@ -333,4 +333,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When stall alerts are non-empty, call Get-BobStallFrIntake and log stall-fr with repo SimonBarnett/bobiverse.
 - Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
-
+- MRB tip behind main: run mrb_merge_gate.py --merge from a current worktree when the assigned tip predates --merge support; do not fail the gate on tip-local usage error
