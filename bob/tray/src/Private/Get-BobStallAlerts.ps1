@@ -1,3 +1,30 @@
+function Get-BobWin32ProcessRows {
+    <#
+      FR #8888: an unfiltered process census can sit past the 45s stall-alerts step.
+      EnumerationOptions.Timeout returns what it has, or nothing.
+    #>
+    param([int]$TimeoutSec = 8)
+    $rows = New-Object System.Collections.Generic.List[object]
+    try {
+        $scope = New-Object System.Management.ManagementScope
+        $query = New-Object System.Management.ObjectQuery 'SELECT ProcessId, Name, CommandLine, ExecutablePath, CreationDate FROM Win32_Process'
+        $opt = New-Object System.Management.EnumerationOptions
+        $opt.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
+        $opt.ReturnImmediately = $false
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+        foreach ($mo in @($searcher.Get())) {
+            $rows.Add([pscustomobject]@{
+                ProcessId      = [int]$mo['ProcessId']
+                Name           = [string]$mo['Name']
+                CommandLine    = [string]$mo['CommandLine']
+                ExecutablePath = [string]$mo['ExecutablePath']
+                CreationDate   = $mo['CreationDate']
+            })
+        }
+    } catch { }
+    return @($rows.ToArray())
+}
+
 function Test-BobJobProcess {
     param(
         [string]$SessionId,
@@ -11,7 +38,7 @@ function Test-BobJobProcess {
         }
         return $false
     }
-    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    $hits = @(Get-BobWin32ProcessRows -TimeoutSec 8 |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $esc })
     return ($hits.Count -gt 0)
 }
@@ -34,7 +61,7 @@ function Get-BobStallAlerts {
     # FR #7998: local watcher and last-seen only. The full health command
     # runs the grok CLI and a bot health call at 30s each and blows the 45s step.
     if ($null -eq $ProcessRows) {
-        $ProcessRows = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        $ProcessRows = @(Get-BobWin32ProcessRows -TimeoutSec 8)
     }
     $lines = New-Object System.Collections.Generic.List[string]
     $watcherUp = $false
