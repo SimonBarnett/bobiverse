@@ -28,19 +28,27 @@ Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- ho
 
 New regressions and step failures → one intake issue each (`feature-request` + `release-blocker`), deduped by test id / error signature.
 
-## IRC (FR #8490 catalog)
+## IRC (FR #8490 / #8770 catalog)
 
 ```
-!build
-!build n [version] [ref] [--tests-only]
-!build tests-only n [version] [ref]
-!build dry-run n [version] [ref]
-!build status n
-!build cancel [n]
-!build preflight n
+!build                               list numbered catalog (name, repo, install, version->next, ref)
+!build help                          usage (two BUILD_USAGE_LINES)
+!build <n> [version] [ref]           build entry n; version default = next patch of latest vX.Y.Z tag; ref default = entry ref or HEAD
+!build tests-only <n> [version] [ref]  suites + pack (+export), no release/install
+!build dry-run <n> [version] [ref]   show plan, start nothing
+!build preflight <n>                 recipe-machine env check (installed recipe; not catalog yml override)
+!build status [n]                    bare = all running builds; n = that entry
+!build cancel <n>                    cancel entry n (bare !build cancel frees all; ops only, FR #6715)
 ```
 
-Ops only (simon / bob-* ears). Bare `!build` lists `builds-catalog.json` (also GET `/bob/v1/builds`). `!build n` runs that entry; version/ref override catalog defaults. `dep` is documentation only. Old `!build owner/repo …` is refused. No recipe → refuse. Same repo already building → refuse with running id.
+Usage reply (single source of truth):
+
+```
+build: !build | !build <n> [version] [ref] | !build tests-only|dry-run <n> [version] [ref]
+build: !build preflight|status|cancel <n> | !build status | !build help  (version default: next patch)
+```
+
+Ops only (simon / bob-* ears). Catalog load is local-first (digest-home `builds-catalog.json`, then chair home; HTTP GET `/bob/v1/builds` only when both empty). List rows stay <= 400 UTF-8 bytes (`yml`/`dep`/`output` appear in dry-run only). `!build n` uses the catalog `yml` path as the recipe (optional `recipe=` on BUILD v1 for non-default paths). Blank version → next patch of latest numeric `vX.Y.Z[.W]` tag; no tags / lookup failure refuse with an explicit version required. `dep` is documentation only. Old `!build owner/repo …` is refused. No recipe → refuse. Same repo already building → refuse with running id.
 
 ## Work packages
 
@@ -54,7 +62,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 
 ### Flow
 
-1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=... id=b-...` on `#bobiverse` (holds `<chair home>/build-locks.json` until terminal result or cancel). For `SimonBarnett/bobiverse`, the chair loads a local `.bobiverse/build.yml` when present; on a packaged install without that folder it falls back to the GitHub recipe at the requested ref (or `main`) (FR #6484). Other repos always use the remote recipe.
+1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=... id=b-...` on `#bobiverse` (holds `<chair home>/build-locks.json` until terminal result or cancel). Non-default catalog `yml` paths add `recipe=<rel>`; the job JSON carries `recipe_rel` for the runner. For `SimonBarnett/bobiverse`, the chair loads a local recipe when present; on a packaged install without that folder it falls back to the GitHub recipe at the requested ref (or `main`) (FR #6484 / #8770). Other repos always use the remote recipe at the catalog path.
 2. Recipe machine (bobiverse: `flamingo`; digest id is `flamingo`, no DIGEST_ID_FOLD alias required) consumes the wire via `consume_build_v1` and enqueues `home/build-queue/*.json` (spawn/pack outside the chair process).
 3. `BuildRunner.run()`:
    - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override download/cache root with env `BOBIVERSE_DOWNLOAD_CACHE`; override BUILD work root with env `BOBIVERSE_BUILD_WORK_DIR` so `run_bobiverse_build.py` uses `$BOBIVERSE_BUILD_WORK_DIR/<version>` when `--work-dir` is absent --- FR #6479).
