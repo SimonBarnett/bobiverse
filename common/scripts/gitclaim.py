@@ -2562,13 +2562,48 @@ def seat_matches_require_machine(nick: str, required: str) -> bool:
         return True
     req = fold_chair_host(req)
     req_mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(req) or req)
-    parsed = bobreport.parse_seat_nick(nick)
-    if not parsed:
+    # FR #8768: use _seat_machine_id so cold digest / missing roster still parses
+    # canonical ``<machine>-<pid>`` nicks (parse_seat_nick alone returns None).
+    seat_mid = _seat_machine_id(nick)
+    if not seat_mid:
         return False
     # FR #8697: fold legacy chair-host seat ids (ionos) before DIGEST_ID_FOLD so
     # ionos-<pid> seats match walrus pins after the #8653 cutover.
-    seat_mid = bobreport.fold_machine_id(fold_chair_host(parsed[0]))
+    seat_mid = bobreport.fold_machine_id(fold_chair_host(seat_mid))
     return bool(seat_mid) and seat_mid == req_mid
+
+
+_REQUIRE_MACHINE_GIVEUP_RE = re.compile(
+    r"(?i)\brequire_machine\s*=\s*([a-z0-9][a-z0-9_.-]*)\b"
+)
+
+
+def parse_require_machine_giveup_reason(reason: str) -> str:
+    """FR #8768: machine id from a honor-path GIVEUP reason, or ''."""
+    m = _REQUIRE_MACHINE_GIVEUP_RE.search(str(reason or ""))
+    if not m:
+        return ""
+    mid = fold_chair_host((m.group(1) or "").strip().lower())
+    mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(mid) or mid)
+    if not mid or mid in _REQUIRE_MACHINE_NON_MACHINE or _is_retired_require_machine(mid):
+        return ""
+    return mid
+
+
+def apply_require_machine_giveup_stamp(row: dict, reason: str) -> str:
+    """FR #8768: stamp require_machine from GIVEUP reason so wrong shops stay gated.
+
+    Returns the stamped machine id, or '' when the reason is not a machine pin.
+    Operator flag survives bobiverse FR #4512 re-infer (same as ops !pin).
+    """
+    if not isinstance(row, dict):
+        return ""
+    mid = parse_require_machine_giveup_reason(reason)
+    if not mid:
+        return ""
+    row["require_machine"] = mid
+    row["require_machine_operator"] = True
+    return mid
 
 
 def row_blocked_for_machine(row: dict, nick: str) -> bool:
@@ -4223,7 +4258,15 @@ def _seat_machine_id(nick: str) -> str:
         c = canonical_worker_nick(nick)
         p = bobreport.parse_seat_nick(c) if c else None
     if not p:
-        return ""
+        # FR #8768: cold digest roster - peel ``<machine>-<pid>`` without parse_seat_nick.
+        c = (canonical_worker_nick(nick) or nick or "").strip().lower()
+        m = re.match(r"^([a-z0-9][a-z0-9_.-]*)-(\d+)$", c)
+        if not m:
+            return ""
+        try:
+            return bobreport.fold_machine_id(m.group(1))
+        except Exception:
+            return m.group(1)
     try:
         return bobreport.fold_machine_id(p[0])
     except Exception:
@@ -7799,8 +7842,10 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     continue
             row = dict(r)
             _stamp_require_machine(row)
-            rm = str(row.get("require_machine") or "").strip()
-            if rm and rm.lower() not in ("*", "any", "none", "-", ""):
+            # FR #8768: gate on row_require_machine (re-infer), not only the stamp
+            # field - bobiverse body pins must block wrong shops in why-empty too.
+            rm = row_require_machine(row)
+            if rm:
                 if not me or row_blocked_for_machine(row, me):
                     req_machine += 1
                     _record_empty_skip(r, "pin")
