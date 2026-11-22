@@ -332,8 +332,13 @@ if ($env:BOB_WEBHOOKS_FAIL_AFTER_BACKUP -eq '1') {
 }
 
 $rollbackPs1 = Join-Path $PhysicalPath 'ROLLBACK-BobWebhooks.ps1'
-if (Test-Path -LiteralPath $webConfig) {
+$webConfigExisted = Test-Path -LiteralPath $webConfig
+if ($webConfigExisted) {
     $raw = Get-Content -LiteralPath $webConfig -Raw -ErrorAction Stop
+} else {
+    # First write must already be the canonical upsert so a second install is a no-op.
+    $raw = $rewriteXml
+}
     # FR #8803: never blanket-replace 127.0.0.1:<port> (that retargeted WsircWebSocket7999 / IrcWebSocket7999).
     $updated = $raw
     if ($updated -notmatch '<rewrite>' -or $updated -notmatch '</rules>') {
@@ -379,33 +384,30 @@ if (Test-Path -LiteralPath $webConfig) {
     }
     $updated = & $normText $updated
     $rawNorm = & $normText $raw
-    if ($updated -eq $rawNorm) {
+    if ($webConfigExisted -and $updated -eq $rawNorm) {
         Write-Host "INFO web.config Bob* rules already current (no write)"
     } else {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $backup = "$webConfig.fr8803.$stamp.bak"
-        Copy-Item -LiteralPath $webConfig -Destination $backup -Force
-        Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $backup -RollbackPath $rollbackPs1
+        if ($webConfigExisted) {
+            Copy-Item -LiteralPath $webConfig -Destination $backup -Force
+        }
         try {
             # Write LF-canonical text; IIS accepts LF in web.config.
             [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
+            if (-not $webConfigExisted) {
+                Copy-Item -LiteralPath $webConfig -Destination $backup -Force
+            }
+            Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $backup -RollbackPath $rollbackPs1
             Write-Host "INFO updated $webConfig (backup $backup; ROLLBACK $rollbackPs1)"
         } catch {
-            if (Test-Path -LiteralPath $backup) {
+            if ($webConfigExisted -and (Test-Path -LiteralPath $backup)) {
                 Copy-Item -LiteralPath $backup -Destination $webConfig -Force
                 Write-Host "WARN FR #8803 rolled back web.config from backup: $($_.Exception.Message)"
             }
             throw
         }
     }
-} else {
-    [IO.File]::WriteAllText($webConfig, $rewriteXml, [Text.UTF8Encoding]::new($false))
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $backup = "$webConfig.fr8803.$stamp.bak"
-    Copy-Item -LiteralPath $webConfig -Destination $backup -Force
-    Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $backup -RollbackPath $rollbackPs1
-    Write-Host "INFO created $webConfig (backup $backup; ROLLBACK $rollbackPs1)"
-}
 
 # Ensure ARR proxy enabled (best-effort; needs appcmd)
 if ($hasAppcmd) {
