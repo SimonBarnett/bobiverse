@@ -188,12 +188,44 @@ def valid_combos_to_clis_public(cat: "ValidCombosCatalog") -> dict[str, Any]:
     return out
 
 
+
+
+def valid_combos_public_doc(cat: "ValidCombosCatalog") -> dict[str, list[dict[str, Any]]]:
+    """FR #8716 / BOB-14: flat allow-list rows (cli -> [{model,contexts,efforts}, ...]).
+
+    GET /bob/v1/models uses `valid_combos_to_clis_public` (FR #8819 nested Si shape).
+    Keep this serializer for Weights clients / tests that still consume the flat list.
+    """
+    if not cat or not cat.available:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cli, rows in (cat.clis or {}).items():
+        key = str(cli or "").strip().lower()
+        if not key:
+            continue
+        packed: list[dict[str, Any]] = []
+        for row in rows or ():
+            packed.append(
+                {
+                    "model": str(row.model or ""),
+                    "contexts": list(row.contexts or ()),
+                    "efforts": list(row.efforts or ()),
+                }
+            )
+        if packed:
+            out[key] = packed
+    return out
+
 def catalog_to_json(
     rows: Iterable[dict[str, str]],
     home: Path | str | None = None,
 ) -> bytes:
     clis_doc: dict[str, Any] | None = None
     if home is not None:
+        try:
+            ensure_valid_combos_seeded(home)
+        except Exception:
+            pass
         clis_doc = valid_combos_to_clis_public(load_valid_combos(home))
     return json.dumps(
         catalog_to_public_doc(rows, clis=clis_doc),
