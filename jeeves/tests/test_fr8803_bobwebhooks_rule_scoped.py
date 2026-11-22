@@ -95,8 +95,12 @@ def test_fr8803_websocket_rules_byte_identical_and_models_added(tmp_path: Path):
     assert marker.read_text(encoding="utf-8") == "do-not-touch\n"
     assert not (site / "site.css").is_file(), "default run must not publish www"
     assert (site / "ROLLBACK-BobWebhooks.ps1").is_file()
-    baks = list(site.glob("web.config.fr8803.*.bak"))
-    assert baks, "web.config backup required"
+    # FR #8887: web.config backup lives under sibling _backup-www-<leaf>, not inside the site.
+    assert not list(site.glob("*.bak")) and not list(site.rglob("*.bak")), (
+        "no *.bak under web root"
+    )
+    bak = site.parent / ("_backup-www-" + site.name) / "web.config"
+    assert bak.is_file(), f"off-root web.config backup required at {bak}"
 
     sha1 = _sha(cfg_path)
     r2 = _run(site)
