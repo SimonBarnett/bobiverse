@@ -1523,7 +1523,7 @@ namespace BobDialogs
             {
                 TrayLifecycle.Write("weights", "via", "bob-tray-Weights");
                 if (weightsForm != null && !weightsForm.IsDisposed) { weightsForm.Activate(); weightsForm.BringToFront(); return; }
-                weightsForm = new WeightsForm();
+                weightsForm = new WeightsForm(root);
                 weightsForm.FormClosed += delegate { weightsForm = null; };
                 weightsForm.Show();
             }
@@ -2341,6 +2341,50 @@ namespace BobDialogs
             {
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
                 return 0;
+            }
+            // FR #8714 / BOB-13: headless Weights GET/PUT against /bob/v1/models (exit before UI).
+            string weightsGetOut = Common.Arg(args, "--weights-get");
+            if (weightsGetOut.Length > 0)
+            {
+                BobModelsResult got = BobModelsClient.Get(root);
+                File.WriteAllText(weightsGetOut, BobModelsClient.ResultToJson(got), new UTF8Encoding(false));
+                TrayLifecycle.Write(
+                    "weights_get",
+                    "host", got != null ? (got.UrlHost ?? "") : "",
+                    "status", got != null ? got.Status.ToString() : "0",
+                    "rows", got != null && got.Rows != null ? got.Rows.Count.ToString() : "0",
+                    "bodyHash", got != null ? (got.BodyHash ?? "") : "",
+                    "ok", got != null && got.Ok ? "1" : "0");
+                return got != null && got.Ok ? 0 : 2;
+            }
+            string weightsSaveIn = Common.Arg(args, "--weights-save");
+            if (weightsSaveIn.Length > 0)
+            {
+                string outPath = Common.Arg(args, "--text-out");
+                if (outPath.Length == 0) outPath = weightsSaveIn + ".result.json";
+                if (!File.Exists(weightsSaveIn))
+                {
+                    File.WriteAllText(outPath, "{\"ok\":false,\"error\":\"missing input\"}", new UTF8Encoding(false));
+                    return 2;
+                }
+                string inText = File.ReadAllText(weightsSaveIn, Encoding.UTF8);
+                if (inText.Length > 0 && inText[0] == '\uFEFF') inText = inText.Substring(1);
+                List<Dictionary<string, string>> rows = BobModelsClient.ParseAgents(inText);
+                BobModelsResult put = BobModelsClient.Save(root, rows);
+                File.WriteAllText(outPath, BobModelsClient.ResultToJson(put), new UTF8Encoding(false));
+                TrayLifecycle.Write(
+                    "weights_save",
+                    "method", put != null ? (put.Method ?? "PUT") : "PUT",
+                    "status", put != null ? put.Status.ToString() : "0",
+                    "bodyHash", put != null ? (put.BodyHash ?? "") : "",
+                    "ok", put != null && put.Ok ? "1" : "0");
+                if (put != null && put.Ok)
+                {
+                    BobModelsResult again = BobModelsClient.Get(root);
+                    bool match = again != null && again.Ok && BobModelsClient.RowsMatch(rows, again.Rows);
+                    TrayLifecycle.Write("weights_reload_match", "match", match ? "true" : "false");
+                }
+                return put != null && put.Ok ? 0 : 2;
             }
             // FR #8719 / BOB-23: headless MarchHare Cursor gate probe (exit before UI).
             string marchhareGateOut = Common.Arg(args, "--check-marchhare-cursor-gate");
