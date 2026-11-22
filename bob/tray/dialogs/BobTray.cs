@@ -970,7 +970,7 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            miPlan.Click += delegate { StartWorker("plan", ""); };
+            miPlan.Click += delegate { StartPlanExe(); };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
@@ -1714,6 +1714,26 @@ namespace BobDialogs
                 if (row != null) rows.Add(row);
             }
             return rows;
+        }
+
+        // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
+        void StartPlanExe()
+        {
+            string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
+            if (!File.Exists(exe)) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.WorkingDirectory = Path.GetDirectoryName(exe);
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("plan", "action", "start exe failed", "error", ex.Message);
+            }
         }
 
         void StartWorker(string mode, string agent)
