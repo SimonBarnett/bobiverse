@@ -2737,7 +2737,7 @@ def list_worker_agents(
             "reason": "Grok, then Cursor, then OpenCode",
         }
     ]
-    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "OpenCode"))
+    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "Open Code"))  # FR #8713 / BOB-06
     installed = {"grok": bool(grok_exe), "cursor": bool(cursor_cmd), "opencode": bool(opencode_cmd)}
     for agent_id, label in labels:
         present = installed[agent_id]
@@ -2779,7 +2779,7 @@ def unknown_agent_list_rows() -> list[dict]:
         },
         {"id": "grok", "label": "Grok", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
         {"id": "cursor", "label": "Cursor", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
-        {"id": "opencode", "label": "OpenCode", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+        {"id": "opencode", "label": "Open Code", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
     ]
 
 
@@ -3611,14 +3611,16 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"FR #7000 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
+        f"FR #7000 / #8785 / #8846 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
         f"`{worker_dir}\\.cursor\\mcp.json` -> mcpServers.skill-dag only: run its `command` with **all** `args` unchanged "
         f"(script is args[0]; keep every `--root` and `--job-worktree-file`), then append "
         f"`--once resolve --seed <job-type token>` (e.g. FR or MRB) and `--once get_skill --path <matched[].path>` "
-        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path; if that "
-        f"mcp.json is missing, report the fallback unavailable. PowerShell: "
-        f"`$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
+        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path. "
+        f"PowerShell: `$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
         f"& $cfg.command @($cfg.args) --once resolve --seed MRB`. Do not invent skill bodies. "
+        f"CAST IRON (FR #8846): a missing or dead skill-dag MCP is never fixed by grepping job skills from disk. "
+        f"If mcp.json is missing, MCP unreachable, and the mcp.json --once CLI also fails, ACK then GIVEUP with reason "
+        f"`skill-dag-mcp-down` (optional diagnostic only on that GIVEUP line). Do not continue the FR/MRB/UAT job. "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -3636,7 +3638,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
-        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. FR #8852: before worktree add, Assert-BobiverseJobWorktreePath on $wt (dot common\\scripts\\Bobiverse-Common.ps1, never common\\Bobiverse-Common.ps1); refuse empty/relative paths that would create <install>\\origin\\main. "
         f"FR #8022: open-PR MRB/FIX worktrees must start at gh pr view headRefOid (verify git rev-parse HEAD); never base an open MRB review tree on origin/main. Quote that SHA on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         f"Windows PowerShell 5.1 only (FR #6341): use Get-ChildItem -Depth (not -MaxDepth); use Select-String. Do not run Unix grep or head. Job worktrees: use $env:BOB_JOB_WORKTREE_BASE (and $env:BOB_JOB_WORKTREE when set); never search drives for ai\\worktrees. "
         f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
@@ -3840,6 +3842,8 @@ def rules_text(folder: str, kind: str) -> str:
         skill_line = (
             f"Read {folder}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
             f"(do not read every skill in {folder}\\.grok\\skills). "
+            f"FR #8846: if skill-dag MCP and the mcp.json --once CLI both fail, GIVEUP skill-dag-mcp-down — "
+            f"never continue FR/MRB/UAT by reading job skills from disk. "
         )
     return (f"{head}{skill_line}"
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "

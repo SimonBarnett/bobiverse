@@ -40,6 +40,10 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 - A FIX row (ci-fail / conflict / dirty fold) also covers the PR — it is being handled, not stranded.
 - Shared classification: `common/scripts/gitclaim.py` `open_pr_expects_mrb_or_fix_row` / `list_open_prs_missing_mrb` (drafts, intake harvest receipts, stacked `fix(mrb-N)` tips, `docs/mrb-*` pins and lesson-of-lesson tips are ignored). A `fix(mrb-N)` on `main`/`master` is expected MRB work (FR #8475); the higher-numbered twin of an open parent is not.
 
+## depends_on (FR #8848)
+
+`Test-JeevesMonitorDependsOn.ps1` / `tools/monitor/depends_on.py` exits 1 when an offered or accepted queue row has a `Depends-on:` ref that is still OPEN in the local queue (chair missed BOB-D3). A skipped row (`status=skipped`, `depends_skipped`, or `skip_reason`) exits 0. No Depends-on rows is a soft-ok. Live runs without `--chair-home` stay soft-ok until `common/scripts/depends_on_parse.py` exists or `gitclaim.py` contains `bob_d3_skip_open`. No GitHub token. Distinct from the hold label and from `fr_digest`.
+
 ## fr_digest (FR #8849)
 
 `Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that still has both labels `fr-digest` and `hold` (chair missed BOB-G1). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
@@ -52,6 +56,12 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 - Ops: write digest-home `resync-repos.txt` with focused full names and run `!resync` (or wait for the 15m cycle after Sync/compose).
 - FR #4725: install and chair start seed/merge `DEFAULT_RESYNC_REPOS` into chair + digest `resync-repos.txt` (includes `SimonBarnett/ce-priority`). Pack copy: `jeeves/defaults/resync-repos.txt`.
 - Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
+
+## Composed drive-root monitor scripts (FR #8860)
+
+A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when that script sits beside it. Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
+
+Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves`.
 
 ## empty-offer playbook (FR #2448 / #2446)
 
