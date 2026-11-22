@@ -9,6 +9,8 @@ import jeeves_settings_http as http
 from repo_layout import REPO
 
 WWW = REPO / "jeeves" / "www" / "irc-ntsa"
+# Meta-refresh stubs (digest→report; no models/validate) keep bookmarks; no site chrome.
+STUB_REDIRECT_HTML = frozenset({"digest-local.html", "models-validate.html"})
 LOGO_SRC_RE = re.compile(
     r'src=["\']([^"\']*ntsa-gut-logo\.png)["\']', re.IGNORECASE
 )
@@ -23,7 +25,9 @@ LETTER_MARK_RE = re.compile(
 
 def _served_html_files() -> list[Path]:
     """Every served static HTML under irc-ntsa (FR #7453 / #7478; no site-header filter)."""
-    return sorted(WWW.rglob("*.html"))
+    return sorted(
+        p for p in WWW.rglob("*.html") if p.name not in STUB_REDIRECT_HTML
+    )
 
 
 def test_fr7453_site_chrome_pages_use_logo_inside_home_anchor():

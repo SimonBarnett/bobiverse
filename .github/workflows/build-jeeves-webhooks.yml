@@ -15,6 +15,9 @@ on:
       - jeeves/tests/test_fr7465_webhooks_ci.py
       - jeeves/tests/test_fr7460_webconfig_staticcontent.py
       - jeeves/tests/test_fr7517_webhooks_kit_assets.py
+      - jeeves/tests/test_fr8887_webroot_backups.py
+      - jeeves/scripts/Stamp-PriorityAgentDownloads.ps1
+      - jeeves/scripts/Install-Jeeves.ps1
   push:
     branches: [main]
     paths:
@@ -28,6 +31,9 @@ on:
       - jeeves/tests/test_fr7465_webhooks_ci.py
       - jeeves/tests/test_fr7460_webconfig_staticcontent.py
       - jeeves/tests/test_fr7517_webhooks_kit_assets.py
+      - jeeves/tests/test_fr8887_webroot_backups.py
+      - jeeves/scripts/Stamp-PriorityAgentDownloads.ps1
+      - jeeves/scripts/Install-Jeeves.ps1
 
 permissions:
   contents: read
@@ -52,7 +58,7 @@ jobs:
         run: |
           python -m pip install -q pytest
           $env:PYTHONPATH = "jeeves/scripts;common/scripts;common/tests"
-          python -m pytest -q -p no:cacheprovider jeeves/tests/test_fr7517_webhooks_kit_assets.py
+          python -m pytest -q -p no:cacheprovider jeeves/tests/test_fr7517_webhooks_kit_assets.py jeeves/tests/test_fr8887_webroot_backups.py
           if ($LASTEXITCODE -ne 0) { throw "pytest exit $LASTEXITCODE" }
 
       - name: Check site kit and write the versioned artifact
