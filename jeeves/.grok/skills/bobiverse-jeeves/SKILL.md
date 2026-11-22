@@ -121,7 +121,8 @@ Do this on **walrus** (not ionos).
 
 ## Harvested lessons (intake)
 
-- **FR #8835:** every `/bob/v1/*` BobCallback route (plus local health/digest and outbound stall/wake) needs a home Webhooks & API card, a `docs/webhooks/*.html` page, and a hub index row. Registry `common/scripts/bob_webhook_docs.py`; inventory `bob_route_inventory.py`; CI `test_fr8835_webhook_docs_route_coverage.py`. Coming ops use `DocEntry.status="coming"`. Publish HTML with static copy of `jeeves/www/irc-ntsa/**` excluding `web.config` --- never re-run `Install-BobWebhooks.ps1` for content-only (#8803).
+- **FR #8835:** every `/bob/v1/*` BobCallback route (plus local health/digest and outbound stall/wake) needs a home Webhooks & API card, a `docs/webhooks/*.html` page, and a hub index row. Registry `common/scripts/bob_webhook_docs.py`; inventory `bob_route_inventory.py`; CI `test_fr8835_webhook_docs_route_coverage.py`. Coming ops use `DocEntry.status="coming"`. Publish HTML with static copy of `jeeves/www/irc-ntsa/**` excluding `web.config`, `*.bak`, and `_backup-*` --- never re-run `Install-BobWebhooks.ps1` for content-only (#8803).
+- **FR #8887:** Install-BobWebhooks backups go under `-BackupRoot\_backup-www-<leaf>` (Install-Jeeves passes install root). Shipped web.config denies `.bak` / `_backup-` / `.bak/`. Never leave publish backups inside the IIS web root.
 
 - **FR #7334 / #7338:** when an offerable MRB stays `no_eligible_reviewer` for >5 minutes, `chair_health` stall-heal calls `maybe_recycle_stuck_no_eligible_reviewer` to `!recycleseat` the idle author with the fewest commits (counts from GitHub via `author_commit_counts`), posts one `#bobiverse` notice, and restarts `no_eligible_since` so the next scan does not recycle another author. Busy seats are never recycled; a fresh nick is not an author.
 

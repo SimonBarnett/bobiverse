@@ -25,6 +25,63 @@ using System.Windows.Forms;
 
 namespace BobDialogs
 {
+    // FR #8719 / BOB-23: MarchHare Cursor tokens from fleet-cursor-private.json (si@ntsa.uk).
+    // Never Get-BobTrayCursorFuelRemaining / local Spending — fail-when is "gates on local box only".
+    internal static class MarchHareCursorGate
+    {
+        public const string PrivateFileName = "fleet-cursor-private.json";
+
+        public static bool IsExhausted(string installRoot)
+        {
+            string[] roots = CandidateRoots(installRoot);
+            for (int i = 0; i < roots.Length; i++)
+            {
+                string root = roots[i];
+                if (string.IsNullOrEmpty(root)) continue;
+                string path = Path.Combine(root, PrivateFileName);
+                if (!File.Exists(path)) continue;
+                try
+                {
+                    string text = File.ReadAllText(path, Encoding.UTF8);
+                    if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1);
+                    Dictionary<string, object> doc = Common.Dict(Common.ParseJson(text));
+                    if (doc == null) continue;
+                    if (!Common.Bool(doc, "fresh")) continue;
+                    if (!doc.ContainsKey("remaining") || doc["remaining"] == null) continue;
+                    int rem = Common.Int(doc, "remaining", -1);
+                    if (rem < 0) continue;
+                    return rem <= 0;
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        public static string DumpStatusJson(string installRoot)
+        {
+            bool exhausted = IsExhausted(installRoot);
+            Dictionary<string, object> doc = new Dictionary<string, object>();
+            doc["ok"] = true;
+            doc["exhausted"] = exhausted;
+            doc["gate"] = "marchhare-cursor";
+            doc["source"] = PrivateFileName;
+            return new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(doc);
+        }
+
+        static string[] CandidateRoots(string installRoot)
+        {
+            string digest = (Environment.GetEnvironmentVariable("BOB_DIGEST_HOME") ?? "").Trim();
+            string home = (Environment.GetEnvironmentVariable("BOB_HOME") ?? "").Trim();
+            string root = installRoot ?? "";
+            return new string[] {
+                root,
+                digest,
+                home,
+                root.Length > 0 ? Path.Combine(root, "home") : ""
+            };
+        }
+    }
+
     internal static class WorkerLauncher
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -893,7 +950,7 @@ namespace BobDialogs
         string lastEngineExitCode = "";
         DateTime lastDigestFetchFailReportUtc = DateTime.MinValue; // FR #7580: one CrashHook per failure window
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
-        StatusForm statusForm; AboutForm aboutForm;
+        StatusForm statusForm; AboutForm aboutForm; WeightsForm weightsForm;
         public readonly List<string> MenuItems = new List<string>();
         public string ExitReason { get { return exitReason ?? ""; } }
 
@@ -1456,17 +1513,16 @@ namespace BobDialogs
             catch { }
         }
 
-        // FR #8713 / BOB-06: Weights menu entry (full form is BOB-12/13); keep click path alive.
+        // FR #8715 / BOB-12: Weights grid form (modeless; BOB-13 binds webhook).
         void ShowWeights()
         {
             try
             {
                 TrayLifecycle.Write("weights", "via", "bob-tray-Weights");
-                MessageBox.Show(
-                    "Weights binds to the models webhook in later BOB slices (BOB-12/13).",
-                    "Bob — Weights",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                if (weightsForm != null && !weightsForm.IsDisposed) { weightsForm.Activate(); weightsForm.BringToFront(); return; }
+                weightsForm = new WeightsForm();
+                weightsForm.FormClosed += delegate { weightsForm = null; };
+                weightsForm.Show();
             }
             catch { }
         }
@@ -1666,6 +1722,23 @@ namespace BobDialogs
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
+            // FR #8719 / BOB-23: Workers > Cursor — MarchHare fleet meter gate (not local box fuel).
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase)
+                && string.Equals((agent ?? "").Trim(), "cursor", StringComparison.OrdinalIgnoreCase)
+                && MarchHareCursorGate.IsExhausted(root))
+            {
+                try
+                {
+                    MessageBox.Show(
+                        "MarchHare has no Cursor tokens remaining.\r\nNot starting a Cursor seat (fleet si@ntsa.uk meter).",
+                        "Bobiverse — MarchHare Cursor tokens",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                catch { }
+                TrayLifecycle.Write("marchhare-cursor-gate", "remaining", "0", "action", "dialog-quit");
+                return;
+            }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
             int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err);
             if (pid == 0 && err.Length > 0)
@@ -1796,6 +1869,7 @@ namespace BobDialogs
         {
             try { if (statusForm != null && !statusForm.IsDisposed) statusForm.Close(); } catch { }
             try { if (aboutForm != null && !aboutForm.IsDisposed) aboutForm.Close(); } catch { }
+            try { if (weightsForm != null && !weightsForm.IsDisposed) weightsForm.Close(); } catch { }
         }
 
         // Exit order unchanged (t798u): dialogs + icon go first, then the ircBob stop (detached, never waited for), then the engine is asked to leave.
@@ -2177,6 +2251,21 @@ namespace BobDialogs
             }
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
+            // FR #8715 / BOB-12: exit-before-UI column dump for S1 tests.
+            string dumpWeightsCols = Common.Arg(args, "--dump-weights-columns");
+            if (dumpWeightsCols.Length > 0)
+            {
+                File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
+                return 0;
+            }
+            // FR #8719 / BOB-23: headless MarchHare Cursor gate probe (exit before UI).
+            string marchhareGateOut = Common.Arg(args, "--check-marchhare-cursor-gate");
+            if (marchhareGateOut.Length > 0)
+            {
+                bool exhausted = MarchHareCursorGate.IsExhausted(root);
+                File.WriteAllText(marchhareGateOut, MarchHareCursorGate.DumpStatusJson(root), new UTF8Encoding(false));
+                return exhausted ? 2 : 0;
+            }
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.
             if (!timing && dumpMenu.Length == 0 && !Common.Single(Common.TrayMutexKey(root), ""))
             {
