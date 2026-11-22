@@ -79,6 +79,7 @@ def test_fr7442_install_publishes_favicon_and_mime(tmp_path: Path):
         "http://127.0.0.1:7700",
         "-WwwSource",
         str(www),
+        "-PublishWww",
     ]
     r = subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
     assert r.returncode == 0, r.stdout + "\n" + r.stderr

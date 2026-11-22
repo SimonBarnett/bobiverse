@@ -524,6 +524,23 @@ foreach ($m in $mirror) {
     & robocopy.exe @roboArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok{1}" -f $m.Dst, $xoNote) }
 }
+# FR #8860: tools\monitor on a composed install (including drive-root J:\) stayed
+# stale after #8585 because jeeves tools\ robocopy keeps /XO (MRB #6162) and git
+# mtimes are older than the flat copy. Force-copy monitor scripts from tip.
+# The rest of tools\ stays /XO.
+if ($Product -eq 'jeeves') {
+    $monFrom = Get-BobiverseRepoPath -Root $clone -Rel 'tools\monitor'
+    $monDst = Join-Path $InstallRoot 'tools\monitor'
+    if (Test-Path -LiteralPath $monFrom -PathType Container) {
+        New-Item -ItemType Directory -Force -Path $monDst | Out-Null
+        $nMon = 0
+        foreach ($mf in @(Get-ChildItem -LiteralPath $monFrom -File)) {
+            Copy-Item -LiteralPath $mf.FullName -Destination (Join-Path $monDst $mf.Name) -Force
+            $nMon++
+        }
+        Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
+    }
+}
 
 # t828u: compile the Acknowledge/Status dialog exes into <install>\tools when missing or older than their sources (csc.exe is in-box on Windows;
 # a running dialog is replaced by rename). Failure only warns: the tray then uses its PowerShell dialogs.

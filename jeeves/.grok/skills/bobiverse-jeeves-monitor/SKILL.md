@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves-monitor
 description: >
-  MONITORING agent for the deterministic Jeeves chair at <ai root>\jeeves: keep work flowing to workers, watch queue/digest/IRC/webhooks, report delays via intake (de-duped). Never act as chair. Use when CWD is jeeves, idle seats, empty queue, GIVEUP loops, stale digest, or /bobiverse-jeeves-monitor.
+  MONITORING agent for the deterministic Jeeves chair at <ai root>\jeeves: keep work flowing to workers, watch queue/digest/IRC/webhooks, report delays via intake (de-duped). May run Jeeves commands to keep the queue moving (FR #8827); never touch Ergo/merge/UAT/VERSION. Use when CWD is jeeves, idle seats, empty queue, GIVEUP loops, stale digest, or /bobiverse-jeeves-monitor.
 ---
 
 # bobiverse-jeeves-monitor
@@ -10,7 +10,7 @@ description: >
 
 One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
 
-**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service. You are **not the chair** and **not a worker**. Report anything that delays workers promptly via intake, de-duplicated against open issues: idle seat, empty offer queue, NAK/wait gates, GIVEUP loops, stale digest, open issues not offered/queued, self-review (pairing) blocks, stuck accepted rows, Jeeves/IRC/webhooks down.
+**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service. You are **not the chair** and **not a worker**. Report anything that delays workers promptly via intake, de-duplicated against open issues: idle seat, empty offer queue, NAK/wait gates, GIVEUP loops, stale digest, open issues not offered/queued, self-review (pairing) blocks, stuck accepted rows, Jeeves/IRC/webhooks down. **FR #8827:** you may run Jeeves commands (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / …) **to keep the queue moving**; still never touch Ergo, never merge/UAT/VERSION, never invent secrets.
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
@@ -23,6 +23,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
+>    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
+>    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -30,16 +33,33 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 
 | You do | You never do |
 |---|---|
-| Watch health, queue, seats, digest, webhooks | Act as chair (`!assign`, `!focus`, `!ignore`, queue edits) |
-| File / comment intake FRs (de-dup first) | Touch Ergo / `ircd.yaml` / BobIrcd |
+| Watch health, queue, seats, digest, webhooks | Touch Ergo / `ircd.yaml` / BobIrcd |
+| File / comment intake FRs (de-dup first) | Merge PRs, stamp UAT, bump VERSION |
 | Harvest at end of session **and after every finding** (self-harvest) | Print or commit secrets |
-| Run token-free `Test-JeevesMonitor*.ps1` / `tools\monitor\` first | Speak as Jeeves or claim shop jobs as a worker |
+| Run token-free `Test-JeevesMonitor*.ps1` / `tools\monitor\` first | Speak *as* Jeeves or claim shop jobs as a worker |
+| **Keep the queue moving** with Jeeves commands when ops unblock is needed (FR #8827) | Silent hand-edits of `queue.json` |
 | Point operators at `!status` / logs | Soften exit-1 findings without filing |
+
+## Keep-queue-moving playbook (FR #8827)
+
+Prefer **de-duped intake** when a product bug is the root. Use chair commands for **operational unblock** only.
+
+| Symptom | Command | When |
+|---|---|---|
+| Held FRs already accepted on a seat (label `hold` mid-flight) | `!ignore owner/repo` (or wait for seat GIVEUP) | Monitor applied hold but seat already ACK'd; stop further offers from that repo until clear |
+| Stuck / silent accepted rows | `!stuck` then `!sweep` / shop recycle cues | Redqueen hang, out_of_fuel zombies; free capacity after confirming seat is dead |
+| Offer flow starved under strict focus | `!focus` / `!unfocus` / `!focus strict off` | Only to restore offer flow; prefer repo-level focus |
+| Idle seats + ungated work and auto-feed cannot hand out | `!assign <seat> owner/repo FR\|MRB\|UAT\|FIX N` | Last resort after `queue_flow` / idle_seats show true starve |
+| Give-up stamps blocking re-offer | `!cleargiveup owner/repo#N [seat]` | After confirming not a GIVEUP loop (do not clear-and-reloop) |
+| Machine pin wrong | `!pin` / `!unpin` | Ops pin only; prefer intake if cue inference is wrong |
+
+**Auth:** nick `monitoring` (default `JEEVES_MONITOR_NICKS`) or services account in `JEEVES_MONITOR_ACCOUNTS`, or **ear relay** (append `PRIVMSG #bobiverse :!<cmd>` to `bob-<machine>` outbox). Details without secrets: `docs/monitoring.md`, `docs/jeeves-commands.md`. Tray intervene UI is BOB-43 (#8681).
 
 ## Prefer token-free scripts (t865u)
 
-Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorOpencodeSeats`, `Test-JeevesMonitorSkillPromoteBacklog`, `Test-JeevesMonitorIntakeAllowlist`, `Test-JeevesMonitorGithubResyncFocus`, `Test-JeevesMonitorOpenPrStaleBase`, `Test-JeevesMonitorOpenPrMrbMissing`, `Test-JeevesMonitorTicketClosure` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1729 / FR #3117 / FR #3146 / FR #8333 / FR #8377 / FR #6063 / FR #8583). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
+Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorOpencodeSeats`, `Test-JeevesMonitorSkillPromoteBacklog`, `Test-JeevesMonitorIntakeAllowlist`, `Test-JeevesMonitorGithubResyncFocus`, `Test-JeevesMonitorOpenPrStaleBase`, `Test-JeevesMonitorOpenPrMrbMissing`, `Test-JeevesMonitorTicketClosure`, `Test-JeevesMonitorDependsOn` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1729 / FR #3117 / FR #3146 / FR #8333 / FR #8377 / FR #6063 / FR #8583 / FR #8848). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). When a monitor playbook is proven, promote it into the token-less chair the same way: FR + PR into `jeeves.exe` / `common/scripts` / `jeeves/checks` so the learning survives without a monitoring LLM. Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
 **OpenCode seats (FR #8583):** `opencode_seats` probes live `GET /bob/v1/report` for flamingo `kind=opencode` (stuck age, model_mismatch, week-exhausted while busy). Local digest `seats_stuck_doing` alone misses remote OpenCode. Report only (harvest #1967).
+**Stream heartbeats (FR #8795 / #8796):** `seats_stuck_doing` (and `opencode_seats`) age on `accepted_ts` / `doing_ts` / `offered_ts` only — never `last_progress`, `updated`, `state_ts`, or `ts`. Fresh stream heartbeats are not substantive progress. Doing + accept age >15m + no ACK/DONE/GIVEUP → `stream_heartbeat_no_wire` / `aged_no_wire`; doing + accept age >15m + ACK but no DONE → `stream_heartbeat_no_substantive` / `heartbeat_no_done` / `accepted_no_done`. Report only (harvest #1967); recycle/GIVEUP is chair/ops.
 **Skill promote backlog (FR #1729):** after #1682 offer-all, `skill_promote_backlog` reports `open_skill_without_promote_pr` when open skill/harvest receipts exceed `BOB_SKILL_PROMOTE_THRESHOLD` (default 15) with no open `harvest/*` promote PR and no queued skill FR. Needs `GH_TOKEN`/`GITHUB_TOKEN` on the monitor host for the GitHub count (queue-only without token). Live chair verify is **walrus** (ionos deprecated).
 **Intake allowlist (FR #3117):** `intake_allowlist` POSTs do-not-file probes for each required `DEFAULT_ALLOW_REPOS` entry (a-search, trutex, …). HTTP 403 `repo_not_allowed` is EXIT 1 — Sync/compose ircJeeves on **walrus** after allowlist PRs.
 
@@ -51,13 +71,24 @@ Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2**
 
 **Ticket closure (FR #6063 / #6064 / #6069 / #6081 / #6391 / #6400 / #6405):** `ticket_closure` reports newly closed issues / merged PRs / unmerged closed PRs on focused repos (`closed[]`). Event-first (FR #6405): BobCallback GIT webhooks call `ingest_github_webhook`; ChairJobs poll backup every `TICKET_CLOSURE_S` default 900s when `JEEVES_TICKET_CLOSURE_FIXTURE` is unset (per-repo `poll_cursors` + pagination, FR #6400). Fixture is tests-only. De-dupe state is `monitor-ticket-closure.json` (`seen` / `pending` / per-repo `poll_cursors` + legacy `poll_cursor` / `last_poll_at` / `last_wake_at` / `pending_count` / `ticket_closure_token_source`). Preferred wake: HTTPS POST to `JEEVES_TICKET_CLOSURE_WAKE_URL` (secret never logged); transport failure stays `pending` with backoff. Legacy `JEEVES_TICKET_CLOSURE_WAKE=1` without URL still uses `wake_bob` / GrokBotApi. Optional Phase-2 wait registry: `ticket-closure-waiting.json`. Never writes queue.json, never `!assign`.
 
+## Depends-on + fr-digest go-gates (BOB-D* / BOB-G*)
+
+Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `Depends-on: #N` all CLOSED, (3) `fr-digest` hold/unhold-releases + CI open-children.
+
+| Skill | When |
+|---|---|
+| `bobiverse-jeeves-agent-depends-on` | Every monitor cycle **once BOB-D offer skip is on tip** (D1/D3+); until then load on demand only |
+| `bobiverse-jeeves-agent-fr-digest` | Every cycle **after** depends-on once BOB-G1 is on tip; until then on demand only |
+
+Token-free checks (when landed): `depends_on`, `fr_digest` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies.
+
 ## Auto-start (FR #954)
 
 On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md first-turn rule). Do not wait for a human prompt. Skills are under `.grok\skills` only (no top-level `.\skills`). The Start Menu shortcut / `monitor_prompt` tells the agent to run `monitor-start` now.
 
 ## Self-harvest loop (t865u)
 
-After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest - do not keep private notes.
+After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest - do not keep private notes. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
 
 ## Architecture (chair is deterministic)
 
@@ -92,7 +123,7 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 ## Digest + worker status
 
-`GET https://bob.ntsa.uk/bob/v1/report` (and local digest home): machine online/lastSeen, workers idle/offered/doing, `working_on`, queue counts. Stale digest / missing worker rows / START tiles stuck -> intake FR after de-dup. **FR #8384:** `stuck_accepted` also EXIT 1 when `accepted>0` and every live shop seat still has empty `working_on`/`work` after 600s. Report only. Do not `clear_seat_doing` and do not act as chair.
+`GET https://bob.ntsa.uk/bob/v1/report` (and local digest home): machine online/lastSeen, workers idle/offered/doing, `working_on`, queue counts. Stale digest / missing worker rows / START tiles stuck -> intake FR after de-dup. **FR #8384:** `stuck_accepted` also EXIT 1 when `accepted>0` and every live shop seat still has empty `working_on`/`work` after 600s. Report only by default; do not `clear_seat_doing`. Keep-queue-moving commands allowed per FR #8827 playbook.
 
 ## IRC direction rules
 
@@ -101,11 +132,11 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 | Chair | `Jeeves` | every ChanServ-registered channel (FR #3836: `#bobiverse`, shops, `#wonderland`, …; silent outside fleet/shop paths) |
 | Ear | `bob-<machine>` | own shop + `#bobiverse` (+ `#wonderland` when that FR is live) |
 | Worker | `<machine>-<pid>` | own `#{machine}` only - never `#bobiverse` |
-| Monitor (you) | session | intake only; do not drive assigns |
+| Monitor (you) | session / `monitoring` / ear relay | intake + keep-queue-moving commands (FR #8827) |
 
-- **MRB enqueue when resync blocked (harvest #1927 / product #1811 → #1993):** when `git-claim.lock` / token 403 drops issue+PR queue events while `gh pr list` still works, operator/chair remediation is `enqueue_unaccepted` per open PR plus `clear_seat_doing` for stale busy. Monitor reports only; prefer fixing the lock/token root.
+- **MRB enqueue when resync blocked (harvest #1927 / product #1811 → #1993):** when `git-claim.lock` / token 403 drops issue+PR queue events while `gh pr list` still works, operator/chair remediation is `enqueue_unaccepted` per open PR plus `clear_seat_doing` for stale busy. Monitor may `!assign` / ear-relay when keep-queue-moving requires it; prefer fixing the lock/token root via intake.
 
-## Reporting (intake only)
+## Reporting (intake first; commands for unblock)
 
 1. Search open issues for the same gap; comment if found.
 2. Else `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name> -Kind fr|issue -Title "..." -Body "what / where / evidence / fix"`.
@@ -113,10 +144,11 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 ## Do not
 
-- `!assign` / `!focus` / mutate queue as the agent
 - Restart BobIrcd or edit Ergo to "fix" chair problems
-- Stamp UAT, invent Ergo PASS, print secrets
+- Stamp UAT, bump VERSION, merge PRs, invent Ergo PASS, print secrets
+- Silent hand-edits of `queue.json`
 - `clear_seat_doing` on working seats (keep seats busy; harvest #1967) — report findings; force-orphan only when accepted empty
+- Use `!assign` / `!focus` / `!ignore` for product ownership or preference — only to **keep the queue moving**
 
 ## Chair home vs digest home (FR #1043 / walrus)
 
@@ -127,10 +159,10 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - **FR #7182:** digest-idle ready seats get offers in one `offer_to_idle_seats` tick without a prior nothing-queued note; `summarize_empty_offer` logs per-job skips (PR #7210).
 - Resolve queue/focus per file: live `queue.json`, `focus.json`, and digest state may live under `BOB_DIGEST_HOME`, not the default chair home. Handle both list and dict-shaped `focus.repos`; an empty strict focus must be a finding when unaccepted work exists.
 - `idle_seats` must count rows offerable to at least one live seat, using the same needs-human, cooldown, ledger, and machine-pin gates as `offer_focus_top`; raw unaccepted count alone creates false alarms.
-- **Post-DONE harvest_hold is not starve (harvest #1665 / FR #1611):** after `DONE`/`NACK`/`GIVEUP`, BoredEmitter holds `!bored` for `harvest_hold_s` (default **90s**, extends on outbox). `idle_seats` + ungated offerable during that window is expected - do **not** file chair-host `idle+ungated` / true-starve intake. Expect `bored: harvest hold` in `worker.log`, then `!bored`. Suppress orphan-only / historical giveup done[] / harvest_hold / queue_flow-when-idle_seats-ok noise (FR #1622/#1625/#1652). Never `!assign`.
+- **Post-DONE harvest_hold is not starve (harvest #1665 / FR #1611):** after `DONE`/`NACK`/`GIVEUP`, BoredEmitter holds `!bored` for `harvest_hold_s` (default **90s**, extends on outbox). `idle_seats` + ungated offerable during that window is expected - do **not** file chair-host `idle+ungated` / true-starve intake. Expect `bored: harvest hold` in `worker.log`, then `!bored`. Suppress orphan-only / historical giveup done[] / harvest_hold / queue_flow-when-idle_seats-ok noise (FR #1622/#1625/#1652). Do not `!assign` during harvest_hold — wait for BoredEmitter.
 - **CAST IRON needs-mrb1 ban (harvest #1717 / FR #1526):** never recreate or stamp `needs-mrb1`/`mrb1`. `needs-human` is the real human gate. Queue cache may still show the string until resync - treat as inert (`row_awaits_mrb1` always false).
 - **FR #1625 / #1652 false starve:** rows with non-empty `offered_to` still inside `OFFER_TIMEOUT_S` (awaiting ACK) are **not** starve-offerable. Idle seat math uses shop-form `{machine}-{pid}` only (`collect_idle_shop_seats` / `is_starve_idle_nick`): drop `w-mh-*` / `w-io-*` ghosts and `bob-*` ears, and dedupe by canonical nick when digest lists the same seat in `workers` and `worker_list`. `queue_flow` must pass **idle** shop nicks only into `count_offerable_for_live_seats` (never busy/doing); otherwise ungated work offerable to a busy seat plus orphan `w-mh-*` idle_seat_count yields false "true starve". Payload alias: `offerable_for_idle_seats`.
-- **"Chair not assigning" / large open GitHub counts (harvest #1581 / #1483):** do **not** treat raw open-issue or open-PR totals as proof the chair is stuck. Most of that backlog is often skill/harvest honesty-box (and `needs-human` / boards). Diagnose in order: (1) `queue_flow` / `ungated_offerable` (and `offerable_for_idle_seats`), (2) whether shop seats are posting `!bored` (idle seats without `!bored` will not get offers - including harvest_hold / BoredEmitter holds), (3) focus/ignore/machine-pin gates, (4) only then chair/outbox faults. Monitor still must not `!assign`.
+- **"Chair not assigning" / large open GitHub counts (harvest #1581 / #1483):** do **not** treat raw open-issue or open-PR totals as proof the chair is stuck. Most of that backlog is often skill/harvest honesty-box (and `needs-human` / boards). Diagnose in order: (1) `queue_flow` / `ungated_offerable` (and `offerable_for_idle_seats`), (2) whether shop seats are posting `!bored` (idle seats without `!bored` will not get offers - including harvest_hold / BoredEmitter holds), (3) focus/ignore/machine-pin gates, (4) only then chair/outbox faults. Use `!assign` only after that diagnosis shows true starve (FR #8827 playbook).
 - **Hand-out empty / `nothing queued` under focus (harvest #2243 / #2285 / #2309):** when shop hand-out / `!bored` is empty or Jeeves replies `nothing queued` while many unaccepted GitHub FRs exist, first count **focus-repo** unaccepted MRB/FR rows, then count how many of those are **offerable to live seats** after `require_machine` / author-seat / needs-human / **self-MRB** / **same-machine `review_blocked`** / **`seat-ledger.json` giveup** gates. File can be full (e.g. 41 unaccepted) while only ~1–2 rows offer to the live shop — that is expected under strict focus + pins, not an empty queue bug. Outside-focus ungated rows do **not** offer under strict focus. Per idle nick, simulate `offer_focus_top` (or read `git-claim bored empty|offered` in `logs\stdout.log`) before filing chair-broken. Operator/chair remediation (monitor reports only): re-enqueue open PRs as MRB into the focused queue; expand focus / `!focus strict off` for OOF backlog; clear digest busy **only** for seats whose PR already merged and that are **not** in `queue.accepted` (CAST IRON keep seats busy #1967). Never treat outside-focus ungated totals or raw unaccepted counts as proof the chair is stuck.
 - **Row giveup vs durable ledger (harvest #2309 / #2314):** clearing `needs_human` / `giveup_seats` / `cooldown_until` on the queue row is **not** enough — `ledger_blocks` still reads `~\.bobiverse\seat-ledger.json` `giveup` keys (`owner/repo#N` → seat → roles). To re-feed a starved seat once, clear **both** the row stamps and that seat's ledger giveup entry. **Do not** re-clear after an immediate `ACK` then `GIVEUP` — that restarts the GIVEUP loop; leave the ledger stamp and file/comment the loop instead.
 - **Same-machine MRB + sticky no-ACK (harvest #2309):** `review_blocked_for_author` blocks sibling seats on the **same machine** as `implementer_seat` when another live machine exists. A sticky `offered_to` rebroadcast (`OFFER_TIMEOUT_S` refresh) with **no ACK** on that other machine strands the MRB cascade; report the non-ACK seat (recycle/inject) rather than clearing working seats or forcing self-MRB.
@@ -139,9 +171,10 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - **Skill-offer flood after FR #1682 (harvest #1705/#1706):** large `ungated_offerable` / `idle_seats` EXIT 1 while shop seats are idle is **expected** until consolidate-by-book promote PRs land — do not file a new true-starve FR for skill backlog alone. Still subtract orphan `w-mh-*` / `w-io-*` before calling starve (FR #1625). BobCallback: curl timeout with LISTEN up → re-probe; if report returns 200, leave the single supervised owner alone (never kill Wait-Process parent).
 - **BobCallback single-owner heal (harvest #1568 / FR #1767 / #1831):** on HTTP 000 count supervised parents first — if ≥1, do not Start-Process another. Prefer `schtasks /Run /TN BobCallback` when the task exists; only Start-Process supervised when the task is missing. `Start-BobCallbackSupervised` refuses a second parent (exit 0). Never stack task + second supervised; Stop-ScheduledTask first when task is Running with no listener. Exclude current `$PID` when pruning duplicate supervised. Never kill the supervised `Wait-Process` parent (kills `:7700` child). `health` treats Ready/Running without LISTEN as a finding. Full table: `bobiverse-jeeves-troubleshooting` BobCallback heal.
 - `digest.lock` owned by the live callback is not foreign-stale. A `doing`/`offered` worker with no accepted row, repeated `bored nak busy`, or no ACK/DONE/GIVEUP beyond the threshold should be **reported** (intake). Do not jump to `clear_seat_doing` on a live working seat.
+- **OpenCode stream heartbeats mask hang (FR #8796 / #8795):** `progress_phase=stream` refreshes digest `last_progress` while the linked issue/PR stays untouched. `Test-JeevesMonitorSeatsStuckDoing` / `tools/monitor/seats_stuck_doing.py` keys hang age on accepted/doing clocks (not `last_progress`) and requires a `DONE` (or other substantive close) within 15m; fresh stream heartbeats alone are EXIT 1 (`stream_heartbeat_no_substantive`). De-dup companion seat hang issues; do not clear a live doing seat.
 - **CAST IRON keep seats busy (harvest #1967 / operator):** never clear digest busy on seats that are actively working (`doing`/`offered` with a live ACK path, or non-empty `working_on` while the seat process is alive). `idle_seats` and `seats_stuck_doing` are **report-only** by default. Call `clear_seat_doing` / orphan heal **only** for true stale busy: `queue.accepted` empty **and** the seat is a true orphan blocking `!bored` / nak-busy for the whole shop (no live ACK path). Prefer `--force-orphan-busy` (or equivalent explicit force) over casual clears. Related product: FR #1714; false-busy class: harvest #1712 / PR #1823.
 - **NAK busy / workers map (harvest #1715):** `bored nak busy` can key off `machines.workers.<pid>.working_on` / running state even when `worker_list` shows idle and queue `accepted` is empty (lost DONE). Clearing **only** `worker_list` is not enough - `clear_orphan` must also idle the `workers` map and machine `working_on`. Product fix tracked as FR #1714. Related false-busy: harvest #1712 (`seats_stuck_doing`).
-- Monitor checks observe and diagnose; they do not claim work, assign seats, or act as the chair.
+- Monitor checks observe and diagnose; they do not claim shop jobs as a worker. Keep-queue-moving chair commands are allowed per FR #8827 when ops unblock is needed.
 - **Idle-push say False (MRB #2819 / fix #2821 / harvest-lesson #2824):** `offer_to_idle_seats` must treat `say` returning False (`enqueue_chair_fleet_privmsg` OSError/secret skip) or raise as undelivered — keep idle-after-empty and rate-limit; never clear on a silent False. Product tests: `jeeves/tests/test_mrb2819_hostile_chair_outbox_say_false.py`. **FR #6521 / #6542:** call `clear_seat_offer` + `clear_seat_hold` before stamping `last_push_at` so sticky `offered_to` does not make FR #3192 `bored_gate` busy and trip `clear_idle_after_empty` on the next tick (FR #4089 parity). Product: `common/scripts/gitclaim.py`.
 - **FR #4373 reopened FR stuck in done (product #4383 / MRB #4384):** when GitHub reopens an issue that already sits in `done`, webhook `issues.reopened` and `resync_from_github` must `pop_done` before append, persist reopen `history` via `_coerce_row`, clear machine pins, and re-enter `unaccepted`. Terminal PASS/MERGED must not block reopen when `open_pulls` is None. Monitor: open GitHub issues that never re-offer after reopen are this class — check `done[]` vs open state before filing empty-queue. Product: `common/scripts/gitclaim.py` `requeue_reopened_issue`; tests `jeeves/tests/test_fr4373_requeue_reopened_issues.py`.
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
