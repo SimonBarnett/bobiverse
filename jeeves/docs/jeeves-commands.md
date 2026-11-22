@@ -17,6 +17,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!list [all\|<repo>\|fr\|mrb\|uat]` | `N unaccepted (showing M)` + one job line each, `+K more; !list all` | focus order, ignore list applied; `(list sent Ns ago)` when repeated within the list rate window |
 | `!filter [..]` | same as `!list <filter>` | alias (not in gh-Jeeves @8d76d9a; added because ops use the word) |
 | `!status` | `Jeeves status: version=.. uptime_s=..`, `queue: unaccepted=U accepted=A`, `workers: busy=..`, `roster: machines=N (..)`, `last_resync: roster Ns ago` | read only. `uptime_s` is process/agent age (not first-command age). `version` resolves install-root `VERSION` when frozen (FR #2728). `workers: busy` counts digest `worker_list` seats with `state=doing` (not the accepted-queue length; that stays on the `queue:` line) |
+| `!stuck` | stuck/held job lines from the stuck-job sweep | FR #5510: read-only list of silent accepted rows, untracked offerable opens, and held items with the rule. Sweep runs every 10 min in the chair (no agent). |
 | `!resync` | `resync: roster refresh requested; GitHub FR/MRB re-sync queued; queue unaccepted=U accepted=A purged_ignored=P` | **fallback** (FR #5170): forces ChanServ roster re-read and authenticated GitHub FR/MRB merge-resync. Live queue updates come from git webhooks; use `!resync` on startup/gap/delivery failure, not as the main check |
 | `!sweep [#chan]` | `sweep: #chan re-planned; N grant/revoke sent` | re-runs the privilege plan (+h/+o) for the channel (asks NAMES first); subject to the hard cap below |
 | `!ignore {repo}` / `!unignore {repo}` / `!ignored` | `ignore: now ignoring X (purged N queued)` / `ignore: already ignoring X (purged N queued)` on repeat (always re-purges leaks) / `unignore: resumed X (new events only)` / `ignored: (none)` or `ignored (N):` + `  repo` | Persistent ignore blocks enqueue (incl. late synchronize/resync/reopen), offer fallback, and ACK/accept (`status=ignored`, seat freed; FR #6208). Bare: `ignore: usage !ignore {repo}` |
@@ -78,7 +79,7 @@ A **principal** is derived per message from the nick plus the services account t
 
 | Command | owner | ear (`bob-<machine>`) | monitor | allowlist | anyone |
 |---|---|---|---|---|---|
-| `!help` `!list` `!filter` `!status` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes | yes |
+| `!help` `!list` `!filter` `!status` `!stuck` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes | yes |
 | `!ignore` `!unignore` | yes | yes | yes | no | no |
 | `!focus ..` `!unfocus ..` (write) | yes | yes | yes | yes | no |
 | `!resync` `!sweep` `!recycle` `!assign` `!cleargiveup` `!pin` `!unpin` | yes | yes | yes | no | no |
