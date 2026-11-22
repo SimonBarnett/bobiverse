@@ -1602,6 +1602,12 @@ namespace BobDialogs
                 id = id.Substring(0, pipe);
             }
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
+            else if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
+                TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
+                StartWorker("agent", "grok", null, "");
+            }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
             {
                 string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);

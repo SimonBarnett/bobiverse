@@ -4010,6 +4010,11 @@ function Update-BobTrayWorkerAgentsMenu {
                 if ($picked -eq 'auto') {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent '' -Trigger 'menu'
                 }
+                elseif ($picked -eq 'grok') {
+                    # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
+                    Write-TrayLog 'Workers Grok: grok CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
+                }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
                 }
