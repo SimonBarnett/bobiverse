@@ -953,6 +953,11 @@ def return_job_to_unaccepted(
                     wip = gitclaim.console_closed_wip_ref(reason)
                 if wip:
                     job["console_closed_wip"] = wip[:120]
+            # FR #8768: honor-path GIVEUP require_machine=<mid> stamps that pin so
+            # the next !bored does not re-offer the row into the wrong shop.
+            if reason and not console_closed_giveup:
+                with contextlib.suppress(Exception):
+                    gitclaim.apply_require_machine_giveup_stamp(job, reason)
             if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so

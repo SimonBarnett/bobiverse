@@ -88,9 +88,15 @@ def test_fr6453_front_page_keeps_webhooks_section():
     """FR #7488: redesigned home (FR #7409) dropped 'bobiverse acme' marketing copy.
 
     Keep webhook-section discoverability; do not reintroduce obsolete acme text.
+    FR #8817: assert on visible copy only (HTML comments may keep an FR #6453 pin).
     """
     index = (WWW / "index.html").read_text(encoding="utf-8")
-    assert "bobiverse acme" not in index.lower()
+    visible = re.sub(r"<!--.*?-->", "", index, flags=re.S)
+    assert "bobiverse acme" not in visible.lower()
+    assert "bobiverse acme" not in index.lower(), (
+        "obsolete acme marketing text must not return in comments either "
+        "(rename the FR #6453 pin; see FR #8817)"
+    )
     assert "Webhooks &amp; API" in index or "Webhooks & API" in index
     hrefs = _collect_hrefs(index)
     webhook_links = [h for h in hrefs if "docs/webhooks" in h.replace("\\", "/")]

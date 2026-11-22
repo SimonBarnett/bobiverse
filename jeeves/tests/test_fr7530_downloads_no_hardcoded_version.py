@@ -1,4 +1,4 @@
-"""FR #7530: /downloads must not stamp a semver; lookup failure shows error.html."""
+"""FR #7530: /downloads must not stamp a semver; lookup failure stays on-page (FR #8759)."""
 from __future__ import annotations
 
 import re
@@ -21,9 +21,11 @@ def test_fr7530_downloads_html_and_js_have_no_semver():
         assert _VER.search(text) is None, f"{path.name} stamps a version"
 
 
-def test_fr7530_lookup_failure_goes_to_error_page():
+def test_fr7530_lookup_failure_stays_on_page_with_per_card_errors():
+    """FR #7530 + #8759: no stamped semver; fail path marks cards, does not redirect."""
     text = (DOWNLOADS / "index.html").read_text(encoding="utf-8")
     assert "api.github.com/repos/SimonBarnett/bobiverse/releases/latest" in text
-    assert "window.location.href = '/downloads/error.html'" in text
+    assert "window.location.href = '/downloads/error.html'" not in text
+    assert "markCardUnavailable" in text
     assert "id=\"release-tag\"" in text
     assert "payload.tag_name" in text

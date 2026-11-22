@@ -53,7 +53,7 @@ def test_fr4026_decide_denied_for_worker():
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="win-mpre8vi4u6u",
+        local_machine="walrus",
     )
     assert dec and dec.ok is False and dec.reason == "denied"
     assert "denied" in dec.pm_lines[0]
@@ -72,7 +72,7 @@ def test_fr4026_decide_no_install_test(tmp_path: Path):
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=loader,
-        local_machine="win-mpre8vi4u6u",
+        local_machine="walrus",
     )
     assert dec and dec.ok is False and dec.reason == "no_install_test"
     assert any("no install_test" in ln for ln in dec.pm_lines)
@@ -86,7 +86,7 @@ def test_fr4026_decide_dry_run_plan():
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="flamingo",
+        local_machine="walrus",
     )
     assert dec and dec.ok and dec.dry_run
     assert any("dry-run" in ln for ln in dec.pm_lines)
@@ -95,21 +95,23 @@ def test_fr4026_decide_dry_run_plan():
 
 
 def test_fr4026_machine_fold_ionos_matches_win_mpre():
-    assert bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u")
-    assert bb.is_recipe_build_machine("win-mpre8vi4u6u", "ionos")
+    # FR #8697: ionos ↔ walrus; win-mpre is a separate host id.
+    assert bb.is_recipe_build_machine("ionos", "walrus")
+    assert bb.is_recipe_build_machine("walrus", "ionos")
+    assert not bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u")
     assert not bb.is_recipe_build_machine("ionos", "marchhare")
-    who = cc.Principal("ear", "Bob-flamingo", "", "flamingo")
+    who = cc.Principal("ear", "Bob-walrus", "", "walrus")
     dec = bb.decide_installtest(
         who=who,
         body="!installtest SimonBarnett/bobiverse 0.1.32",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="flamingo",
+        local_machine="walrus",
     )
     assert dec and dec.ok and dec.route.startswith("INSTALLTEST v1")
-    assert dec.machine == "flamingo"
-    assert bb.is_recipe_build_machine(dec.machine, "flamingo")
+    assert dec.machine == "walrus"
+    assert bb.is_recipe_build_machine(dec.machine, "walrus")
 
 
 def test_fr4026_decide_wrong_machine():
@@ -238,7 +240,7 @@ def test_fr4026_runner_postcheck_fail_files_blocker(tmp_path: Path):
 def test_fr4026_recipe_install_test_products():
     recipe = bb.load_recipe(ROOT)
     assert recipe.install_test
-    assert recipe.install_test.get("machine") == "flamingo"
+    assert recipe.install_test.get("machine") == "walrus"
     prods = recipe.install_test.get("products") or []
     assert set(prods) >= {"jeeves", "bob", "airc"}
 
@@ -260,7 +262,7 @@ def test_fr4026_parse_installtest_v1_route():
 def test_fr4026_consume_installtest_enqueues(tmp_path: Path):
     line = "INSTALLTEST v1 repo=SimonBarnett/bobiverse version=0.1.99 tag=v0.1.99"
     q = tmp_path / "build-queue"
-    assert bb.consume_installtest_v1(line, "win-mpre8vi4u6u", "ionos", queue_dir=q) is True
+    assert bb.consume_installtest_v1(line, "walrus", "ionos", queue_dir=q) is True
     jobs = list(q.glob("installtest-*.json"))
     assert len(jobs) == 1
     data = __import__("json").loads(jobs[0].read_text(encoding="utf-8"))
@@ -283,9 +285,9 @@ def test_fr4026_mrb4085_hostile_queued_means_enqueued(tmp_path: Path):
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="flamingo",
+        local_machine="walrus",
     )
     assert dec and dec.ok and dec.route.startswith("INSTALLTEST v1")
     q = tmp_path / "build-queue"
-    assert bb.consume_installtest_v1(dec.route, "flamingo", "flamingo", queue_dir=q) is True
+    assert bb.consume_installtest_v1(dec.route, "walrus", "walrus", queue_dir=q) is True
     assert list(q.glob("installtest-*.json")), "PM queued claim requires enqueue"

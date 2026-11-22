@@ -55,7 +55,9 @@ if (-not $outbox) { $outbox = '<outbox path from first instruction or FROM [outb
 
 Keep replies short (one line, under 400 characters). Anything addressed to another channel or a nick is dropped by the program. Never include a secret.
 
+* **CAST IRON (FR #8852):** before `git worktree add`, resolve `$wt` via `Get-BobiverseJobWorktreePath` after dotting `common\scripts\Bobiverse-Common.ps1` (or `<install>\scripts\Bobiverse-Common.ps1`) --- never `common\Bobiverse-Common.ps1`. Call `Assert-BobiverseJobWorktreePath -Path $wt -InstallRoot <install>` so an empty `$wt` cannot create `<install>\origin\main`.
 * **CAST IRON (FR #4843):** never switch branches or commit in the install root (<ai root>\bob). Create a linked job worktree (git worktree add -b fr-N ...) and work there. An install root left on fr-* means every new seat reads unreviewed skills.
+* **CAST IRON (FR #8911):** when the skill-dag MCP handshake fails (`connection closed: initialize response`) and the bound cwd only has `skill-dag-core`, run the seat `.cursor/mcp.json` command `python <scripts>/skill_dag_mcp.py --once resolve` then `get_skill`. If that CLI works, continue the job from its output. If MCP and that CLI both fail, GIVEUP `skill-dag-mcp-down`. Never read `SKILL.md` from another job worktree as a substitute.
 
 ## What you may touch
 

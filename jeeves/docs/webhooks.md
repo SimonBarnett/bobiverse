@@ -21,6 +21,9 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/summary?user=…&date=…` | Day totals: raw + de-overlapped minutes, overlaps |
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
+| GET | `/bob/v1/models` | Fleet agent Weights rows JSON (`{"agents":[…]}`) from digest-home `models-catalog.json` or built-in defaults (BOB-01 / FR #8707); **open, no secret** |
+| PUT | `/bob/v1/models` | Persist Weights full replace (direct/LAN; IIS GET|HEAD only) |
+| POST | `/bob/v1/models/validate` | Fail-closed `(cli, model, context, effort)` check against digest-home `models-valid-combos.json` (BOB-03 / FR #8710); **peer allow-list** (`BOB_REPORT_ALLOW`); never persists |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -68,10 +71,66 @@ curl -sS "https://bob.ntsa.uk/bob/v1/report"
 
 ### GET builds catalog (FR #8490)
 
-Serves the validated JSON array from digest-home `builds-catalog.json` (missing file → `[]`). Each entry needs `name`, `yml` (`owner/repo` or `owner/repo:path`), `output` (artifact export dir; no whitespace), `install` (`fleet` or a machine id); optional `dep` (list, documentation only), `version` (numeric `x.y.z` / `x.y.z.w`), `ref`. Invalid rows are skipped. Ops `!build n` builds the selected `yml`, copies pack artifacts into `output`, then reinstalls on `install` (fleet expands from `registered-machines.json`). Example seed: `common/defaults/builds-catalog.example.json`.
+Serves the validated JSON array from digest-home `builds-catalog.json` (missing file → `[]`). Each entry needs `name`, `yml` (`owner/repo` or `owner/repo:path`; path may not contain `..`, absolute/drive forms, or `?#%`/whitespace), `output` (artifact export dir; no whitespace), `install` (`fleet` or a machine id); optional `dep` (list, documentation only), `version` (numeric `x.y.z` / `x.y.z.w`), `ref`. Invalid rows are skipped. Chair `!build` loads the digest-home file first and only falls back to this HTTP endpoint when local catalogs are empty (FR #8770). Ops `!build n` builds the selected `yml` path, copies pack artifacts into `output`, then reinstalls on `install` (fleet expands from `registered-machines.json`). Example seed: `common/defaults/builds-catalog.example.json`.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/builds"
+```
+
+### GET models / Weights rows (BOB-01 / FR #8707)
+
+Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (valid-combos BOB-03; seed values BOB-04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
+
+```bash
+curl -sS "https://bob.ntsa.uk/bob/v1/models"
+```
+
+### PUT models / Weights rows (BOB-02 / FR #8708)
+
+Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged.
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
+```
+
+### POST models validate (BOB-03 / FR #8710)
+
+Non-persisting check of one `(cli, model, context, effort)` tuple against digest-home **`models-valid-combos.json`** (separate from Weights `models-catalog.json` so BOB-02 PUT cannot wipe the allow-list). Fail-closed: missing, unreadable, malformed, or empty catalogue -> **503** `{"error":"catalog_unavailable"}` (never accepts). Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs (403 off-list). Does not write, enqueue, or touch `models-catalog.json` / tray stores.
+
+**Request JSON keys**
+
+| key | required | notes |
+|-----|----------|-------|
+| `cli` | yes | `grok` \| `cursor` \| `opencode` (case-folded; launchable worker agents only - not `aider`) |
+| `model` | yes | Exact catalogue model id (placeholders like `auto` / `$model` and fuel-pool ids fail unless listed) |
+| `context` | yes | Exact catalogue context string (no token-window invention) |
+| `effort` | when the row lists efforts | Exact match after case-fold only. Empty `efforts` on a row means effort must be absent (non-Grok CLIs). Never uses `normalize_effort`. |
+
+**Catalogue schema** (digest-home `models-valid-combos.json`): top-level `version` (int) and `clis` object keyed by `grok`/`cursor`/`opencode`; each value is a list of `{model, contexts[], efforts[]}`. Duplicate model rows within one CLI keep the first. Invalid rows are skipped. **BOB-04 / FR #8709 seed:** BobCallback start calls `models_catalog.ensure_valid_combos_seeded(home)` which creates the store from `common/defaults/models-valid-combos.seed.json` when missing, or appends missing seeded `(cli, model)` rows while preserving operator rows; malformed stores are left unchanged. Seed rows carry provenance (CLI version + capture source). Fixture-only example remains `common/defaults/models-valid-combos.example.json`.
+
+**Responses**
+
+| status | body | when |
+|--------|------|------|
+| 200 | `{"ok":true}` | combination listed |
+| 400 | `{"error":"malformed"}` | non-object body or wrong types / missing required keys |
+| 400 | `{"error":"<code>","field":"<name>"}` | invalid combo |
+| 403 | empty | peer not on `BOB_REPORT_ALLOW` |
+| 405 | empty | non-POST |
+| 503 | `{"error":"catalog_unavailable"}` | catalogue missing/malformed/empty |
+
+Stable error codes: `unknown_cli`, `unknown_model`, `invalid_context`, `invalid_effort`, `effort_not_supported`, `catalog_unavailable`, `malformed`.
+
+**Rejection log (S1 tray/log evidence):** BobCallback stdout one line per reject:
+
+`INFO models validate reject error=<code> field=<name|-> cli=... model=... context=... effort=...`
+
+(never the raw request body). On the chair / digest host this is the BobCallback / Jeeves service log (NSSM or scheduled-task stdout for the `:7700` listener).
+
+```bash
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/validate" \
+  -H "Content-Type: application/json" \
+  -d "{\"cli\":\"grok\",\"model\":\"fixture-grok-a\",\"context\":\"128k\",\"effort\":\"medium\"}"
 ```
 
 ### POST report (status / ops)
@@ -195,6 +254,16 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 
 `Install-BobWebhooks.ps1` copies `jeeves-butler.ico` and `ntsa-gut-logo.png` to `<IIS physical>/jeeves/assets/`. The `BobJeevesAppliance` rewrite skips `/jeeves/assets/` so IIS serves those files (`.ico` / `.png` allowed). Login HTML uses prefix-aware `/jeeves/assets/...` when mounted at `/jeeves`. Packed installs also resolve the butler from `assets/jeeves-butler.ico`.
 
-## Front-page HTML docs (FR #6453)
+## Front-page HTML docs (FR #6453 / FR #8835)
 
-Static pages under `jeeves/www/irc-ntsa/` are copied to the IIS site physical path by `Install-BobWebhooks.ps1`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`. FR #7413 publishes unauthenticated <code>/jeeves/commands</code> (rewrite skips it like assets). FR #7410 adds `/downloads` (Bob ear / Jeeves / airc latest MSI tiles) plus `site.css`. FR #7528: `/downloads` is a vertical one-column card list with airc last. FR #7414 (publish path): re-run `Install-BobWebhooks.ps1` after git pull / compose so walrus IIS stays in sync — it publishes `site.css`, `downloads/`, `jeeves/commands/` (when present), and `docs/`. FR #7442: site-root `/favicon.ico` is the Bob tray icon (`bob/tray/assets/bob-systray.ico` kept in sync with `jeeves/www/favicon.ico`); `web.config` maps `.ico` to `image/x-icon` and does not rewrite `/favicon.ico` to Jeeves. Optional `-WwwSource` overrides the tree for tests. Registry: `common/scripts/bob_webhook_docs.py` (tests fail if a BobCallback route lacks a doc entry).
+Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
+
+**Coverage rule (FR #8835):** every public route under `/bob/v1/*` served by Jeeves/BobCallback (plus local health/digest and outbound stall/wake) MUST have (1) a card in Webhooks & API on the home page, (2) a page under `docs/webhooks/`, and (3) a row on `docs/webhooks/index.html`. Registry: `common/scripts/bob_webhook_docs.py`. Route inventory: `common/scripts/bob_route_inventory.py`. Enforced by `common/tests/test_fr8835_webhook_docs_route_coverage.py` (also run from `pytest-ascii-bom`). Coming operations (models PUT/PATCH #8708, models/refresh #8820) use `DocEntry.status="coming"` until served.
+
+**Static-only content publish (FR #8835 / #8803):** for HTML/docs-only updates, copy `jeeves/www/irc-ntsa/**` to the IIS site physical path **excluding `web.config`**, `*.bak`, and `_backup-*`, and do **not** delete live files. Do **not** re-run `Install-BobWebhooks.ps1` for content-only changes --- that installer rewrites WebSocket rules (#8803). Use `Install-BobWebhooks.ps1` only when rewrite rules or site wiring must change. Regenerate pages with `python common/scripts/gen_bob_webhook_docs_html.py` after registry edits.
+
+**Publish backups (FR #8887):** `Install-BobWebhooks.ps1` writes rollback copies under `-BackupRoot\_backup-www-<site leaf>` (default: parent of `-PhysicalPath`; `Install-Jeeves` passes the install root, e.g. `C:\ai\jeeves\_backup-www-irc-ntsa`). Never place `_backup-*` or `*.bak` inside the IIS web root. The shipped `web.config` denies `.bak` (fileExtensions) and the URL sequences `_backup-` / `.bak/` so a stray backup is not served. Removing legacy live-root backups on walrus is a one-off for Slab (Si go) and is outside the installer PR.
+
+**Walrus verify checklist (FR #8887):** after publish, confirm `https://bob.ntsa.uk/web.config.fr8803.anything.bak` and `https://bob.ntsa.uk/downloads/_backup-20261115-x/` return 404/403 (not 200). Upper-case `_BACKUP-` must also stop. Working routes (`/`, `/bob/v1/models`, `/downloads/`) still 200. Owner sign-off before declaring green.
+
+FR #7413 publishes unauthenticated <code>/jeeves/commands</code>. FR #7410 / #7528 downloads shelf. FR #7414 (publish path): when rewrite/site wiring must change, re-run `Install-BobWebhooks.ps1` after git pull / compose so walrus IIS stays in sync — it can publish `site.css`, `downloads/`, `jeeves/commands/` (when present), and `docs/` (opt-in `-PublishWww` / `-SiteKit` per #8803). FR #7442: site-root `/favicon.ico` is the Bob tray icon; `web.config` maps `.ico` to `image/x-icon` and does not rewrite `/favicon.ico` to Jeeves. Optional `-WwwSource` overrides the tree for installer tests.

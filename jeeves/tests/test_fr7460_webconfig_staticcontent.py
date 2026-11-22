@@ -39,6 +39,7 @@ def _run_install(site: Path, www: Path) -> subprocess.CompletedProcess[str]:
             "http://127.0.0.1:7700",
             "-WwwSource",
             str(www),
+            "-PublishWww",
         ],
         capture_output=True,
         text=True,
