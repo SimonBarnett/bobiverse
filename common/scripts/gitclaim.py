@@ -319,6 +319,126 @@ def row_fr_hold_reason(row: dict) -> str | None:
     )
 
 
+# FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
+_DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
+_BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
+_DEPENDS_ISSUE_REF_RE = re.compile(r"(?:#|/issues/)(\d+)\b")
+_VISION_PACK_FILE_RE = re.compile(r"(feature-request-[\w.-]+\.md)", re.I)
+_BOB_TITLE_ID_RE = re.compile(r"^\s*BOB-(\d+)\b", re.I)
+
+
+def _bob_docs_root() -> Path | None:
+    """Repo ``bob/docs`` next to common/scripts when present (chair install / worktree)."""
+    here = Path(__file__).resolve()
+    for cand in (here.parents[2] / "bob" / "docs", here.parents[1] / "bob" / "docs"):
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def parse_depends_on_tokens(text: str) -> list[str]:
+    """Normalize Depends-on tokens to ``BOB-N`` and ``#N`` (stable order, unique)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _BOB_BACKLOG_ID_RE.finditer(text or ""):
+        tok = f"BOB-{int(m.group(1))}"
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    for m in _DEPENDS_ISSUE_REF_RE.finditer(text or ""):
+        tok = f"#{int(m.group(1))}"
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
+def fr_depends_on_tokens(
+    *,
+    title: str = "",
+    body: str = "",
+    docs_root: Path | None = None,
+) -> list[str]:
+    """FR #8754: Depends-on tokens from issue body/title and linked local vision pack."""
+    blob = f"{title or ''}\n{body or ''}"
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def _add(more: list[str]) -> None:
+        for t in more:
+            if t not in seen:
+                seen.add(t)
+                tokens.append(t)
+
+    for m in _DEPENDS_ON_LINE_RE.finditer(blob):
+        _add(parse_depends_on_tokens(m.group(1)))
+    root = docs_root if docs_root is not None else _bob_docs_root()
+    if root is not None:
+        for m in _VISION_PACK_FILE_RE.finditer(blob):
+            path = root / m.group(1)
+            if not path.is_file():
+                continue
+            try:
+                pack = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for pm in _DEPENDS_ON_LINE_RE.finditer(pack):
+                _add(parse_depends_on_tokens(pm.group(1)))
+    return tokens
+
+
+def _open_fr_bob_and_id_index(doc: dict) -> tuple[dict[str, list[str]], set[str]]:
+    """Map ``BOB-N`` → open queue FR ids; set of open FR numeric ids (no hash)."""
+    bobs: dict[str, list[str]] = {}
+    ids: set[str] = set()
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            rid = _norm_row_id(str(row.get("id") or ""))
+            if not rid:
+                continue
+            ids.add(rid)
+            title = str(row.get("title") or "").strip()
+            tm = _BOB_TITLE_ID_RE.match(title)
+            if tm:
+                key = f"BOB-{int(tm.group(1))}"
+                bobs.setdefault(key, []).append(rid)
+    return bobs, ids
+
+
+def row_fr_depends_blocked_reason(
+    row: dict,
+    doc: dict,
+    *,
+    docs_root: Path | None = None,
+) -> str | None:
+    """FR #8754: why an FR must wait on open Depends-on backlog, else None.
+
+    Does not purge the row — when depends leave the queue, the FR becomes offerable.
+    """
+    if _canon_task(row) != "FR":
+        return None
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    body = str(row.get("body") or "")
+    tokens = fr_depends_on_tokens(title=title, body=body, docs_root=docs_root)
+    if not tokens:
+        return None
+    self_id = _norm_row_id(str(row.get("id") or ""))
+    bobs, open_ids = _open_fr_bob_and_id_index(doc)
+    for tok in tokens:
+        if tok.startswith("BOB-"):
+            for oid in bobs.get(tok) or []:
+                if oid != self_id:
+                    # oid already includes leading # from _norm_row_id
+                    return f"depends-on open: {tok} ({oid if oid.startswith('#') else '#' + oid})"
+        elif tok.startswith("#"):
+            oid = _norm_row_id(tok)
+            if oid in open_ids and oid != self_id:
+                return f"depends-on open: {tok}"
+    return None
+
+
 @dataclass(frozen=True)
 class GitClaim:
     repo: str
@@ -2442,11 +2562,48 @@ def seat_matches_require_machine(nick: str, required: str) -> bool:
         return True
     req = fold_chair_host(req)
     req_mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(req) or req)
-    parsed = bobreport.parse_seat_nick(nick)
-    if not parsed:
+    # FR #8768: use _seat_machine_id so cold digest / missing roster still parses
+    # canonical ``<machine>-<pid>`` nicks (parse_seat_nick alone returns None).
+    seat_mid = _seat_machine_id(nick)
+    if not seat_mid:
         return False
-    seat_mid = bobreport.fold_machine_id(parsed[0])
+    # FR #8697: fold legacy chair-host seat ids (ionos) before DIGEST_ID_FOLD so
+    # ionos-<pid> seats match walrus pins after the #8653 cutover.
+    seat_mid = bobreport.fold_machine_id(fold_chair_host(seat_mid))
     return bool(seat_mid) and seat_mid == req_mid
+
+
+_REQUIRE_MACHINE_GIVEUP_RE = re.compile(
+    r"(?i)\brequire_machine\s*=\s*([a-z0-9][a-z0-9_.-]*)\b"
+)
+
+
+def parse_require_machine_giveup_reason(reason: str) -> str:
+    """FR #8768: machine id from a honor-path GIVEUP reason, or ''."""
+    m = _REQUIRE_MACHINE_GIVEUP_RE.search(str(reason or ""))
+    if not m:
+        return ""
+    mid = fold_chair_host((m.group(1) or "").strip().lower())
+    mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(mid) or mid)
+    if not mid or mid in _REQUIRE_MACHINE_NON_MACHINE or _is_retired_require_machine(mid):
+        return ""
+    return mid
+
+
+def apply_require_machine_giveup_stamp(row: dict, reason: str) -> str:
+    """FR #8768: stamp require_machine from GIVEUP reason so wrong shops stay gated.
+
+    Returns the stamped machine id, or '' when the reason is not a machine pin.
+    Operator flag survives bobiverse FR #4512 re-infer (same as ops !pin).
+    """
+    if not isinstance(row, dict):
+        return ""
+    mid = parse_require_machine_giveup_reason(reason)
+    if not mid:
+        return ""
+    row["require_machine"] = mid
+    row["require_machine_operator"] = True
+    return mid
 
 
 def row_blocked_for_machine(row: dict, nick: str) -> bool:
@@ -4101,7 +4258,15 @@ def _seat_machine_id(nick: str) -> str:
         c = canonical_worker_nick(nick)
         p = bobreport.parse_seat_nick(c) if c else None
     if not p:
-        return ""
+        # FR #8768: cold digest roster - peel ``<machine>-<pid>`` without parse_seat_nick.
+        c = (canonical_worker_nick(nick) or nick or "").strip().lower()
+        m = re.match(r"^([a-z0-9][a-z0-9_.-]*)-(\d+)$", c)
+        if not m:
+            return ""
+        try:
+            return bobreport.fold_machine_id(m.group(1))
+        except Exception:
+            return m.group(1)
     try:
         return bobreport.fold_machine_id(p[0])
     except Exception:
@@ -7677,8 +7842,10 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     continue
             row = dict(r)
             _stamp_require_machine(row)
-            rm = str(row.get("require_machine") or "").strip()
-            if rm and rm.lower() not in ("*", "any", "none", "-", ""):
+            # FR #8768: gate on row_require_machine (re-infer), not only the stamp
+            # field - bobiverse body pins must block wrong shops in why-empty too.
+            rm = row_require_machine(row)
+            if rm:
                 if not me or row_blocked_for_machine(row, me):
                     req_machine += 1
                     _record_empty_skip(r, "pin")
@@ -9665,16 +9832,22 @@ def heal_worktree_head_mismatch_row(row: dict) -> bool:
 
 
 def is_skill_dag_down_reason(reason: str) -> bool:
-    """True when a GIVEUP reason is OpenCode skill-dag preflight down (FR #7963).
+    """True when a GIVEUP reason is skill-dag preflight / MCP down (FR #7963 / #8846).
 
-    Seat fault, not job fault: ``skill_dag_down`` or ``skill_dag_down:exit-1``.
+    Seat fault, not job fault: ``skill_dag_down``, ``skill-dag-down:exit-1``,
+    or ``skill-dag-mcp-down`` (FR #8846 fail-closed when MCP + mcp.json CLI both fail).
     """
     text = (reason or "").strip().lower()
     if not text:
         return False
     norm = text.replace("_", "-").replace(" ", "-")
     token = norm.split(",", 1)[0].strip()
-    return token == "skill-dag-down" or token.startswith("skill-dag-down:")
+    return (
+        token == "skill-dag-down"
+        or token.startswith("skill-dag-down:")
+        or token == "skill-dag-mcp-down"
+        or token.startswith("skill-dag-mcp-down:")
+    )
 
 
 def is_console_closed_reason(reason: str) -> bool:
@@ -11307,6 +11480,9 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
                         purged = True
                     return None
+                # FR #8754: Depends-on backlog still open in queue — skip offer; keep row.
+                if row_fr_depends_blocked_reason(cand, doc):
+                    return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
@@ -11748,6 +11924,10 @@ def offer_top(
                     if _drop_unaccepted_row(doc, row, kind="fr-hold", reason=row_fr_hold_reason(row)):
                         purged = True
                         continue
+                    i += 1
+                    continue
+                # FR #8754: Depends-on backlog still open — skip; keep row.
+                if row_fr_depends_blocked_reason(row, doc):
                     i += 1
                     continue
                 if row_awaits_mrb1(row):
@@ -15058,6 +15238,9 @@ def assign_row(
             hold_why = row_fr_hold_reason(cand)
             if hold_why:
                 return "refused", f"row on hold: {hold_why}"
+            dep_why = row_fr_depends_blocked_reason(cand, doc)
+            if dep_why:
+                return "refused", f"row blocked: {dep_why}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):

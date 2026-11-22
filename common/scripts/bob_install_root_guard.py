@@ -83,6 +83,51 @@ def suggest_job_worktree(install_root: str | Path, *, mode: str = "fr", issue_n:
     return str(root.parent / f"bob-wt-{mode_l}-{issue_n}")
 
 
+
+def refuse_empty_job_worktree_path(
+    path: str | Path | None,
+    *,
+    install_root: str | Path | None = None,
+) -> Optional[str]:
+    """FR #8852: return refusal when *path* is empty, relative, or under *install_root*; else None.
+
+    Call before ``git worktree add`` so an empty ``$wt`` cannot land at ``<install>/origin/main``.
+    """
+    raw = "" if path is None else str(path).strip()
+    if not raw:
+        return (
+            "FR #8852: job worktree path is empty; dot common\\scripts\\Bobiverse-Common.ps1 "
+            "(or <install>\\scripts\\Bobiverse-Common.ps1) and call Get-BobiverseJobWorktreePath "
+            "before git worktree add"
+        )
+    p = Path(raw)
+    if not p.is_absolute():
+        return (
+            f"FR #8852: job worktree path must be absolute (got relative {raw!r}); "
+            "refuse git worktree add under the install"
+        )
+    # Normalize separators for the origin/main leaf check
+    norm = raw.replace("\\", "/").rstrip("/").lower()
+    if norm.endswith("origin/main") or norm == "origin/main":
+        return f"FR #8852: refusing install-relative origin/main worktree path {raw!r}"
+    if install_root is not None:
+        root = _norm(install_root)
+        full = _norm(p)
+        if paths_equal(full, root):
+            return f"FR #8852: job worktree path must not be the install root ({full})"
+        try:
+            full.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            return (
+                f"FR #8852: job worktree path must not be under the install root "
+                f"({full} under {root})"
+            )
+    return None
+
+
+
 def refuse_job_git(
     *,
     op: str,

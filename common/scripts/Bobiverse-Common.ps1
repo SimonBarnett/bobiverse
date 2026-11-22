@@ -1754,6 +1754,46 @@ function Get-BobiverseJobScratchPath {
     return $full.TrimEnd('\')
 }
 
+function Assert-BobiverseJobWorktreePath {
+    <#
+      FR #8852: refuse empty / relative / install-relative job-wt before `git worktree add`.
+      When Get-BobiverseJobWorktreePath was never loaded (wrong Common path) and `$wt` was empty,
+      `git -C <install> worktree add -b fr-N $wt origin/main` created `<install>\origin\main`.
+      Dot `common\scripts\Bobiverse-Common.ps1` (repo tree) or `<install>\scripts\Bobiverse-Common.ps1`
+      (composed flat runtime) --- never `common\Bobiverse-Common.ps1`.
+    #>
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Path,
+        [string]$InstallRoot = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'FR #8852: job worktree path is empty; dot common\scripts\Bobiverse-Common.ps1 (or <install>\scripts\Bobiverse-Common.ps1) and call Get-BobiverseJobWorktreePath before git worktree add'
+    }
+    $trimmed = $Path.Trim()
+    if (-not [IO.Path]::IsPathRooted($trimmed)) {
+        throw "FR #8852: job worktree path must be absolute (got relative '$trimmed'); refuse git worktree add under the install"
+    }
+    if ($trimmed -match '(?i)(^|[/\\])origin[/\\]main[/\\]?$') {
+        throw "FR #8852: refusing install-relative origin/main worktree path '$trimmed'"
+    }
+    $full = [IO.Path]::GetFullPath($trimmed)
+    if (Test-BobiverseIsDriveRoot $full) {
+        throw "FR #4988/#8852: job worktree path must not be a drive root ($full)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $root = [IO.Path]::GetFullPath($InstallRoot.TrimEnd('\', '/'))
+        if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "FR #8852: job worktree path must not be the install root ($full)"
+        }
+        $prefix = $root.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        $alt = $root.TrimEnd('\', '/') + [IO.Path]::AltDirectorySeparatorChar
+        if ($full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or $full.StartsWith($alt, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "FR #8852: job worktree path must not be under the install root ($full under $root)"
+        }
+    }
+    return $full.TrimEnd('\')
+}
+
 # ---------------------------------------------------------------------------------------------------------------------------
 # The install dir as a git work tree (t781u/t782u). On every service start (Start-Bob / Start-Jeeves / Start-AircConsole ->
 # Sync-BobiverseFromRepo.ps1 -> Sync-BobiverseWorkTree) <ai root>\<product> is made a SPARSE checkout of the bobiverse repo that holds

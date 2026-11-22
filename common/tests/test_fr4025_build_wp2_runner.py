@@ -61,12 +61,15 @@ def test_fr4025_parse_build_v1_route():
 
 
 def test_fr4025_is_recipe_build_machine_fold():
-    assert bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u")
-    assert bb.is_recipe_build_machine("win-mpre8vi4u6u", "ionos")
+    # FR #8697: ionos folds to walrus (chair host), not win-mpre.
+    assert bb.is_recipe_build_machine("ionos", "walrus")
+    assert bb.is_recipe_build_machine("walrus", "ionos")
     assert bb.is_recipe_build_machine("ionos", "ionos")
+    assert bb.is_recipe_build_machine("walrus", "walrus")
     assert bb.is_recipe_build_machine("win-mpre8vi4u6u", "win-mpre8vi4u6u")
     assert not bb.is_recipe_build_machine("ionos", "flamingo")
-    assert bb.fold_build_machine("ionos") == bb.fold_build_machine("win-mpre8vi4u6u")
+    assert not bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u")
+    assert bb.fold_build_machine("ionos") == bb.fold_build_machine("walrus")
 
 
 def test_fr4025_fake_filer_create_then_dedupe_comment():
@@ -132,7 +135,7 @@ def test_fr4025_build_runner_new_regression_skips_pack(tmp_path: Path):
         filer,
         work_dir=tmp_path / "work",
         log_dir=tmp_path / "logs",
-        local_machine="win-mpre8vi4u6u",
+        local_machine="walrus",
         run_command_fn=run_fn,
         pack_fn=pack_fn,
         release_fn=release_fn,
@@ -213,7 +216,7 @@ def test_fr4025_green_path_pack_and_prerelease(tmp_path: Path, monkeypatch):
         filer,
         work_dir=tmp_path / "work",
         log_dir=tmp_path / "logs",
-        local_machine="win-mpre8vi4u6u",
+        local_machine="walrus",
         run_command_fn=run_fn,
         pack_fn=pack_fn,
         release_fn=release_fn,
@@ -249,7 +252,7 @@ def test_fr4025_consume_build_v1(tmp_path: Path):
     line = "BUILD v1 repos=SimonBarnett/bobiverse version=0.1.40 ref=main"
     assert bb.consume_build_v1(line, "flamingo", "ionos") is False
     q = tmp_path / "build-queue"
-    assert bb.consume_build_v1(line, "win-mpre8vi4u6u", "ionos", queue_dir=q) is True
+    assert bb.consume_build_v1(line, "walrus", "ionos", queue_dir=q) is True
     jobs = list(q.glob("build-*.json"))
     assert len(jobs) == 1
     data = jobs[0].read_text(encoding="utf-8")

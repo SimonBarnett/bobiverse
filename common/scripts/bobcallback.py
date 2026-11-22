@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Digest callback: report/git/intake/jira/hours; public GET digest (#174, #149).
+"""Digest callback: report/git/intake/jira/hours/models; public GET digest (#174, #149).
 
 Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /jeeves**
 login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
 with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
-rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404).
+rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
+returns fleet agent Weights rows (BOB-01 / FR #8707). POST **/bob/v1/models/validate**
+checks a ``(cli, model, context, effort)`` tuple against the fail-closed
+``models-valid-combos.json`` allow-list (BOB-03 / FR #8710); it never persists.
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -35,6 +38,7 @@ import bobreport
 import builds_catalog
 import intake
 import jira_webhook
+import models_catalog
 import webhook_queue
 
 REPORT_PATH = "/bob/v1/report"
@@ -44,6 +48,8 @@ INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
 HOURS_PATH = bobhours.HOURS_PATH
 BUILDS_PATH = builds_catalog.BUILDS_PATH
+MODELS_PATH = models_catalog.MODELS_PATH
+MODELS_VALIDATE_PATH = models_catalog.MODELS_VALIDATE_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -59,15 +65,19 @@ LISTENER_EXIT_CODE = 1
 # Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
-    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
+    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours|"
+    "/bob/v1/models/validate; "
     "front-door GET is /bob/v1/report|/jeeves (local bobcallback also serves /bob/v1/digest); "
-    "GET /bob/v1/jira; GET /bob/v1/builds; GET|POST /bob/v1/hours"
+    "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
-POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH})
+POST_ROUTES = frozenset(
+    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_VALIDATE_PATH}
+)
+PUT_ROUTES = frozenset({MODELS_PATH})  # BOB-02 / FR #8708
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
 MAX_BODY_BYTES = 1024 * 1024          # hard cap for any POST body (413 above)
 MAX_REPORT_BYTES = 256 * 1024         # /bob/v1/report bodies are tiny status docs
@@ -149,6 +159,22 @@ def _check_post_route(
         return 403, b""
     return 0, allow
 
+
+
+
+def _check_put_route(
+    verb: str, route: str, peer_ip: str, allow_ips: set[str] | None
+) -> tuple[int, set[str]] | tuple[int, bytes]:
+    """BOB-02: PUT /bob/v1/models — unknown 404, wrong method 405, peer 403."""
+    allow = allow_ips if allow_ips is not None else load_allow_ips()
+    if route not in PUT_ROUTES:
+        return 404, b""
+    if verb != "PUT":
+        return 405, b""
+    ip = (peer_ip or "").split("%", 1)[0]
+    if allow and ip not in allow:
+        return 403, b""
+    return 0, allow
 
 def report_rate_per_min() -> int:
     try:
@@ -1009,6 +1035,25 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # BOB-01 / FR #8707: fleet agent Weights rows (models-catalog.json or built-in defaults).
+    if verb in ("GET", "HEAD") and route == MODELS_PATH:
+        code, payload = models_catalog.handle_models_get(home)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        if verb == "HEAD":
+            return code, b""
+        return code, payload
+    # BOB-02 / FR #8708: PUT replace Weights (PATCH stays 501 via BaseHTTPRequestHandler).
+    if route == MODELS_PATH:
+        if verb == "PUT":
+            gate = _check_put_route(verb, route, peer_ip, allow_ips)
+            if gate[0] != 0:
+                return gate[0], gate[1]
+            code, payload = models_catalog.handle_models_put(body, home)
+            if code in (200, 400, 413, 500, 503) and payload:
+                stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, payload
+        if verb in ("POST", "DELETE"):
+            return 405, b""
     if verb in ("GET", "HEAD") and route.startswith(INTAKE_PATH + "/"):
         iid = route[len(INTAKE_PATH) + 1 :].strip("/")
         if not iid or "/" in iid:
@@ -1044,6 +1089,11 @@ def handle_request(
         return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
         return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
+    # BOB-03 / FR #8710: non-persisting combo validate (peer-gated like other POSTs).
+    if route == MODELS_VALIDATE_PATH:
+        code, payload = models_catalog.handle_models_validate(body, home)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
     return handle_report_post(headers, body, home, briefer_nick, filer=filer, rate=report_rate)
 
 
@@ -1620,8 +1670,10 @@ def main() -> None:
         raise SystemExit(1) from exc
     host, port = httpd.server_address[:2]
     print(
-        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{HOURS_PATH} "
-        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
+        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
+        f"PUT {MODELS_PATH} "
+        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
+        f"POST {MODELS_VALIDATE_PATH}",
         flush=True,
     )
     try:
