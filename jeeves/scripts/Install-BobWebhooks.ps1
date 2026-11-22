@@ -332,6 +332,16 @@ if ($env:BOB_WEBHOOKS_FAIL_AFTER_BACKUP -eq '1') {
 }
 
 $rollbackPs1 = Join-Path $PhysicalPath 'ROLLBACK-BobWebhooks.ps1'
+# Canonicalize newlines so a second run is a no-op (FR #8803 idempotent).
+$normText = {
+    param($t)
+    $s = [string]$t
+    $s = $s -replace "`r`n", "`n"
+    $s = $s -replace "`r", "`n"
+    # Collapse runs of spaces before newlines introduced by rule upsert formatting.
+    $s = [regex]::Replace($s, '[ \t]+\n', "`n")
+    return $s.TrimEnd() + "`n"
+}
 if (Test-Path -LiteralPath $webConfig) {
     $raw = Get-Content -LiteralPath $webConfig -Raw -ErrorAction Stop
     # FR #8803: never blanket-replace 127.0.0.1:<port> (that retargeted WsircWebSocket7999 / IrcWebSocket7999).
@@ -367,16 +377,6 @@ if (Test-Path -LiteralPath $webConfig) {
     if ($icoMaps.Count -gt 1) {
         throw "FR #7460 validation failed: $($icoMaps.Count) .ico mimeMap entries"
     }
-    # Canonicalize newlines so a second run is a no-op (FR #8803 idempotent).
-    $normText = {
-        param($t)
-        $s = [string]$t
-        $s = $s -replace "`r`n", "`n"
-        $s = $s -replace "`r", "`n"
-        # Collapse runs of spaces before newlines introduced by rule upsert formatting.
-        $s = [regex]::Replace($s, '[ \t]+\n', "`n")
-        return $s.TrimEnd() + "`n"
-    }
     $updated = & $normText $updated
     $rawNorm = & $normText $raw
     if ($updated -eq $rawNorm) {
@@ -399,7 +399,16 @@ if (Test-Path -LiteralPath $webConfig) {
         }
     }
 } else {
-    [IO.File]::WriteAllText($webConfig, $rewriteXml, [Text.UTF8Encoding]::new($false))
+    # First create must already be the upsert form (8-space rule lines). A raw
+    # here-string keeps 10-space children, so the second install rewrote them.
+    $created = $rewriteXml
+    foreach ($rn in $script:BobOwnedRuleNames) {
+        $ruleXml = Get-BobOwnedRuleXml -Name $rn -BackendUrl $Backend
+        $created = Set-BobOwnedRewriteRule -Cfg $created -Name $rn -RuleXml $ruleXml
+    }
+    $created = Ensure-IcoStaticContent -Cfg $created
+    $created = & $normText $created
+    [IO.File]::WriteAllText($webConfig, $created, [Text.UTF8Encoding]::new($false))
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $backup = "$webConfig.fr8803.$stamp.bak"
     Copy-Item -LiteralPath $webConfig -Destination $backup -Force
