@@ -975,7 +975,7 @@ namespace BobDialogs
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
             // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-            miPriority.Click += delegate { TrayLifecycle.Write("priority", "via", "bob-tray-Priority"); };
+            miPriority.Click += delegate { StartPriorityExe(); };
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
@@ -1714,6 +1714,26 @@ namespace BobDialogs
                 if (row != null) rows.Add(row);
             }
             return rows;
+        }
+
+        // FR #8699 / BOB-50: Agents > Priority starts vendor\priority\PriorityAgent.exe.
+        void StartPriorityExe()
+        {
+            string exe = Path.Combine(root, "vendor\\priority\\PriorityAgent.exe");
+            TrayLifecycle.Write("priority", "via", "bob-tray-Priority", "action", "start exe", "path", exe);
+            if (!File.Exists(exe)) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.WorkingDirectory = Path.GetDirectoryName(exe);
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("priority", "action", "start exe failed", "error", ex.Message);
+            }
         }
 
         // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
