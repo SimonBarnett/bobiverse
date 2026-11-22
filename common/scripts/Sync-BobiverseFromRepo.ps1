@@ -27,6 +27,9 @@
   FR #7167: when InstallRoot VERSION (MSI/ARP) is newer than clone common\VERSION but the sparse
   worktree tip is OK (or -ComposeOnly), still compose flat scripts and keep MSI VERSION; only
   full-skip robocopy when the tip is stale (FR #1018 older-clone rollback guard).
+  FR #8863: sync-skip-diverged (FR #7301) still overlays allowlisted runtime scripts
+  (bob/scripts/bob_worker.py, bob/scripts/skill_dag_mcp.py) plus flat scripts\ copies.
+  That does not replace a frozen bob-worker.exe; the onefile still needs an MSI rebuild.
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
@@ -461,6 +464,18 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
         }
     } catch {
         Write-Host ("WARN sync-gitclaim-from-tip error: {0}" -f $_.Exception.Message)
+    }
+    # FR #8863: allowlisted runtime scripts (bob_worker.py, skill_dag_mcp.py) even when
+    # ff is blocked or MSI VERSION is newer than the clone. Does not replace bob-worker.exe.
+    try {
+        $tf = Sync-BobiverseAllowlistedTipFiles -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
+        if ($tf.Ok) {
+            Write-Host ("INFO sync-tip-file ok bytes={0}: {1}" -f $tf.Bytes, $tf.Reason)
+        } else {
+            Write-Host ("WARN sync-tip-file skipped: {0}" -f $tf.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-tip-file error: {0}" -f $_.Exception.Message)
     }
     # FR #7161: tip-heal recycleseat.py when compose is skipped (e.g. MSI VERSION newer than
     # clone stamp) so live flat scripts\ still get SYSTEM/dirty-recycle gates without a full ff compose.
