@@ -3604,7 +3604,72 @@ def describe_agent_child_launch(
     return out
 
 
+def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
+    """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
+    install = str(Path(worker_dir).parent)
+    pairs = (
+        ("@@WORKER_DIR@@", worker_dir),
+        ("@@OUTBOX@@", str(outbox_path_for_run(home))),
+        ("@@INSTALL@@", install),
+        ("@@NICK@@", nick),
+        ("@@MACHINE@@", machine),
+    )
+    out = text
+    for token, value in pairs:
+        out = out.replace(token, value)
+    return out
+
+
+def _worker_prompt_from_install_tip(worker_dir: str, home: str, machine: str, nick: str) -> str | None:
+    """FR #8865: prefer the install-root tip template over text frozen into bob-worker.exe.
+
+    Flat ``<install>\\scripts`` and ``<install>\\bob\\scripts`` win over the exe-adjacent
+    copy so a tip-heal updates the seat prompt without a new hashed exe. A template that
+    still names ``bob/bob/scripts`` (pre-#8785 FR #7000 path) is ignored.
+    """
+    name = "worker_prompt_template.txt"
+    install = Path(worker_dir).parent
+    ordered = [
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+        Path(worker_dir) / "scripts" / name,
+    ]
+    seen: set[str] = set()
+    for cand in ordered:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not cand.is_file():
+                continue
+            raw = cand.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "@@WORKER_DIR@@" not in raw or "@@NICK@@" not in raw or "@@MACHINE@@" not in raw:
+            continue
+        if "bob/bob/scripts" in raw.replace("\\", "/"):
+            continue
+        rendered = _apply_worker_prompt_tokens(raw, worker_dir, home, machine, nick)
+        if "bob/bob/scripts" in rendered.replace("\\", "/"):
+            continue
+        if "@@" in rendered:
+            continue
+        return rendered
+    return None
+
+
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
+    tipped = _worker_prompt_from_install_tip(worker_dir, home, machine, nick)
+    if tipped:
+        return tipped
+    return _worker_prompt_builtin(worker_dir, home, machine, nick)
+
+
+def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) -> str:
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
