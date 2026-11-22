@@ -10091,6 +10091,41 @@ def out_of_fuel_quit_enabled(env: Optional[dict] = None) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+# TipForm / web meter fragments that must never appear in Win32 MessageBox (FR #9027).
+_OUT_OF_FUEL_DIALOG_HTML_RE = re.compile(r"<[^>]+>", re.DOTALL)
+_OUT_OF_FUEL_DIALOG_CSS_RE = re.compile(
+    r"\.token-progress[a-z0-9_-]*\s*\{[^}]*\}", re.IGNORECASE | re.DOTALL
+)
+_OUT_OF_FUEL_DIALOG_BAN_RE = re.compile(
+    r"(?i)(token-progress-bar|token-progress-fill|low cost models|<style|</style|<div|</div)"
+)
+
+
+def sanitize_out_of_fuel_dialog_field(text: str, maxlen: int) -> str:
+    """Plain-text only for MessageBox: strip tags/CSS/JSON blobs, cap length (FR #9027)."""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    # Drop HTML tags and TipForm meter CSS blocks.
+    cleaned = _OUT_OF_FUEL_DIALOG_HTML_RE.sub(" ", raw)
+    cleaned = _OUT_OF_FUEL_DIALOG_CSS_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("{", " ").replace("}", " ")
+    # Collapse whitespace (including newlines from dumped HTML).
+    cleaned = " ".join(cleaned.split())
+    if _OUT_OF_FUEL_DIALOG_BAN_RE.search(cleaned):
+        # Still looks like meter chrome — refuse the field rather than show garbage.
+        cleaned = ""
+    # Prefer short fuel summaries when evidence is a provider blob.
+    low = cleaned.lower()
+    if "fuel-exhausted:opencode-free" in low or "free usage limit" in low:
+        cleaned = "fuel-exhausted:opencode-free"
+    elif "hard-402" in low or ("402" in low and "payment" in low):
+        cleaned = "hard-402"
+    elif low.startswith("{") or '"error"' in low or '"html"' in low:
+        cleaned = ""
+    return one_line(cleaned, int(maxlen))
+
+
 def format_out_of_fuel_dialog_text(
     *,
     pool: str = "",
@@ -10099,21 +10134,21 @@ def format_out_of_fuel_dialog_text(
     evidence: str = "",
     nick: str = "",
 ) -> str:
-    """User-visible dialog body for FR #8814 fuel-exhausted quit."""
+    """User-visible dialog body for FR #8814 fuel-exhausted quit (plain text; FR #9027)."""
     lines = ["Fuel exhausted for this seat."]
-    pool_s = (pool or "").strip()
+    pool_s = sanitize_out_of_fuel_dialog_field(pool, 60)
     if pool_s:
         lines.append(f"Pool: {pool_s}")
-    rem_s = (remaining or "").strip()
+    rem_s = sanitize_out_of_fuel_dialog_field(remaining, 80)
     if rem_s:
         lines.append(f"Remaining: {rem_s}")
-    reset_s = (reset_hint or "").strip()
+    reset_s = sanitize_out_of_fuel_dialog_field(reset_hint, 80)
     if reset_s:
         lines.append(f"Reset: {reset_s}")
-    nick_s = (nick or "").strip()
+    nick_s = sanitize_out_of_fuel_dialog_field(nick, 40)
     if nick_s:
         lines.append(f"Seat: {nick_s}")
-    preview = one_line(evidence or "", 160)
+    preview = sanitize_out_of_fuel_dialog_field(evidence or "", 120)
     if preview:
         lines.append(preview)
     lines.append("This seat will close now so it leaves the digest.")
@@ -16878,8 +16913,13 @@ class Supervisor:
             except Exception:
                 pass
         if "reset" in (evidence or "").lower():
-            reset_hint = one_line(evidence or "", 80)
-        return pool, remaining, reset_hint
+            # FR #9027: never dump provider HTML/JSON into Reset: — sanitize first.
+            reset_hint = sanitize_out_of_fuel_dialog_field(evidence or "", 80)
+        return (
+            sanitize_out_of_fuel_dialog_field(pool, 60),
+            sanitize_out_of_fuel_dialog_field(remaining, 80),
+            reset_hint,
+        )
 
     def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
         """FR #8814 / #8991 / #9016: worker-remove + dialog + shutdown (no fuel-hold zombie).
