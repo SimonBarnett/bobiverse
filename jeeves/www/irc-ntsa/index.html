@@ -97,8 +97,8 @@
       <article class="card">
         <span class="pill">Report</span>
         <h3>Digest / report</h3>
-        <p><code>GET|POST /bob/v1/report</code> — live digest JSON and docs.</p>
-        <a class="btn btn-primary" href="docs/webhooks/report.html">Report docs</a>
+        <p><code>GET|POST /bob/v1/report</code> — live digest JSON (same webhook as <code>/bob/v1/digest</code>, which 301s here).</p>
+        <a class="btn btn-primary" href="docs/webhooks/report.html">Digest / report docs</a>
       </article>
       <article class="card">
         <span class="pill">Intake</span>
@@ -121,14 +121,8 @@
       <article class="card">
         <span class="pill">Models</span>
         <h3>Models</h3>
-        <p><code>GET /bob/v1/models</code> — fleet Weights rows (PUT/PATCH + <code>/refresh</code> coming).</p>
+        <p><code>GET /bob/v1/models</code> — Weights selections + per-CLI model/context/effort catalog (form dropdowns validate).</p>
         <a class="btn btn-primary" href="docs/webhooks/models.html">Models docs</a>
-      </article>
-      <article class="card">
-        <span class="pill">Validate</span>
-        <h3>Models validate</h3>
-        <p><code>POST /bob/v1/models/validate</code> - fail-closed combo check (BOB-03).</p>
-        <a class="btn btn-primary" href="docs/webhooks/models-validate.html">Validate docs</a>
       </article>
       <article class="card">
         <span class="pill">Git</span>
@@ -141,12 +135,6 @@
         <h3>Builds</h3>
         <p><code>GET /bob/v1/builds</code> — published build catalogue.</p>
         <a class="btn btn-primary" href="docs/webhooks/builds.html">Builds docs</a>
-      </article>
-      <article class="card">
-        <span class="pill">Digest</span>
-        <h3>Digest (local)</h3>
-        <p><code>GET /bob/v1/digest</code> — local alias of report (chair host).</p>
-        <a class="btn btn-primary" href="docs/webhooks/digest-local.html">Digest docs</a>
       </article>
       <article class="card">
         <span class="pill">Outbound</span>

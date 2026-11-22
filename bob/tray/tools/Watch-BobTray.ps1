@@ -4004,6 +4004,20 @@ function Update-BobTrayWorkerAgentsMenu {
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
+        # FR #8717 / BOB-24: Workers > Cursor shows the cursor.com favicon.
+        if ($id -eq 'cursor') {
+            $fav = Join-Path $PSScriptRoot '..\assets\menu-favicons\cursor.com.ico'
+            $favOk = '0'
+            if (Test-Path -LiteralPath $fav) {
+                try {
+                    $favIcon = New-Object System.Drawing.Icon $fav
+                    $item.Image = $favIcon.ToBitmap()
+                    $favIcon.Dispose()
+                    $favOk = '1'
+                } catch { $favOk = '0' }
+            }
+            Write-TrayLog ("worker-favicon id=cursor path={0} ok={1}" -f $fav, $favOk)
+        }
         # Sender is the clicked item. An empty tag must not start Automatic.
         $item.Add_Click({
                 param($sender, $e)

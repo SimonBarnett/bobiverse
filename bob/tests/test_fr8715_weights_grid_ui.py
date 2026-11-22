@@ -32,9 +32,9 @@ def test_fr8715_sources_pin_weights_grid_and_dump_flag():
     assert "DataGridView" in w
     assert "low" in w and "medium" in w and "high" in w
     assert "256" in w and "512" in w
-    assert "Opencode-Free" in w
+    # BOB-13 replaces static placeholder rows with webhook data; column contract stays.
     assert "MessageBox.Show" not in t.split("void ShowWeights()")[1].split("void ApplyEngineEnv()")[0]
-    assert "new WeightsForm()" in t
+    assert "new WeightsForm(" in t
     assert "--dump-weights-columns" in t
     assert "WeightsForm.cs" in b
     assert MOCK.is_file()
