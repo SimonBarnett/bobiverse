@@ -1572,6 +1572,17 @@ namespace BobDialogs
             // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
             ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
+            // FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
+            string ocIcon = Path.Combine(root, "bob", "tray", "assets", "opencode-favicon.ico");
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "path", ocIcon, "source", "https://opencode.ai/favicon-v3.ico");
+            try
+            {
+                if (File.Exists(ocIcon)) oc.Image = new Icon(ocIcon, 16, 16).ToBitmap();
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("workers-opencode", "action", "opencode favicon failed", "error", ex.Message);
+            }
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
