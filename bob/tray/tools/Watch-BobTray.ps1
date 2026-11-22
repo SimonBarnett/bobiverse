@@ -2142,7 +2142,7 @@ function Start-BobTrayWorkerExe {
             }
         }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
-        $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)[-1]
+        $childPid = Get-BobTrayLaunchPidFromOutput -Output @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)
         $picked = if ($explicit) { $explicit } else { 'auto' }
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} agent={3} own visible console (NEW agent every click; explicit agent never substitutes)' -f $Mode, $childPid, $Mode, $picked)
         if ([int]$childPid -gt 0) {
@@ -3733,19 +3733,19 @@ function Get-BobTrayWorkerAgentChoices {
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
-        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
+        [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
     $missing = @(
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
-        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
+        [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
     )
     $unknown = @(
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
-        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
+        [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
     )
     $exe = Join-Path $InstallRoot 'worker\bob-worker.exe'
     if (-not (Test-Path -LiteralPath $exe)) {
@@ -3895,26 +3895,32 @@ $notify.Text = ''
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miStatus = $menu.Items.Add('Status')
 $miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.FontStyle]::Bold)   # t795u: bold = the default item
-# Agents lists installed worker choices (Automatic / Grok / Cursor / OpenCode). Plan stays one click.
-# Explicit choices pass --agent and the worker refuses instead of starting a different agent.
-$miAgents = $menu.Items.Add('Agents')
+# FR #8713 / BOB-06: Agents{Plan,Priority,Jeeves}; Workers hold CLI starts (was Agents seed).
+$miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
+[void]$menu.Items.Add($miAgents)
+$miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
+$miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
+$miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
+[void]$miAgents.DropDownItems.Add($miPlan)
+[void]$miAgents.DropDownItems.Add($miPriority)
+[void]$miAgents.DropDownItems.Add($miJeeves)
+$miWorkers = New-Object System.Windows.Forms.ToolStripMenuItem('Workers')
+[void]$menu.Items.Add($miWorkers)
 # Do not call --list-agents here. Engine mode never shows this menu; a fuel read can take 90s.
-# Seed is local text only. Opening the menu (visible PowerShell tray) refreshes off the UI thread.
-Update-BobTrayWorkerAgentsMenu $miAgents @(
+Update-BobTrayWorkerAgentsMenu $miWorkers @(
     [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
     [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = '' }
-    [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = '' }
+    [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = '' }
 )
-$miAgents.Add_DropDownOpening({
+$miWorkers.Add_DropDownOpening({
         if (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue) {
             if (Test-BobTrayEngineMode) { return }
         }
-        Start-BobTrayWorkerAgentsRefresh $miAgents
+        Start-BobTrayWorkerAgentsRefresh $miWorkers
     })
-$miPlan = $menu.Items.Add('Plan')
-$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
-$miAck = $menu.Items.Add('Acknowledge')
+$miWeights = $menu.Items.Add('Weights')
+$miAbout = $menu.Items.Add('About')
 $miLog = $menu.Items.Add('Open log')
 [void]$menu.Items.Add('-')
 # FR #8706 / BOB-07: Exit submenu hosts Reload, Restart engine, Exit (TipForm).
@@ -3929,7 +3935,19 @@ $miExit = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$miAck.Add_Click({
+$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
+# BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
+$miPriority.Add_Click({ Write-TrayLog 'Priority: menu click (BOB-06 tree; start is later BOB)' })
+$miJeeves.Add_Click({ Write-TrayLog 'Jeeves: menu click (BOB-06 tree; start is later BOB)' })
+$miWeights.Add_Click({
+        Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'
+        [void][System.Windows.Forms.MessageBox]::Show(
+            'Weights binds to the models webhook in later BOB slices (BOB-12/13).',
+            'Bob — Weights',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information)
+    })
+$miAbout.Add_Click({
         Clear-Attention
         Show-BobTrayAbout
     })

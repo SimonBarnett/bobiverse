@@ -67,10 +67,14 @@ def page(title: str, body: str, *, crumbs_html: str = "") -> str:
 def render_entries(entries: list[d.DocEntry]) -> str:
     parts: list[str] = []
     for e in entries:
+        coming = getattr(e, "status", "live") == "coming"
+        status_badge = (
+            ' <span class="badge">Coming — not served</span>' if coming else ""
+        )
         parts.append(
             f"<section id=\"{escape(e.slug)}\">\n"
             f"<h2>{escape(e.title)} <span class=\"badge\">{escape(e.method)} "
-            f"{escape(e.path)}</span></h2>\n"
+            f"{escape(e.path)}</span>{status_badge}</h2>\n"
             f"<p><strong>Direction:</strong> {escape(e.direction)} · "
             f"<strong>Purpose:</strong> {escape(e.purpose)}</p>\n"
             f"<p><strong>Who calls it:</strong> {escape(e.callers)}</p>\n"
@@ -101,6 +105,8 @@ def main() -> None:
         "docs/webhooks/intake.html": "Intake webhook",
         "docs/webhooks/jira.html": "Jira webhook",
         "docs/webhooks/git.html": "GitHub git webhook",
+        "docs/webhooks/models.html": "Models webhook",
+        "docs/webhooks/builds.html": "Builds catalog",
         "docs/webhooks/digest-local.html": "Local digest alias",
         "docs/webhooks/health-local.html": "BobCallback health",
         "docs/webhooks/outbound-stall-wake.html": "Outbound stall / ticket-closure wake",
@@ -126,12 +132,16 @@ def main() -> None:
 
     rows: list[str] = []
     for e in d.all_entries():
+        coming = getattr(e, "status", "live") == "coming"
+        title_cell = escape(e.title) + (
+            ' <span class="badge">Coming — not served</span>' if coming else ""
+        )
         rows.append(
             "<tr>"
             f"<td>{escape(e.direction)}</td>"
             f"<td><code>{escape(e.method)}</code></td>"
             f'<td><a href="{escape(Path(e.html_rel).name)}"><code>{escape(e.path)}</code></a></td>'
-            f"<td>{escape(e.title)}</td>"
+            f"<td>{title_cell}</td>"
             "</tr>"
         )
     hub_body = (
@@ -155,41 +165,14 @@ def main() -> None:
     )
     print("wrote docs/webhooks/index.html")
 
-    index_body = """
-<p><strong>bobiverse acme</strong></p>
-<p>Public HTTP front door for Bobiverse fleet webhooks (IIS + Cloudflare).
-API JSON lives under <code>/bob/v1/*</code>.</p>
-<h2>Webhooks &amp; API</h2>
-<p>Read-only documentation for each inbound and outbound webhook:</p>
-<ul>
-<li><a href="docs/webhooks/index.html">Webhooks &amp; API index</a></li>
-<li><a href="docs/webhooks/report.html">Report / digest</a> — <code>GET|POST /bob/v1/report</code></li>
-<li><a href="docs/webhooks/git.html">GitHub git</a> — <code>POST /bob/v1/git</code></li>
-<li><a href="docs/webhooks/intake.html">Intake / harvest</a> — <code>POST /bob/v1/intake</code></li>
-<li><a href="docs/webhooks/jira.html">Jira</a> — <code>GET|POST /bob/v1/jira</code></li>
-<li><a href="docs/webhooks/hours.html">Hours</a> — <code>GET|POST /bob/v1/hours</code></li>
-<li><a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / ticket-closure wake</a> (FR #6391 / #6439)</li>
-<li><a href="docs/webhooks/digest-local.html">Local digest alias</a> · <a href="docs/webhooks/health-local.html">Local /health</a></li>
-</ul>
-<p class="meta">Live digest JSON: <a href="/bob/v1/report"><code>/bob/v1/report</code></a></p>
-"""
-    # FR #7467: do not clobber the rich public front door (site.css / /jeeves).
-    # Only seed a stub index when none exists yet.
+    # FR #7467 / #7478 / #7488: never write or clobber the redesigned home
+    # (jeeves/www/irc-ntsa/index.html). Cards live in that hand-edited file;
+    # this generator only owns docs/webhooks/*.html.
     site_index = www / "index.html"
-    if site_index.is_file() and (
-        "site.css" in site_index.read_text(encoding="utf-8")
-        or 'href="/jeeves"' in site_index.read_text(encoding="utf-8")
-    ):
+    if site_index.is_file():
         print("kept existing front-page index.html")
-        text = site_index.read_text(encoding="utf-8")
-        if "bobiverse acme" not in text.lower():
-            raise SystemExit("index missing bobiverse acme marker")
     else:
-        site_index.write_text(page("bobiverse acme", index_body), encoding="utf-8")
-        print("wrote index.html")
-        text = site_index.read_text(encoding="utf-8")
-        if "bobiverse acme" not in text.lower():
-            raise SystemExit("index missing bobiverse acme marker")
+        print("skipped front-page index.html (no seed; redesigned home is hand-edited)")
     print("ok", www)
 
 

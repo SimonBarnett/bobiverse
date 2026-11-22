@@ -28,7 +28,7 @@ import unregister_cmd
 import bobreport
 
 CMD = "!recycleseat"
-REQUEST_TTL_S = 60.0
+REQUEST_TTL_S = 300.0  # FR #8864: tray tick can lag past 60s; keep the req until the queue runs
 ACK_COOLDOWN_S = 900.0
 # FR #8602: stale doing / accepted_silent may --force past the busy gate.
 DEFAULT_STUCK_S = 900.0

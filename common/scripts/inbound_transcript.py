@@ -27,8 +27,9 @@ _SECRETISH = re.compile(
 _lock = threading.Lock()
 
 # Canonical fleet machine ids covered by FR #2174 acceptance (path + recovery).
-# Ionos host shop is win-mpre8vi4u6u (DIGEST_ID_FOLD); keep alias "ionos" for docs/tests.
-FLEET_EAR_MACHINES = ("win-mpre8vi4u6u", "marchhare", "flamingo")
+# FR #8653 / #8697: ionos alias folds to walrus (live chair/Ergo host). Keep
+# win-mpre8vi4u6u as a distinct fleet id if that hostname is still registered.
+FLEET_EAR_MACHINES = ("walrus", "win-mpre8vi4u6u", "marchhare", "flamingo")
 FLEET_EAR_ALIASES = ("ionos", "dev1")
 
 
@@ -44,7 +45,7 @@ def sanitize_machine_id(machine_id: str) -> str:
 
 
 def canonical_machine_id(machine_id: str) -> str:
-    """Fold digest aliases (ionos->win-mpre8vi4u6u, dev1->ce-priority-dev1) for shop channels."""
+    """Fold digest aliases (ionos->walrus, dev1->ce-priority-dev1) for shop channels."""
     mid = sanitize_machine_id(machine_id)
     if not mid:
         return mid
@@ -55,7 +56,7 @@ def canonical_machine_id(machine_id: str) -> str:
         return folded or mid
     except Exception:  # noqa: BLE001
         if mid == "ionos":
-            return "win-mpre8vi4u6u"
+            return "walrus"
         if mid == "dev1":
             return "ce-priority-dev1"
         return mid
