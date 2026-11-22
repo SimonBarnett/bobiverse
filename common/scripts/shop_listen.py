@@ -849,7 +849,9 @@ def return_job_to_unaccepted(
             # stamp require_machine to the giving seat's machine so the worktree is reused.
             console_closed_giveup = gitclaim.is_console_closed_reason(reason)
             # FR #8298: no-terminal-reply means the seat went silent. It is not a
-            # permanent refusal and must not burn giveup_count / giveup_seats.
+            # permanent reviewer refusal and must not burn giveup_count / needs_human.
+            # FR #8937: it must still keep the row, record giveup_seats, and set
+            # cooldown_until. Dropping those fields let an open FR leave the queue.
             no_terminal_giveup = gitclaim.is_no_terminal_reply_reason(reason)
             seat_not_job_giveup = (
                 self_mrb_giveup
@@ -890,7 +892,6 @@ def return_job_to_unaccepted(
             if (
                 gave_up_by
                 and not out_of_fuel_giveup
-                and not no_terminal_giveup
                 and not head_mismatch_giveup
                 and not busy_nack
             ):
@@ -926,7 +927,6 @@ def return_job_to_unaccepted(
                 not out_of_fuel_giveup
                 and not skill_dag_down_giveup
                 and not console_closed_giveup
-                and not no_terminal_giveup
                 and not head_mismatch_giveup
                 and not busy_nack
             ):
