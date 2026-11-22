@@ -1,6 +1,6 @@
 function Get-BobWin32ProcessRows {
     <#
-      FR #8888: unfiltered Get-CimInstance Win32_Process can sit past the 45s stall-alerts step.
+      FR #8888: an unfiltered process census can sit past the 45s stall-alerts step.
       EnumerationOptions.Timeout returns what it has, or nothing.
     #>
     param([int]$TimeoutSec = 8)
