@@ -4005,6 +4005,20 @@ function Update-BobTrayWorkerAgentsMenu {
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
+        # FR #8717 / BOB-24: Workers > Cursor shows the cursor.com favicon.
+        if ($id -eq 'cursor') {
+            $fav = Join-Path $PSScriptRoot '..\assets\menu-favicons\cursor.com.ico'
+            $favOk = '0'
+            if (Test-Path -LiteralPath $fav) {
+                try {
+                    $favIcon = New-Object System.Drawing.Icon $fav
+                    $item.Image = $favIcon.ToBitmap()
+                    $favIcon.Dispose()
+                    $favOk = '1'
+                } catch { $favOk = '0' }
+            }
+            Write-TrayLog ("worker-favicon id=cursor path={0} ok={1}" -f $fav, $favOk)
+        }
         # Sender is the clicked item. An empty tag must not start Automatic.
         $item.Add_Click({
                 param($sender, $e)
@@ -4085,6 +4099,16 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
+# BOB-40: Agents > Jeeves uses the existing butler icon.
+$butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
+}
+if (Test-Path -LiteralPath $butler) {
+    $ico = New-Object System.Drawing.Icon $butler
+    $miJeeves.Image = $ico.ToBitmap()
+    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+}
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
 [void]$miAgents.DropDownItems.Add($miJeeves)
@@ -4124,6 +4148,34 @@ $miJeeves.Add_Click({
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Warning)
             return
+        }
+        $fuelPath = $env:BOB_JEEVES_FUEL_FILE
+        if (-not $fuelPath) { $fuelPath = Join-Path $RepoRoot 'run\jeeves-fuel.json' }
+        if (Test-Path -LiteralPath $fuelPath) {
+            $doc = Get-Content -LiteralPath $fuelPath -Raw
+            if ($doc -match '"remaining_pct"\s*:\s*(-?\d+)' -and [int]$Matches[1] -le 0) {
+                Write-TrayLog 'jeeves dialog-quit reason=no-tokens'
+                try {
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        'No tokens on this box. Jeeves will quit.',
+                        'Bobiverse - Jeeves',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning)
+                } catch { }
+                return
+            }
+        }
+        $hook = $env:BOB_MODELS_WEBHOOK_FILE
+        if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
+        if (Test-Path -LiteralPath $hook) {
+            $raw = Get-Content -LiteralPath $hook -Raw
+            if ($raw -match '"Jeeves"\s*:\s*\{([^}]+)\}') {
+                $body = $Matches[1]
+                $model = if ($body -match '"model"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                $context = if ($body -match '"context"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                $effort = if ($body -match '"effort"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                Write-TrayLog ("jeeves-models webhook model=$model context=$context effort=$effort")
+            }
         }
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
