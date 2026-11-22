@@ -970,16 +970,19 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            miPlan.Click += delegate { StartWorker("plan", ""); };
+            miPlan.Click += delegate { StartPlanExe(); };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
             // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-            miPriority.Click += delegate { TrayLifecycle.Write("priority", "via", "bob-tray-Priority"); };
+            miPriority.Click += delegate { StartPriorityExe(); };
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            miJeeves.Click += delegate { TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves"); };
+            miJeeves.Click += delegate {
+                TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
+                StartWorker("agent", "grok");
+            };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
             menu.Items.Add(miAgents);
@@ -1553,12 +1556,38 @@ namespace BobDialogs
             AddOpencodeModelSubmenu(parent, true, record);
         }
 
+        // FR #8717 / BOB-24: Workers > Cursor uses the cursor.com favicon.
+        internal static string WorkerFaviconPath(string installRoot, string id)
+        {
+            if (!string.Equals(id ?? "", "cursor", StringComparison.OrdinalIgnoreCase)) return "";
+            return Path.Combine(installRoot ?? "", "assets", "menu-favicons", "cursor.com.ico");
+        }
+
+        void ApplyWorkerFavicon(ToolStripMenuItem mi, string id)
+        {
+            string p = WorkerFaviconPath(root, id);
+            if (p.Length == 0 || mi == null) return;
+            bool ok = false;
+            try
+            {
+                if (File.Exists(p))
+                {
+                    using (Icon ico = new Icon(p, 16, 16))
+                        mi.Image = ico.ToBitmap();
+                    ok = mi.Image != null;
+                }
+            }
+            catch { ok = false; }
+            TrayLifecycle.Write("worker-favicon", "id", id, "path", p, "ok", ok ? "1" : "0");
+        }
+
         void AddAgentChoice(ToolStripMenuItem parent, string id, string text, bool enabled, bool record)
         {
             ToolStripMenuItem mi = new ToolStripMenuItem(text);
             mi.Tag = id;
             mi.Enabled = enabled;
             mi.Click += OnAgentChoiceClick;
+            ApplyWorkerFavicon(mi, id);
             parent.DropDownItems.Add(mi);
             if (record) MenuItems.Add(text);
         }
@@ -1599,11 +1628,19 @@ namespace BobDialogs
                 id = id.Substring(0, pipe);
             }
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
+            else if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
+                TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
+                StartWorker("agent", "grok", null, "");
+            }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
             {
                 string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
+                // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
+                TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
             }
             else StartWorker("agent", id, null, "");
@@ -1711,6 +1748,46 @@ namespace BobDialogs
                 if (row != null) rows.Add(row);
             }
             return rows;
+        }
+
+        // FR #8699 / BOB-50: Agents > Priority starts vendor\priority\PriorityAgent.exe.
+        void StartPriorityExe()
+        {
+            string exe = Path.Combine(root, "vendor\\priority\\PriorityAgent.exe");
+            TrayLifecycle.Write("priority", "via", "bob-tray-Priority", "action", "start exe", "path", exe);
+            if (!File.Exists(exe)) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.WorkingDirectory = Path.GetDirectoryName(exe);
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("priority", "action", "start exe failed", "error", ex.Message);
+            }
+        }
+
+        // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
+        void StartPlanExe()
+        {
+            string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
+            if (!File.Exists(exe)) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.WorkingDirectory = Path.GetDirectoryName(exe);
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("plan", "action", "start exe failed", "error", ex.Message);
+            }
         }
 
         void StartWorker(string mode, string agent)
@@ -2252,6 +2329,13 @@ namespace BobDialogs
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
             // FR #8715 / BOB-12: exit-before-UI column dump for S1 tests.
+            // FR #8717 / BOB-24: exit-before-UI path of the Workers > Cursor favicon.
+            string dumpFav = Common.Arg(args, "--dump-worker-favicon");
+            if (dumpFav.Length > 0)
+            {
+                File.WriteAllText(dumpFav, TrayContext.WorkerFaviconPath(root, "cursor") + "\r\n", new UTF8Encoding(false));
+                return 0;
+            }
             string dumpWeightsCols = Common.Arg(args, "--dump-weights-columns");
             if (dumpWeightsCols.Length > 0)
             {

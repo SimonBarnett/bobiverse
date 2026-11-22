@@ -88,7 +88,7 @@ def test_tray_agents_menu_lists_choices_and_plan_stays_one_click():
     assert "ToolStripMenuItem('Workers')" in block or "$menu.Items.Add('Workers')" in block
     assert "Update-BobTrayWorkerAgentsMenu" in block
     assert "DropDownOpening" in block
-    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in t
+    assert "$miPlan.Add_Click({ Start-BobTrayPlanExe })" in t
     assert "Get-BobTrayWorkerAgentChoices" in t
     assert "--list-agents" in t
     assert "Start-BobTrayWorkerExe -Mode 'agent' -Agent" in t
@@ -132,8 +132,9 @@ def test_tray_second_click_starts_a_second_new_process_from_the_same_run_copy(tm
         "function Test-BobTraySeatsOff { $false }  # FR #7772: live tray dotsources this; the extract does not\n"
         "function Write-BobTraySeatStart { param($Log,$SeatId,$WorkerPid,$Trigger) }\n"
         f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{TRAY}',[ref]$null,[ref]$null)\n"
-        "foreach($name in 'ConvertTo-BobTrayProcessArgumentString','Initialize-BobTrayConsoleLauncher','Register-BobTrayGrokSession','Start-BobTrayVisibleProcessWithSessionEnv','Start-BobTrayWorkerExe'){\n"
-        "  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true).Extent.Text\n"
+        f"$astPid=[System.Management.Automation.Language.Parser]::ParseFile('{(TRAY.parent / 'BobTrayStartWorker.ps1')}',[ref]$null,[ref]$null)\n"
+        "foreach($pair in @(@($ast,'ConvertTo-BobTrayProcessArgumentString'),@($ast,'Initialize-BobTrayConsoleLauncher'),@($ast,'Register-BobTrayGrokSession'),@($ast,'Start-BobTrayVisibleProcessWithSessionEnv'),@($astPid,'Get-BobTrayLaunchPidFromOutput'),@($ast,'Start-BobTrayWorkerExe'))){\n"
+        "  $fn=$pair[0].Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $pair[1]},$true).Extent.Text\n"
         "  Invoke-Expression $fn }\n"
         "Start-BobTrayWorkerExe -Mode agent\nStart-BobTrayWorkerExe -Mode agent\nStart-BobTrayWorkerExe -Mode plan\n",
         encoding="utf-8")
