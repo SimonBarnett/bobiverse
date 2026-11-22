@@ -76,6 +76,7 @@ def test_fr7414_install_copies_downloads_css_and_commands(tmp_path: Path):
         "http://127.0.0.1:7700",
         "-WwwSource",
         str(www),
+        "-PublishWww",
     ]
     r = subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
     assert r.returncode == 0, r.stdout + "\n" + r.stderr

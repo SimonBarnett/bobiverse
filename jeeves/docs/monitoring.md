@@ -1,5 +1,18 @@
 # Jeeves monitoring checks
 
+## MONITORING command access (FR #8827)
+
+The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / …) **to keep the queue moving**. Chair auth: principal kind `monitor` — nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
+
+**How the seat authenticates (no secrets here):**
+
+| Path | When | How |
+|---|---|---|
+| **Ear relay** | Monitor host has a live `bob-<machine>` ear (usual) | Append `PRIVMSG #bobiverse :!<cmd>` (or `PRIVMSG Jeeves :!<cmd>`) to the ear outbox. Ear principal already has full mutators. |
+| **Direct** | Dedicated IRC nick for monitor | Nick in `JEEVES_MONITOR_NICKS` (default `monitoring`) and/or account in `JEEVES_MONITOR_ACCOUNTS` on the chair. SASL/services login is configured on the client host — never paste passwords into docs or intake. |
+
+`bob-worker --mode monitor` itself still has no IRC shop seat; relay or a separate IRC client supplies the nick. Playbook (when to `!ignore` vs intake): `.grok/skills/bobiverse-jeeves-monitor/SKILL.md`. Related tray UI: BOB-43 (#8681).
+
 ## intake_allowlist (FR #3117)
 
 `Test-JeevesMonitorIntakeAllowlist.ps1` / `tools/monitor/intake_allowlist.py` probes live `POST /bob/v1/intake` with do-not-file titles for known products (including `SimonBarnett/a-search` and `SimonBarnett/trutex`).
