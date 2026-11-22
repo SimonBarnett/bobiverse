@@ -20,6 +20,8 @@ class RouteConstant:
 
 
 _EXCLUDE_PREFIXES = ("/jeeves",)
+# Retired routes kept as named constants for 404/redirect handlers — not separate docs cards.
+_EXCLUDE_PATHS = frozenset({"/bob/v1/models/validate"})
 
 
 def _const_str(node: ast.AST) -> str | None:
@@ -116,6 +118,8 @@ def inventory_bobcallback_tree(repo_root: Path) -> list[RouteConstant]:
     by_path: dict[str, RouteConstant] = {}
     for c in collected:
         if any(c.path.startswith(p) for p in _EXCLUDE_PREFIXES):
+            continue
+        if c.path in _EXCLUDE_PATHS:
             continue
         prev = by_path.get(c.path)
         if prev is None or "bobcallback" in c.source.replace("\\", "/"):
