@@ -970,7 +970,17 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            miPlan.Click += delegate { StartPlanExe(); };
+            miPlan.Click += delegate {
+                // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
+                string fuel = PlanFuelPath();
+                if (PlanFuelEmpty(fuel))
+                {
+                    TrayLifecycle.Write("plan", "action", "no tokens", "quit", "1", "path", fuel);
+                    MessageBox.Show("Plan: this box has no tokens. The Plan seat will quit instead of starting without fuel.", "Plan - no tokens", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                StartPlanExe();
+            };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
@@ -979,7 +989,52 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
+            // BOB-40: Agents > Jeeves uses the existing butler icon.
+            string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
+            if (!File.Exists(butler))
+            {
+                DirectoryInfo parent = Directory.GetParent(root);
+                if (parent != null)
+                    butler = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
+            }
+            if (File.Exists(butler))
+            {
+                using (Icon ico = new Icon(butler))
+                    miJeeves.Image = ico.ToBitmap();
+                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico");
+            }
             miJeeves.Click += delegate {
+                // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
+                if (!JeevesJDrivePresent(@"J:\"))
+                {
+                    TrayLifecycle.Write("jeeves", "action", "J: map missing", "quit", "1");
+                    MessageBox.Show("J: is not mapped. Jeeves will not start.", "Bob - Jeeves", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (JeevesNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_JEEVES_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(JeevesNoTokenGate.Body, JeevesNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("jeeves", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
+                string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
+                if (string.IsNullOrEmpty(hook))
+                    hook = System.IO.Path.Combine(root, "run", "models-webhook.json");
+                try
+                {
+                    if (System.IO.File.Exists(hook))
+                    {
+                        string line = JeevesModelsWebhook.DryRunLine(System.IO.File.ReadAllText(hook));
+                        if (line.Length > 0)
+                            TrayLifecycle.Write("jeeves-models", "webhook", line);
+                    }
+                }
+                catch { }
+
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
                 StartWorker("agent", "grok");
             };
@@ -1761,6 +1816,13 @@ namespace BobDialogs
             return rows;
         }
 
+        // FR #8686 / BOB-36: Jeeves requires a J: map. The click passes J:\. Tests can call the same check with a fixture path.
+        bool JeevesJDrivePresent(string driveRoot)
+        {
+            if (string.IsNullOrEmpty(driveRoot)) return false;
+            return Directory.Exists(driveRoot);
+        }
+
         // FR #8699 / BOB-50: Agents > Priority starts vendor\priority\PriorityAgent.exe.
         void StartPriorityExe()
         {
@@ -1781,10 +1843,55 @@ namespace BobDialogs
             }
         }
 
+        // FR #8692 / BOB-46: fuel file for this box. BOB_PLAN_FUEL_FILE overrides the local default.
+        string PlanFuelPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_PLAN_FUEL_FILE");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(local, "Bobiverse", "plan-fuel.json");
+        }
+
+        bool PlanFuelEmpty(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))); }
+            catch { return false; }
+            if (doc == null) return false;
+            if (doc.ContainsKey("status") && doc["status"] != null)
+            {
+                string st = ("" + doc["status"]).Trim().ToLowerInvariant();
+                if (st == "empty" || st == "exhausted" || st == "out-of-fuel" || st == "out_of_fuel") return true;
+            }
+            foreach (string key in new string[] { "remaining_pct", "remaining", "tokens_remaining" })
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null || ("" + doc[key]).Trim().Length == 0) continue;
+                int n;
+                if (int.TryParse(("" + doc[key]).Trim(), out n)) return n <= 0;
+            }
+            return false;
+        }
+
         // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
         void StartPlanExe()
         {
             string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
+            if (string.IsNullOrEmpty(hook))
+                hook = Path.Combine(root, "run", "models-webhook.json");
+            try
+            {
+                if (File.Exists(hook))
+                {
+                    string line = PlanModelsWebhook.DryRunLine(File.ReadAllText(hook));
+                    if (line.Length > 0)
+                        TrayLifecycle.Write("plan-models", "webhook", line);
+                }
+            }
+            catch { }
+            string mcpPath = PlanMcpConfig.WriteConfig(root);
+            TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
             TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
             if (!File.Exists(exe)) return;
             try
