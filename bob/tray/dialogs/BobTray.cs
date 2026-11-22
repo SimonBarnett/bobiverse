@@ -1826,6 +1826,8 @@ namespace BobDialogs
         void StartPlanExe()
         {
             string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            string mcpPath = PlanMcpConfig.WriteConfig(root);
+            TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
             TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
             if (!File.Exists(exe)) return;
             try

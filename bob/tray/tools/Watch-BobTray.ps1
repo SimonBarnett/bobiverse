@@ -2112,6 +2112,12 @@ function Start-BobTrayPriorityExe {
 function Start-BobTrayPlanExe {
     # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
     $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    $mcpDir = Join-Path $RepoRoot 'run'
+    New-Item -ItemType Directory -Force -Path $mcpDir | Out-Null
+    $mcpPath = Join-Path $mcpDir 'plan-mcp.json'
+    $mcpUrl = 'https://plan.ntsa.uk/mcp'
+    Set-Content -LiteralPath $mcpPath -Encoding utf8 -Value ('{"mcpServers":{"plan":{"url":"' + $mcpUrl + '"}}}')
+    Write-TrayLog ('plan-mcp url=' + $mcpUrl + ' config=' + $mcpPath)
     Write-TrayLog ('Plan: start exe ' + $exe)
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-TrayLog ('Plan exe missing: ' + $exe)
