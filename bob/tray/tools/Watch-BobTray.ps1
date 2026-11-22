@@ -4050,6 +4050,15 @@ function Update-BobTrayWorkerAgentsMenu {
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
+        if ($id -eq 'opencode') {
+            # FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
+            $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
+            Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
+            if (Test-Path -LiteralPath $ocIcon) {
+                try { $item.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
+                catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
+            }
+        }
         if ($id -eq 'grok') {
             # FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon.
             $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
