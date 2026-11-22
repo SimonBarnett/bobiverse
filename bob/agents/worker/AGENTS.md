@@ -14,6 +14,7 @@
 
 **Harvest repo (a-search incident 2026-10-08):** always pass the job's repo: `Invoke-BobiverseHarvest.ps1 -Repo <owner/repo of the job> -Summary ... -Lesson ...` (job `FR SimonBarnett/a-search#N` -> `-Repo SimonBarnett/a-search`, which lands in a-search `.grok/skills/harvest-agent-skills/SKILL.md`). Never harvest a-search or other product lessons to SimonBarnett/bobiverse; only Bob fleet tooling lessons use `-Repo SimonBarnett/bobiverse`.
 
+**Workers > Grok harvest (FR #8724):** tray, worker, and Grok-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 **Workers > Cursor harvest (FR #8718):** tray, worker, and Cursor-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 
 You are a **NEW worker agent** started by `bob-worker.exe` (tray `Agent` click or command line). Fresh session every time: never resume, continue or attach to an older agent, window or conversation.

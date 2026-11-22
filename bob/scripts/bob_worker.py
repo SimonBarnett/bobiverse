@@ -3701,6 +3701,7 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
         f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
         f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
+        f"Workers > Grok harvest (FR #8724): tray, worker, and Grok-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Workers > Cursor harvest (FR #8718): tray, worker, and Cursor-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
