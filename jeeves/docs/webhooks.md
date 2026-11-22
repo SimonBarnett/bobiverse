@@ -71,7 +71,7 @@ curl -sS "https://bob.ntsa.uk/bob/v1/report"
 
 ### GET builds catalog (FR #8490)
 
-Serves the validated JSON array from digest-home `builds-catalog.json` (missing file → `[]`). Each entry needs `name`, `yml` (`owner/repo` or `owner/repo:path`), `output` (artifact export dir; no whitespace), `install` (`fleet` or a machine id); optional `dep` (list, documentation only), `version` (numeric `x.y.z` / `x.y.z.w`), `ref`. Invalid rows are skipped. Ops `!build n` builds the selected `yml`, copies pack artifacts into `output`, then reinstalls on `install` (fleet expands from `registered-machines.json`). Example seed: `common/defaults/builds-catalog.example.json`.
+Serves the validated JSON array from digest-home `builds-catalog.json` (missing file → `[]`). Each entry needs `name`, `yml` (`owner/repo` or `owner/repo:path`; path may not contain `..`, absolute/drive forms, or `?#%`/whitespace), `output` (artifact export dir; no whitespace), `install` (`fleet` or a machine id); optional `dep` (list, documentation only), `version` (numeric `x.y.z` / `x.y.z.w`), `ref`. Invalid rows are skipped. Chair `!build` loads the digest-home file first and only falls back to this HTTP endpoint when local catalogs are empty (FR #8770). Ops `!build n` builds the selected `yml` path, copies pack artifacts into `output`, then reinstalls on `install` (fleet expands from `registered-machines.json`). Example seed: `common/defaults/builds-catalog.example.json`.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/builds"

@@ -49,6 +49,7 @@ $hidden = @(
     'stall_callbacks', 'stall_detectors', 'stall_filer',
     # FR #6487: !build recipe parse needs PyYAML inside the frozen exe.
     'yaml', '_yaml', 'bobiverse_build',
+    # FR #8770: chair_commands imports builds_catalog for BUILD_USAGE_LINES.
     # BOB-01/03 / FR #8707 / #8710: models Weights GET + validate combo catalogue.
     'models_catalog', 'builds_catalog'
 )
