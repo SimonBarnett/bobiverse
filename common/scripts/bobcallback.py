@@ -5,9 +5,13 @@ Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /j
 login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
 with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
 rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows (BOB-01 / FR #8707). POST **/bob/v1/models/validate**
-checks a ``(cli, model, context, effort)`` tuple against the fail-closed
-``models-valid-combos.json`` allow-list (BOB-03 / FR #8710); it never persists.
+returns fleet agent Weights rows (BOB-01 / FR #8707) plus a ``clis`` catalogue
+whose model/context/effort options come from digest-home ``models-valid-combos.json``
+(missing/malformed combo file yields empty model maps, not an error). FR #9053
+retired ``POST /bob/v1/models/validate``: the route returns JSON 404
+``no_models_validate`` and does not check or persist the tuple. The Weights form
+limits dropdowns to that GET catalogue; ``PUT /bob/v1/models`` persists agent rows
+and does not apply the combo allow-list.
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
