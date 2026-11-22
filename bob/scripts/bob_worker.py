@@ -17604,6 +17604,15 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #8721 / BOB-21 S1: stable cursor-agent token after successful Cursor spawn (wrapper PID).
+            if (self.kind or "").strip().lower() == "cursor":
+                try:
+                    _cc = resolve_cursor_cmd(env) or resolve_cursor_cmd() or "(unresolved)"
+                except Exception:
+                    _cc = "(unresolved)"
+                self.log(
+                    f"cursor-agent: cmd={_cc} pid={proc.pid} nick={self.nick} workspace={self.cwd}"
+                )
             # FR #4843: warn when the live install checkout is not on main.
             try:
                 log_install_root_guard(self._install_root_for_fuel(), self.log)
