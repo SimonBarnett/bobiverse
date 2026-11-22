@@ -319,9 +319,12 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 (log_dir / "checkout.log").write_text("\n".join(ck_log), encoding="utf-8")
             print(f"build: checkout done sha={sha} baseline={tag or 'none'}", flush=True)
-        recipe = bb.load_recipe(root)
+        # FR #8770: catalog yml path from job; legacy jobs without field → default.
+        rel = str(job.get("recipe_rel") or "").strip()
+        recipe = bb.load_recipe(root, rel)
         print(
-            f"build: recipe machine={recipe.machine} suites={len(recipe.suites or [])}",
+            f"build: recipe machine={recipe.machine} suites={len(recipe.suites or [])}"
+            + (f" rel={rel}" if rel else ""),
             flush=True,
         )
         local = (args.local_machine or "").strip()

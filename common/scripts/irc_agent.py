@@ -2416,24 +2416,13 @@ class Client:
 
 
     def _load_build_catalog_entries(self):
-        """FR #8490: prefer GET /bob/v1/builds; fall back to local builds-catalog.json."""
+        """FR #8770: digest-home then chair home; HTTP only when both are empty."""
         import builds_catalog as bc
 
-        try:
-            return bc.fetch_catalog_http(bc.default_builds_url())
-        except Exception:
-            pass
-        for home in (self._digest_home(), Path(self.home)):
-            try:
-                rows = bc.load_catalog_file(home)
-            except Exception:
-                rows = []
-            if rows:
-                return rows
-        try:
-            return bc.load_catalog_file(self._digest_home())
-        except Exception:
-            return []
+        return bc.load_catalog_entries_local_first(
+            (self._digest_home(), Path(self.home)),
+            http_fetcher=lambda: bc.fetch_catalog_http(bc.default_builds_url()),
+        )
 
     def _handle_build_command(
         self,
@@ -2459,9 +2448,10 @@ class Client:
         except Exception:
             catalog_entries = []
 
-        def recipe_loader(repo: str):
+        def recipe_loader(repo: str, rel: str = ""):
             # Only bobiverse's own recipe lives in this install; other repos must carry
             # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            # FR #8770: optional rel from catalog yml path.
             def _ensure_token() -> None:
                 import gh_filer
 
@@ -2472,7 +2462,7 @@ class Client:
                     _ensure_token()
                 except Exception:
                     pass
-                return bobiverse_build.fetch_remote_recipe(repo)
+                return bobiverse_build.fetch_remote_recipe(repo, rel=rel or "")
             # FR #6484: packaged Jeeves has no local .bobiverse/; fall back to GitHub.
             # FR #6487: present local YAML that fails to parse is not masked as missing.
             # FR #8490: ref comes after catalog index n (version/ref), else catalog, else main.
@@ -2506,8 +2496,18 @@ class Client:
                 [root, root.parent],
                 repo,
                 ref=build_ref,
+                rel=rel or "",
                 ensure_token=_ensure_token,
             )
+
+        def version_resolver(repo: str):
+            try:
+                import gh_filer
+
+                gh_filer.ensure_gh_token_env()
+            except Exception:
+                pass
+            return bobiverse_build.resolve_next_build_version(repo)
 
         ignored = ()
         try:
@@ -2525,6 +2525,7 @@ class Client:
                 lock=lock,
                 ignored=ignored,
                 catalog_entries=catalog_entries,
+                version_resolver=version_resolver,
             )
         except Exception as e:
             info(f"WARN build decide failed: {type(e).__name__}: {e}")

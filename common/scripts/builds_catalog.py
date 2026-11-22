@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 BUILDS_CATALOG_NAME = "builds-catalog.json"
 BUILDS_PATH = "/bob/v1/builds"
@@ -26,6 +26,14 @@ _YML_RE = re.compile(
 _NUMERIC_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\.\d+)?$")
 _MACHINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_RECIPE_REL = ".bobiverse/build.yml"
+
+# FR #8770: single source of truth for !build usage (chair help, list footer, decide_build).
+BUILD_USAGE_LINES = (
+    "build: !build | !build <n> [version] [ref] | !build tests-only|dry-run <n> [version] [ref]",
+    "build: !build preflight|status|cancel <n> | !build status | !build help  (version default: next patch)",
+)
+
+_IRC_ROW_MAX_BYTES = 400
 
 
 @dataclass
@@ -58,6 +66,24 @@ def catalog_path(home: Path | str) -> Path:
     return Path(home) / BUILDS_CATALOG_NAME
 
 
+def _validate_recipe_rel(rel: str) -> str:
+    """Normalize and refuse unsafe relative recipe paths (FR #8770)."""
+    text = (rel or "").strip().replace("\\", "/")
+    text = text.lstrip("/")
+    if not text:
+        return DEFAULT_RECIPE_REL
+    if text.startswith("/") or text.startswith("\\"):
+        raise ValueError(f"bad yml path (absolute): {rel!r}")
+    if re.match(r"^[A-Za-z]:", text) or text.startswith("//"):
+        raise ValueError(f"bad yml path (drive/UNC): {rel!r}")
+    if any(ch in text for ch in "?#% \t\r\n"):
+        raise ValueError(f"bad yml path (special/whitespace): {rel!r}")
+    parts = text.split("/")
+    if any(p == "" or p == "." or p == ".." for p in parts):
+        raise ValueError(f"bad yml path (empty/dot segment): {rel!r}")
+    return text
+
+
 def parse_yml_field(yml: str) -> tuple[str, str]:
     """Return ``(owner/repo, relative_recipe_path)``."""
     text = (yml or "").strip()
@@ -65,8 +91,10 @@ def parse_yml_field(yml: str) -> tuple[str, str]:
     if not m:
         raise ValueError(f"bad yml field: {yml!r}")
     repo = m.group("repo")
-    rel = (m.group("path") or "").strip().lstrip("/\\") or DEFAULT_RECIPE_REL
-    rel = rel.replace("\\", "/")
+    raw_path = (m.group("path") or "").strip()
+    if not raw_path:
+        return repo, DEFAULT_RECIPE_REL
+    rel = _validate_recipe_rel(raw_path)
     return repo, rel
 
 
@@ -163,26 +191,97 @@ def catalog_to_json(entries: Iterable[BuildCatalogEntry]) -> bytes:
     ).encode("utf-8")
 
 
-def format_catalog_lines(entries: Iterable[BuildCatalogEntry]) -> list[str]:
+def _clip_utf8(text: str, max_bytes: int) -> str:
+    """Clip *text* to ``max_bytes`` UTF-8 without splitting a codepoint."""
+    raw = text or ""
+    b = raw.encode("utf-8")
+    if len(b) <= max_bytes:
+        return raw
+    cut = b[:max_bytes]
+    while cut:
+        try:
+            return cut.decode("utf-8")
+        except UnicodeDecodeError:
+            cut = cut[:-1]
+    return ""
+
+
+def format_catalog_lines(
+    entries: Iterable[BuildCatalogEntry],
+    *,
+    next_versions: dict | None = None,
+    footer: Iterable[str] | None = None,
+) -> list[str]:
+    """IRC list rows: name/repo/install/version/ref only; each row ≤ 400 UTF-8 bytes.
+
+    FR #8770: ``yml``/``dep``/``output`` stay in dry-run, not list rows.
+    ``next_versions`` maps repo → display without the ``next:`` prefix (``2.0.2``,
+    ``-``, ``?``). Blank entry.version → ``version=next:Y``.
+    """
     rows = list(entries)
     if not rows:
         return [
             "build: catalog empty (edit builds-catalog.json on chair home)",
         ]
+    nv = next_versions or {}
     lines = ["build catalog:"]
     for i, e in enumerate(rows, 1):
-        dep = ",".join(e.dep) if e.dep else "-"
-        ver = e.version or "(set on !build n)"
-        ref = e.ref or "HEAD"
-        lines.append(
-            f"  {i}) {e.name}  yml={e.yml}  install={e.install}  "
-            f"dep={dep}  version={ver}  ref={ref}  output={e.output}"
-        )
-    lines.append(
-        "build: !build n [version] [ref]  |  !build dry-run n  |  "
-        "!build status n  |  !build cancel n"
-    )
+        repo = e.repo
+        ref = (e.ref or "HEAD").strip() or "HEAD"
+        if (e.version or "").strip():
+            ver_disp = e.version.strip()
+        else:
+            preview = nv.get(repo, nv.get(repo.lower(), "?"))
+            ver_disp = f"next:{preview}"
+        # Clip name/ref so the full row stays ≤ 400 bytes.
+        name = e.name
+        for _ in range(8):
+            row = (
+                f"  {i}) {name}  {repo}  install={e.install}  "
+                f"version={ver_disp}  ref={ref}"
+            )
+            if len(row.encode("utf-8")) <= _IRC_ROW_MAX_BYTES:
+                break
+            # Prefer shrinking name, then ref.
+            overhead = len(row.encode("utf-8")) - _IRC_ROW_MAX_BYTES
+            if len(name.encode("utf-8")) > 8:
+                name = _clip_utf8(name, max(4, len(name.encode("utf-8")) - overhead - 1))
+            elif len(ref.encode("utf-8")) > 4:
+                ref = _clip_utf8(ref, max(3, len(ref.encode("utf-8")) - overhead - 1))
+            else:
+                row = _clip_utf8(row, _IRC_ROW_MAX_BYTES)
+                break
+        else:
+            row = _clip_utf8(
+                f"  {i}) {name}  {repo}  install={e.install}  "
+                f"version={ver_disp}  ref={ref}",
+                _IRC_ROW_MAX_BYTES,
+            )
+        lines.append(row)
+    foot = list(footer) if footer is not None else list(BUILD_USAGE_LINES)
+    lines.extend(foot)
     return lines
+
+
+def load_catalog_entries_local_first(
+    homes: Iterable[Path | str],
+    *,
+    http_fetcher: Callable | None = None,
+) -> list[BuildCatalogEntry]:
+    """FR #8770: digest/chair local files first; HTTP only when every home is empty."""
+    for home in homes:
+        try:
+            rows = load_catalog_file(home)
+        except Exception:
+            rows = []
+        if rows:
+            return rows
+    if http_fetcher is None:
+        return []
+    try:
+        return list(http_fetcher() or [])
+    except Exception:
+        return []
 
 
 def entry_at(entries: Iterable[BuildCatalogEntry], n: int) -> BuildCatalogEntry | None:
