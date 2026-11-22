@@ -4077,6 +4077,19 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
+# FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+$priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
+if (Test-Path -LiteralPath $priorityIco) {
+    try {
+        $priorityIcon = New-Object System.Drawing.Icon $priorityIco
+        $miPriority.Image = $priorityIcon.ToBitmap()
+        $priorityIcon.Dispose()
+        Write-TrayLog 'priority-icon path=vendor/priority/priority.ico'
+    }
+    catch {
+        Write-TrayLog ('priority-icon failed: ' + $_.Exception.Message)
+    }
+}
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)

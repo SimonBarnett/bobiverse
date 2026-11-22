@@ -974,7 +974,20 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
-            // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
+            // FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+            string priorityIco = Path.Combine(root, "vendor\\priority\\priority.ico");
+            if (File.Exists(priorityIco))
+            {
+                try
+                {
+                    using (Icon ico = new Icon(priorityIco)) { miPriority.Image = ico.ToBitmap(); }
+                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", "vendor/priority/priority.ico");
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("priority", "action", "priority-icon failed", "error", ex.Message);
+                }
+            }
             miPriority.Click += delegate { StartPriorityExe(); };
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
