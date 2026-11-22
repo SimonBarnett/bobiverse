@@ -3843,6 +3843,11 @@ function Update-BobTrayWorkerAgentsMenu {
                 if ($picked -eq 'auto') {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent '' -Trigger 'menu'
                 }
+                elseif ($picked -eq 'opencode') {
+                    # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
+                    Write-TrayLog 'Workers Open Code: opencode CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode'
+                }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
                 }

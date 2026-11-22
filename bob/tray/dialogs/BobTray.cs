@@ -1548,6 +1548,8 @@ namespace BobDialogs
                 string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
+                // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
+                TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
             }
             else StartWorker("agent", id, null, "");
