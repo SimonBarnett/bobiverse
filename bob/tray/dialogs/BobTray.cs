@@ -2342,6 +2342,22 @@ namespace BobDialogs
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
                 return 0;
             }
+            // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
+            string dumpWeightsValid = Common.Arg(args, "--dump-weights-valid");
+            if (dumpWeightsValid.Length > 0)
+            {
+                BobModelsResult catalog = BobModelsClient.Get(root);
+                Dictionary<string, List<BobModelsComboRow>> clis =
+                    catalog != null ? catalog.Clis : null;
+                File.WriteAllText(dumpWeightsValid, WeightsForm.DumpValidOptions(clis), new UTF8Encoding(false));
+                TrayLifecycle.Write(
+                    "weights_valid_dump",
+                    "host", catalog != null ? (catalog.UrlHost ?? "") : "",
+                    "status", catalog != null ? catalog.Status.ToString() : "0",
+                    "clis", clis != null ? clis.Count.ToString() : "0",
+                    "ok", catalog != null && catalog.Ok ? "1" : "0");
+                return catalog != null && catalog.Ok && clis != null && clis.Count > 0 ? 0 : 2;
+            }
             // FR #8714 / BOB-13: headless Weights GET/PUT against /bob/v1/models (exit before UI).
             string weightsGetOut = Common.Arg(args, "--weights-get");
             if (weightsGetOut.Length > 0)
