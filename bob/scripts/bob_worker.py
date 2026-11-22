@@ -4876,6 +4876,69 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+
+def _stderr_is_seat_prompt_echo(text: str) -> bool:
+    """True when stderr is the worker assignment prompt, not a CLI error.
+
+    FR #8990: OpenCode killed with exit 0xffffffff often leaves only the
+    seat prompt (worktree / .bob tmp / outbox rules) on stderr. That is an
+    external kill. A real crash still names a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind", '"lvl": "error"', '"lvl":"error"')):
+        return False
+    markers = (
+        "job worktree",
+        "do not check the outbox",
+        ".bob\\tmp",
+        ".bob/tmp",
+        "the turn is not over until done",
+    )
+    return any(m in low for m in markers)
+
+
+def _stderr_is_grok_structured_info_noise(text: str) -> bool:
+    """True when every nonempty line is a Grok JSON info/debug log, not an error.
+
+    FR #8992: a killed seat (exit 0xffffffff) often leaves only
+    ``billing: fetched credits config`` (or similar) with ``\"lvl\": \"info\"``.
+    Those are not a CLI crash. Reject warn/error levels and failure tokens.
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        low = ln.lower()
+        if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind")):
+            return False
+        if any(
+            tok in low
+            for tok in (
+                '"lvl": "error"',
+                '"lvl":"error"',
+                '"lvl": "warn"',
+                '"lvl":"warn"',
+                '"lvl": "warning"',
+                '"lvl":"warning"',
+            )
+        ):
+            return False
+        if not any(
+            tok in low
+            for tok in (
+                '"lvl": "info"',
+                '"lvl":"info"',
+                '"lvl": "debug"',
+                '"lvl":"debug"',
+            )
+        ):
+            return False
+    return True
+
+
+
 def grok_worker_spawn_connect_failure(text: str) -> bool:
     """FR #8972: grok exited because its own worker_spawn could not connect.
 
@@ -4884,6 +4947,7 @@ def grok_worker_spawn_connect_failure(text: str) -> bool:
     """
     raw = str(text or "")
     return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
 
 
 def unsigned_exit_stderr_is_noise(text: str) -> bool:
@@ -4905,6 +4969,8 @@ def unsigned_exit_stderr_is_noise(text: str) -> bool:
         r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
         raw,
     ))
+
+
 
 
 def _intake_disabled_by_env() -> bool:
@@ -5012,13 +5078,16 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    # FR #9013: OpenCode stdout TextIOWrapper OSError 22 is external-kill teardown noise.
-    # FR #9012: OpenCode idle missing-query console dump is external-kill noise.
-    # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
+    # FR #8990: the same exit with only the assignment prompt echoed is the same class.
+    # FR #8992 / #9013 / #9012 / #8969 / #8970: unsigned-exit stderr noise classifiers (OR).
+    prompt_echo = u == 0xFFFFFFFF and _stderr_is_seat_prompt_echo(evidence)
+    info_noise = u == 0xFFFFFFFF and _stderr_is_grok_structured_info_noise(evidence)
     oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
     missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
     silent = u == 0xFFFFFFFF and (
         not str(evidence or "").strip()
+        or prompt_echo
+        or info_noise
         or oserror22_noise
         or missing_query_noise
         or unsigned_exit_stderr_is_noise(evidence)
@@ -5073,6 +5142,14 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if prompt_echo:
+            what += (
+                "Stderr was the seat assignment prompt only (not a CLI error). FR #8990.\n"
+            )
+        if info_noise:
+            what += (
+                "Stderr was Grok JSON info/debug only (not a CLI error). FR #8992.\n"
+            )
         if oserror22_noise:
             what += (
                 "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
@@ -10091,6 +10168,41 @@ def out_of_fuel_quit_enabled(env: Optional[dict] = None) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+# TipForm / web meter fragments that must never appear in Win32 MessageBox (FR #9027).
+_OUT_OF_FUEL_DIALOG_HTML_RE = re.compile(r"<[^>]+>", re.DOTALL)
+_OUT_OF_FUEL_DIALOG_CSS_RE = re.compile(
+    r"\.token-progress[a-z0-9_-]*\s*\{[^}]*\}", re.IGNORECASE | re.DOTALL
+)
+_OUT_OF_FUEL_DIALOG_BAN_RE = re.compile(
+    r"(?i)(token-progress-bar|token-progress-fill|low cost models|<style|</style|<div|</div)"
+)
+
+
+def sanitize_out_of_fuel_dialog_field(text: str, maxlen: int) -> str:
+    """Plain-text only for MessageBox: strip tags/CSS/JSON blobs, cap length (FR #9027)."""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    # Drop HTML tags and TipForm meter CSS blocks.
+    cleaned = _OUT_OF_FUEL_DIALOG_HTML_RE.sub(" ", raw)
+    cleaned = _OUT_OF_FUEL_DIALOG_CSS_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("{", " ").replace("}", " ")
+    # Collapse whitespace (including newlines from dumped HTML).
+    cleaned = " ".join(cleaned.split())
+    if _OUT_OF_FUEL_DIALOG_BAN_RE.search(cleaned):
+        # Still looks like meter chrome — refuse the field rather than show garbage.
+        cleaned = ""
+    # Prefer short fuel summaries when evidence is a provider blob.
+    low = cleaned.lower()
+    if "fuel-exhausted:opencode-free" in low or "free usage limit" in low:
+        cleaned = "fuel-exhausted:opencode-free"
+    elif "hard-402" in low or ("402" in low and "payment" in low):
+        cleaned = "hard-402"
+    elif low.startswith("{") or '"error"' in low or '"html"' in low:
+        cleaned = ""
+    return one_line(cleaned, int(maxlen))
+
+
 def format_out_of_fuel_dialog_text(
     *,
     pool: str = "",
@@ -10099,21 +10211,21 @@ def format_out_of_fuel_dialog_text(
     evidence: str = "",
     nick: str = "",
 ) -> str:
-    """User-visible dialog body for FR #8814 fuel-exhausted quit."""
+    """User-visible dialog body for FR #8814 fuel-exhausted quit (plain text; FR #9027)."""
     lines = ["Fuel exhausted for this seat."]
-    pool_s = (pool or "").strip()
+    pool_s = sanitize_out_of_fuel_dialog_field(pool, 60)
     if pool_s:
         lines.append(f"Pool: {pool_s}")
-    rem_s = (remaining or "").strip()
+    rem_s = sanitize_out_of_fuel_dialog_field(remaining, 80)
     if rem_s:
         lines.append(f"Remaining: {rem_s}")
-    reset_s = (reset_hint or "").strip()
+    reset_s = sanitize_out_of_fuel_dialog_field(reset_hint, 80)
     if reset_s:
         lines.append(f"Reset: {reset_s}")
-    nick_s = (nick or "").strip()
+    nick_s = sanitize_out_of_fuel_dialog_field(nick, 40)
     if nick_s:
         lines.append(f"Seat: {nick_s}")
-    preview = one_line(evidence or "", 160)
+    preview = sanitize_out_of_fuel_dialog_field(evidence or "", 120)
     if preview:
         lines.append(preview)
     lines.append("This seat will close now so it leaves the digest.")
@@ -16878,8 +16990,13 @@ class Supervisor:
             except Exception:
                 pass
         if "reset" in (evidence or "").lower():
-            reset_hint = one_line(evidence or "", 80)
-        return pool, remaining, reset_hint
+            # FR #9027: never dump provider HTML/JSON into Reset: — sanitize first.
+            reset_hint = sanitize_out_of_fuel_dialog_field(evidence or "", 80)
+        return (
+            sanitize_out_of_fuel_dialog_field(pool, 60),
+            sanitize_out_of_fuel_dialog_field(remaining, 80),
+            reset_hint,
+        )
 
     def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
         """FR #8814 / #8991 / #9016: worker-remove + dialog + shutdown (no fuel-hold zombie).
