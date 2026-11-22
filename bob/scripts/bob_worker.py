@@ -4822,6 +4822,26 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+def _stderr_is_grok_pager_noise(text: str) -> bool:
+    """True when every nonempty line is grok-pager info or debug, not an error.
+
+    FR #8969: a killed seat (exit 0xffffffff) often leaves only pager
+    ``turn.first_activity`` / ``turn.phase_transition`` lines. Those are not a CLI crash.
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        low = ln.lower()
+        if "grok-pager" not in low:
+            return False
+        if any(tok in low for tok in ('"lvl": "error"', '"lvl":"error"', '"lvl": "warn"', '"lvl":"warn"')):
+            return False
+        if not any(tok in low for tok in ('"lvl": "info"', '"lvl":"info"', '"lvl": "debug"', '"lvl":"debug"')):
+            return False
+    return True
+
+
 def _intake_disabled_by_env() -> bool:
     """True when unit/offline harnesses ask to skip live intake posts."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -4901,7 +4921,9 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #8969: grok-pager info/debug on that exit is noise, not a CLI failure.
+    pager_noise = u == 0xFFFFFFFF and _stderr_is_grok_pager_noise(evidence)
+    silent = u == 0xFFFFFFFF and (not str(evidence or "").strip() or pager_noise)
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
@@ -4952,6 +4974,10 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if pager_noise:
+            what += (
+                "Stderr was grok-pager info/debug only (not a CLI error). FR #8969.\n"
+            )
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
