@@ -120,6 +120,29 @@ namespace BobDialogs
             return sha.Length > 0 ? (v + " (" + sha + ")") : v;
         }
 
+        // BOB-10 / FR #8675: About shows Plan and Priority build versions.
+        public static string SliceVersion(string root, string slice)
+        {
+            string envName = slice == "priority" ? "BOBIVERSE_PRIORITY_VERSION" : "BOBIVERSE_PLAN_VERSION";
+            string v = (Environment.GetEnvironmentVariable(envName) ?? "").Trim();
+            if (v.Length == 0)
+            {
+                string ai = (Environment.GetEnvironmentVariable("BOB_AI_ROOT") ?? "").Trim();
+                string[] cands = new string[] {
+                    Path.Combine(root, slice + "\\VERSION"),
+                    Path.Combine(root, "src\\" + slice + "\\VERSION"),
+                    ai.Length > 0 ? Path.Combine(ai, "bob\\" + slice + "\\VERSION") : "" };
+                foreach (string c in cands)
+                {
+                    if (c.Length == 0) continue;
+                    string t = FirstLine(c);
+                    if (t.Length > 0) { v = t; break; }
+                }
+            }
+            if (v.Length == 0) v = BobVersion(root);
+            return v.Length > 0 ? v : "unknown";
+        }
+
         public static string ExeSourceShortSha(string root)
         {
             if (string.IsNullOrEmpty(root)) return "";

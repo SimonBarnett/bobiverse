@@ -229,16 +229,21 @@ namespace BobDialogs
             // FR #6924: re-read VERSION + deployed identity when shown (not only at process start).
             ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
             ver.Font = new Font("Segoe UI", 9f); ver.AutoSize = true; ver.Location = new Point(130, 84);
+            Label agents = new Label();
+            agents.Name = "agentBuildVersions";
+            agents.Text = "Plan " + Common.SliceVersion(root, "plan") + "    Priority " + Common.SliceVersion(root, "priority");
+            agents.Font = new Font("Segoe UI", 9f); agents.AutoSize = true; agents.Location = new Point(130, 104);
             box = new TextBox();
             box.Multiline = true; box.ReadOnly = true; box.ScrollBars = ScrollBars.Vertical; box.Font = new Font("Consolas", 9f);
-            box.Text = "reading installs..."; box.Location = new Point(16, 128); box.Size = new Size(548, 256);
+            box.Text = "reading installs..."; box.Location = new Point(16, 148); box.Size = new Size(548, 236);
             Button ok = new Button();
             ok.Text = "Close"; ok.Location = new Point(474, 398);
             ok.Click += delegate { Close(); };
-            Controls.AddRange(new Control[] { logo, title, by, ver, box, ok });
+            Controls.AddRange(new Control[] { logo, title, by, ver, agents, box, ok });
             AcceptButton = ok;
             Shown += delegate {
                 ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
+                agents.Text = "Plan " + Common.SliceVersion(root, "plan") + "    Priority " + Common.SliceVersion(root, "priority");
                 box.Select(0, 0); ok.Focus();
             };
             string r = root;
@@ -263,7 +268,9 @@ namespace BobDialogs
             string textOut = Common.Arg(args, "--text-out");
             if (textOut.Length > 0)
             {
-                File.WriteAllText(textOut, InstallInfo.Format(InstallInfo.Gather(root)), new UTF8Encoding(false));
+                string head = "Plan version: " + Common.SliceVersion(root, "plan") + "\r\n"
+                    + "Priority version: " + Common.SliceVersion(root, "priority") + "\r\n";
+                File.WriteAllText(textOut, head + InstallInfo.Format(InstallInfo.Gather(root)), new UTF8Encoding(false));
                 return 0;
             }
             if (!Common.Single("About", "Bobiverse systray - about")) return 0;

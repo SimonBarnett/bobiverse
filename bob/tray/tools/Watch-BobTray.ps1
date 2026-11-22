@@ -2861,6 +2861,12 @@ function Show-BobTrayAbout {
         $ver.Font = New-Object System.Drawing.Font 'Segoe UI', 9
         $ver.AutoSize = $true
         $ver.Location = New-Object System.Drawing.Point 130, 84
+        $agents = New-Object System.Windows.Forms.Label
+        $agents.Name = 'agentBuildVersions'
+        $agents.Text = ('Plan {0}    Priority {1}' -f (Get-BobTraySliceVersion -Slice 'plan'), (Get-BobTraySliceVersion -Slice 'priority'))
+        $agents.Font = New-Object System.Drawing.Font 'Segoe UI', 9
+        $agents.AutoSize = $true
+        $agents.Location = New-Object System.Drawing.Point 130, 104
         $box = New-Object System.Windows.Forms.TextBox
         $box.Multiline = $true
         $box.ReadOnly = $true
@@ -2873,7 +2879,7 @@ function Show-BobTrayAbout {
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
         $ok.Add_Click({ $script:aboutForm.Close() })
-        foreach ($c in @($logo, $title, $by, $ver, $box, $ok)) { $form.Controls.Add($c) }
+        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
         $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
@@ -2985,6 +2991,34 @@ function Get-BobTrayDeployedSourceShortSha {
     if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json') }
     if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json') }
     return $scripts
+}
+
+function Get-BobTraySliceVersion {
+    param([string]$Slice)
+    $envName = if ($Slice -eq 'priority') { 'BOBIVERSE_PRIORITY_VERSION' } else { 'BOBIVERSE_PLAN_VERSION' }
+    $ver = [string][Environment]::GetEnvironmentVariable($envName)
+    if (-not $ver.Trim()) {
+        $ai = [string]$env:BOB_AI_ROOT
+        foreach ($cand in @(
+                (Join-Path $RepoRoot ($Slice + '\VERSION')),
+                (Join-Path $RepoRoot ('src\' + $Slice + '\VERSION')),
+                $(if ($ai) { Join-Path $ai ('bob\' + $Slice + '\VERSION') })
+            )) {
+            if ($cand -and (Test-Path -LiteralPath $cand)) {
+                try {
+                    $ver = ([string](Get-Content -LiteralPath $cand -TotalCount 1 -ErrorAction Stop)).Trim()
+                    if ($ver) { break }
+                }
+                catch { }
+            }
+        }
+    }
+    if (-not $ver.Trim()) {
+        $bob = Get-BobTrayProductVersionLabel
+        if ($bob.StartsWith('bob ')) { $ver = $bob.Substring(4) } else { $ver = $bob }
+    }
+    if (-not $ver.Trim()) { $ver = 'unknown' }
+    return $ver.Trim()
 }
 
 function Get-BobTrayProductVersionLabel {
