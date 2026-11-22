@@ -4099,6 +4099,22 @@ $miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Start-BobTrayPriorityExe })
 $miJeeves.Add_Click({
+        $fuelPath = $env:BOB_JEEVES_FUEL_FILE
+        if (-not $fuelPath) { $fuelPath = Join-Path $RepoRoot 'run\jeeves-fuel.json' }
+        if (Test-Path -LiteralPath $fuelPath) {
+            $doc = Get-Content -LiteralPath $fuelPath -Raw
+            if ($doc -match '"remaining_pct"\s*:\s*(-?\d+)' -and [int]$Matches[1] -le 0) {
+                Write-TrayLog 'jeeves dialog-quit reason=no-tokens'
+                try {
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        'No tokens on this box. Jeeves will quit.',
+                        'Bobiverse - Jeeves',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning)
+                } catch { }
+                return
+            }
+        }
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
     })
