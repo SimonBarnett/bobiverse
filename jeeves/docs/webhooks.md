@@ -21,8 +21,8 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/summary?user=…&date=…` | Day totals: raw + de-overlapped minutes, overlaps |
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
-| GET | `/bob/v1/models` | Fleet agent Weights rows JSON (`{"agents":[…]}`) from digest-home `models-catalog.json` or built-in defaults (BOB-01 / FR #8707); **open, no secret** |
-| PUT | `/bob/v1/models` | Persist Weights full replace (direct/LAN; IIS GET|HEAD only) |
+| GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
+| PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); direct/LAN; IIS GET\|HEAD only |
 | POST | `/bob/v1/models/validate` | Fail-closed `(cli, model, context, effort)` check against digest-home `models-valid-combos.json` (BOB-03 / FR #8710); **peer allow-list** (`BOB_REPORT_ALLOW`); never persists |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
@@ -77,17 +77,26 @@ Serves the validated JSON array from digest-home `builds-catalog.json` (missing 
 curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 ```
 
-### GET models / Weights rows (BOB-01 / FR #8707)
+### GET models / Weights rows (BOB-01 / FR #8707 / FR #8819)
 
-Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (valid-combos BOB-03; seed values BOB-04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
+Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders.
+
+`clis` is the nested allow-list for dropdowns (Si locked shape, FR #8819):
+
+```json
+{"clis":{"Grok":{"models":{"<model>":{"contexts":{"<context>":{"efforts":["…"]}}}}},"Cursor":{"models":{}},"Opencode":{"models":{}}},
+ "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}
+```
+
+Built from digest-home `models-valid-combos.json` (BOB-03/04). A CLI with no catalog entry returns `models: {}` (still 200 — no invented names). Each agent row's options are `clis[row.cli]`. Example agents seed: `common/defaults/models-catalog.example.json`.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/models"
 ```
 
-### PUT models / Weights rows (BOB-02 / FR #8708)
+### PUT models / Weights rows (BOB-02 / FR #8708 / FR #8819)
 
-Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged.
+Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged. Agent row **`cli` is read-only** (FR #8819): a body that changes `cli` for a known agent returns **400** and leaves the store unchanged. Primary validation of model/context/effort is the Weights form dropdowns from `clis[row.cli]` (no POST validate required for this FR).
 
 ```bash
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
