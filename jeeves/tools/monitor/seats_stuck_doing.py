@@ -19,11 +19,16 @@ from _common import (
 )
 
 DOING_MAX_AGE_SEC = 15 * 60
+# FR #8796: OpenCode progress_phase=stream refreshes last_progress without GitHub
+# progress; accepted jobs past this bound with no DONE are a hang finding.
+STREAM_HEARTBEAT_MAX_AGE_SEC = DOING_MAX_AGE_SEC
 NAK_BUSY_MIN = 3
 LOG_TAIL = 400
 PERMISSION_RX = re.compile(r"PermissionError|WinError\s*5|Access is denied", re.I)
 NAK_BUSY_RX = re.compile(r"bored\s+nak\s+busy", re.I)
 WIRE_RX = re.compile(r"\b(ACK|DONE|GIVEUP|NACK)\b", re.I)
+DONE_RX = re.compile(r"\bDONE\b", re.I)
+STREAM_PHASES = frozenset({"stream", "streaming"})
 # FR #8795 / #8796: OpenCode stream heartbeats refresh these; never use them for stuck age.
 HEARTBEAT_AGE_KEYS = frozenset(
     {"last_progress", "updated", "updated_at", "ts", "state_ts", "progress_ts"}
@@ -80,14 +85,57 @@ def _worker_busy(w: dict) -> bool:
     return bool(wo)
 
 
+def _nick_key(w: dict) -> str:
+    return str(w.get("nick") or w.get("name") or "?").strip().lower()
+
+
+def _accepted_age_for_nick(accepted: list, nick_l: str) -> float | None:
+    """Wall age of the matching accepted row (accepted_ts / offered_ts / ts)."""
+    best: float | None = None
+    for row in accepted:
+        rn = str(row.get("nick") or row.get("accepted_by") or "").strip().lower()
+        if not rn or rn != nick_l:
+            continue
+        age = _age_sec(row.get("accepted_ts") or row.get("offered_ts") or row.get("ts"))
+        if age is None:
+            continue
+        if best is None or age > best:
+            best = age
+    return best
+
+
+def _wire_counts(log_lines: list[str], nick_l: str) -> tuple[int, int]:
+    """Return (any_wire_hits, done_hits) for lines mentioning nick."""
+    wire = 0
+    done = 0
+    for ln in log_lines:
+        if nick_l not in ln.lower():
+            continue
+        if WIRE_RX.search(ln):
+            wire += 1
+        if DONE_RX.search(ln):
+            done += 1
+    return wire, done
+
+
 def _progress_phase(w: dict) -> str:
     return str(w.get("progress_phase") or w.get("phase") or "").strip().lower()
+
+
+def _work_text(w: dict) -> str:
+    wo = w.get("working_on")
+    if isinstance(wo, str) and wo.strip():
+        return wo.strip()
+    work = w.get("work")
+    if isinstance(work, str) and work.strip():
+        return work.strip()
+    return ""
 
 
 def _is_stream_heartbeat(w: dict) -> bool:
     """True when the seat only shows stream/heartbeat freshness (FR #8795)."""
     phase = _progress_phase(w)
-    if phase == "stream":
+    if phase in STREAM_PHASES:
         return True
     kind = str(w.get("kind") or "").lower()
     if kind == "opencode" and w.get("last_progress") is not None:
@@ -127,7 +175,7 @@ def check(args):
         "report only by default (keep seats busy; harvest #1967)",
         "restart BobCallback if digest/working_on is stale",
         "clear_seat_doing / idle workers.<pid>.working_on only when accepted is empty AND seat is a true orphan blocking !bored (use --force-orphan-busy)",
-        "FR #8795: OpenCode progress_phase=stream / last_progress heartbeats do not reset accept age — recycle or GIVEUP when accept_age >15m with no wire",
+        "FR #8795/#8796: OpenCode progress_phase=stream / last_progress heartbeats do not reset accept age — recycle or GIVEUP when accept_age >15m with no DONE (stream/heartbeat is not substantive)",
     ]
     stuck = []
     dig = _load_json(digest / "digest.json") or {}
@@ -163,17 +211,25 @@ def check(args):
 
     for w in workers:
         nick = str(w.get("nick") or w.get("name") or "?")
-        nick_l = nick.lower()
-        # FR #8795: age on accepted_ts / doing_ts only — stream heartbeats must not reset the clock.
+        nick_l = _nick_key(w) if nick != "?" else nick.lower()
+        # FR #8795: age on accepted_ts / doing_ts / offered_ts only — never heartbeat clocks.
         age = _accept_age_sec(w, accepted)
-        wire_hits = sum(1 for ln in log_lines if nick_l in ln.lower() and WIRE_RX.search(ln))
+        accepted_age = _accepted_age_for_nick(accepted, nick_l)
+        if age is None and accepted_age is not None:
+            age = accepted_age
+        wire_hits, done_hits = _wire_counts(log_lines, nick_l)
+        phase = _progress_phase(w)
+        lp_age = _age_sec(w.get("last_progress"))
+        work = _work_text(w)
+
+        # Legacy / FR #8795: aged busy with no wire at all (no ACK either).
         if age is not None and age > DOING_MAX_AGE_SEC and wire_hits == 0:
             streamish = _is_stream_heartbeat(w)
             reason = "stream_heartbeat_no_wire" if streamish else "aged_no_wire"
-            phase = _progress_phase(w) or "-"
+            phase_s = phase or "-"
             findings.append(
                 f"seat {nick} doing/offered accept_age_sec={int(age)} (>15m) "
-                f"progress_phase={phase} with no ACK/DONE/GIVEUP in recent chair log"
+                f"progress_phase={phase_s} with no ACK/DONE/GIVEUP in recent chair log"
                 + (" (stream heartbeat ignored)" if streamish else "")
             )
             stuck.append(
@@ -181,10 +237,66 @@ def check(args):
                     "nick": nick,
                     "reason": reason,
                     "age_sec": int(age),
-                    "progress_phase": phase if phase != "-" else None,
+                    "progress_phase": phase if phase else None,
                     "kind": w.get("kind"),
                 }
             )
+
+        # FR #8796: accepted doing past bound with no DONE is a hang even when
+        # last_progress is fresh (OpenCode stream heartbeats) and ACK was seen.
+        hang_age = accepted_age if accepted_age is not None else age
+        if (
+            hang_age is not None
+            and hang_age > STREAM_HEARTBEAT_MAX_AGE_SEC
+            and done_hits == 0
+            and str(w.get("state") or "").lower() in ("doing", "busy", "accepted")
+        ):
+            already = any(
+                s.get("nick", "").lower() == nick_l
+                and s.get("reason")
+                in (
+                    "aged_no_wire",
+                    "stream_heartbeat_no_wire",
+                    "stream_heartbeat_no_substantive",
+                    "heartbeat_no_done",
+                    "accepted_no_done",
+                )
+                for s in stuck
+            )
+            if not already:
+                streamish = phase in STREAM_PHASES
+                fresh_lp = lp_age is not None and lp_age < STREAM_HEARTBEAT_MAX_AGE_SEC
+                if streamish or fresh_lp:
+                    reason = "stream_heartbeat_no_substantive" if streamish else "heartbeat_no_done"
+                    findings.append(
+                        f"seat {nick} doing accepted_age_sec={int(hang_age)} (>15m) "
+                        f"progress_phase={phase or '-'} last_progress_age_sec="
+                        f"{int(lp_age) if lp_age is not None else 'none'} "
+                        f"work={work or '-'} with no DONE (stream/heartbeat is not substantive progress)"
+                    )
+                    stuck.append(
+                        {
+                            "nick": nick,
+                            "reason": reason,
+                            "age_sec": int(hang_age),
+                            "progress_phase": phase or "",
+                            "last_progress_age_sec": int(lp_age) if lp_age is not None else None,
+                            "work": work,
+                        }
+                    )
+                elif accepted_age is not None:
+                    findings.append(
+                        f"seat {nick} doing accepted_age_sec={int(accepted_age)} (>15m) "
+                        f"with no DONE in recent chair log"
+                    )
+                    stuck.append(
+                        {
+                            "nick": nick,
+                            "reason": "accepted_no_done",
+                            "age_sec": int(accepted_age),
+                            "work": work,
+                        }
+                    )
 
         nak_n = 0
         for k, v in nak_counts.items():
@@ -216,6 +328,7 @@ def check(args):
             "permission_error_count": perm_count,
             "nak_busy_counts": nak_counts,
             "max_doing_age_sec": DOING_MAX_AGE_SEC,
+            "stream_heartbeat_max_age_sec": STREAM_HEARTBEAT_MAX_AGE_SEC,
             "findings": findings,
             "remediation": remediation if findings else [],
         },

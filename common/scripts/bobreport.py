@@ -9502,6 +9502,22 @@ def parse_xai_billing_credits_response(
     }
 
 
+def format_xai_read_failure(exc: BaseException) -> str:
+    """FR #8773: stable, secret-free error for pool state / stale reports.
+
+    Bare ``TypeError`` alone is not actionable. Prefer
+    ``read-failed:<Class>:<short message>`` after crash_report redaction.
+    """
+    import crash_report as _cr
+
+    name = type(exc).__name__ or "Exception"
+    raw = str(exc or "").replace("\n", " ").strip()
+    msg = _cr.redact(raw)[:120].strip()
+    if not msg:
+        return f"read-failed:{name}"
+    return f"read-failed:{name}:{msg}"
+
+
 def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
     """FR #6274 / #7464: live weekly via CLI billing endpoint using the signed-in session.
 
@@ -9547,6 +9563,13 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         token, auth_err, selected_label, did_refresh = (
             None,
             "auth-file-unreadable",
+            None,
+            False,
+        )
+    except Exception as exc:  # noqa: BLE001 — FR #8773: never leak bare TypeError
+        token, auth_err, selected_label, did_refresh = (
+            None,
+            format_xai_read_failure(exc),
             None,
             False,
         )
@@ -9961,7 +9984,11 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
         if reading.get("period_end"):
             enriched["period_end"] = str(reading["period_end"])
         if reading.get("used_pct") is not None:
-            enriched["xai_weekly_used_pct"] = int(reading["used_pct"])
+            try:
+                enriched["xai_weekly_used_pct"] = int(reading["used_pct"])
+            except (TypeError, ValueError):
+                # FR #8773: bad used_pct must not abort the live apply as bare TypeError.
+                enriched["xai_weekly_used_pct"] = None
         else:
             enriched["xai_weekly_used_pct"] = None
         enriched["xai_weekly_source"] = str(reading.get("source") or "")
@@ -10267,15 +10294,24 @@ def publish_local_peer_fuel(
                     now=clock,
                     machine_id=mid,
                 )
+                # FR #8773: persist soft-fail meter so the next tick / stale
+                # reporter sees the real error, not a bare class name from state.
+                with contextlib.suppress(Exception):
+                    bobstat.write_peer(home, peer)
         else:
             _last_fuel_publish_diag["acquisition"] = "cached"
             # FR #7365: pool interval skip is not a successful apply.
             _last_fuel_publish_diag["xai_attempt"] = "cached-reading"
     except Exception as exc:
+        # FR #8773: flamingo filed last_fetch_error=TypeError with no message.
+        # Keep class + short redacted detail on both pool state and the meter.
+        detail = format_xai_read_failure(exc)
         _last_fuel_publish_diag["acquisition"] = "read-failed"
-        _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
-        mark_pool_fetch("xai", now_f, ok=False, error=type(exc).__name__)
-        peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
+        _last_fuel_publish_diag["xai_weekly_error"] = detail
+        mark_pool_fetch("xai", now_f, ok=False, error=detail)
+        peer = enrich_peer_keep_last_good_xai_weekly(peer, error=detail)
+        with contextlib.suppress(Exception):
+            bobstat.write_peer(home, peer)
     # FR #7503: stale xAI reading (>2 min without a live fetch) is an exception.
     try:
         import ear_pool_stale_report as _epsr
