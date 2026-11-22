@@ -73,6 +73,8 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
 **FR #8536:** when idle seats exist and `offerable_for_live_seats==0`, the check stays EXIT 0 and sets `healthy_idle_empty_offerable=true` (and `queue_needs_human_only` when every unaccepted row is needs_human). Notes say do not recycle as hung. Digest `queue` also exposes `offerable_count` / `queue_needs_human_only` for TipForm.
 
+**FR #8866 (non-chair):** when neither home has `queue.json`, the check fetches one live `/bob/v1/report` (same missing-queue rule as `queue_flow` FR #8579). It does not need a local `digest.json`. Idle seats come from the report after dropping `workers_stale` machines. `offerable_for_live_seats` is an estimate (`offerable_estimate=true`): pending offer, needs_human, cooldown, and an explicit `require_machine` matched to an idle seat machine. Unverified gates (not applied): focus, ignore, ledger, review-author, FR/MRB shape, free-fuel, inferred pins. Idle seat plus estimate > 0 is EXIT 1 and names each nick. No live idle seats is EXIT 0. A missing, stale, or incomplete report is EXIT 1 (`local queue missing; live report unavailable/stale/incomplete`) with `idle_seats=[]`. A present local queue never fetches.
+
 - Gated-only queue + idle seats → EXIT 0
 - Idle seats + offerable row → EXIT 1
 - Pin-only empty offer sustained >10m → EXIT 1 (`queue_flow`, FR #2448 / #2446)
