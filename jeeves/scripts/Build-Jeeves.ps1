@@ -48,7 +48,9 @@ $hidden = @(
     # FR #6439: stall HTTPS callbacks (reuse wake URL) + detectors/filer used by chair_health.
     'stall_callbacks', 'stall_detectors', 'stall_filer',
     # FR #6487: !build recipe parse needs PyYAML inside the frozen exe.
-    'yaml', '_yaml', 'bobiverse_build'
+    'yaml', '_yaml', 'bobiverse_build',
+    # BOB-01/03 / FR #8707 / #8710: models Weights GET + validate combo catalogue.
+    'models_catalog', 'builds_catalog'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 # FR #6487: pull PyYAML package data/extensions into the freeze when installed on the build host.
