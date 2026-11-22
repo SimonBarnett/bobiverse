@@ -979,7 +979,52 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
+            // BOB-40: Agents > Jeeves uses the existing butler icon.
+            string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
+            if (!File.Exists(butler))
+            {
+                DirectoryInfo parent = Directory.GetParent(root);
+                if (parent != null)
+                    butler = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
+            }
+            if (File.Exists(butler))
+            {
+                using (Icon ico = new Icon(butler))
+                    miJeeves.Image = ico.ToBitmap();
+                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico");
+            }
             miJeeves.Click += delegate {
+                // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
+                if (!JeevesJDrivePresent(@"J:\"))
+                {
+                    TrayLifecycle.Write("jeeves", "action", "J: map missing", "quit", "1");
+                    MessageBox.Show("J: is not mapped. Jeeves will not start.", "Bob - Jeeves", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (JeevesNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_JEEVES_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(JeevesNoTokenGate.Body, JeevesNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("jeeves", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
+                string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
+                if (string.IsNullOrEmpty(hook))
+                    hook = System.IO.Path.Combine(root, "run", "models-webhook.json");
+                try
+                {
+                    if (System.IO.File.Exists(hook))
+                    {
+                        string line = JeevesModelsWebhook.DryRunLine(System.IO.File.ReadAllText(hook));
+                        if (line.Length > 0)
+                            TrayLifecycle.Write("jeeves-models", "webhook", line);
+                    }
+                }
+                catch { }
+
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
                 StartWorker("agent", "grok");
             };
@@ -1748,6 +1793,13 @@ namespace BobDialogs
                 if (row != null) rows.Add(row);
             }
             return rows;
+        }
+
+        // FR #8686 / BOB-36: Jeeves requires a J: map. The click passes J:\. Tests can call the same check with a fixture path.
+        bool JeevesJDrivePresent(string driveRoot)
+        {
+            if (string.IsNullOrEmpty(driveRoot)) return false;
+            return Directory.Exists(driveRoot);
         }
 
         // FR #8699 / BOB-50: Agents > Priority starts vendor\priority\PriorityAgent.exe.
