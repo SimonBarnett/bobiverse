@@ -1,4 +1,4 @@
-"""BOB-03 / FR #8710: fail-closed valid combos + POST /bob/v1/models/validate."""
+"""BOB-03 / FR #8710: fail-closed valid combos; POST /models/validate retired (FR #9053)."""
 from __future__ import annotations
 
 import json
@@ -145,85 +145,42 @@ def _post_validate(home: Path, body: dict | bytes, peer: str = "127.0.0.1"):
     )
 
 
-def test_handle_request_validate_ok_and_reject(tmp_path: Path):
+
+def test_handle_request_validate_retired_404(tmp_path: Path):
+    """FR #9053: POST /models/validate is form-only; route returns 404."""
     _write_combos(tmp_path)
-    before = sorted(p.name for p in tmp_path.iterdir())
     code, payload = _post_validate(
         tmp_path,
-        {
-            "cli": "grok",
-            "model": "fixture-grok-a",
-            "context": "128k",
-            "effort": "medium",
-        },
+        {"cli": "grok", "model": "auto", "context": "128k", "effort": "low"},
     )
-    assert code == 200
-    assert json.loads(payload.decode("utf-8")) == {"ok": True}
-
-    code2, payload2 = _post_validate(
-        tmp_path,
-        {"cli": "grok", "model": "nope", "context": "128k", "effort": "low"},
-    )
-    assert code2 == 400
-    doc = json.loads(payload2.decode("utf-8"))
-    assert doc["error"] == mc.ERROR_UNKNOWN_MODEL
-    assert doc["field"] == "model"
-    after = sorted(p.name for p in tmp_path.iterdir())
-    assert after == before
+    assert code == 404
+    body = payload.decode("utf-8")
+    assert "no_models_validate" in body
 
 
-def test_handle_request_validate_malformed_and_unavailable(tmp_path: Path):
-    code, payload = _post_validate(tmp_path, b"not-json")
-    assert code == 400
-    assert json.loads(payload.decode("utf-8"))["error"] == mc.ERROR_MALFORMED
-
-    code2, payload2 = _post_validate(
-        tmp_path, {"cli": "grok", "model": "x", "context": "y", "effort": "low"}
-    )
-    assert code2 == 503
-    assert json.loads(payload2.decode("utf-8"))["error"] == mc.ERROR_CATALOG_UNAVAILABLE
-
-
-def test_handle_request_validate_peer_gate_and_get(tmp_path: Path):
+def test_handle_request_validate_peer_gate_still_404(tmp_path: Path):
     _write_combos(tmp_path)
-    code, _payload = handle_request(
+    code, payload = handle_request(
         "POST",
         mc.MODELS_VALIDATE_PATH,
-        {"Content-Type": "application/json"},
-        json.dumps(
-            {
-                "cli": "grok",
-                "model": "fixture-grok-a",
-                "context": "128k",
-                "effort": "low",
-            }
-        ).encode("utf-8"),
-        "203.0.113.9",
-        tmp_path,
-        allow_ips={"127.0.0.1"},
-    )
-    assert code == 403
-
-    code2, payload2 = handle_request(
-        "GET",
-        mc.MODELS_VALIDATE_PATH,
         {},
-        b"",
-        "127.0.0.1",
+        b"{}",
+        "8.8.8.8",
         tmp_path,
         allow_ips={"127.0.0.1"},
     )
-    assert code2 == 405
-    assert payload2 == b""
+    # Retired before peer gate: always JSON 404, never a successful validate.
+    assert code == 404
+    assert b"no_models_validate" in payload
 
 
 def test_validate_does_not_touch_models_catalog_json(tmp_path: Path):
     _write_combos(tmp_path)
-    agents = tmp_path / mc.MODELS_CATALOG_NAME
-    agents.write_text(json.dumps({"agents": []}), encoding="utf-8")
-    stamp = agents.read_bytes()
+    path = tmp_path / mc.MODELS_CATALOG_NAME
+    before = path.read_bytes() if path.is_file() else b""
     _post_validate(
         tmp_path,
-        {"cli": "grok", "model": "nope", "context": "128k", "effort": "low"},
+        {"cli": "grok", "model": "auto", "context": "128k", "effort": "low"},
     )
-    assert agents.read_bytes() == stamp
+    after = path.read_bytes() if path.is_file() else b""
+    assert after == before
