@@ -53,6 +53,13 @@
         <div data-role="assets"></div>
         <a class="btn btn-ghost" data-role="release-notes" href="https://github.com/SimonBarnett/priority-mcp/releases">Release notes</a>
       </article>
+<article class="card" data-product="plan-agent">
+        <span class="pill">Plan Agent</span>
+        <h3>Plan Agent</h3>
+        <p>The Windows installer for Plan Agent. The download appears when a plan-v release is published.</p>
+        <p data-role="version">not yet released</p>
+        <div data-role="assets"></div>
+      </article>
       <!-- airc must stay the last card; insert new cards above this line. -->
 <article class="card" data-product="airc">
         <span class="pill">airc</span>
@@ -79,17 +86,21 @@ Get-Service Airc</code></pre>
     </div>
 
     <p style="margin-top:1.25rem;color:var(--ink-soft);font-size:0.92rem">
-      For Bob, Jeeves, and airc, each download button gets the current Windows installer from the latest GitHub release, and a checksum file when one is published.
+      For Bob, Jeeves, and airc, each download button gets the current Windows installer from the latest GitHub release, and a checksum file when one is published. Plan Agent uses its own release and stays on this card as not yet released until a plan-v release exists.
     </p>
 
     <footer class="site-footer">
-      <span><a href="/">← Home</a> · FR #7410 · FR #7455</span>
+      <span><a href="/">← Home</a> · FR #7410 · FR #7455 · FR #8759</span>
       <span><a href="https://github.com/SimonBarnett/bobiverse/releases">All releases</a></span>
     </footer>
   </div>
   <script>
-  /* Optional live refresh: keep stamped hrefs if API blocked. */
+  /* Optional live refresh: keep stamped hrefs if API blocked.
+   * FR #8759: never page-redirect to error.html — mark failed bobiverse cards
+   * in place so Priority Agent (separate API) stays visible.
+   */
   (function () {
+    var RELEASES = 'https://github.com/SimonBarnett/bobiverse/releases';
     function syncAircInstallSnippet() {
       var card = document.querySelector('[data-product="airc"]');
       if (!card) return;
@@ -121,6 +132,43 @@ Get-Service Airc</code></pre>
         }
       });
     }
+    function markCardUnavailable(card) {
+      if (!card) return;
+      var pill = card.querySelector('.pill');
+      if (pill) {
+        pill.textContent = 'Unavailable';
+        if (pill.className.indexOf('err') < 0) pill.className = (pill.className + ' err').trim();
+      }
+      var a = card.querySelector('[data-role="msi"]');
+      if (a) {
+        a.href = RELEASES;
+        a.textContent = 'Open GitHub Releases';
+        a.className = 'btn btn-primary';
+      }
+      var sha = card.querySelector('[data-role="sha256"]');
+      if (sha) {
+        sha.removeAttribute('href');
+        sha.setAttribute('hidden', '');
+      }
+      var note = card.querySelector('[data-role="msi-error"]');
+      if (!note) {
+        note = document.createElement('p');
+        note.setAttribute('data-role', 'msi-error');
+        note.style.color = 'var(--ink-soft)';
+        note.style.fontSize = '0.92rem';
+        note.textContent = 'Direct MSI link unavailable. Use GitHub Releases meanwhile.';
+        var insertBefore = a && a.nextSibling ? a.nextSibling : null;
+        if (a && a.parentNode) a.parentNode.insertBefore(note, insertBefore);
+        else card.appendChild(note);
+      }
+    }
+    function markAllBobiverseUnavailable() {
+      ['bob', 'jeeves', 'airc'].forEach(function (product) {
+        markCardUnavailable(document.querySelector('[data-product="' + product + '"]'));
+      });
+      var tag = document.getElementById('release-tag');
+      if (tag) tag.textContent = 'GitHub Releases · MSI lookup failed';
+    }
     syncAircInstallSnippet();
     wireCopy();
     var products = ['bob', 'jeeves', 'airc'];
@@ -131,11 +179,11 @@ Get-Service Airc</code></pre>
         var assets = (payload.assets || []).map(function (a) { return a.name; });
         var lower = {};
         assets.forEach(function (n) { lower[n.toLowerCase()] = n; });
-        var missing = false;
+        var anyMissing = false;
         var base = 'https://github.com/SimonBarnett/bobiverse/releases/latest/download/';
         products.forEach(function (product) {
           var card = document.querySelector('[data-product="' + product + '"]');
-          if (!card) { missing = true; return; }
+          if (!card) { anyMissing = true; return; }
           var alias = product + '-latest.msi';
           var msi = lower[alias] || null;
           if (!msi) {
@@ -152,20 +200,28 @@ Get-Service Airc</code></pre>
             });
             msi = best;
           }
-          if (!msi) { missing = true; return; }
+          if (!msi) {
+            anyMissing = true;
+            markCardUnavailable(card);
+            return;
+          }
           var a = card.querySelector('[data-role="msi"]');
           if (a) a.href = base + msi;
           var sha = lower[(msi + '.sha256').toLowerCase()];
           var existing = card.querySelector('[data-role="sha256"]');
           if (existing && sha) existing.href = base + sha;
         });
-        if (missing) { window.location.href = '/downloads/error.html'; return; }
         var tag = document.getElementById('release-tag');
-        if (tag) tag.textContent = 'GitHub Releases · MSI · ' + (payload.tag_name || 'latest');
+        if (tag) {
+          tag.textContent = anyMissing
+            ? ('GitHub Releases · MSI · ' + (payload.tag_name || 'latest') + ' (partial)')
+            : ('GitHub Releases · MSI · ' + (payload.tag_name || 'latest'));
+        }
         syncAircInstallSnippet();
-      }).catch(function () { window.location.href = '/downloads/error.html'; });
+      }).catch(function () { markAllBobiverseUnavailable(); });
   })();
   </script>
   <script src="/downloads/priority-agent.js"></script>
+  <script src="/downloads/plan-agent.js"></script>
 </body>
 </html>

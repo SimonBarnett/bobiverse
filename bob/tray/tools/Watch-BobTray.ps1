@@ -2142,7 +2142,7 @@ function Start-BobTrayWorkerExe {
             }
         }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
-        $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)[-1]
+        $childPid = Get-BobTrayLaunchPidFromOutput -Output @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)
         $picked = if ($explicit) { $explicit } else { 'auto' }
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} agent={3} own visible console (NEW agent every click; explicit agent never substitutes)' -f $Mode, $childPid, $Mode, $picked)
         if ([int]$childPid -gt 0) {
