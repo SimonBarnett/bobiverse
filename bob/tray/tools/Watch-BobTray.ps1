@@ -2031,6 +2031,17 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     return $childPid
 }
 
+function Start-BobTrayPlanExe {
+    # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
+    $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    Write-TrayLog ('Plan: start exe ' + $exe)
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-TrayLog ('Plan exe missing: ' + $exe)
+        return
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+}
+
 function Start-BobTrayWorkerExe {
     <#
     .SYNOPSIS
@@ -3928,7 +3939,7 @@ $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
+$miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Write-TrayLog 'Priority: menu click (BOB-06 tree; start is later BOB)' })
 $miJeeves.Add_Click({ Write-TrayLog 'Jeeves: menu click (BOB-06 tree; start is later BOB)' })
