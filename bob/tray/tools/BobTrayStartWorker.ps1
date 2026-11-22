@@ -55,6 +55,69 @@ function Get-BobTrayEmptyOnlineFillCount {
     return [Math]::Min([int]$Cap, 2)
 }
 
+function Get-BobTrayCachedOpencodeFreeRemaining {
+    <#
+    FR #9000: TipForm/hover snapshot free % only. Never invent a number.
+    #>
+    $snap = $script:lastFuelSnapshot
+    if (-not $snap) { return $null }
+    foreach ($k in @('opencode_free', 'opencode-free')) {
+        if ($snap.PSObject.Properties.Name -contains $k -and $null -ne $snap.$k -and [string]$snap.$k -ne '') {
+            try { return [int]$snap.$k } catch { }
+        }
+    }
+    return $null
+}
+
+function Get-BobTrayEmptyOnlineFillAgentChoice {
+    <#
+    FR #9000: when grok weekly remaining is known 0, empty-online fill pins
+    agent=opencode slot=free so auto does not burn the 2-seat cap on hard-402.
+    Unknown grok remaining keeps auto. Known free remaining 0 keeps auto.
+    Does not invent fuel numbers. Menu/auto elsewhere is unchanged.
+    #>
+    param(
+        $GrokRemaining,
+        $OpencodeFreeRemaining,
+        [string]$Root = ''
+    )
+    if (-not $PSBoundParameters.ContainsKey('GrokRemaining')) {
+        $GrokRemaining = $null
+        if (Get-Command Get-BobTrayGrokFuelRemaining -ErrorAction SilentlyContinue) {
+            try { $GrokRemaining = Get-BobTrayGrokFuelRemaining } catch { $GrokRemaining = $null }
+        }
+    }
+    if ($null -eq $GrokRemaining -or [string]$GrokRemaining -eq '') {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+    try { $g = [int]$GrokRemaining } catch {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+    if ($g -ne 0) {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('OpencodeFreeRemaining')) {
+        $OpencodeFreeRemaining = Get-BobTrayCachedOpencodeFreeRemaining
+    }
+    if ($null -ne $OpencodeFreeRemaining -and [string]$OpencodeFreeRemaining -ne '') {
+        try {
+            if ([int]$OpencodeFreeRemaining -lt 1) {
+                return [pscustomobject]@{ agent = ''; slot = '' }
+            }
+        } catch { }
+    }
+
+    $leaf = ''
+    if (Get-Command Resolve-BobTrayOpencodeSlotModel -ErrorAction SilentlyContinue) {
+        try { $leaf = [string](Resolve-BobTrayOpencodeSlotModel -Root $Root -Slot 'free') } catch { $leaf = '' }
+    }
+    if (-not $leaf) {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+    return [pscustomobject]@{ agent = 'opencode'; slot = 'free' }
+}
+
 function Get-BobTrayUnderCapFillCount {
     <#
       FR #8890: one busy seat is not a full shop. When offerable work remains
