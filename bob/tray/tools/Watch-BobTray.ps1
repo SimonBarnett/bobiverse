@@ -2963,6 +2963,7 @@ function Show-BobTrayAbout {
         $rows = @(Get-BobInstallInfo -RepoRoot $RepoRoot)
         $text = Format-BobInstallInfo -Rows $rows
         $mid = [string]$env:BOB_MACHINE_ID
+        $logPath = Join-Path $env:USERPROFILE '.grok\long-running-background-tasks\watch_bob_tray.log'
         $form = New-Object System.Windows.Forms.Form
         $form.Text = 'Bobiverse systray - about'
         $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -3007,11 +3008,19 @@ function Show-BobTrayAbout {
         $box.Text = $text
         $box.Location = New-Object System.Drawing.Point 16, 148
         $box.Size = New-Object System.Drawing.Size 548, 256
+        $logs = New-Object System.Windows.Forms.Button
+        $logs.Text = 'Show logs'
+        $logs.Location = New-Object System.Drawing.Point 350, 398
+        $logs.Size = New-Object System.Drawing.Size 100, 23
+        $logs.Add_Click({
+            # FR #8677 / BOB-09: same tray log as menu Open log
+            if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
+        })
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
         $ok.Add_Click({ $script:aboutForm.Close() })
-        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $ok)) { $form.Controls.Add($c) }
+        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $logs, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
         $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
