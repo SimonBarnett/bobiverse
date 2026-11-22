@@ -299,3 +299,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
 - When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
 - BOB-57 S1 needs a verified plan.ntsa.uk MSI URL from VIS-08 before any downloads card; homepage or guessed /plan.msi is not acceptance.
+- require_machine offer gate: peel cold-digest <machine>-<pid> nicks, gate why-empty on row_require_machine re-infer, and stamp require_machine from honor-path GIVEUP so the next !bored skips wrong shops.
