@@ -439,6 +439,120 @@ def row_fr_depends_blocked_reason(
     return None
 
 
+# BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
+# BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
+# private extractor so D3 ships with Depends-on: (none) before those land.
+DEPENDS_OPEN_REASON = "depends-open"
+_QUALIFIED_DEPENDS_ISSUE_RE = re.compile(
+    r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$"
+)
+_RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
+_NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
+
+
+def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
+    """Private BOB-D3 extractor: ``(owner/repo, number)`` from Depends-on stamps.
+
+    Line-anchored, case-insensitive, optional Markdown bold. Accepts ``#N`` and
+    ``owner/repo#N`` (comma/whitespace separated). Relative ``#N`` resolves against
+    ``row["repo"]``. Repo keys are lower-cased. Empty / ``(none)`` / malformed /
+    self-reference yield no refs. Public parser/resolver: BOB-D1 / BOB-D2.
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return []
+    home_repo = _repo_key(str(row.get("repo") or ""))
+    self_num_raw = str(row.get("id") or "").strip().lstrip("#")
+    try:
+        self_num = int(self_num_raw) if self_num_raw else None
+    except ValueError:
+        self_num = None
+    blob = f"{str(row.get('title') or '')}\n{str(row.get('body') or '')}"
+    out: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for m in _DEPENDS_ON_LINE_RE.finditer(blob):
+        value = (m.group(1) or "").strip()
+        if not value or _NONE_DEPENDS_VALUE_RE.match(value):
+            continue
+        for raw in re.split(r"[,;\s]+", value):
+            tok = raw.strip().strip("`*")
+            if not tok:
+                continue
+            qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
+            if qm:
+                pair = (_repo_key(qm.group(1)), int(qm.group(2)))
+            else:
+                rm = _RELATIVE_DEPENDS_ISSUE_RE.match(tok)
+                if not rm:
+                    continue
+                if not home_repo:
+                    continue
+                pair = (home_repo, int(rm.group(1)))
+            if self_num is not None and pair[0] == home_repo and pair[1] == self_num:
+                continue
+            if pair in seen:
+                continue
+            seen.add(pair)
+            out.append(pair)
+    return out
+
+
+def open_fr_issue_keys(doc: dict) -> set[tuple[str, int]]:
+    """Open FR ``(lower repo, number)`` keys from unaccepted + accepted (not done)."""
+    keys: set[tuple[str, int]] = set()
+    if not isinstance(doc, dict):
+        return keys
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if str(row.get("state") or "").strip().lower() == "closed":
+                continue
+            repo = _repo_key(str(row.get("repo") or ""))
+            raw = str(row.get("id") or "").strip().lstrip("#")
+            if not repo or not raw:
+                continue
+            try:
+                num = int(raw)
+            except ValueError:
+                continue
+            if num < 1:
+                continue
+            keys.add((repo, num))
+    return keys
+
+
+def row_depends_open_reason(
+    row: dict,
+    open_keys: set[tuple[str, int]] | None = None,
+    *,
+    issue_open=None,
+) -> str | None:
+    """BOB-D3 / FR #8807: ``depends-open`` when any Depends-on issue is OPEN, else None.
+
+    Blocks only on positive OPEN evidence (queue key set and/or ``issue_open`` True).
+    Unknown / ``GitHubLookupUnknown`` / missing stamp / ``(none)`` do not block (D5).
+    """
+    if _canon_task(row) != "FR":
+        return None
+    refs = _row_depends_on_issue_refs(row)
+    if not refs:
+        return None
+    keys = open_keys if open_keys is not None else set()
+    for repo, num in refs:
+        if (repo, num) in keys:
+            return DEPENDS_OPEN_REASON
+        if issue_open is None:
+            continue
+        try:
+            if bool(issue_open(repo, str(num))):
+                return DEPENDS_OPEN_REASON
+        except Exception:
+            # Unknown / budget / network: fail open (D5 owns unresolved).
+            continue
+    return None
+
+
+
 @dataclass(frozen=True)
 class GitClaim:
     repo: str
@@ -7904,6 +8018,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
     except Exception:
         return out
     out["unaccepted"] = len(rows)
+    open_dep_keys_summary = open_fr_issue_keys(raw if isinstance(raw, dict) else {})
     me = (canonical_worker_nick(nick) or nick or "").strip()
     live = live_seat_nicks(home) if me else set()
     ledger = ledger_load(home) if me else {}
@@ -8069,6 +8184,12 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if me and to_c and to_c != me_l:
                     _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
+            # BOB-D3 / FR #8807: local depends-open (no checker on empty-offer path).
+            if _canon_task(cand) == "FR" and row_depends_open_reason(
+                cand, open_dep_keys_summary
+            ):
+                _record_empty_skip(r, DEPENDS_OPEN_REASON)
+                continue
             offerable += 1
         out["skips"] = skip_log
         out["out_of_focus"] = out_of_focus
@@ -11583,6 +11704,9 @@ def offer_focus_top(
 
             import focus_ignore  # lazy: avoid import cycle; needed before _eligible (FR #6208)
 
+            # BOB-D3 / FR #8807: build once per locked !bored pass (zero-call local keys).
+            open_dep_keys = open_fr_issue_keys(doc)
+
             def _eligible(cand: dict) -> dict | None:
                 nonlocal purged
                 # FR #6208: belt-and-braces - never offer an ignored repo (incl. fallback walk).
@@ -11682,6 +11806,11 @@ def offer_focus_top(
                     return None
                 if not fr_row_offerable(
                     cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
+                ):
+                    return None
+                # BOB-D3 / FR #8807: any Depends-on issue still OPEN — skip, do not purge.
+                if row_depends_open_reason(
+                    cand, open_dep_keys, issue_open=issue_open
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
