@@ -4144,6 +4144,8 @@ function Update-BobTrayWorkerAgentsMenu {
                     else { Write-TrayLog 'workers-opencode slot=free' }
                     $ocModel = 'opencode/deepseek-v4.1-flash-free'
                     if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
+                    # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
+                    Write-TrayLog ('workers-opencode model=' + $ocModel)
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Trigger 'workers-opencode'
