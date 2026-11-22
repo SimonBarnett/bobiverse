@@ -4817,6 +4817,7 @@ def agent_stderr_evidence(text: str) -> str:
 
 
 
+
 def _stderr_is_opencode_stdout_oserror22_noise(text: str) -> bool:
     """True when stderr is only OpenCode stdout TextIOWrapper OSError 22.
 
@@ -4835,6 +4836,33 @@ def _stderr_is_opencode_stdout_oserror22_noise(text: str) -> bool:
     if "invalid argument" not in low:
         return False
     if "textiowrapper" not in low and "stdout" not in low:
+        return False
+    return True
+
+
+def _stderr_is_opencode_missing_query_noise(text: str) -> bool:
+    """True when stderr is OpenCode idle tool noise ending in missing query.
+
+    FR #9012: unsigned exit 0xffffffff with console dir listings and
+    ``missing query (try ".")`` is an external kill / tool misuse while
+    job=(none), not a CLI crash. Traceback / exception / fatal stay failures.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(
+        tok in low
+        for tok in (
+            "traceback",
+            "exception",
+            "fatal",
+            "error_kind",
+            '"lvl": "error"',
+            '"lvl":"error"',
+        )
+    ):
+        return False
+    if "missing query" not in low:
         return False
     return True
 
@@ -4968,12 +4996,16 @@ def report_agent_cli_nonzero_exit(
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
     # FR #9013: OpenCode stdout TextIOWrapper OSError 22 is external-kill teardown noise.
+    # FR #9012: OpenCode idle missing-query console dump is external-kill noise.
     # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
     oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
+    missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
     silent = u == 0xFFFFFFFF and (
         not str(evidence or "").strip()
         or oserror22_noise
+        or missing_query_noise
         or unsigned_exit_stderr_is_noise(evidence)
+    )
     )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
@@ -5028,6 +5060,10 @@ def report_agent_cli_nonzero_exit(
         if oserror22_noise:
             what += (
                 "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
+            )
+        if missing_query_noise:
+            what += (
+                "Stderr was OpenCode idle missing-query tool noise only (not a CLI crash). FR #9012.\n"
             )
     if reason:
         reason = _scrub(reason)[:160]
