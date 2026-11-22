@@ -334,4 +334,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
 - Never block out-of-fuel worker-remove on MessageBoxW. Session 0 hangs leave digest zombies.
+- OpenCode gh_auth_missing on a named shop is require_machine ops: GIVEUP from other hosts; operator runs gh auth login there; do not invent GH_TOKEN or read hosts.yml.
 
