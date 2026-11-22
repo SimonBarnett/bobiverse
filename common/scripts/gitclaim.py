@@ -369,6 +369,124 @@ def row_fr_park_only_reason(row: dict) -> str | None:
 def row_fr_skip_offer_reason(row: dict) -> str | None:
     """FR #4009 + #8741: hold or park-only reason to skip offering an FR row."""
     return row_fr_hold_reason(row) or row_fr_park_only_reason(row)
+# FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
+_DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
+_BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
+_DEPENDS_ISSUE_REF_RE = re.compile(r"(?:#|/issues/)(\d+)\b")
+_VISION_PACK_FILE_RE = re.compile(r"(feature-request-[\w.-]+\.md)", re.I)
+_BOB_TITLE_ID_RE = re.compile(r"^\s*BOB-(\d+)\b", re.I)
+
+
+def _bob_docs_root() -> Path | None:
+    """Repo ``bob/docs`` next to common/scripts when present (chair install / worktree)."""
+    here = Path(__file__).resolve()
+    for cand in (here.parents[2] / "bob" / "docs", here.parents[1] / "bob" / "docs"):
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def parse_depends_on_tokens(text: str) -> list[str]:
+    """Normalize Depends-on tokens to ``BOB-N`` and ``#N`` (stable order, unique)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _BOB_BACKLOG_ID_RE.finditer(text or ""):
+        tok = f"BOB-{int(m.group(1))}"
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    for m in _DEPENDS_ISSUE_REF_RE.finditer(text or ""):
+        tok = f"#{int(m.group(1))}"
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
+def fr_depends_on_tokens(
+    *,
+    title: str = "",
+    body: str = "",
+    docs_root: Path | None = None,
+) -> list[str]:
+    """FR #8754: Depends-on tokens from issue body/title and linked local vision pack."""
+    blob = f"{title or ''}\n{body or ''}"
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def _add(more: list[str]) -> None:
+        for t in more:
+            if t not in seen:
+                seen.add(t)
+                tokens.append(t)
+
+    for m in _DEPENDS_ON_LINE_RE.finditer(blob):
+        _add(parse_depends_on_tokens(m.group(1)))
+    root = docs_root if docs_root is not None else _bob_docs_root()
+    if root is not None:
+        for m in _VISION_PACK_FILE_RE.finditer(blob):
+            path = root / m.group(1)
+            if not path.is_file():
+                continue
+            try:
+                pack = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for pm in _DEPENDS_ON_LINE_RE.finditer(pack):
+                _add(parse_depends_on_tokens(pm.group(1)))
+    return tokens
+
+
+def _open_fr_bob_and_id_index(doc: dict) -> tuple[dict[str, list[str]], set[str]]:
+    """Map ``BOB-N`` → open queue FR ids; set of open FR numeric ids (no hash)."""
+    bobs: dict[str, list[str]] = {}
+    ids: set[str] = set()
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            rid = _norm_row_id(str(row.get("id") or ""))
+            if not rid:
+                continue
+            ids.add(rid)
+            title = str(row.get("title") or "").strip()
+            tm = _BOB_TITLE_ID_RE.match(title)
+            if tm:
+                key = f"BOB-{int(tm.group(1))}"
+                bobs.setdefault(key, []).append(rid)
+    return bobs, ids
+
+
+def row_fr_depends_blocked_reason(
+    row: dict,
+    doc: dict,
+    *,
+    docs_root: Path | None = None,
+) -> str | None:
+    """FR #8754: why an FR must wait on open Depends-on backlog, else None.
+
+    Does not purge the row — when depends leave the queue, the FR becomes offerable.
+    """
+    if _canon_task(row) != "FR":
+        return None
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    body = str(row.get("body") or "")
+    tokens = fr_depends_on_tokens(title=title, body=body, docs_root=docs_root)
+    if not tokens:
+        return None
+    self_id = _norm_row_id(str(row.get("id") or ""))
+    bobs, open_ids = _open_fr_bob_and_id_index(doc)
+    for tok in tokens:
+        if tok.startswith("BOB-"):
+            for oid in bobs.get(tok) or []:
+                if oid != self_id:
+                    # oid already includes leading # from _norm_row_id
+                    return f"depends-on open: {tok} ({oid if oid.startswith('#') else '#' + oid})"
+        elif tok.startswith("#"):
+            oid = _norm_row_id(tok)
+            if oid in open_ids and oid != self_id:
+                return f"depends-on open: {tok}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -2494,11 +2612,48 @@ def seat_matches_require_machine(nick: str, required: str) -> bool:
         return True
     req = fold_chair_host(req)
     req_mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(req) or req)
-    parsed = bobreport.parse_seat_nick(nick)
-    if not parsed:
+    # FR #8768: use _seat_machine_id so cold digest / missing roster still parses
+    # canonical ``<machine>-<pid>`` nicks (parse_seat_nick alone returns None).
+    seat_mid = _seat_machine_id(nick)
+    if not seat_mid:
         return False
-    seat_mid = bobreport.fold_machine_id(parsed[0])
+    # FR #8697: fold legacy chair-host seat ids (ionos) before DIGEST_ID_FOLD so
+    # ionos-<pid> seats match walrus pins after the #8653 cutover.
+    seat_mid = bobreport.fold_machine_id(fold_chair_host(seat_mid))
     return bool(seat_mid) and seat_mid == req_mid
+
+
+_REQUIRE_MACHINE_GIVEUP_RE = re.compile(
+    r"(?i)\brequire_machine\s*=\s*([a-z0-9][a-z0-9_.-]*)\b"
+)
+
+
+def parse_require_machine_giveup_reason(reason: str) -> str:
+    """FR #8768: machine id from a honor-path GIVEUP reason, or ''."""
+    m = _REQUIRE_MACHINE_GIVEUP_RE.search(str(reason or ""))
+    if not m:
+        return ""
+    mid = fold_chair_host((m.group(1) or "").strip().lower())
+    mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(mid) or mid)
+    if not mid or mid in _REQUIRE_MACHINE_NON_MACHINE or _is_retired_require_machine(mid):
+        return ""
+    return mid
+
+
+def apply_require_machine_giveup_stamp(row: dict, reason: str) -> str:
+    """FR #8768: stamp require_machine from GIVEUP reason so wrong shops stay gated.
+
+    Returns the stamped machine id, or '' when the reason is not a machine pin.
+    Operator flag survives bobiverse FR #4512 re-infer (same as ops !pin).
+    """
+    if not isinstance(row, dict):
+        return ""
+    mid = parse_require_machine_giveup_reason(reason)
+    if not mid:
+        return ""
+    row["require_machine"] = mid
+    row["require_machine_operator"] = True
+    return mid
 
 
 def row_blocked_for_machine(row: dict, nick: str) -> bool:
@@ -4164,7 +4319,15 @@ def _seat_machine_id(nick: str) -> str:
         c = canonical_worker_nick(nick)
         p = bobreport.parse_seat_nick(c) if c else None
     if not p:
-        return ""
+        # FR #8768: cold digest roster - peel ``<machine>-<pid>`` without parse_seat_nick.
+        c = (canonical_worker_nick(nick) or nick or "").strip().lower()
+        m = re.match(r"^([a-z0-9][a-z0-9_.-]*)-(\d+)$", c)
+        if not m:
+            return ""
+        try:
+            return bobreport.fold_machine_id(m.group(1))
+        except Exception:
+            return m.group(1)
     try:
         return bobreport.fold_machine_id(p[0])
     except Exception:
@@ -4752,6 +4915,16 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_un:
             out["offer_unanswered"] = clean_un
+    # FR #8924: refusal waves and the one escalation survive reload.
+    try:
+        waves = int(row.get("offer_refusal_waves") or 0)
+    except (TypeError, ValueError):
+        waves = 0
+    if waves:
+        out["offer_refusal_waves"] = waves
+    escalated = str(row.get("offer_escalate_reason") or "").strip()
+    if escalated:
+        out["offer_escalate_reason"] = escalated
     # FR #8428: last seat that timed out. Idle push tries a different seat first.
     last_to = (canonical_worker_nick(str(row.get("offer_last_timeout_seat") or "")) or "").strip()
     if last_to:
@@ -5611,6 +5784,9 @@ GIVEUP_OFFER_EXTRA_S = 90.0
 OFFER_STICKY_MAX = 3
 # FR #7966: unanswered offers to one seat (timeout, no ACK/NACK/GIVEUP) stop at this count.
 OFFER_UNANSWERED_MAX = 3
+# FR #8924: one cooldown expiry may clear an offer-timeout refusal. The next
+# expiry escalates once and leaves the seat refused.
+OFFER_REFUSAL_EXPIRE_MAX = 1
 # Sticky via values that get the extended offer window (harvest hold / seat turn end).
 _RELEASE_OFFER_VIA = frozenset({"giveup", "done", "nack"})
 
@@ -5719,6 +5895,7 @@ def live_seat_can_take_unanswered(
     """
     if not isinstance(row, dict):
         return False
+    expire_offer_timeout_refusals(row, time.time())
     repo = str(row.get("repo") or "")
     for raw in live or ():
         nick = str(raw or "").strip()
@@ -5776,17 +5953,119 @@ def seat_submit_verify_in_flight(home: Path, nick: str) -> bool:
     return False
 
 
-def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
+def offer_timeout_reason(home: Path, nick: str) -> str:
+    """Why a live seat missed ACK (FR #8924). Idle with no job is idle-no-ack."""
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not want:
+        return "offer-timeout"
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return "offer-timeout:idle-no-ack"
+    for ent in (doc.get("machines") or {}).values():
+        if not isinstance(ent, dict):
+            continue
+        for wrow in bobreport._coerce_worker_list(ent.get("worker_list")):
+            if not isinstance(wrow, dict):
+                continue
+            got = (canonical_worker_nick(str(wrow.get("nick") or "")) or "").strip().lower()
+            if got != want:
+                continue
+            state = str(wrow.get("state") or "").strip().lower()
+            jobs = wrow.get("jobs")
+            work = str(wrow.get("work") or "").strip()
+            if isinstance(jobs, list) and jobs:
+                return "offer-timeout:busy-jobs"
+            if work:
+                return "offer-timeout:busy-jobs"
+            if state and state != "idle":
+                return "offer-timeout:state-" + state[:40]
+            return "offer-timeout:idle-no-ack"
+    return "offer-timeout:idle-no-ack"
+
+
+def expire_offer_timeout_refusals(row: dict, now_f: float) -> bool:
+    """Clear an offer-timeout refusal after cooldown (FR #8924).
+
+    One wave may be re-offered. A later expiry stamps offer-timeout-cap and
+    leaves the seat refused. Real giveup_reason rows keep giveup_seats.
+    """
+    if not isinstance(row, dict):
+        return False
+    until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
+    if until is None or float(now_f) < until:
+        return False
+    refused = [str(x).strip() for x in (row.get("offer_refused_by") or []) if str(x).strip()]
+    if not refused:
+        return False
+    latest: dict[str, str] = {}
+    for item in row.get("offer_outcomes") or []:
+        if not isinstance(item, dict):
+            continue
+        seat = str(item.get("seat") or "").strip().lower()
+        if seat:
+            latest[seat] = str(item.get("reason") or "")
+    timeout_seats = []
+    for seat in refused:
+        key = (canonical_worker_nick(seat) or seat).strip().lower()
+        reason = latest.get(key) or latest.get(seat.lower()) or ""
+        if reason.startswith("offer-timeout") and "cap" not in reason:
+            timeout_seats.append(seat)
+    if not timeout_seats:
+        return False
+    try:
+        waves = int(row.get("offer_refusal_waves") or 0)
+    except (TypeError, ValueError):
+        waves = 0
+    if waves >= int(OFFER_REFUSAL_EXPIRE_MAX):
+        if not str(row.get("offer_escalate_reason") or "").strip():
+            row["offer_escalate_reason"] = "offer-timeout-cap"
+            note_offer_outcome(row, timeout_seats[0], "escalate", "offer-timeout-cap")
+            return True
+        return False
+    drop = {(canonical_worker_nick(s) or s).strip().lower() for s in timeout_seats}
+    row["offer_refused_by"] = [
+        s for s in refused
+        if (canonical_worker_nick(s) or s).strip().lower() not in drop
+    ]
+    real = str(row.get("giveup_reason") or "").strip()
+    if not real or real.startswith("offer-timeout"):
+        kept = []
+        for raw in str(row.get("giveup_seats") or "").split(","):
+            seat = raw.strip()
+            if not seat:
+                continue
+            if (canonical_worker_nick(seat) or seat).strip().lower() in drop:
+                continue
+            kept.append(seat)
+        if kept:
+            row["giveup_seats"] = ",".join(kept)
+        else:
+            row.pop("giveup_seats", None)
+    counts = row.get("offer_unanswered")
+    if isinstance(counts, dict):
+        for key in list(counts):
+            if str(key).strip().lower() in drop:
+                counts.pop(key, None)
+        row["offer_unanswered"] = counts
+    row.pop("cooldown_until", None)
+    row["offer_refusal_waves"] = waves + 1
+    note_offer_outcome(row, timeout_seats[0], "expire", "offer-timeout-expired")
+    return True
+
+
+def note_unanswered_offer(row: dict, seat: str, now_f: float, reason: str = "offer-timeout") -> None:
     """Count a timed-out offer. After OFFER_UNANSWERED_MAX, refuse that seat (FR #7966).
 
     Sets cooldown_until and offer_refused_by. Also appends giveup_seats so
     row_on_cooldown blocks only that seat. Does not increment giveup_count
-    and does not stamp needs_human.
+    and does not stamp needs_human. FR #8924 records why the seat missed ACK.
     """
     canon = (canonical_worker_nick(seat) or seat or "").strip()
     if not canon or not isinstance(row, dict):
         return
-    note_offer_outcome(row, canon, "timeout", "offer-timeout")
+    why = str(reason or "offer-timeout").strip() or "offer-timeout"
+    note_offer_outcome(row, canon, "timeout", why)
     key = canon.lower()
     counts = row.get("offer_unanswered")
     if not isinstance(counts, dict):
@@ -7740,8 +8019,10 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     continue
             row = dict(r)
             _stamp_require_machine(row)
-            rm = str(row.get("require_machine") or "").strip()
-            if rm and rm.lower() not in ("*", "any", "none", "-", ""):
+            # FR #8768: gate on row_require_machine (re-infer), not only the stamp
+            # field - bobiverse body pins must block wrong shops in why-empty too.
+            rm = row_require_machine(row)
+            if rm:
                 if not me or row_blocked_for_machine(row, me):
                     req_machine += 1
                     _record_empty_skip(r, "pin")
@@ -9728,16 +10009,22 @@ def heal_worktree_head_mismatch_row(row: dict) -> bool:
 
 
 def is_skill_dag_down_reason(reason: str) -> bool:
-    """True when a GIVEUP reason is OpenCode skill-dag preflight down (FR #7963).
+    """True when a GIVEUP reason is skill-dag preflight / MCP down (FR #7963 / #8846).
 
-    Seat fault, not job fault: ``skill_dag_down`` or ``skill_dag_down:exit-1``.
+    Seat fault, not job fault: ``skill_dag_down``, ``skill-dag-down:exit-1``,
+    or ``skill-dag-mcp-down`` (FR #8846 fail-closed when MCP + mcp.json CLI both fail).
     """
     text = (reason or "").strip().lower()
     if not text:
         return False
     norm = text.replace("_", "-").replace(" ", "-")
     token = norm.split(",", 1)[0].strip()
-    return token == "skill-dag-down" or token.startswith("skill-dag-down:")
+    return (
+        token == "skill-dag-down"
+        or token.startswith("skill-dag-down:")
+        or token == "skill-dag-mcp-down"
+        or token.startswith("skill-dag-mcp-down:")
+    )
 
 
 def is_console_closed_reason(reason: str) -> bool:
@@ -11314,7 +11601,7 @@ def offer_focus_top(
                 if dead_pin or age >= offer_timeout_s(cand):
                     # FR #7966: a silent seat is a recorded refusal, not a fresh offer.
                     if not dead_pin:
-                        note_unanswered_offer(cand, to, now_f)
+                        note_unanswered_offer(cand, to, now_f, offer_timeout_reason(home, to))
                     else:
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
                     with contextlib.suppress(Exception):
@@ -11372,8 +11659,15 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind=kind, reason=skip_why):
                         purged = True
                     return None
+                # FR #8754: Depends-on backlog still open in queue — skip offer; keep row.
+                if row_fr_depends_blocked_reason(cand, doc):
+                    return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
+                if expire_offer_timeout_refusals(cand, now_f):
+                    # Cap and clear both mutate the live row. A cap does not
+                    # offer, so the empty return must still persist the stamp.
+                    purged = True
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
                 # FR #8008: agent-class exclusion after repeated hard-ceiling kills.
@@ -11815,6 +12109,10 @@ def offer_top(
                     if _drop_unaccepted_row(doc, row, kind=kind, reason=skip_why):
                         purged = True
                         continue
+                    i += 1
+                    continue
+                # FR #8754: Depends-on backlog still open — skip; keep row.
+                if row_fr_depends_blocked_reason(row, doc):
                     i += 1
                     continue
                 if row_awaits_mrb1(row):
@@ -15126,6 +15424,9 @@ def assign_row(
             if hold_why:
                 prefix = "row park-only" if hold_why.startswith("park-only") else "row on hold"
                 return "refused", f"{prefix}: {hold_why}"
+            dep_why = row_fr_depends_blocked_reason(cand, doc)
+            if dep_why:
+                return "refused", f"row blocked: {dep_why}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):

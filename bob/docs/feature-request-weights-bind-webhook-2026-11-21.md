@@ -75,6 +75,14 @@ Every other backlog ID. Implementation is after park when dispatched.
 - Park-only until human dispatch
 - Cross-link index + depends-on
 
+## Implemented (FR #8714)
+
+- Client: `bob/tray/dialogs/BobModelsClient.cs`
+- Form + headless flags: `WeightsForm.cs`, `BobTray.cs` (`--weights-get` / `--weights-save`)
+- Evidence: `bob/docs/evidence/bob13-weights-webhook-roundtrip-2026-11-22.md`
+- Test: `bob/tests/test_bob13_weights_webhook_roundtrip.py`
+- Depends: BOB-02 (#8708), BOB-12 (#8715); dialogs note in `bob-tray-dialogs.md`
+
 ## UNKNOWN
 
 - Exact initial models matrix seed values (BOB-04) until CLI `--help` / Simon seed

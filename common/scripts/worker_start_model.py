@@ -12,7 +12,7 @@ from typing import Any
 
 WORKER_CLIS = ("grok", "cursor", "aider", "opencode")
 DEFAULT_EFFORT = "low"
-VALID_EFFORTS = ("low", "medium", "high")
+VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 DEFAULT_OPENCODE_FREE = "opencode/deepseek-v4.1-flash-free"
 DEFAULT_OPENCODE_PAID = "opencode-go/deepseek-v4-pro"
 ENV_ACTUAL_EFFORT = "BOB_WORKER_ACTUAL_EFFORT"
@@ -80,6 +80,68 @@ def load_worker_start_config(
     localapp = str((e or {}).get("LOCALAPPDATA") or "").strip()
     if localapp:
         _merge_file(Path(localapp) / "Bobiverse" / "tray-models.json")
+    # BOB-15 / FR #8711: webhook overlay above tray/defaults, below env JSON / explicit file / raw.
+    settings_source: dict[str, str] = {k: "local" for k in WORKER_CLIS}
+    settings_fallback: dict[str, str] = {}
+    try:
+        import models_webhook as _mw
+
+        wh_doc = _mw.fetch_models_webhook(env=e)
+    except Exception:
+        wh_doc = None
+        settings_fallback["webhook"] = "import_or_fetch_failed"
+    if wh_doc is None and "webhook" not in settings_fallback:
+        settings_fallback["webhook"] = "unavailable"
+    if isinstance(wh_doc, dict):
+        w_models = data.get("workerStartModels")
+        if not isinstance(w_models, dict):
+            w_models = {}
+        w_efforts = data.get("workerStartEffort")
+        if not isinstance(w_efforts, dict):
+            w_efforts = {}
+        w_contexts = data.get("workerStartContext")
+        if not isinstance(w_contexts, dict):
+            w_contexts = {}
+        extra = data.get("models")
+        if not isinstance(extra, dict):
+            extra = {}
+        for cli in WORKER_CLIS:
+            slot = None
+            if cli == "opencode":
+                # Prefer paid Opencode row for workerStartModels; free slot fills models.opencodeFree.
+                free = _mw.webhook_settings_for_cli("opencode", opencode_slot="free", doc=wh_doc, env=e)
+                paid = _mw.webhook_settings_for_cli("opencode", opencode_slot="paid", doc=wh_doc, env=e)
+                if free.get("model"):
+                    extra["opencodeFree"] = free["model"]
+                    settings_source["opencode"] = "webhook"
+                if paid.get("model"):
+                    w_models["opencode"] = paid["model"]
+                    if paid.get("effort"):
+                        w_efforts["opencode"] = paid["effort"]
+                    if paid.get("context"):
+                        w_contexts["opencode"] = paid["context"]
+                    settings_source["opencode"] = "webhook"
+                elif free.get("model"):
+                    w_models["opencode"] = free["model"]
+                    if free.get("effort"):
+                        w_efforts["opencode"] = free["effort"]
+                    if free.get("context"):
+                        w_contexts["opencode"] = free["context"]
+                continue
+            got = _mw.webhook_settings_for_cli(cli, doc=wh_doc, env=e)
+            if got.get("model"):
+                w_models[cli] = got["model"]
+                settings_source[cli] = "webhook"
+            if got.get("effort"):
+                w_efforts[cli] = got["effort"]
+            if got.get("context"):
+                w_contexts[cli] = got["context"]
+        data["workerStartModels"] = w_models
+        data["workerStartEffort"] = w_efforts
+        data["workerStartContext"] = w_contexts
+        data["models"] = extra
+    data["_settings_source"] = settings_source
+    data["_settings_fallback"] = settings_fallback
     blob = str((e or {}).get(ENV_CONFIG_JSON) or "").strip()
     if blob:
         try:
@@ -108,15 +170,32 @@ def load_worker_start_config(
     efforts = data.get("workerStartEffort")
     if not isinstance(efforts, dict):
         efforts = {}
+    contexts = data.get("workerStartContext")
+    if not isinstance(contexts, dict):
+        contexts = {}
     extra_models = data.get("models")
     if not isinstance(extra_models, dict):
         extra_models = {}
+    src_map = data.get("_settings_source")
+    if not isinstance(src_map, dict):
+        src_map = {k: "local" for k in WORKER_CLIS}
+    # Env pin marks settings_source for that CLI (inline; env_model_pin is defined below).
+    for cli in WORKER_CLIS:
+        for key in ENV_MODEL_PINS.get(cli, ()):
+            got = str((e or {}).get(key) or "").strip().strip("'\"")
+            if got and got.lower() not in ("auto", "unknown", "none", "null") and "$" not in got:
+                src_map[cli] = "env-pin"
+                break
+    fb = data.get("_settings_fallback")
+    if not isinstance(fb, dict):
+        fb = {}
     return {
         "workerStartModels": {k: str(models.get(k) or "").strip() for k in WORKER_CLIS},
         "workerStartEffort": {
             k: normalize_effort(efforts.get(k) or efforts.get("default") or "")
             for k in WORKER_CLIS
         },
+        "workerStartContext": {k: str(contexts.get(k) or "").strip() for k in WORKER_CLIS},
         "models": {
             "opencodeFree": str(extra_models.get("opencodeFree") or "").strip(),
             "opencodePaid": str(extra_models.get("opencodePaid") or "").strip(),
@@ -127,6 +206,8 @@ def load_worker_start_config(
             for k, v in jobs.items()
             if str(k).strip()
         },
+        "settings_source": {k: str(src_map.get(k) or "local") for k in WORKER_CLIS},
+        "settings_fallback": {str(k): str(v) for k, v in fb.items()},
     }
 
 
@@ -246,6 +327,10 @@ def write_launch_record(
     model: str,
     effort: str,
     argv: list[str] | None = None,
+    context: str = "",
+    settings_source: str = "",
+    cli_settings_args: list[str] | None = None,
+    setting_status: dict[str, str] | None = None,
 ) -> Path:
     """Seat launch record for the tray (model + effort actually passed)."""
     rd = Path(run_dir)
@@ -254,7 +339,11 @@ def write_launch_record(
         "kind": _cli(kind),
         "model": str(model or "").strip(),
         "effort": normalize_effort(effort) or DEFAULT_EFFORT,
+        "context": str(context or "").strip(),
+        "settings_source": str(settings_source or "").strip(),
         "argv": [str(a) for a in (argv or [])][:24],
+        "cli_settings_args": [str(a) for a in (cli_settings_args or [])][:24],
+        "setting_status": {str(k): str(v) for k, v in (setting_status or {}).items()},
     }
     dest = rd / "launch-record.json"
     dest.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
@@ -388,6 +477,138 @@ def launch_argv_with_effort(kind: str, argv: list[str], effort: str | None = Non
     args.insert(1, level)
     args.insert(1, flag)
     return args
+
+
+
+
+def cli_settings_args(
+    kind: str,
+    *,
+    model: str = "",
+    effort: str = "",
+    context: str = "",
+    mode: str = "agent",
+) -> tuple[list[str], dict[str, str]]:
+    """BOB-15: capability-aware setting argv + per-setting status.
+
+    Status values: ``passed``, ``not-passed: unsupported``, ``not-passed: invalid``,
+    ``not-passed: empty``.
+    """
+    cli = _cli(kind)
+    mid = concrete_model_id(model) or str(model or "").strip()
+    # Reject PowerShell-metachar models (same rule as models_webhook).
+    if mid and any(ch in mid for ch in (" ", "'", '"', "$", ";", "`", "|", "&", "<", ">")):
+        mid = ""
+        model_status = "not-passed: invalid"
+    elif mid:
+        model_status = "passed"
+    else:
+        model_status = "not-passed: empty"
+    eff = normalize_effort(effort)
+    if str(effort or "").strip() and not eff:
+        effort_status = "not-passed: invalid"
+    elif eff:
+        effort_status = "passed"
+    else:
+        effort_status = "not-passed: empty"
+    ctx = str(context or "").strip()
+    # No verified context flag on grok/cursor/opencode yet.
+    context_status = "not-passed: unsupported" if ctx else "not-passed: empty"
+
+    args: list[str] = []
+    status = {"model": model_status, "effort": effort_status, "context": context_status}
+
+    if cli == "grok":
+        if model_status == "passed":
+            args.extend(["--model", mid])
+        else:
+            status["model"] = model_status if model_status != "not-passed: empty" else "not-passed: empty"
+        if effort_status == "passed":
+            args.extend(["--reasoning-effort", eff])
+        elif str(effort or "").strip():
+            status["effort"] = effort_status
+    elif cli == "cursor":
+        if model_status == "passed":
+            args.extend(["--model", mid])
+        status["effort"] = "not-passed: unsupported" if str(effort or "").strip() else "not-passed: empty"
+    elif cli == "opencode":
+        if model_status == "passed":
+            # Outer helper uses -m; callers may re-map.
+            args.extend(["-m", mid])
+        status["effort"] = "not-passed: unsupported" if str(effort or "").strip() else "not-passed: empty"
+    elif cli == "aider":
+        if model_status == "passed":
+            args.extend(["--model", mid])
+        status["effort"] = "not-passed: unsupported" if str(effort or "").strip() else "not-passed: empty"
+    else:
+        status["model"] = "not-passed: unsupported"
+        status["effort"] = "not-passed: unsupported"
+    _ = mode  # reserved for Plan vs agent wrappers
+    return args, status
+
+
+def resolved_start_settings(
+    kind: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolved model/context/effort + source for a CLI (webhook-aware config)."""
+    c = cfg if cfg is not None else load_worker_start_config(env=env)
+    cli = _cli(kind)
+    model = launch_selected_model(cli, c, env)
+    efforts = (c or {}).get("workerStartEffort") or {}
+    contexts = (c or {}).get("workerStartContext") or {}
+    sources = (c or {}).get("settings_source") or {}
+    effort = normalize_effort(efforts.get(cli)) or configured_start_effort(cli, c)
+    context = str(contexts.get(cli) or "").strip()
+    source = str(sources.get(cli) or "local")
+    if env_model_pin(cli, env):
+        source = "env-pin"
+    args, status = cli_settings_args(cli, model=model, effort=effort, context=context)
+    return {
+        "kind": cli,
+        "model": model,
+        "effort": effort,
+        "context": context,
+        "settings_source": source,
+        "cli_settings_args": args,
+        "setting_status": status,
+    }
+
+
+def launch_dryrun_path(*, env: dict[str, str] | None = None) -> Path:
+    e = os.environ if env is None else env
+    local = str((e or {}).get("LOCALAPPDATA") or "").strip()
+    if not local:
+        local = str(Path.home() / "AppData" / "Local")
+    return Path(local) / "Bobiverse" / "worker" / "launch-dryrun.jsonl"
+
+
+def append_launch_dryrun(
+    entry: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+    path: Path | None = None,
+) -> Path:
+    """Append one JSON line for BOB-15 S1 evidence (no prompt/env/session ids)."""
+    dest = Path(path) if path else launch_dryrun_path(env=env)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    safe = {
+        "kind": str(entry.get("kind") or ""),
+        "mode": str(entry.get("mode") or ""),
+        "settings_source": str(entry.get("settings_source") or ""),
+        "model": str(entry.get("model") or ""),
+        "context": str(entry.get("context") or ""),
+        "effort": str(entry.get("effort") or ""),
+        "setting_status": entry.get("setting_status") or {},
+        "cli_args": [str(a) for a in (entry.get("cli_args") or entry.get("cli_settings_args") or [])][:48],
+        "executable": str(entry.get("executable") or ""),
+    }
+    with dest.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(safe, sort_keys=True) + "\n")
+    return dest
+
 
 
 def concrete_model_id(raw: object) -> str:
