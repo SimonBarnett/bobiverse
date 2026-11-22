@@ -27,6 +27,9 @@
   FR #7167: when InstallRoot VERSION (MSI/ARP) is newer than clone common\VERSION but the sparse
   worktree tip is OK (or -ComposeOnly), still compose flat scripts and keep MSI VERSION; only
   full-skip robocopy when the tip is stale (FR #1018 older-clone rollback guard).
+  FR #8863: sync-skip-diverged (FR #7301) still overlays allowlisted runtime scripts
+  (bob/scripts/bob_worker.py, bob/scripts/skill_dag_mcp.py) plus flat scripts\ copies.
+  That does not replace a frozen bob-worker.exe; the onefile still needs an MSI rebuild.
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
@@ -462,6 +465,18 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
     } catch {
         Write-Host ("WARN sync-gitclaim-from-tip error: {0}" -f $_.Exception.Message)
     }
+    # FR #8863: allowlisted runtime scripts (bob_worker.py, skill_dag_mcp.py) even when
+    # ff is blocked or MSI VERSION is newer than the clone. Does not replace bob-worker.exe.
+    try {
+        $tf = Sync-BobiverseAllowlistedTipFiles -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
+        if ($tf.Ok) {
+            Write-Host ("INFO sync-tip-file ok bytes={0}: {1}" -f $tf.Bytes, $tf.Reason)
+        } else {
+            Write-Host ("WARN sync-tip-file skipped: {0}" -f $tf.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-tip-file error: {0}" -f $_.Exception.Message)
+    }
     # FR #7161: tip-heal recycleseat.py when compose is skipped (e.g. MSI VERSION newer than
     # clone stamp) so live flat scripts\ still get SYSTEM/dirty-recycle gates without a full ff compose.
     try {
@@ -523,6 +538,23 @@ foreach ($m in $mirror) {
     if ($m.Xf.Count) { $roboArgs += @('/XF') + $m.Xf }
     & robocopy.exe @roboArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok{1}" -f $m.Dst, $xoNote) }
+}
+# FR #8860: tools\monitor on a composed install (including drive-root J:\) stayed
+# stale after #8585 because jeeves tools\ robocopy keeps /XO (MRB #6162) and git
+# mtimes are older than the flat copy. Force-copy monitor scripts from tip.
+# The rest of tools\ stays /XO.
+if ($Product -eq 'jeeves') {
+    $monFrom = Get-BobiverseRepoPath -Root $clone -Rel 'tools\monitor'
+    $monDst = Join-Path $InstallRoot 'tools\monitor'
+    if (Test-Path -LiteralPath $monFrom -PathType Container) {
+        New-Item -ItemType Directory -Force -Path $monDst | Out-Null
+        $nMon = 0
+        foreach ($mf in @(Get-ChildItem -LiteralPath $monFrom -File)) {
+            Copy-Item -LiteralPath $mf.FullName -Destination (Join-Path $monDst $mf.Name) -Force
+            $nMon++
+        }
+        Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
+    }
 }
 
 # t828u: compile the Acknowledge/Status dialog exes into <install>\tools when missing or older than their sources (csc.exe is in-box on Windows;
