@@ -375,7 +375,7 @@ def _inbound() -> list[DocEntry]:
             html_rel="docs/webhooks/models.html",
             status="coming",
         ),
-                DocEntry(
+        DocEntry(
             slug="models-refresh",
             title="Models refresh (POST)",
             method="POST",

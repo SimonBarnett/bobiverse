@@ -1,20 +1,22 @@
 """BOB-01 / FR #8707: fleet agent Weights rows (GET /bob/v1/models).
 
-Public JSON shape (FR #8820)::
+Public GET JSON shape (FR #8819 nested + FR #8820 stale)::
 
-    {"clis":{"grok":{"models":[{"model","contexts","efforts"}],"refreshed_at":null}, ...},
-     "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}, ...]}
+    {"clis":{"Grok":{"models":{...}},"Cursor":{"models":{...}},"Opencode":{"models":{...}}},
+     "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":"","stale":true?}, ...]}
 
-`clis` uses lowercase CLI keys (#8710 schema). Agent rows with a non-empty
-model absent from the matching CLI catalog get response-only `stale: true`.
+``clis`` nests model -> context -> efforts from digest-home
+``models-valid-combos.json`` (BOB-03/04 / FR #8819). Agent rows with a non-empty
+model absent from the refresh catalog in ``models-catalog.json`` ``clis``
+(lowercase keys, FR #8820) get response-only ``stale: true``.
 
-Rows match `bob/docs/mocks/systray-agents-workers/weights.html`. Optional
-digest-home `models-catalog.json` holds agents + clis (PUT is BOB-02;
-POST /bob/v1/models/refresh is FR #8820).
+POST /bob/v1/models/refresh (FR #8820) rebuilds the lowercase ``clis`` node
+inside ``models-catalog.json`` (models list + ``refreshed_at``); it does not
+rewrite agent selections or ``models-valid-combos.json``.
 
-BOB-03 / FR #8710: fail-closed valid `(cli, model, context, effort)` combinations
-live in a **separate** digest-home file `models-valid-combos.json` so BOB-02 PUT
-cannot wipe the allow-list. There is no POST /models/validate (form-only).
+Rows match ``bob/docs/mocks/systray-agents-workers/weights.html``. Optional
+digest-home ``models-catalog.json`` holds agents + refresh ``clis`` (PUT is
+BOB-02). There is no POST /models/validate (form-only).
 """
 from __future__ import annotations
 
@@ -36,6 +38,14 @@ MODELS_REFRESH_PATH = "/bob/v1/models/refresh"
 
 # Worker-launchable CLI keys (bob-worker --agent). Not the Weights display labels.
 VALID_CLI_KEYS = frozenset({"grok", "cursor", "opencode"})
+
+# GET /bob/v1/models public CLI keys (Weights / FR #8819). Map from VALID_CLI_KEYS.
+CLI_PUBLIC_KEYS: tuple[str, ...] = ("Grok", "Cursor", "Opencode")
+CLI_KEY_TO_PUBLIC: dict[str, str] = {
+    "grok": "Grok",
+    "cursor": "Cursor",
+    "opencode": "Opencode",
+}
 
 ERROR_UNKNOWN_CLI = "unknown_cli"
 ERROR_UNKNOWN_MODEL = "unknown_model"
@@ -259,9 +269,89 @@ def catalog_to_public_doc(
     }
 
 
+def empty_clis_public_doc() -> dict[str, Any]:
+    """FR #8819: every known CLI present with ``models: {}`` (no invented names)."""
+    return {name: {"models": {}} for name in CLI_PUBLIC_KEYS}
+
+
+def valid_combos_to_clis_public(cat: "ValidCombosCatalog") -> dict[str, Any]:
+    """FR #8819 nested GET shape from BOB-03/04 allow-list.
+
+    ``clis[DisplayCli].models[model].contexts[context].efforts = [...]``.
+    Efforts are duplicated under each context (Cartesian product of the
+    stored per-model lists). Missing/unavailable catalog -> empty models.
+    """
+    out = empty_clis_public_doc()
+    if not cat or not cat.available:
+        return out
+    for cli_key, rows in (cat.clis or {}).items():
+        pub = CLI_KEY_TO_PUBLIC.get(str(cli_key or "").strip().lower())
+        if not pub:
+            continue
+        models: dict[str, Any] = {}
+        for row in rows or ():
+            model = str(row.model or "").strip()
+            if not model:
+                continue
+            efforts = [str(e) for e in (row.efforts or ())]
+            contexts: dict[str, Any] = {}
+            for ctx in row.contexts or ():
+                ctx_s = str(ctx or "").strip()
+                if not ctx_s:
+                    continue
+                contexts[ctx_s] = {"efforts": list(efforts)}
+            models[model] = {"contexts": contexts}
+        out[pub] = {"models": models}
+    return out
+
+
+def valid_combos_public_doc(cat: "ValidCombosCatalog") -> dict[str, list[dict[str, Any]]]:
+    """FR #8716 / BOB-14: flat allow-list rows (cli -> [{model,contexts,efforts}, ...]).
+
+    GET /bob/v1/models uses `valid_combos_to_clis_public` (FR #8819 nested Si shape).
+    Keep this serializer for Weights clients / tests that still consume the flat list.
+    """
+    if not cat or not cat.available:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cli, rows in (cat.clis or {}).items():
+        key = str(cli or "").strip().lower()
+        if not key:
+            continue
+        packed: list[dict[str, Any]] = []
+        for row in rows or ():
+            packed.append(
+                {
+                    "model": str(row.model or ""),
+                    "contexts": list(row.contexts or ()),
+                    "efforts": list(row.efforts or ()),
+                }
+            )
+        if packed:
+            out[key] = packed
+    return out
+
+
 def catalog_to_json(
-    rows: Iterable[dict[str, str]], *, clis: dict[str, Any] | None = None
+    rows: Iterable[dict[str, str]],
+    *,
+    clis: dict[str, Any] | None = None,
+    home: Path | str | None = None,
 ) -> bytes:
+    """Serialize agents (+ optional clis).
+
+    When ``home`` is set and ``clis`` is omitted, emit FR #8819 nested ``clis``
+    from valid-combos plus FR #8820 stale markers from the refresh catalog.
+    """
+    if home is not None and clis is None:
+        doc = load_catalog_document(home, for_write=False)
+        clis_nested = valid_combos_to_clis_public(load_valid_combos(home))
+        agents = agents_public_with_stale(rows, clis_public_from_document(doc))
+        return json.dumps(
+            {"clis": clis_nested, "agents": agents},
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
     return json.dumps(
         catalog_to_public_doc(rows, clis=clis),
         separators=(",", ":"),
@@ -270,11 +360,9 @@ def catalog_to_json(
 
 
 def handle_models_get(home: Path | str) -> tuple[int, bytes]:
-    """BobCallback GET /bob/v1/models → agents + clis (+ stale) JSON (never 404)."""
-    doc = load_catalog_document(home, for_write=False)
-    rows = _rows_from_payload(doc) or default_agent_rows()
-    clis = clis_public_from_document(doc)
-    return 200, catalog_to_json(rows, clis=clis)
+    """BobCallback GET /bob/v1/models -> nested clis (FR #8819) + stale agents (FR #8820)."""
+    rows = load_catalog_file(home)
+    return 200, catalog_to_json(rows, home=home)
 
 
 def save_catalog_document(home: Path | str, doc: dict[str, Any]) -> None:
@@ -580,6 +668,7 @@ def handle_models_validate(
 MODELS_LOCK_NAME = "models-catalog.lock"
 MODELS_PUT_MAX_BYTES = 64 * 1024
 _KNOWN_AGENTS = frozenset(a for a, _cli in _DEFAULT_ROWS)
+_AGENT_CLI = {agent: cli for agent, cli in _DEFAULT_ROWS}
 _MODELS_THREAD_LOCK = threading.Lock()
 
 
@@ -632,6 +721,10 @@ def validate_put_agents(raw: Any) -> tuple[list[dict[str, str]] | None, str]:
             return None, why or "invalid agent row"
         if row["agent"] not in _KNOWN_AGENTS:
             return None, f"unknown agent {row['agent']}"
+        expected_cli = _AGENT_CLI.get(row["agent"])
+        if expected_cli is not None and row["cli"] != expected_cli:
+            # FR #8819: agent row cli is read-only (Weights binds dropdowns from clis[row.cli]).
+            return None, f"cli is read-only for {row['agent']}"
         if row["agent"] in seen:
             return None, f"duplicate agent {row['agent']}"
         if _row_secretish(row):
@@ -705,9 +798,7 @@ def handle_models_put(body: bytes | str, home: Path | str) -> tuple[int, bytes]:
         return 500, b'{"error":"write failed"}'
     if changed:
         return 204, b""
-    doc = load_catalog_document(home, for_write=False)
-    clis = clis_public_from_document(doc)
-    return 200, catalog_to_json(rows, clis=clis)
+    return 200, catalog_to_json(rows, home=home)
 
 
 # --- BOB-04 / FR #8709: seed models-valid-combos.json from shipped seed ------------
