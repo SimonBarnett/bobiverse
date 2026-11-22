@@ -4876,6 +4876,29 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+
+def _stderr_is_seat_prompt_echo(text: str) -> bool:
+    """True when stderr is the worker assignment prompt, not a CLI error.
+
+    FR #8990: OpenCode killed with exit 0xffffffff often leaves only the
+    seat prompt (worktree / .bob tmp / outbox rules) on stderr. That is an
+    external kill. A real crash still names a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind", '"lvl": "error"', '"lvl":"error"')):
+        return False
+    markers = (
+        "job worktree",
+        "do not check the outbox",
+        ".bob\\tmp",
+        ".bob/tmp",
+        "the turn is not over until done",
+    )
+    return any(m in low for m in markers)
+
+
 def _stderr_is_grok_structured_info_noise(text: str) -> bool:
     """True when every nonempty line is a Grok JSON info/debug log, not an error.
 
@@ -4946,7 +4969,6 @@ def unsigned_exit_stderr_is_noise(text: str) -> bool:
         r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
         raw,
     ))
-
 
 
 
@@ -5056,12 +5078,15 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
+    # FR #8990: the same exit with only the assignment prompt echoed is the same class.
     # FR #8992 / #9013 / #9012 / #8969 / #8970: unsigned-exit stderr noise classifiers (OR).
+    prompt_echo = u == 0xFFFFFFFF and _stderr_is_seat_prompt_echo(evidence)
     info_noise = u == 0xFFFFFFFF and _stderr_is_grok_structured_info_noise(evidence)
     oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
     missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
     silent = u == 0xFFFFFFFF and (
         not str(evidence or "").strip()
+        or prompt_echo
         or info_noise
         or oserror22_noise
         or missing_query_noise
@@ -5117,6 +5142,10 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if prompt_echo:
+            what += (
+                "Stderr was the seat assignment prompt only (not a CLI error). FR #8990.\n"
+            )
         if info_noise:
             what += (
                 "Stderr was Grok JSON info/debug only (not a CLI error). FR #8992.\n"
