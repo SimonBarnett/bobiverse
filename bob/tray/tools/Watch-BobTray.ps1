@@ -4166,6 +4166,32 @@ $flash.Add_Tick({
         catch { }
     })
 
+function Update-BobTrayWatchDigestPools {
+    # FR #9046: bob-tray.exe owns the 60s digest-pools timer. When that exe is parked,
+    # Watch is the only poll, so tray-digest-pools.json must refresh from here.
+    # Do not wait on the UI thread. Skip while the previous helper is still running.
+    try {
+        if ($script:digestPoolsProc -and -not $script:digestPoolsProc.HasExited) { return }
+    } catch { $script:digestPoolsProc = $null }
+    $now = [datetime]::UtcNow
+    if ($script:digestPoolsAt -and (($now - $script:digestPoolsAt).TotalSeconds -lt 55)) { return }
+    $scriptPath = Join-Path $RepoRoot 'tools\Update-BobTrayDigestPools.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        $alt = Join-Path $PSScriptRoot 'Update-BobTrayDigestPools.ps1'
+        if (Test-Path -LiteralPath $alt) { $scriptPath = $alt } else { return }
+    }
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $ps)) { $ps = 'powershell.exe' }
+    $script:digestPoolsAt = $now
+    try {
+        $script:digestPoolsProc = Start-Process -FilePath $ps -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-Root', $RepoRoot
+        ) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+    } catch {
+        Write-TrayLog ('digest pools refresh: ' + $_.Exception.Message)
+    }
+}
+
 $poll = New-Object System.Windows.Forms.Timer
 $poll.Interval = [Math]::Max(5000, $PollSec * 1000)
 $poll.Add_Tick({
@@ -4249,6 +4275,8 @@ $poll.Add_Tick({
                 # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
                 # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
                 if (-not $engine) {
+                    # FR #9046: exe timer is absent while bob-tray.exe is parked.
+                    try { Update-BobTrayWatchDigestPools } catch { }
                     Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
                     $swW = [System.Diagnostics.Stopwatch]::StartNew()
                     try {
