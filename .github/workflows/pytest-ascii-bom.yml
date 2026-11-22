@@ -52,3 +52,8 @@ jobs:
             common/tests/test_fr8765_ps1_ascii_helpers.py `
             jeeves/tests/test_fr3975_ci_ascii_bom_gates.py `
             -q --tb=short
+
+      - name: Webhook docs route coverage (FR #8835)
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves;$((Get-Location).Path)\common\tests;$((Get-Location).Path)"
+          python -m pytest common/tests/test_fr8835_webhook_docs_route_coverage.py -q -p no:cacheprovider --tb=short

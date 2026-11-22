@@ -97,7 +97,7 @@
       <article class="card">
         <span class="pill">Intake</span>
         <h3>Intake / harvest</h3>
-        <p><code>POST /bob/v1/intake</code> — file issues, FRs, and harvest lessons.</p>
+        <p><code>GET|POST /bob/v1/intake</code> — file issues, FRs, and harvest lessons (GET by intake id).</p>
         <a class="btn btn-primary" href="docs/webhooks/intake.html">Intake docs</a>
       </article>
       <article class="card">
@@ -113,6 +113,42 @@
         <a class="btn btn-primary" href="docs/webhooks/hours.html">Hours docs</a>
       </article>
       <article class="card">
+        <span class="pill">Models</span>
+        <h3>Models</h3>
+        <p><code>GET /bob/v1/models</code> — fleet Weights rows (PUT/PATCH + <code>/refresh</code> coming).</p>
+        <a class="btn btn-primary" href="docs/webhooks/models.html">Models docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Validate</span>
+        <h3>Models validate</h3>
+        <p><code>POST /bob/v1/models/validate</code> - fail-closed combo check (BOB-03).</p>
+        <a class="btn btn-primary" href="docs/webhooks/models-validate.html">Validate docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Git</span>
+        <h3>GitHub git</h3>
+        <p><code>POST /bob/v1/git</code> — GitHub webhook into Jeeves queue.</p>
+        <a class="btn btn-primary" href="docs/webhooks/git.html">Git docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Builds</span>
+        <h3>Builds</h3>
+        <p><code>GET /bob/v1/builds</code> — published build catalogue.</p>
+        <a class="btn btn-primary" href="docs/webhooks/builds.html">Builds docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Digest</span>
+        <h3>Digest (local)</h3>
+        <p><code>GET /bob/v1/digest</code> — local alias of report (chair host).</p>
+        <a class="btn btn-primary" href="docs/webhooks/digest-local.html">Digest docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Outbound</span>
+        <h3>Stall / wake</h3>
+        <p>Outbound HTTPS wake callbacks (stall / ticket-closure).</p>
+        <a class="btn btn-primary" href="docs/webhooks/outbound-stall-wake.html">Outbound docs</a>
+      </article>
+      <article class="card">
         <span class="pill">Health</span>
         <h3>Health</h3>
         <p><code>GET /health</code> — BobCallback liveness (local; not on the public front door).</p>
@@ -120,11 +156,9 @@
       </article>
     </div>
     <p class="meta" style="margin-top:1rem;color:var(--ink-soft);font-size:0.92rem">
-      Also:
-      <a href="docs/webhooks/git.html">GitHub git</a> ·
-      <a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / wake</a> ·
-      <a href="docs/webhooks/digest-local.html">Local digest</a> ·
-      live <a href="/bob/v1/report"><code>/bob/v1/report</code></a>
+      Live <a href="/bob/v1/report"><code>/bob/v1/report</code></a> ·
+      <a href="/bob/v1/models"><code>/bob/v1/models</code></a>
+      · every <code>/bob/v1/*</code> route must have a card + docs page (FR #8835)
     </p>
 
     <footer class="site-footer">
