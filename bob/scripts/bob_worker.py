@@ -7733,6 +7733,47 @@ def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) ->
     return False
 
 
+
+def probe_opencode_turns_recent(
+    turns_path: Path | str,
+    *,
+    within_s: float,
+    now_wall: float | None = None,
+) -> bool:
+    """True when opencode-turns.jsonl has turn_started/ended within within_s (FR #9009).
+
+    Digest worker.updated can lag while OpenCode is still turning. A fresh turn
+    marker means the seat is not frozen; do not recycle for opencode-frozen-progress.
+    """
+    path = Path(turns_path)
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    now = float(now_wall) if now_wall is not None else time.time()
+    cutoff = now - max(1.0, float(within_s))
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        typ = str(obj.get("type") or "")
+        if typ not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts >= cutoff:
+            return True
+    return False
+
+
 def probe_opencode_headless_receipt(
     turns_path: Path | str,
     *,
@@ -12506,6 +12547,7 @@ def opencode_frozen_recycle_reason(
     digest_doing_age_s: float | None,
     progress_moved_age_s: float | None,
     threshold_s: float = 900.0,
+    turns_recent: bool = False,
 ) -> str:
     """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
 
@@ -12514,6 +12556,11 @@ def opencode_frozen_recycle_reason(
     `limited=true` with rolling remaining must not set `out_of_fuel` (that
     hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
     hard 402 / exhausted holds.
+
+    FR #9009: recent opencode-turns.jsonl activity (turn_started/ended) means the
+    agent is still working even when digest worker.updated is stale. That
+    suppresses frozen-progress / lost-ack-stale recycles (FR #8646 still applies
+    when turns are not recent).
     """
     if (kind or "").strip().lower() != "opencode":
         return ""
@@ -12529,8 +12576,13 @@ def opencode_frozen_recycle_reason(
     if digest_age is not None and digest_age >= thr:
         if not ack_open:
             return "opencode-lost-ack-stale"
+        # FR #9009: fresh turns mean the agent is working despite a stale digest stamp.
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     return ""
 
@@ -19294,6 +19346,14 @@ class Supervisor:
                 digest_age = self._opencode_report_doing_age_s(nick)
         except Exception:
             digest_age = None
+        turns_recent = False
+        try:
+            turns_path = Path(self.run_dir) / "opencode-turns.jsonl"
+            turns_recent = probe_opencode_turns_recent(
+                turns_path, within_s=thr, now_wall=time.time()
+            )
+        except Exception:
+            turns_recent = False
         reason = opencode_frozen_recycle_reason(
             kind=self.kind,
             out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
@@ -19301,12 +19361,13 @@ class Supervisor:
             digest_doing_age_s=digest_age,
             progress_moved_age_s=moved_age,
             threshold_s=thr,
+            turns_recent=turns_recent,
         )
         if not reason:
             return False
         self.log(
             f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
-            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+            f"moved_age={moved_age!r} turns_recent={turns_recent} thr={thr:.0f}s; recycling"
         )
         self.restart_agent(reason)
         return True
