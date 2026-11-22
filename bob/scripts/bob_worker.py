@@ -4876,6 +4876,46 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+def _stderr_is_grok_structured_info_noise(text: str) -> bool:
+    """True when every nonempty line is a Grok JSON info/debug log, not an error.
+
+    FR #8992: a killed seat (exit 0xffffffff) often leaves only
+    ``billing: fetched credits config`` (or similar) with ``\"lvl\": \"info\"``.
+    Those are not a CLI crash. Reject warn/error levels and failure tokens.
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        low = ln.lower()
+        if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind")):
+            return False
+        if any(
+            tok in low
+            for tok in (
+                '"lvl": "error"',
+                '"lvl":"error"',
+                '"lvl": "warn"',
+                '"lvl":"warn"',
+                '"lvl": "warning"',
+                '"lvl":"warning"',
+            )
+        ):
+            return False
+        if not any(
+            tok in low
+            for tok in (
+                '"lvl": "info"',
+                '"lvl":"info"',
+                '"lvl": "debug"',
+                '"lvl":"debug"',
+            )
+        ):
+            return False
+    return True
+
+
+
 def grok_worker_spawn_connect_failure(text: str) -> bool:
     """FR #8972: grok exited because its own worker_spawn could not connect.
 
@@ -4884,6 +4924,7 @@ def grok_worker_spawn_connect_failure(text: str) -> bool:
     """
     raw = str(text or "")
     return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
 
 
 def unsigned_exit_stderr_is_noise(text: str) -> bool:
@@ -4905,6 +4946,9 @@ def unsigned_exit_stderr_is_noise(text: str) -> bool:
         r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
         raw,
     ))
+
+
+
 
 
 def _intake_disabled_by_env() -> bool:
@@ -5012,13 +5056,13 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    # FR #9013: OpenCode stdout TextIOWrapper OSError 22 is external-kill teardown noise.
-    # FR #9012: OpenCode idle missing-query console dump is external-kill noise.
-    # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
+    # FR #8992 / #9013 / #9012 / #8969 / #8970: unsigned-exit stderr noise classifiers (OR).
+    info_noise = u == 0xFFFFFFFF and _stderr_is_grok_structured_info_noise(evidence)
     oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
     missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
     silent = u == 0xFFFFFFFF and (
         not str(evidence or "").strip()
+        or info_noise
         or oserror22_noise
         or missing_query_noise
         or unsigned_exit_stderr_is_noise(evidence)
@@ -5073,6 +5117,10 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if info_noise:
+            what += (
+                "Stderr was Grok JSON info/debug only (not a CLI error). FR #8992.\n"
+            )
         if oserror22_noise:
             what += (
                 "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
