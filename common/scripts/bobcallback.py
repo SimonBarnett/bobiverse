@@ -2,9 +2,10 @@
 """Digest callback: report/git/intake/jira/hours/models; public GET digest (#174, #149).
 
 Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /jeeves**
-login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
-with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
-rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
+login HTML (FR #6815). Local bobcallback answers `/bob/v1/digest` and `/digest` with
+**301** `Location: /bob/v1/report` (same webhook; no duplicate JSON handler). Those
+aliases are not published through the bob.ntsa.uk IIS rewrite today
+(GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
 returns fleet agent Weights rows (BOB-01 / FR #8707). POST **/bob/v1/models/validate**
 checks a ``(cli, model, context, effort)`` tuple against the fail-closed
 ``models-valid-combos.json`` allow-list (BOB-03 / FR #8710); it never persists.
