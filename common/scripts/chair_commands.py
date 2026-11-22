@@ -13,6 +13,7 @@ AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
     ------------------------------   ---------  ------- --------- ------ -------- ------ ------- --------
     owner: services account simon*   yes        yes     yes       yes    yes      yes    yes     yes
     ear: bob-<registered machine>**  yes        yes     yes       yes    yes      yes    yes     yes
+    monitor: MONITORING principal*** yes        yes     yes       yes    yes      yes    yes     yes
     allowlist (JEEVES_FOCUS_MUT*)    yes        no      no        yes    yes      no     no      no
     anyone else                      yes        no      no        no     no       no     no      no
 
@@ -21,6 +22,8 @@ AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
     ** Nick ``bob-<machine>`` of a machine in the ChanServ roster - the same trust root that earns the ear
        its +o/+h (chan_privs). If the server told us the nick is logged in to a DIFFERENT, non-owner
        account it is refused (someone else holding a look-alike nick).
+    *** FR #8827: nick in ``JEEVES_MONITOR_NICKS`` (default ``monitoring``) or services account in
+        ``JEEVES_MONITOR_ACCOUNTS``. Same queue-mutator class as owner/ear; still no Ergo/merge/UAT.
 """
 from __future__ import annotations
 
@@ -30,6 +33,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from builds_catalog import BUILD_USAGE_LINES
 
 ROLE_WORKER = "worker"
 ROLE_BOB = "bob"
@@ -57,6 +62,7 @@ class CommandSpec:
     example: str = ""
     details: str = ""
     related: tuple = ()
+    usage_lines: tuple = ()
 
 
 COMMANDS: tuple = (
@@ -157,19 +163,19 @@ COMMANDS: tuple = (
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
     CommandSpec(
         "build",
-        "!build | !build n [version] [ref] [--tests-only] | !build status|cancel|dry-run|preflight|tests-only n",
-        "numbered catalog BUILD (no agent); failures become release-blocker issues (FR #4006 / #8490)",
+        " | ".join(ln.split(": ", 1)[-1] for ln in BUILD_USAGE_LINES),
+        "numbered catalog BUILD (no agent); failures become release-blocker issues (FR #4006 / #8490 / #8770)",
         OPS_ROLES,
-        "!build 1 0.1.40",
-        "Ops only (simon / bob-* / +o/+h). Bare !build lists builds-catalog.json (GET /bob/v1/builds). "
-        "!build n runs that entry's yml on the recipe machine, exports pack artifacts to catalog output, "
-        "then reinstalls on install (machine id or fleet via registered-machines.json). "
-        "version/ref override catalog defaults. "
-        "<version> must be numeric x.y.z or x.y.z.w (digits only); v-prefix / -suffix refused (#4186). "
-        "dep is documentation only. Old !build owner/repo form is refused — use the numbered list. "
-        "Subcommands take n: status, cancel (bare cancel still frees all), dry-run, preflight (#6492), "
-        "tests-only. Per-repo single-flight; no recipe => refuse.",
+        "!build 1",
+        "Ops only (simon / bob-* / +o/+h). Bare !build lists numbered builds-catalog.json "
+        "(local digest-home first, else GET /bob/v1/builds). "
+        "!build n uses the catalog yml path as the recipe, exports pack to output, reinstalls on "
+        "install (machine or fleet). Blank version → next patch of latest vX.Y.Z tag; "
+        "explicit version must be numeric x.y.z or x.y.z.w (#4186). "
+        "Bare !build status lists running builds; bare cancel frees all (ops only, FR #6715). "
+        "dep is documentation only. Old owner/repo form refused.",
         ("status", "list", "focus", "installtest"),
+        usage_lines=BUILD_USAGE_LINES,
     ),
     CommandSpec(
         "installtest",
@@ -240,22 +246,39 @@ def _csv_env(name: str) -> set:
     return {p.strip().lower() for p in (os.environ.get(name) or "").split(",") if p.strip()}
 
 
+# FR #8827: MONITORING principal — same queue-mutator class as owner/ear.
+# Default nick ``monitoring`` when JEEVES_MONITOR_NICKS is unset; empty env disables nick default.
+# Services accounts listed in JEEVES_MONITOR_ACCOUNTS (fail closed when unset).
+_DEFAULT_MONITOR_NICKS = frozenset({"monitoring"})
+
+
+def monitor_nicks() -> set:
+    raw = os.environ.get("JEEVES_MONITOR_NICKS")
+    if raw is None:
+        return set(_DEFAULT_MONITOR_NICKS)
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def monitor_accounts() -> set:
+    return _csv_env("JEEVES_MONITOR_ACCOUNTS")
+
+
 @dataclass(frozen=True)
 class Principal:
-    kind: str                     # owner | ear | allowlist | none
+    kind: str                     # owner | ear | monitor | allowlist | none
     nick: str = ""
     account: str = ""
     machine: str = ""             # ear: roster machine id
 
     @property
     def ops(self) -> bool:
-        return self.kind in ("owner", "ear")
+        return self.kind in ("owner", "ear", "monitor")
 
     @property
     def roles(self) -> frozenset:
         if self.kind == "owner":
             return ALL_ROLES
-        if self.kind == "ear":
+        if self.kind in ("ear", "monitor"):
             return frozenset({ROLE_BOB, ROLE_WORKER})
         return frozenset({ROLE_WORKER})
 
@@ -272,6 +295,11 @@ def classify(nick, account=None, *, ear_machine: Callable = lambda n: None) -> P
         if acct and acct not in (low, low.rstrip("_")) and not acct.startswith("bob-"):
             return Principal("none", n, acct)          # look-alike nick under someone else's account
         return Principal("ear", n, acct, mid)
+    # FR #8827: MONITORING principal (keep-queue-moving mutators). Before focus-only allowlist.
+    if acct and acct in monitor_accounts():
+        return Principal("monitor", n, acct)
+    if low and low in monitor_nicks():
+        return Principal("monitor", n, acct)
     if acct and acct in _csv_env("JEEVES_FOCUS_MUTATOR_ACCOUNTS"):
         return Principal("allowlist", n, acct)
     if low and low in _csv_env("JEEVES_FOCUS_MUTATORS"):
@@ -294,7 +322,7 @@ def may(cmd: str, who: Principal) -> bool:
     if rule == "any":
         return True
     if rule == "ops+allow":
-        return who.kind in ("owner", "ear", "allowlist")
+        return who.ops or who.kind == "allowlist"
     return who.ops
 
 
@@ -437,9 +465,15 @@ def index_line(c: CommandSpec) -> str:
 
 
 def detail_lines(c: CommandSpec) -> list:
-    lines = [_clip(f"syntax: {c.syntax}"),
-             _clip(f"what: {c.summary}" + (f" - {c.details}" if c.details else "")),
-             _clip(f"who: {', '.join(sorted(c.roles))}")]
+    # FR #8770: when usage_lines is set, emit those (clipped) instead of syntax:.
+    if c.usage_lines:
+        lines = [_clip(ln) for ln in c.usage_lines]
+    else:
+        lines = [_clip(f"syntax: {c.syntax}")]
+    lines.append(
+        _clip(f"what: {c.summary}" + (f" - {c.details}" if c.details else ""))
+    )
+    lines.append(_clip(f"who: {', '.join(sorted(c.roles))}"))
     if c.example:
         lines.append(_clip(f"example: {c.example}"))
     if c.related:

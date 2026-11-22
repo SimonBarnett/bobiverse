@@ -79,7 +79,7 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $icoArgs
-$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model', '--hidden-import', 'worker_shipped_scripts', '--hidden-import', 'repo_clone_store')
+$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model', '--hidden-import', 'models_webhook', '--hidden-import', 'worker_shipped_scripts', '--hidden-import', 'repo_clone_store')
 # FR #7910: bundle every script bob_worker launches by path. _MEI is not a valid runtime path.
 $shipPy = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\worker_shipped_scripts.py'
 if (-not (Test-Path -LiteralPath $shipPy)) { throw "missing $shipPy" }

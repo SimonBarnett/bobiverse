@@ -43,9 +43,9 @@ Admin-sealed `identity.json` under LocalSystem → `CryptUnprotectData failed`. 
 - Webhooks: `docs/webhooks.md`
 - Post-install: `docs/post-install.md`
 
-## !build (FR #4006 / #8490)
+## !build (FR #4006 / #8490 / #8770)
 
-Ops: bare `!build` lists the numbered catalog (`builds-catalog.json` / GET `/bob/v1/builds`). `!build n [version] [ref]` queues a deterministic BUILD from that entry's `yml` (no agent): suites → pack → export artifacts to catalog `output` → reinstall on `install` (single machine id or `fleet` via `registered-machines.json`). Local target uses recipe `install_test` msiexec against exported MSIs; remote targets get `BUILD_INSTALL` queue jobs (WARN-and-continue; offline skipped). Version/ref override catalog defaults; `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). `dep` is documentation only. Old `!build owner/repo` form is refused. Use `!build dry-run n` to validate.
+Ops: bare `!build` lists the numbered catalog (digest-home `builds-catalog.json` first, then chair home; HTTP GET `/bob/v1/builds` only when both empty). List rows: name, repo, install, `version=next:Y` (or fixed), ref — each <= 400 bytes; `yml`/`dep`/`output` appear in dry-run. `!build n [version] [ref]` queues a deterministic BUILD from that entry's `yml` path (no agent): suites → pack → export to `output` → reinstall on `install` (machine or `fleet` via `registered-machines.json`). Blank version → next patch of latest numeric `vX.Y.Z[.W]` tag (no tags / tag lookup failure → refuse and ask for an explicit version). Explicit `<version>` must be numeric `x.y.z` or `x.y.z.w` (#4186). Default ref is entry ref or `HEAD`. Bare `!build status` lists running builds; bare `!build cancel` frees all (ops, FR #6715). `!build help` prints the two canonical usage lines. `dep` is documentation only. Old `!build owner/repo` form is refused. Preflight still checks the installed recipe (not a custom catalog path). Use `!build dry-run n` to validate.
 
 ## !installtest (FR #4026 WP3)
 

@@ -210,6 +210,17 @@ if ((Test-Path -LiteralPath (Get-BobiverseRepoPath -Root $repoRoot -Rel 'bob-age
         Write-Host 'INFO scripts\bob-ear.exe not present (repo install): ircBob uses python irc_agent.py until MSI or Build-BobEar.ps1 + Install-BobEarExe.ps1 (FR #1481)'
     }
 }
+# FR #8675 / BOB-10: stamp plan identity from installed VERSION + short HEAD (after sync; skip-safe when plan\ missing).
+$planVer = ''
+try {
+    $vf = Join-Path $InstallRoot 'VERSION'
+    if (Test-Path -LiteralPath $vf) { $planVer = ([string](Get-Content -LiteralPath $vf -TotalCount 1 -ErrorAction Stop)).Trim() }
+} catch { }
+$planCommit = ''
+try { $planCommit = [string](& git -C $repoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+try { Write-BobiversePlanIdentity -Destination $InstallRoot -Version $planVer -Commit $planCommit.Trim() } catch {
+    Write-Host ("WARN FR #8675 plan identity: {0}" -f $_.Exception.Message)
+}
 
 # TipForm tray payload (tools/src/assets/PIN) when installing from repo (MSI heat already staged)
 $trayVendor = Get-BobiverseRepoPath -Root $repoRoot -Rel 'third_party\bob-tray'

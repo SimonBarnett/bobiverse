@@ -69,6 +69,21 @@ if (-not $BobInstallRoot) {
     }
 }
 $BobInstallRoot = Normalize-JeevesRoot $BobInstallRoot
+# FR #8860: non-chair composed installs (drive-root J:\) never run Start-Jeeves,
+# so tools\monitor lagged main after #8585. Refresh from tip when the flat
+# Sync script is beside this file. A repo tree without that sibling is a no-op.
+$syncMon = Join-Path $PSScriptRoot 'Sync-BobiverseFromRepo.ps1'
+if (Test-Path -LiteralPath $syncMon) {
+    try {
+        if ($DryRun) {
+            & $syncMon -Product jeeves -InstallRoot $InstallRoot -DryRun
+        } else {
+            & $syncMon -Product jeeves -InstallRoot $InstallRoot
+        }
+    } catch {
+        Write-Warning ("FR #8860 sync-monitor: {0}" -f $_.Exception.Message)
+    }
+}
 $exe = Join-Path $BobInstallRoot 'worker\bob-worker.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
     Write-Error "bob-worker.exe missing at $exe (install/upgrade the bob MSI). Jeeves Monitor uses the same agent launcher as the tray Agent item."
