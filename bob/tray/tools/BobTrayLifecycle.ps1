@@ -45,18 +45,29 @@ function Restart-BobTrayService {
 
 function Invoke-BobTrayExitSequence {
     <#
-      Exit order (t798u): 1 close every dialog and dispose the tray icon IMMEDIATELY, 2 exit the UI loop,
-      3 only then start the service stop, detached. Each step is isolated: a failing step never skips the next.
+      Exit order (t798u / FR #9034): 1 close every dialog and dispose the tray icon IMMEDIATELY,
+      2 exit the UI loop. TipForm Exit must NOT stop ircBob (ear is a machine service).
+      -StopService is optional for legacy callers; when omitted or $null the step is skipped.
+      Each step is isolated: a failing step never skips the next.
       Returns the names of the steps in the order they ran.
     #>
     param(
         [Parameter(Mandatory)][scriptblock]$CloseDialogs,
         [Parameter(Mandatory)][scriptblock]$DisposeIcon,
         [Parameter(Mandatory)][scriptblock]$ExitUi,
-        [Parameter(Mandatory)][scriptblock]$StopService
+        [scriptblock]$StopService = $null
     )
     $ran = New-Object System.Collections.Generic.List[string]
-    foreach ($step in @(@('close-dialogs', $CloseDialogs), @('dispose-icon', $DisposeIcon), @('exit-ui', $ExitUi), @('stop-service', $StopService))) {
+    $steps = @(
+        @('close-dialogs', $CloseDialogs),
+        @('dispose-icon', $DisposeIcon),
+        @('exit-ui', $ExitUi)
+    )
+    # FR #9034: do not stop ircBob on TipForm Exit; optional legacy StopService only when passed.
+    if ($null -ne $StopService) {
+        $steps += ,@('stop-service', $StopService)
+    }
+    foreach ($step in $steps) {
         $ran.Add([string]$step[0])
         try { & $step[1] } catch { }
     }
