@@ -72,9 +72,10 @@ def test_get_models_includes_clis_allow_list(tmp_path: Path):
     doc = json.loads(body.decode("utf-8"))
     assert "agents" in doc
     assert "clis" in doc
-    assert set(doc["clis"]) == {"grok", "cursor", "opencode"}
-    grok_models = [r["model"] for r in doc["clis"]["grok"]]
-    assert "fixture-grok-a" in grok_models
+    # FR #8819 nested Si shape (DisplayCli keys + models/contexts/efforts).
+    assert set(doc["clis"]) == {"Grok", "Cursor", "Opencode"}
+    assert "fixture-grok-a" in doc["clis"]["Grok"]["models"]
+    assert "128k" in doc["clis"]["Grok"]["models"]["fixture-grok-a"]["contexts"]
     blob = json.dumps(doc["clis"])
     assert '"256"' not in blob
     assert '"med"' not in blob

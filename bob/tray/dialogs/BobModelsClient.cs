@@ -1,4 +1,4 @@
-// FR #8714 / BOB-13: Weights form client for GET/PUT /bob/v1/models (BOB-01/02 contract).
+﻿// FR #8714 / BOB-13: Weights form client for GET/PUT /bob/v1/models (BOB-01/02 contract).
 // C# 5 / .NET Framework 4. Peer-IP gate is server-side; client does not invent auth headers.
 using System;
 using System.Collections;
@@ -276,12 +276,14 @@ namespace BobDialogs
 
         public static Dictionary<string, List<BobModelsComboRow>> ParseClis(string json)
         {
-            // FR #8716: optional ``clis`` map from GET /bob/v1/models.
+            // FR #8716 / FR #8819: clis from GET /bob/v1/models.
+            // Nested Si shape (8819): clis[DisplayCli].models[model].contexts[ctx].efforts
+            // Legacy flat list (8716): clis[cli] = [{model,contexts,efforts}, ...]
             Dictionary<string, List<BobModelsComboRow>> clis =
                 new Dictionary<string, List<BobModelsComboRow>>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrEmpty(json)) return clis;
             string text = json;
-            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1);
+            if (text.Length > 0 && text[0] == '﻿') text = text.Substring(1);
             object parsed = Common.ParseJson(text);
             Dictionary<string, object> doc = Common.Dict(parsed);
             if (doc == null || !doc.ContainsKey("clis")) return clis;
@@ -291,21 +293,64 @@ namespace BobDialogs
             {
                 string cli = (kv.Key ?? "").Trim().ToLowerInvariant();
                 if (cli.Length == 0) continue;
-                IEnumerable list = kv.Value as IEnumerable;
-                if (list == null || kv.Value is string) continue;
                 List<BobModelsComboRow> rows = new List<BobModelsComboRow>();
-                foreach (object item in list)
+                Dictionary<string, object> nested = Common.Dict(kv.Value);
+                if (nested != null && nested.ContainsKey("models"))
                 {
-                    Dictionary<string, object> raw = Common.Dict(item);
-                    if (raw == null) continue;
-                    BobModelsComboRow row = new BobModelsComboRow();
-                    row.Model = Str(raw, "model");
-                    if (row.Model.Length == 0) continue;
-                    row.Contexts = StrList(raw, "contexts");
-                    row.Efforts = StrList(raw, "efforts");
-                    rows.Add(row);
+                    Dictionary<string, object> models = Common.Dict(nested["models"]);
+                    if (models != null)
+                    {
+                        foreach (KeyValuePair<string, object> mk in models)
+                        {
+                            string model = (mk.Key ?? "").Trim();
+                            if (model.Length == 0) continue;
+                            Dictionary<string, object> modelObj = Common.Dict(mk.Value);
+                            if (modelObj == null) continue;
+                            object ctxRaw = modelObj.ContainsKey("contexts") ? modelObj["contexts"] : null;
+                            Dictionary<string, object> ctxMap = Common.Dict(ctxRaw);
+                            BobModelsComboRow row = new BobModelsComboRow();
+                            row.Model = model;
+                            row.Contexts = new List<string>();
+                            row.Efforts = new List<string>();
+                            if (ctxMap != null)
+                            {
+                                foreach (KeyValuePair<string, object> ck in ctxMap)
+                                {
+                                    string ctx = (ck.Key ?? "").Trim();
+                                    if (ctx.Length == 0) continue;
+                                    if (!row.Contexts.Contains(ctx)) row.Contexts.Add(ctx);
+                                    Dictionary<string, object> ctxObj = Common.Dict(ck.Value);
+                                    if (ctxObj == null) continue;
+                                    List<string> efforts = StrList(ctxObj, "efforts");
+                                    for (int ei = 0; ei < efforts.Count; ei++)
+                                    {
+                                        string e = efforts[ei];
+                                        if (e.Length == 0) continue;
+                                        if (!row.Efforts.Contains(e)) row.Efforts.Add(e);
+                                    }
+                                }
+                            }
+                            rows.Add(row);
+                        }
+                    }
                 }
-                if (rows.Count > 0) clis[cli] = rows;
+                else
+                {
+                    IEnumerable list = kv.Value as IEnumerable;
+                    if (list == null || kv.Value is string) continue;
+                    foreach (object item in list)
+                    {
+                        Dictionary<string, object> raw = Common.Dict(item);
+                        if (raw == null) continue;
+                        BobModelsComboRow row = new BobModelsComboRow();
+                        row.Model = Str(raw, "model");
+                        if (row.Model.Length == 0) continue;
+                        row.Contexts = StrList(raw, "contexts");
+                        row.Efforts = StrList(raw, "efforts");
+                        rows.Add(row);
+                    }
+                }
+                clis[cli] = rows;
             }
             return clis;
         }
