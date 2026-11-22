@@ -169,6 +169,7 @@ EXIT_LAUNCH_FAIL = 6
 EXIT_REFUSED = 7  # t815u: already the maximum number of workers running
 EXIT_STALE_BUILD = 8  # FR #2782 legacy; FR #3180 keeps the seat running and asks for a manual restart instead
 EXIT_XAI_AUTH_EXPIRED = 9  # FR #7345: Grok sign-in missing/expired; do not launch interactive auth
+EXIT_OUT_OF_FUEL = 10  # FR #8814: fuel exhausted — dialog then quit (no out_of_fuel zombie seat)
 
 def _default_install_root() -> str:
     """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
@@ -9875,6 +9876,132 @@ def _http_post_json(
     return False
 
 
+def out_of_fuel_quit_enabled(env: Optional[dict] = None) -> bool:
+    """FR #8814: after fuel GIVEUP, dialog + quit by default (no zombie out_of_fuel seat).
+
+    Set ``BOB_WORKER_OUT_OF_FUEL_QUIT=0`` to keep the legacy FR #3012 hold until fuel returns.
+    """
+    env = os.environ if env is None else env
+    raw = str(env.get("BOB_WORKER_OUT_OF_FUEL_QUIT", "1") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def format_out_of_fuel_dialog_text(
+    *,
+    pool: str = "",
+    remaining: str = "",
+    reset_hint: str = "",
+    evidence: str = "",
+    nick: str = "",
+) -> str:
+    """User-visible dialog body for FR #8814 fuel-exhausted quit."""
+    lines = ["Fuel exhausted for this seat."]
+    pool_s = (pool or "").strip()
+    if pool_s:
+        lines.append(f"Pool: {pool_s}")
+    rem_s = (remaining or "").strip()
+    if rem_s:
+        lines.append(f"Remaining: {rem_s}")
+    reset_s = (reset_hint or "").strip()
+    if reset_s:
+        lines.append(f"Reset: {reset_s}")
+    nick_s = (nick or "").strip()
+    if nick_s:
+        lines.append(f"Seat: {nick_s}")
+    preview = one_line(evidence or "", 160)
+    if preview:
+        lines.append(preview)
+    lines.append("This seat will close now so it leaves the digest.")
+    return "\n".join(lines)
+
+
+def show_out_of_fuel_dialog(
+    *,
+    pool: str = "",
+    remaining: str = "",
+    reset_hint: str = "",
+    evidence: str = "",
+    nick: str = "",
+    title: str = "Bobiverse — out of fuel",
+    show_fn: Optional[Callable[[str, str], None]] = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """Show fuel-exhausted dialog (FR #8814). Returns True when a dialog path ran.
+
+    ``show_fn(text, title)`` is injectable for tests. When unset, uses Win32 MessageBoxW
+    unless ``BOB_WORKER_FUEL_DIALOG=0`` (headless / CI skip).
+    """
+    env = os.environ if env is None else env
+    text = format_out_of_fuel_dialog_text(
+        pool=pool,
+        remaining=remaining,
+        reset_hint=reset_hint,
+        evidence=evidence,
+        nick=nick,
+    )
+    if show_fn is not None:
+        show_fn(text, title)
+        return True
+    raw = str(env.get("BOB_WORKER_FUEL_DIALOG", "1") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        if log:
+            try:
+                log("out-of-fuel: dialog skipped (BOB_WORKER_FUEL_DIALOG=0)")
+            except Exception:
+                pass
+        return False
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        MB_OK = 0x00000000
+        MB_ICONWARNING = 0x00000030
+        user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+        return True
+    except Exception as e:
+        if log:
+            try:
+                log(f"out-of-fuel: dialog failed {type(e).__name__}")
+            except Exception:
+                pass
+        return False
+
+
+def post_digest_worker_remove(
+    *,
+    machine: str,
+    nick: str,
+    pid: int | str | None = None,
+    url: str | None = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """FR #8814: remove the seat nick from digest workers so out_of_fuel zombies leave."""
+    env = os.environ if env is None else env
+    report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
+    nick_s = (nick or "").strip()
+    if not report or not nick_s:
+        return False
+    mid = normalize_machine_id(machine) or str(machine or "").strip().lower()
+    row: dict = {
+        "op": "worker-remove",
+        "machine": mid,
+        "id": mid,
+        "nick": nick_s,
+    }
+    if pid is not None and str(pid).strip() != "":
+        try:
+            row["pid"] = int(str(pid))
+        except (TypeError, ValueError):
+            pass
+    ok = bool(_http_post_json(report, row, log=log))
+    if not ok and log:
+        try:
+            log(f"post_digest_worker_remove failed mid={mid} nick={nick_s}")
+        except Exception:
+            pass
+    return ok
+
+
 def post_digest_out_of_fuel(
     *,
     machine: str,
@@ -9889,6 +10016,7 @@ def post_digest_out_of_fuel(
 
     FR #5032: include weekly=0 so peers paint exhausted (0%% red) instead of a stale %.
     FR #8494: also POST worker-work ``state=out_of_fuel`` so the seat row is not idle.
+    FR #8814: callers that quit the seat should follow with ``post_digest_worker_remove``.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -14207,6 +14335,8 @@ class BoredEmitter:
         self.out_of_fuel_release_fn: Optional[Callable[[str], None]] = None
         # FR #4180: always run once when entering the hold (clear ack-miss / HangDetector).
         self.out_of_fuel_enter_fn: Optional[Callable[[], None]] = None
+        # FR #8814: after enter+release, quit the seat (dialog + digest worker-remove + shutdown).
+        self.out_of_fuel_quit_fn: Optional[Callable[[str], None]] = None
         self.fuel_check_fn: Optional[Callable[[], bool]] = None
         # FR #3019: while ACK open, True => mid-job fuel lost (Cursor/Grok reading exhausted).
         self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
@@ -14615,22 +14745,26 @@ class BoredEmitter:
             return bool(self._out_of_fuel)
 
     def note_out_of_fuel(self, evidence: str = "") -> Optional[str]:
-        """FR #3012: mark out-of-fuel, clear ACK/done-miss, invoke release_fn once with the job key.
+        """FR #3012: mark out-of-fuel, clear ACK/done-miss, invoke out_of_fuel_release_fn once with the job key.
 
         Returns the job key that was open (for shop GIVEUP / digest), or None.
         FR #4180: also invoke ``out_of_fuel_enter_fn`` once so Supervisors can disarm
         ack-miss / HangDetector even when no ACK was open.
+        FR #8814: then ``out_of_fuel_quit_fn`` (dialog + worker-remove + seat exit) unless
+        ``BOB_WORKER_OUT_OF_FUEL_QUIT=0``.
         """
         release_key: Optional[str] = None
         fn: Optional[Callable[[str], None]] = None
         enter_fn: Optional[Callable[[], None]] = None
+        quit_fn: Optional[Callable[[str], None]] = None
+        evidence_s = evidence or ""
         with self._cv:
             if self._out_of_fuel:
                 return None  # already held; no second GIVEUP
             now = self.clock()
             self._out_of_fuel = True
             self._out_of_fuel_at = now
-            self._out_of_fuel_hard_402 = is_hard_402_out_of_fuel_text(evidence or "")
+            self._out_of_fuel_hard_402 = is_hard_402_out_of_fuel_text(evidence_s)
             self._out_of_fuel_clear_reason = None
             self._clear_done_miss()
             self._clear_finish_turn()
@@ -14652,10 +14786,16 @@ class BoredEmitter:
             self._harvest_until = None
             fn = self.out_of_fuel_release_fn
             enter_fn = self.out_of_fuel_enter_fn
-            preview = one_line(evidence or "out-of-fuel", 100)
+            quit_fn = self.out_of_fuel_quit_fn
+            preview = one_line(evidence_s or "out-of-fuel", 100)
             hard = " hard-402" if self._out_of_fuel_hard_402 else ""
+            quit_soon = quit_fn is not None and out_of_fuel_quit_enabled()
             self.log(
-                f"out-of-fuel: holding seat{hard}"
+                (
+                    f"out-of-fuel: quitting seat after dialog{hard}"
+                    if quit_soon
+                    else f"out-of-fuel: holding seat{hard}"
+                )
                 + (f" (was ACK {release_key})" if release_key else "")
                 + f" - {preview}"
             )
@@ -14670,6 +14810,12 @@ class BoredEmitter:
                 fn(release_key)
             except Exception as e:
                 self.log(f"out-of-fuel: release_fn failed {type(e).__name__}")
+        # FR #8814: dialog + digest remove + process exit (no zombie out_of_fuel worker).
+        if quit_fn is not None and out_of_fuel_quit_enabled():
+            try:
+                quit_fn(evidence_s)
+            except Exception as e:
+                self.log(f"out-of-fuel: quit_fn failed {type(e).__name__}")
         return release_key
 
     def clear_out_of_fuel(self, reason: str = "reading") -> None:
@@ -15998,6 +16144,7 @@ class Supervisor:
         if self.bored is not None:
             self.bored.out_of_fuel_release_fn = self._release_out_of_fuel_job
             self.bored.out_of_fuel_enter_fn = self._on_out_of_fuel_enter
+            self.bored.out_of_fuel_quit_fn = self._quit_after_out_of_fuel
             self.bored.fuel_check_fn = self._fuel_available_again
             self.bored.fuel_lost_check_fn = self._fuel_lost_mid_job
         relay.on_inject = self._on_inject
@@ -16440,16 +16587,21 @@ class Supervisor:
         """FR #3012: shop GIVEUP + digest so Jeeves / tray see out-of-fuel immediately."""
         line = out_of_fuel_giveup_line(job_key)
         shop = self.irc.shop if self.irc else shop_channel(self.machine)
+        quit_soon = out_of_fuel_quit_enabled(
+            self.base_env if isinstance(getattr(self, "base_env", None), dict) else None
+        )
         if self.irc and self.irc.alive:
             try:
                 self.irc.say(shop, line)
             except Exception as e:
                 self.log(f"out-of-fuel: GIVEUP say failed {type(e).__name__}")
             try:
-                self.irc.say(
-                    shop,
-                    f"out-of-fuel: {self.nick} released `{job_key}` (402/usage exhausted) - quiet until fuel returns",
+                follow = (
+                    f"out-of-fuel: {self.nick} released `{job_key}` (402/usage exhausted) - closing seat"
+                    if quit_soon
+                    else f"out-of-fuel: {self.nick} released `{job_key}` (402/usage exhausted) - quiet until fuel returns"
                 )
+                self.irc.say(shop, follow)
             except Exception:
                 pass
         # Bookkeeping without arming harvest !bored (BoredEmitter._out_of_fuel already set).
@@ -16479,6 +16631,91 @@ class Supervisor:
         except Exception as e:
             self.log(f"out-of-fuel: digest post failed {type(e).__name__}: {e}")
         self.log(f"out-of-fuel: posted {line}")
+
+    def _out_of_fuel_dialog_pool_bits(self, evidence: str = "") -> tuple[str, str, str]:
+        """Best-effort pool / remaining / reset strings for the FR #8814 dialog."""
+        kind = (self.kind or "").strip().lower() or "worker"
+        pool = kind
+        remaining = "0"
+        reset_hint = ""
+        env = self.base_env if isinstance(getattr(self, "base_env", None), dict) else os.environ
+        model = str(env.get("BOB_OPENCODE_MODEL") or env.get("BOB_WORKER_MODEL") or "").strip()
+        if kind == "opencode":
+            ev = (evidence or "").lower()
+            if "fuel-exhausted:opencode-free" in ev or "free usage" in ev:
+                pool = "opencode_free"
+            else:
+                pool = "opencode"
+            if model:
+                pool = f"{pool} ({model})"
+        try:
+            fuel = load_fresh_agent_list_fuel(max_age_s=3600.0, env=env)
+        except Exception:
+            fuel = None
+        if fuel is not None:
+            try:
+                if kind == "opencode":
+                    remaining = f"free={getattr(fuel, 'opencode_free', '?')} go={getattr(fuel, 'opencode_go', '?')}"
+                elif kind == "cursor":
+                    remaining = f"high={getattr(fuel, 'cursor_high', '?')} low={getattr(fuel, 'cursor_low', '?')}"
+                elif kind == "grok":
+                    remaining = f"pct={getattr(fuel, 'grok_pct', '?')} state={getattr(fuel, 'grok_state', '?')}"
+            except Exception:
+                pass
+        if "reset" in (evidence or "").lower():
+            reset_hint = one_line(evidence or "", 80)
+        return pool, remaining, reset_hint
+
+    def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
+        """FR #8814: dialog + worker-remove + shutdown so the nick leaves the digest."""
+        if getattr(self, "_out_of_fuel_quit_started", False):
+            return
+        self._out_of_fuel_quit_started = True
+        env = self.base_env if isinstance(getattr(self, "base_env", None), dict) else os.environ
+        if not out_of_fuel_quit_enabled(env):
+            self.log("out-of-fuel: quit skipped (BOB_WORKER_OUT_OF_FUEL_QUIT=0)")
+            return
+        pool, remaining, reset_hint = self._out_of_fuel_dialog_pool_bits(evidence)
+        show_fn = getattr(self, "_out_of_fuel_dialog_show_fn", None)
+        try:
+            show_out_of_fuel_dialog(
+                pool=pool,
+                remaining=remaining,
+                reset_hint=reset_hint,
+                evidence=evidence or "",
+                nick=self.nick,
+                show_fn=show_fn,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: dialog path failed {type(e).__name__}")
+        pid = None
+        try:
+            if self.proc is not None:
+                pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
+        if pid is None:
+            try:
+                pid = os.getpid()
+            except Exception:
+                pid = None
+        try:
+            post_digest_worker_remove(
+                machine=self.machine,
+                nick=self.nick,
+                pid=pid,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
+        self.log("out-of-fuel: closing seat (FR #8814)")
+        try:
+            self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+        except Exception as e:
+            self.log(f"out-of-fuel: shutdown failed {type(e).__name__}")
 
     def _try_opencode_switch_free_to_paid(self, evidence: str) -> bool:
         """FR #8537: pause free, rebind to paid, continue ACK. True when switched."""
