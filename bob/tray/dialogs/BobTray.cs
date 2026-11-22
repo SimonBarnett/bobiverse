@@ -430,6 +430,12 @@ namespace BobDialogs
         // FR #6429: childEnv is applied only to the new seat process (never the tray / tray-env.json).
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error)
         {
+            return Launch(root, mode, machine, agent, childEnv, out error, "");
+        }
+
+        // FR #8679 / BOB-37: cwdOverride (e.g. J:\ for Agents > Jeeves) wins over describe-launch cwd.
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride)
+        {
             error = "";
             if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
             {
@@ -478,7 +484,11 @@ namespace BobDialogs
                 try { File.Delete(old); } catch { }
             }
 
-            if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
+            if (!string.IsNullOrEmpty(cwdOverride))
+            {
+                wd = cwdOverride;
+            }
+            else if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
             {
                 wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
                 if (!Directory.Exists(wd)) wd = root;
@@ -1025,8 +1035,10 @@ namespace BobDialogs
                 }
                 catch { }
 
+                // FR #8679 / BOB-37: cwd is J: (mapped to Ergo ai\jeeves). Dry-run prints cwd J:.
+                TrayLifecycle.Write("jeeves", "cwd", "cwd J:");
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok");
+                StartWorker("agent", "grok", null, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
@@ -1844,10 +1856,15 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
-            StartWorker(mode, agent, null, "");
+            StartWorker(mode, agent, null, "", "");
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
+        {
+            StartWorker(mode, agent, childEnv, opencodeSlot, "");
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
@@ -1869,7 +1886,7 @@ namespace BobDialogs
                 return;
             }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err);
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;

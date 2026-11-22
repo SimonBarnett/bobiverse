@@ -2238,6 +2238,8 @@ function Start-BobTrayWorkerExe {
             }
         }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
+        # FR #8679 / BOB-37: Agents > Jeeves cwd is J: (mapped to Ergo ai\jeeves).
+        if ($Trigger -eq 'jeeves-menu') { $wd = 'J:\' }
         $childPid = Get-BobTrayLaunchPidFromOutput -Output @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)
         $picked = if ($explicit) { $explicit } else { 'auto' }
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} agent={3} own visible console (NEW agent every click; explicit agent never substitutes)' -f $Mode, $childPid, $Mode, $picked)
@@ -4177,6 +4179,7 @@ $miJeeves.Add_Click({
                 Write-TrayLog ("jeeves-models webhook model=$model context=$context effort=$effort")
             }
         }
+        Write-TrayLog 'cwd J:'
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
     })
