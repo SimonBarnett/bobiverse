@@ -4076,7 +4076,10 @@ $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Write-TrayLog 'Priority: menu click (BOB-06 tree; start is later BOB)' })
-$miJeeves.Add_Click({ Write-TrayLog 'Jeeves: menu click (BOB-06 tree; start is later BOB)' })
+$miJeeves.Add_Click({
+        Write-TrayLog 'Jeeves: grok start'
+        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
+    })
 $miWeights.Add_Click({
         Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'
         [void][System.Windows.Forms.MessageBox]::Show(
