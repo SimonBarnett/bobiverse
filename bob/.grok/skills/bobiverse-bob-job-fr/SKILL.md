@@ -53,12 +53,13 @@ flowchart TD
 
 The live install (<ai root>\bob, --install-root) must stay on main. FR/FIX/MRB seats **must not** git checkout / switch / commit / merge / rebase in that checkout. Always:
 
-1. git -C <install> worktree add -b fr-N <job-wt> origin/main — **FR #4988:** `<job-wt>` = `Get-BobiverseJobWorktreePath -Repo owner/name -Job fr-N` (default `<data drive>\ai\worktrees\<repo>\fr-N`; override `BOB_JOB_WORKTREE_BASE` / `BOB_BRIDGE_HOME\worktrees`; never a drive root)
-2. Write .bobiverse-seat immediately, then git sparse-checkout disable **once**
-3. Commit/push from the job worktree only
+1. Dot `common\scripts\Bobiverse-Common.ps1` (repo tree) or `<install>\scripts\Bobiverse-Common.ps1` (composed flat) --- never `common\Bobiverse-Common.ps1`. `$wt` = `Get-BobiverseJobWorktreePath -Repo owner/name -Job fr-N` (default `<data drive>\ai\worktrees\<repo>\fr-N`; override `BOB_JOB_WORKTREE_BASE` / `BOB_BRIDGE_HOME\worktrees`; never a drive root). **FR #8852:** `Assert-BobiverseJobWorktreePath -Path $wt -InstallRoot <install>` before `git worktree add` --- refuse empty/relative/`origin/main` / under-install paths.
+2. `git -C <install> worktree add -b fr-N $wt origin/main`
+3. Write .bobiverse-seat immediately, then git sparse-checkout disable **once**
+4. Commit/push from the job worktree only
 
 
-rrefuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
+Assert-BobiverseJobWorktreePath (FR #8852) / refuse_empty_job_worktree_path / refuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py and Bobiverse-Common.ps1 are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
 
 
 ## Duplicates: find and close them before DONE (t857u)
