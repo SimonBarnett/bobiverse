@@ -1706,7 +1706,8 @@ namespace BobDialogs
             if (record) MenuItems.Add("Open Code");
         }
 
-        // FR #8725 / BOB-17: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+
+        // FR #8725 / BOB-17 + FR #8732 / BOB-30: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
         string ModelsCatalogPath()
         {
             string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
@@ -1728,6 +1729,27 @@ namespace BobDialogs
                     Dictionary<string, object> row = Common.Dict(item);
                     if (row == null) continue;
                     if (!string.Equals(Common.Str(row, "agent"), "Grok", StringComparison.OrdinalIgnoreCase)) continue;
+                    return Common.Str(row, "model");
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        string OpencodeWebhookModel(string path, string agentName)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null || !doc.ContainsKey("agents")) return "";
+                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
+                if (agents == null || doc["agents"] is string) return "";
+                foreach (object item in agents)
+                {
+                    Dictionary<string, object> row = Common.Dict(item);
+                    if (row == null) continue;
+                    if (!string.Equals(Common.Str(row, "agent"), agentName, StringComparison.OrdinalIgnoreCase)) continue;
                     return Common.Str(row, "model");
                 }
             }
@@ -1794,7 +1816,12 @@ namespace BobDialogs
                         TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
                     }
                 }
-                string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
+                // FR #8732 / BOB-30: free uses the Opencode-Free row; paid uses the Opencode row.
+                string catalog = ModelsCatalogPath();
+                string rowAgent = slot == "free" ? "Opencode-Free" : "Opencode";
+                string webhook = OpencodeWebhookModel(catalog, rowAgent);
+                TrayLifecycle.Write("workers-opencode", "action", "webhook model", "model", webhook, "path", catalog, "agent", rowAgent, "slot", slot);
+                string model = webhook.Length > 0 ? webhook : WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
                 // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.

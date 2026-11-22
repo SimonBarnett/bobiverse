@@ -4026,6 +4026,7 @@ function Get-BobTrayWorkerAgentChoices {
     }
 }
 
+
 function Get-BobTrayGrokWebhookModel {
     # FR #8725 / BOB-17: model field of the Grok agent row in models-catalog.json.
     param([string]$CatalogPath)
@@ -4034,6 +4035,18 @@ function Get-BobTrayGrokWebhookModel {
     try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
     foreach ($row in @($doc.agents)) {
         if ([string]$row.agent -eq 'Grok') { return [string]$row.model }
+    }
+    return ''
+}
+
+function Get-BobTrayOpencodeWebhookModel {
+    # FR #8732 / BOB-30: model field of the named Opencode agent row in models-catalog.json.
+    param([string]$CatalogPath, [string]$AgentName)
+    if ([string]::IsNullOrWhiteSpace($CatalogPath)) { return '' }
+    if (-not (Test-Path -LiteralPath $CatalogPath)) { return '' }
+    try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
+    foreach ($row in @($doc.agents)) {
+        if ([string]$row.agent -eq $AgentName) { return [string]$row.model }
     }
     return ''
 }
@@ -4148,6 +4161,19 @@ function Update-BobTrayWorkerAgentsMenu {
                     Write-TrayLog ('workers-opencode model=' + $ocModel)
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
+                    # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
+                    $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                    if ([string]::IsNullOrWhiteSpace($catalog)) {
+                        $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
+                        $catalog = Join-Path $install 'home\models-catalog.json'
+                    }
+                    $rowAgent = if ($ocSlot -eq 'free') { 'Opencode-Free' } else { 'Opencode' }
+                    $webhook = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName $rowAgent
+                    $paidModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode'
+                    $freeModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode-Free'
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $paidModel + ' agent Opencode path ' + $catalog)
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $freeModel + ' agent Opencode-Free path ' + $catalog)
+                    if (-not [string]::IsNullOrWhiteSpace($webhook)) { $ocModel = $webhook }
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Trigger 'workers-opencode'
                 }
                 else {
