@@ -15,7 +15,8 @@ digest-home ``models-catalog.json`` overrides agent selections (PUT is BOB-02).
 BOB-03 / FR #8710: fail-closed valid ``(cli, model, context, effort)`` combinations
 live in a **separate** digest-home file ``models-valid-combos.json`` so BOB-02 PUT
 cannot wipe the allow-list. ``POST /bob/v1/models/validate`` rejects invalid combos
-with 4xx and never persists.
+with 4xx and never persists. ``POST /bob/v1/models/refresh`` (FR #8820) rebuilds
+the allow-list from CLI listings; GET may mark selections ``stale: true``.
 """
 from __future__ import annotations
 
@@ -36,6 +37,11 @@ MODELS_VALIDATE_PATH = "/bob/v1/models/validate"
 
 # Worker-launchable CLI keys (bob-worker --agent). Not the Weights display labels.
 VALID_CLI_KEYS = frozenset({"grok", "cursor", "opencode"})
+
+
+class CatalogUnavailable(Exception):
+    """HTTP 503 when models-valid-combos.json is unreadable/malformed for writers."""
+
 
 # GET /bob/v1/models public CLI keys (Weights / FR #8819). Map from VALID_CLI_KEYS.
 CLI_PUBLIC_KEYS: tuple[str, ...] = ("Grok", "Cursor", "Opencode")
@@ -237,9 +243,18 @@ def handle_models_get(home: Path | str) -> tuple[int, bytes]:
 
     FR #8819: ``clis`` always present (empty ``models`` when the allow-list
     file is missing/malformed). Agent selections stay in ``agents``.
+    FR #8820: agent rows whose model left the allow-list get response-only
+    ``stale: true`` (selection unchanged on disk).
     """
     rows = load_catalog_file(home)
-    return 200, catalog_to_json(rows, home=home)
+    cat = load_valid_combos(home)
+    clis_doc = valid_combos_to_clis_public(cat)
+    agents = agents_public_with_stale(rows, cat)
+    return 200, json.dumps(
+        {"clis": clis_doc, "agents": agents},
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
 
 
 # --- BOB-03 / FR #8710: fail-closed valid combinations -------------------------
@@ -353,6 +368,95 @@ def load_valid_combos(home: Path | str) -> ValidCombosCatalog:
     if not clis:
         return ValidCombosCatalog(available=False, version=version)
     return ValidCombosCatalog(available=True, version=version, clis=clis)
+
+
+
+def model_ids_from_valid_combos(cat: "ValidCombosCatalog", cli: str) -> set[str]:
+    """Model ids for a CLI key or Weights display label (FR #8820 stale)."""
+    key = str(cli or "").strip().lower()
+    if key not in VALID_CLI_KEYS:
+        for low, pub in CLI_KEY_TO_PUBLIC.items():
+            if pub.lower() == key or pub == str(cli or "").strip():
+                key = low
+                break
+    rows = (cat.clis or {}).get(key) or []
+    return {str(r.model).strip() for r in rows if str(r.model or "").strip()}
+
+
+def agents_public_with_stale(
+    rows: Iterable[dict[str, str]],
+    cat: "ValidCombosCatalog",
+) -> list[dict[str, Any]]:
+    """Emit agent rows; ``stale: true`` only when model missing from allow-list (FR #8820)."""
+    agents: list[dict[str, Any]] = []
+    ids_cache: dict[str, set[str]] = {}
+    available = bool(cat and cat.available)
+    for row in rows:
+        public: dict[str, Any] = {k: str(row.get(k) or "") for k in _ROW_KEYS}
+        model = public["model"].strip()
+        if available and model:
+            cli = public["cli"]
+            if cli not in ids_cache:
+                ids_cache[cli] = model_ids_from_valid_combos(cat, cli)
+            ids = ids_cache[cli]
+            if ids and model not in ids:
+                public["stale"] = True
+        agents.append(public)
+    return agents
+
+
+def save_valid_combos_document(home: Path | str, doc: dict[str, Any]) -> None:
+    """Atomic replace of models-valid-combos.json. Callers must hold models_catalog_lock."""
+    path = valid_combos_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(doc, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix="models-valid-combos.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        last_exc: Exception | None = None
+        for _attempt in range(8):
+            try:
+                os.replace(tmp_name, path)
+                last_exc = None
+                break
+            except OSError as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        if last_exc is not None:
+            raise last_exc
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+def mutate_valid_combos(
+    home: Path | str,
+    mutator: Any,
+) -> ValidCombosCatalog:
+    """Lock, reload allow-list, apply mutator(clis_dict), save. Returns loaded catalog.
+
+    ``mutator`` receives ``dict[str, list[ModelComboRow]]`` (lowercase CLI keys)
+    and may mutate it in place. FR #8820 refresh is the primary writer.
+    """
+    with models_catalog_lock(home):
+        cat = load_valid_combos(home)
+        clis: dict[str, list[ModelComboRow]] = {
+            k: list(v) for k, v in (cat.clis or {}).items()
+        }
+        version = int(cat.version or 1) or 1
+        mutator(clis)
+        clis = {k: v for k, v in clis.items() if v}
+        if not clis:
+            raise CatalogUnavailable("models-valid-combos empty after mutate")
+        doc = {"version": version, "clis": _combo_rows_to_payload(clis)}
+        save_valid_combos_document(home, doc)
+        return ValidCombosCatalog(available=True, version=version, clis=clis)
 
 
 def _normalize_cli(cli: Any) -> str:

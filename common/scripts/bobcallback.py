@@ -5,7 +5,7 @@ Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /j
 login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
 with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
 rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows (BOB-01 / FR #8707). POST **/bob/v1/models/validate**
+returns fleet agent Weights rows + nested clis (BOB-01 / FR #8707 / #8819). POST /bob/v1/models/refresh rebuilds the allow-list (FR #8820). POST **/bob/v1/models/validate**
 checks a ``(cli, model, context, effort)`` tuple against the fail-closed
 ``models-valid-combos.json`` allow-list (BOB-03 / FR #8710); it never persists.
 
@@ -39,6 +39,7 @@ import builds_catalog
 import intake
 import jira_webhook
 import models_catalog
+import models_refresh
 import webhook_queue
 
 REPORT_PATH = "/bob/v1/report"
@@ -50,6 +51,7 @@ HOURS_PATH = bobhours.HOURS_PATH
 BUILDS_PATH = builds_catalog.BUILDS_PATH
 MODELS_PATH = models_catalog.MODELS_PATH
 MODELS_VALIDATE_PATH = models_catalog.MODELS_VALIDATE_PATH
+MODELS_REFRESH_PATH = models_refresh.MODELS_REFRESH_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -76,7 +78,7 @@ DIGEST_REDIRECT_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS})
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({REPORT_PATH})
 POST_ROUTES = frozenset(
-    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH}
+    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_REFRESH_PATH}
 )
 PUT_ROUTES = frozenset({MODELS_PATH})  # BOB-02 / FR #8708
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
@@ -962,6 +964,7 @@ def handle_request(
     filer: intake.GitHubFiler | None = None,
     intake_rate: intake.RateLimiter | None = None,
     report_rate: intake.RateLimiter | None = None,
+    models_refresh_ctl: "models_refresh.ModelsRefreshController | None" = None,
 ) -> tuple[int, bytes]:
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     stash_response_headers([])
@@ -1091,6 +1094,18 @@ def handle_request(
         return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
         return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
+    # FR #8820: rebuild per-CLI models catalog from CLI listings.
+    if route == MODELS_REFRESH_PATH:
+        if verb != "POST":
+            return 405, b'{"error":"method_not_allowed"}'
+        ctl = models_refresh_ctl
+        if ctl is None:
+            ctl = models_refresh.ModelsRefreshController(home)
+        code, payload = ctl.handle(body)
+        if payload:
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
+
     # No POST /bob/v1/models/validate — Weights form dropdowns are the validation (Si 2026-11-22).
     if route == MODELS_VALIDATE_PATH:
         stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
@@ -1195,6 +1210,7 @@ def make_handler(
     filer: intake.GitHubFiler | None = None,
     intake_rate: intake.RateLimiter | None = None,
     report_rate: intake.RateLimiter | None = None,
+    models_refresh_ctl: "models_refresh.ModelsRefreshController | None" = None,
 ):
     from http.server import BaseHTTPRequestHandler
 
@@ -1235,6 +1251,7 @@ def make_handler(
                 filer=filer,
                 intake_rate=rate,
                 report_rate=rrate,
+                models_refresh_ctl=models_refresh_ctl,
             )
             self._reply(code, payload, method)
 
@@ -1680,6 +1697,7 @@ def main() -> None:
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
         f"PUT {MODELS_PATH} "
+        f"POST {MODELS_REFRESH_PATH} "
         f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
         f"POST {MODELS_VALIDATE_PATH}",
         flush=True,

@@ -29,7 +29,6 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <header>
 <a class="brand" href="/"><img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" alt="NTSA" width="36" height="36"/><span class="brand-text"><strong>bob.ntsa.uk</strong><span>Webhooks</span></span></a> <span class="meta">· <a href="index.html">Webhooks</a> · Models webhook</span>
 <h1>Models webhook</h1>
-<p><strong>No POST validate.</strong> Available model / context / effort per CLI are on <code>GET /bob/v1/models</code>. Weights form dropdowns are the validation (Si 2026-11-22).</p>
 </header>
 <p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
 <section id="models-get">
@@ -87,17 +86,17 @@ Content-Type: application/json
 </section>
 
 <section id="models-refresh">
-<h2>Models refresh (POST) — coming <span class="badge">POST /bob/v1/models/refresh</span> <span class="badge">Coming — not served</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options from each CLI listing (#8820). Not served yet.</p>
+<h2>Models refresh (POST) <span class="badge">POST /bob/v1/models/refresh</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options from each CLI listing (#8820).</p>
 <p><strong>Who calls it:</strong> Operators / tray refresh.</p>
 <p><strong>Auth (named only):</strong> None once live (rate-limited).</p>
 <p><strong>Request schema:</strong> Empty or optional CLI filter JSON.</p>
 <p><strong>Response schema:</strong> JSON clis + refreshed_at + added/removed; failed CLI keeps prior.</p>
-<p><strong>Status codes:</strong> Coming — 404 today; 429 when rate-limited once live.</p>
+<p><strong>Status codes:</strong> 200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.</p>
 <p><strong>Retry / idempotency:</strong> Safe to retry; fail-closed per CLI.</p>
-<p><strong>Rate limits:</strong> TBD with #8820.</p>
-<p><strong>Reachability:</strong> Not served yet (same BobModelsWebhook prefix).</p>
-<p><strong>Source:</strong> <code>planned with #8820</code> · <strong>Related:</strong> FR #8820</p>
+<p><strong>Rate limits:</strong> One attempt per CLI per 60s (in-memory).</p>
+<p><strong>Reachability:</strong> Same BobModelsWebhook IIS prefix.</p>
+<p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8820</p>
 <p><strong>Redacted example</strong></p>
 <pre>POST https://bob.ntsa.uk/bob/v1/models/refresh</pre>
 </section>

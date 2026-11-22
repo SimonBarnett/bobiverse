@@ -10,7 +10,7 @@ from repo_layout import REPO
 WWW = REPO / "jeeves" / "www" / "irc-ntsa"
 WEBHOOKS = WWW / "docs" / "webhooks"
 # Bookmark stubs: digest-local → report; models-validate retired → models.
-STUB_REDIRECT_HTML = frozenset({"digest-local.html", "models-validate.html"})
+STUB_REDIRECT_HTML = frozenset()  # FR #8820: stubs removed
 LOGO_SRC = "/jeeves/assets/ntsa-gut-logo.png"
 BRAND_RE = re.compile(
     r'<a\s+class=["\']brand["\']\s+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
@@ -37,7 +37,7 @@ class _LinkCollector(HTMLParser):
 
 def _webhook_pages() -> list[Path]:
     pages = sorted(WEBHOOKS.glob("*.html"))
-    assert len(pages) == 12, f"expected 12 webhook docs, got {len(pages)}"
+    assert len(pages) == 10, f"expected 10 webhook docs, got {len(pages)}"
     return pages
 
 
@@ -70,15 +70,6 @@ def test_fr7478_detail_pages_keep_index_breadcrumb():
 
 
 def test_fr7478_stub_redirect_pages_refresh_to_canonical():
-    """Stub HTML keep old URLs; they meta-refresh to the live docs page."""
-    expect = {
-        "digest-local.html": "report.html",
-        "models-validate.html": "models.html",
-    }
-    for name, target in expect.items():
-        path = WEBHOOKS / name
-        assert path.is_file(), f"missing stub {name}"
-        html = path.read_text(encoding="utf-8")
-        assert f'url={target}' in html.lower() or f'url="{target}"' in html.lower()
-        assert target in html
-        assert 'rel="icon"' in html.lower() or "rel='icon'" in html.lower()
+    """Legacy stub redirects retired with FR #8820 (refresh on models.html)."""
+    for name in ("digest-local.html", "models-validate.html"):
+        assert not (WEBHOOKS / name).is_file(), f"stub {name} should be removed"
