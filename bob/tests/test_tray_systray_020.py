@@ -59,7 +59,8 @@ def test_status_is_the_bold_default_item_run_by_menu_left_click_and_double_click
 
 # ------------------------------------------------------------------------------------------------ 2. Acknowledge dialog
 def test_acknowledge_clears_the_alert_and_shows_the_about_dialog_with_logo_and_credit():
-    m = re.search(r"\$miAck\.Add_Click\(\{(.*?)\}\)", WATCH, re.S)
+    # FR #8713 / BOB-06: menu label About (was Acknowledge); same Clear-Attention + Show-BobTrayAbout.
+    m = re.search(r"\$miAbout\.Add_Click\(\{(.*?)\}\)", WATCH, re.S)
     assert m and m.group(1).index("Clear-Attention") < m.group(1).index("Show-BobTrayAbout")
     about = _fn(WATCH, "Show-BobTrayAbout")
     assert "by Simon Barnett" in about and "Get-BobTrayLogoImage" in about

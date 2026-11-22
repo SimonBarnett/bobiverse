@@ -121,6 +121,46 @@ def test_source_missing_repo_allowed_is_finding(tmp_path, monkeypatch):
     )
 
 
+def test_cloudflare_1010_is_probe_error_not_allowlist_drift(monkeypatch):
+    """FR #8861: bare CF 403 must not become Sync/compose repo_not_allowed."""
+    monkeypatch.setenv("BOB_INTAKE_URL", "https://example.test/bob/v1/intake")
+    monkeypatch.setenv("BOB_INTAKE_REQUIRED_REPOS", "SimonBarnett/bobiverse")
+    monkeypatch.setenv("BOB_INTAKE_PY", str(INTAKE_PY))
+
+    def opener(req, timeout=20.0):
+        assert req.get_header("User-agent") or req.headers.get("User-agent")
+        raise HTTPError(
+            req.full_url,
+            403,
+            "Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(b"error code: 1010\n"),
+        )
+
+    args = type("A", (), {"chair_home": "", "digest_home": "", "dry_run": False})()
+    payload, code = ial.check(args, opener=opener)
+    assert code == 1, payload
+    assert payload["source_ok"] is True
+    assert any("probe error" in f and "1010" in f for f in payload["findings"])
+    assert not any("Sync/compose" in f for f in payload["findings"])
+
+
+def test_probe_sets_user_agent(monkeypatch):
+    seen = {}
+
+    def opener(req, timeout=20.0):
+        seen["ua"] = req.get_header("User-agent") or req.headers.get("User-agent")
+        return _FakeResp(202, {"intake_id": "in_ok", "queued": False})
+
+    monkeypatch.setenv("BOB_INTAKE_URL", "https://example.test/bob/v1/intake")
+    monkeypatch.setenv("BOB_INTAKE_REQUIRED_REPOS", "SimonBarnett/bobiverse")
+    monkeypatch.setenv("BOB_INTAKE_PY", str(INTAKE_PY))
+    args = type("A", (), {"chair_home": "", "digest_home": "", "dry_run": False})()
+    payload, code = ial.check(args, opener=opener)
+    assert code == 0, payload
+    assert seen.get("ua") and "BobiverseIntakeAllowlist" in seen["ua"]
+
+
 def test_dry_run_via_main(monkeypatch):
     rc = ial.main(["--dry-run"])
     assert rc == 0

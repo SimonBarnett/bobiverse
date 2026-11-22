@@ -55,6 +55,42 @@ function Get-BobTrayEmptyOnlineFillCount {
     return [Math]::Min([int]$Cap, 2)
 }
 
+function Get-BobTrayUnderCapFillCount {
+    <#
+      FR #8890: one busy seat is not a full shop. When offerable work remains
+      and live agent seats are below the hard cap, ask for one more seat.
+      Zero live seats stay on Get-BobTrayEmptyOnlineFillCount.
+    #>
+    param(
+        [int]$LiveAgents = 0,
+        [int]$PendingReqs = 0,
+        [bool]$SeatsOff = $false,
+        [bool]$Cooldown = $false,
+        [int]$Cap = 2,
+        [int]$Offerable = 0
+    )
+    if ($SeatsOff -or $Cooldown -or $PendingReqs -gt 0) { return 0 }
+    if ($Offerable -lt 1 -or $LiveAgents -lt 1 -or $Cap -lt 1) { return 0 }
+    if ($LiveAgents -ge $Cap) { return 0 }
+    return 1
+}
+
+function Get-BobTrayCachedOfferableCount {
+    $paths = @()
+    if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
+        $paths += (Join-Path (Get-BobIrcHome) 'bob-peers\_report-digest.json')
+    }
+    foreach ($p in $paths) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        try {
+            $j = Get-Content -LiteralPath $p -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($null -ne $j.offerable_count) { return [int]$j.offerable_count }
+            if ($j.queue -and $null -ne $j.queue.offerable_count) { return [int]$j.queue.offerable_count }
+        } catch { }
+    }
+    return 0
+}
+
 function Get-BobTrayAgentSeatUnionCount {
     <#
     MRB #8445 / FR #3181 / FR #4458: same agent-seat union CapRefusal uses
@@ -224,6 +260,35 @@ function Resolve-BobTrayOpencodeSlotModel {
   return $freeDef
 }
 
+function Get-BobTrayLaunchPidFromOutput {
+    <#
+    .SYNOPSIS
+      FR #8864: last numeric pid in a Launch scriptblock output. Log strings are ignored.
+      A later explicit 0 (cap / missing exe) still wins over an earlier pid.
+    #>
+    param($Output)
+    $found = 0
+    $saw = $false
+    foreach ($item in @($Output)) {
+        if ($null -eq $item) { continue }
+        $n = $null
+        if (($item -is [int]) -or ($item -is [long]) -or ($item -is [double]) -or ($item -is [decimal])) {
+            $n = [int]$item
+        } elseif ($item -is [string]) {
+            $text = $item.Trim()
+            if ($text -match '^\d+$') { $n = [int]$text }
+        } else {
+            try {
+                if ($item.PSObject.Properties['Id']) { $n = [int]$item.Id }
+                elseif ($item.PSObject.Properties['ProcessId']) { $n = [int]$item.ProcessId }
+            } catch { $n = $null }
+        }
+        if ($null -ne $n) { $found = $n; $saw = $true }
+    }
+    if (-not $saw -or $found -lt 0) { return 0 }
+    return $found
+}
+
 function Invoke-BobTrayStartWorkerQueue {
     <#
     .SYNOPSIS
@@ -279,10 +344,10 @@ function Invoke-BobTrayStartWorkerQueue {
             else {
                 try {
                     if ($agent -and $agent -ne 'auto') {
-                        $pidOut = [int](@(& $Launch $mode $agent $model)[-1])
+                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode $agent $model))
                     }
                     else {
-                        $pidOut = [int](@(& $Launch $mode '' '')[-1])
+                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode '' ''))
                     }
                     if ($pidOut -gt 0) { $ok = $true } else { $reason = 'launch-failed' }
                 }
