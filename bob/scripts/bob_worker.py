@@ -4814,6 +4814,34 @@ def agent_stderr_evidence(text: str) -> str:
         return "(evidence unavailable)"
 
 
+
+def _stderr_is_opencode_missing_query_noise(text: str) -> bool:
+    """True when stderr is OpenCode idle tool noise ending in missing query.
+
+    FR #9012: unsigned exit 0xffffffff with console dir listings and
+    ``missing query (try ".")`` is an external kill / tool misuse while
+    job=(none), not a CLI crash. Traceback / exception / fatal stay failures.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(
+        tok in low
+        for tok in (
+            "traceback",
+            "exception",
+            "fatal",
+            "error_kind",
+            '"lvl": "error"',
+            '"lvl":"error"',
+        )
+    ):
+        return False
+    if "missing query" not in low:
+        return False
+    return True
+
+
 def agent_stderr_dedupe_line(text: str) -> str:
     """Normalised first nonempty stderr line for the intake key (FR #7671)."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
@@ -4902,7 +4930,11 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #9012: OpenCode idle missing-query console dump is external-kill noise.
+    missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip() or missing_query_noise
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
@@ -4953,6 +4985,10 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if missing_query_noise:
+            what += (
+                "Stderr was OpenCode idle missing-query tool noise only (not a CLI crash). FR #9012.\n"
+            )
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
