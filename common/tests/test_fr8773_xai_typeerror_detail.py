@@ -17,11 +17,12 @@ def test_format_xai_read_failure_includes_class_and_message():
 
 
 def test_format_xai_read_failure_redacts_tokenish():
-    err = br.format_xai_read_failure(
-        TypeError("Authorization Bearer FAKESECRET_e4f5g6h7i8j9k0l1m2n3")
-    )
+    # FR #3304: assemble hunter-style token from parts (never a contiguous literal).
+    fake = "ghp_" + "EXAMPLE" + "A" * 20
+    err = br.format_xai_read_failure(TypeError("Authorization Bearer " + fake))
     assert "read-failed:TypeError:" in err
     assert "ghp_" not in err.lower()
+    assert "EXAMPLE" not in err
 
 
 def test_publish_typeerror_persists_detailed_error_and_peer(monkeypatch):
