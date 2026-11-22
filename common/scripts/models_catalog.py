@@ -222,10 +222,8 @@ def catalog_to_json(
 ) -> bytes:
     clis_doc: dict[str, Any] | None = None
     if home is not None:
-        try:
-            ensure_valid_combos_seeded(home)
-        except Exception:
-            pass
+        # Do not auto-seed here: FR #8819 requires missing/malformed catalog → models: {}.
+        # BOB-04 seeds on BobCallback start / explicit ensure path.
         clis_doc = valid_combos_to_clis_public(load_valid_combos(home))
     return json.dumps(
         catalog_to_public_doc(rows, clis=clis_doc),
