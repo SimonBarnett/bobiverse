@@ -1604,6 +1604,17 @@ namespace BobDialogs
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
             else if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
             {
+                // FR #8726 / BOB-18: empty local Grok fuel shows a dialog and does not start.
+                if (GrokNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_GROK_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(GrokNoTokenGate.Body, GrokNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("workers-grok", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
                 StartWorker("agent", "grok", null, "");

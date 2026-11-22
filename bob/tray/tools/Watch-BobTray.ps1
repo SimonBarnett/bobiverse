@@ -4011,6 +4011,23 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent '' -Trigger 'menu'
                 }
                 elseif ($picked -eq 'grok') {
+                    # FR #8726 / BOB-18: empty local Grok fuel shows a dialog and does not start.
+                    $fuelPath = $env:BOB_GROK_FUEL_FILE
+                    if (-not $fuelPath) { $fuelPath = Join-Path $RepoRoot 'run\grok-fuel.json' }
+                    if (Test-Path -LiteralPath $fuelPath) {
+                        $doc = Get-Content -LiteralPath $fuelPath -Raw
+                        if ($doc -match '"remaining_pct"\s*:\s*(-?\d+)' -and [int]$Matches[1] -le 0) {
+                            Write-TrayLog 'workers-grok dialog-quit reason=no-tokens'
+                            try {
+                                [void][System.Windows.Forms.MessageBox]::Show(
+                                    'No tokens on this box. Grok will quit.',
+                                    'Bobiverse - Grok',
+                                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                                    [System.Windows.Forms.MessageBoxIcon]::Warning)
+                            } catch { }
+                            return
+                        }
+                    }
                     # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
                     Write-TrayLog 'Workers Grok: grok CLI start'
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
