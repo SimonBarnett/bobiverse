@@ -4825,6 +4825,16 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+def grok_worker_spawn_connect_failure(text: str) -> bool:
+    """FR #8972: grok exited because its own worker_spawn could not connect.
+
+    That is a grok-internal connect blip, not a bob CLI bug. The seat still
+    recycles and GIVEUPs an accepted job. It does not open another intake issue.
+    """
+    raw = str(text or "")
+    return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
+
 def unsigned_exit_stderr_is_noise(text: str) -> bool:
     """FR #8969 / #8970: 0xffffffff plus progress or TUI chrome is an external kill.
 
@@ -4922,6 +4932,15 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
+    # FR #8972: grok worker_spawn connect is logged by the caller and recycled.
+    # Do not open "bug: agent CLI nonzero exit" for that signature.
+    if grok_worker_spawn_connect_failure(stderr_tail) or grok_worker_spawn_connect_failure(evidence):
+        if log:
+            try:
+                log("worker: skip agent-cli-nonzero-exit intake (grok worker_spawn connect; FR #8972)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "grok-worker-spawn-connect"}
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
