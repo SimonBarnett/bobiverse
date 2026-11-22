@@ -2725,7 +2725,7 @@ def list_worker_agents(
             "reason": "Grok, then Cursor, then OpenCode",
         }
     ]
-    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "OpenCode"))
+    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "Open Code"))  # FR #8713 / BOB-06
     installed = {"grok": bool(grok_exe), "cursor": bool(cursor_cmd), "opencode": bool(opencode_cmd)}
     for agent_id, label in labels:
         present = installed[agent_id]
@@ -2767,7 +2767,7 @@ def unknown_agent_list_rows() -> list[dict]:
         },
         {"id": "grok", "label": "Grok", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
         {"id": "cursor", "label": "Cursor", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
-        {"id": "opencode", "label": "OpenCode", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+        {"id": "opencode", "label": "Open Code", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
     ]
 
 
