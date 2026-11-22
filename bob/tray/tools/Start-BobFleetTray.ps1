@@ -81,9 +81,17 @@ function Ensure-BobSystraySeatWrapper {
 
 function Get-BobSystrayTrayExe {
     # t832u: the compiled tray (icon + menu + clicks). When present it IS the systray; the PowerShell tray script runs as its hidden engine.
+    # FR #9044: un-park bob-tray.exe.clickfix-park when the live exe is the only thing missing.
     param([string]$Root)
+    $life = Join-Path $Root 'tools\BobTrayLifecycle.ps1'
+    if (-not (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue)) {
+        if (Test-Path -LiteralPath $life) { . $life }
+    }
+    if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
+        return Restore-BobTrayExeFromClickfixPark -Root $Root
+    }
     $p = Join-Path $Root 'tools\bob-tray.exe'
-    if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    if ([IO.File]::Exists($p)) { return $p }
     return $null
 }
 
