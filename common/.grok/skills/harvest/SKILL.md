@@ -312,6 +312,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - !build UX: put BUILD_USAGE_LINES in builds_catalog (leaf), re-export from bobiverse_build; local-first catalog before HTTP; optional recipe= on BUILD v1 only for non-default yml paths.
 - Workers > Cursor menu image is assets/menu-favicons/cursor.com.ico. Log worker-favicon with that path. Do not reuse the fuel badge.
 - A fresh Install-BobWebhooks.ps1 must write the same canonical web.config the second run would upsert, or site-kit CI fails with second install changed web.config bytes.
+- When neither home has queue.json, idle_seats uses one live /bob/v1/report estimate. A local queue never fetches. Unverified gates stay named and are not applied.
 - About Plan and Priority versions come from slice VERSION files or BOBIVERSE_PLAN_VERSION and BOBIVERSE_PRIORITY_VERSION, and fall back to the bob version so the fields are never blank.
 - A skill pin that forbids CR must normalize the checkout to LF before the assertion. autocrlf makes a clean LF blob look like CRLF on windows-latest.
 - Do not cap an MRB PASS verdict with a character window. Require the verdict after the board heading in the same comment.
