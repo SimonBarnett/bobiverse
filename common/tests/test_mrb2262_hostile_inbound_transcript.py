@@ -11,7 +11,9 @@ IRC = ROOT / "common/scripts/irc_agent.py"
 
 
 def test_mrb2262_ionos_channel_list_not_hash_ionos():
-    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
+    # FR #8697: ionos → walrus; win-mpre remains its own shop channel.
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#walrus"
+    assert it.channel_list_for_machine("walrus") == "#bobiverse,#wonderland,#walrus"
     assert it.channel_list_for_machine("win-mpre8vi4u6u") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
 
 
@@ -24,6 +26,7 @@ def test_mrb2262_scrub_and_always_on_hook():
 
 
 def test_mrb2262_fleet_canonical_ids():
+    assert "walrus" in it.FLEET_EAR_MACHINES
     assert "win-mpre8vi4u6u" in it.FLEET_EAR_MACHINES
     assert "marchhare" in it.FLEET_EAR_MACHINES
     assert "flamingo" in it.FLEET_EAR_MACHINES

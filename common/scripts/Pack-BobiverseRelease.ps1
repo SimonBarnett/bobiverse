@@ -114,6 +114,10 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($marker, $markerBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host 'INFO bob staged plan\ for bob-ear MSI (BOB-49 / FR #8700)'
+    # FR #8675 / BOB-10: stamp plan\VERSION from MSI-aligned pack identity.
+    $planCommit = ''
+    try { $planCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+    Write-BobiversePlanIdentity -Destination $Stage -Version $msiVersion -Commit $planCommit.Trim()
     # FR #8701 / BOB-55: bob-ear MSI must include PriorityAgent.exe (PRI-06 supplies the real build).
     $priDir = Join-Path $Stage 'priority'
     New-Item -ItemType Directory -Force -Path $priDir | Out-Null
@@ -155,6 +159,7 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host 'INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701)'
+
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
     } else {
@@ -432,6 +437,11 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path $defaultsDest | Out-Null
         Copy-Item -LiteralPath $resyncSrc -Destination (Join-Path $defaultsDest 'resync-repos.txt') -Force
         Write-Host 'INFO jeeves staged defaults\resync-repos.txt (FR #4725)'
+        # BOB-04 / FR #8709: seed for models-valid-combos.json (fail-closed allow-list)
+        $seedSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\defaults\models-valid-combos.seed.json'
+        if (-not (Test-Path -LiteralPath $seedSrc)) { throw 'jeeves pack requires common\defaults\models-valid-combos.seed.json (FR #8709)' }
+        Copy-Item -LiteralPath $seedSrc -Destination (Join-Path $defaultsDest 'models-valid-combos.seed.json') -Force
+        Write-Host 'INFO jeeves staged defaults\models-valid-combos.seed.json (FR #8709)'
         # FR #7455: publish jeeves/www beside flat scripts so Install-BobWebhooks ..\www\irc-ntsa works from MSI layout.
         $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
         if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }
