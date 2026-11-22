@@ -14,6 +14,7 @@ COMMON = ROOT / "common" / "scripts" / "Bobiverse-Common.ps1"
 GUARD = ROOT / "common" / "scripts" / "bob_install_root_guard.py"
 AGENTS = ROOT / "bob" / "agents" / "worker" / "AGENTS.md"
 FR_SKILL = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-job-fr" / "SKILL.md"
+SEAT_SKILL = ROOT / "bob" / "agents" / "worker" / ".grok" / "skills" / "bobiverse-worker-seat" / "SKILL.md"
 
 
 def _ps(script: str) -> subprocess.CompletedProcess[str]:
@@ -128,3 +129,6 @@ def test_fr8852_docs_pin_common_scripts_path_and_assert():
     assert "FR #8852" in skill
     assert "Assert-BobiverseJobWorktreePath" in skill
     assert "common\\scripts\\Bobiverse-Common.ps1" in skill or "common/scripts/Bobiverse-Common.ps1" in skill
+    seat = SEAT_SKILL.read_text(encoding="utf-8")
+    assert "Assert-BobiverseJobWorktreePath -Path $wt" in seat
+    assert "resolve `$wt` via" in seat
