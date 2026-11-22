@@ -71,8 +71,8 @@ def test_fr7966_three_timeouts_refuse_the_seat(tmp_path, monkeypatch):
     assert not final.get("needs_human")
     outcomes = final.get("offer_outcomes") or []
     assert len([o for o in outcomes if o.get("outcome") == "timeout"]) == 3
-    # A later bored does not climb offered_count.
-    st3, _job3 = _offer(home, now + 10_000)
+    # Still inside the cooldown: a later bored does not climb offered_count.
+    st3, _job3 = _offer(home, now + 30)
     assert st3 == "empty"
     again = gitclaim.load_unaccepted(home)[0]
     assert int(again["offered_count"]) == 3
