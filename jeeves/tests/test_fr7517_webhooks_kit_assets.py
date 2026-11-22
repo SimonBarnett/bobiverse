@@ -38,7 +38,7 @@ def test_fr7517_write_site_kit_includes_assets_and_hashes(tmp_path: Path):
     out = _build_kit(tmp_path)
     data = json.loads((out / "MANIFEST.json").read_text(encoding="utf-8"))
     by_path = {e["path"]: e["sha256"] for e in data["files"]}
-    assert len(data["files"]) == 20
+    assert len(data["files"]) == 25
     for src, kit_rel, _url in kit.KIT_ASSETS:
         assert kit_rel in by_path
         digest = hashlib.sha256((out / kit_rel).read_bytes()).hexdigest()

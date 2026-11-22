@@ -1,4 +1,4 @@
-"""FR #7000 / #8785: Cursor seats may lack skill-dag MCP; --once CLI is the supported fallback."""
+"""FR #7000 / #8785 / #8846: Cursor seats may lack skill-dag MCP; --once CLI is the supported fallback."""
 from __future__ import annotations
 
 import json
@@ -62,7 +62,7 @@ def test_fr7000_once_resolve_and_get_skill(tmp_path: Path):
 
 
 def test_fr7000_worker_prompt_documents_once_fallback():
-    """FR #8785: rendered prompt uses .cursor/mcp.json; never constructs bob\\bob\\scripts."""
+    """FR #8785 / #8846: rendered prompt uses .cursor/mcp.json; never constructs bob\\bob\\scripts."""
     prompt = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\ai\bob\home", "marchhare", "marchhare-1")
     assert "FR #7000" in prompt
     assert "--once resolve" in prompt
@@ -82,3 +82,4 @@ def test_fr7000_worker_prompt_documents_once_fallback():
     assert "`--root` / `--job-worktree` args" not in prompt
     assert "Do not invent skill bodies" in prompt
     assert "ConvertFrom-Json" in prompt or "@($cfg.args)" in prompt
+    assert "skill-dag-mcp-down" in prompt
