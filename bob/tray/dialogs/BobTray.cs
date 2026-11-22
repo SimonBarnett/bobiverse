@@ -1680,6 +1680,17 @@ namespace BobDialogs
             // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
             ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
+            // FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
+            string ocIcon = Path.Combine(root, "bob", "tray", "assets", "opencode-favicon.ico");
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "path", ocIcon, "source", "https://opencode.ai/favicon-v3.ico");
+            try
+            {
+                if (File.Exists(ocIcon)) oc.Image = new Icon(ocIcon, 16, 16).ToBitmap();
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("workers-opencode", "action", "opencode favicon failed", "error", ex.Message);
+            }
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
@@ -1695,7 +1706,8 @@ namespace BobDialogs
             if (record) MenuItems.Add("Open Code");
         }
 
-        // FR #8725 / BOB-17: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+
+        // FR #8725 / BOB-17 + FR #8732 / BOB-30: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
         string ModelsCatalogPath()
         {
             string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
@@ -1724,6 +1736,27 @@ namespace BobDialogs
             return "";
         }
 
+        string OpencodeWebhookModel(string path, string agentName)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null || !doc.ContainsKey("agents")) return "";
+                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
+                if (agents == null || doc["agents"] is string) return "";
+                foreach (object item in agents)
+                {
+                    Dictionary<string, object> row = Common.Dict(item);
+                    if (row == null) continue;
+                    if (!string.Equals(Common.Str(row, "agent"), agentName, StringComparison.OrdinalIgnoreCase)) continue;
+                    return Common.Str(row, "model");
+                }
+            }
+            catch { }
+            return "";
+        }
+
         void OnAgentChoiceClick(object sender, EventArgs e)
         {
             ToolStripMenuItem mi = sender as ToolStripMenuItem;
@@ -1741,6 +1774,17 @@ namespace BobDialogs
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
             else if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
             {
+                // FR #8726 / BOB-18: empty local Grok fuel shows a dialog and does not start.
+                if (GrokNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_GROK_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(GrokNoTokenGate.Body, GrokNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("workers-grok", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
                 // FR #8725 / BOB-17: launch uses the Grok row from the models webhook catalog.
@@ -1755,12 +1799,34 @@ namespace BobDialogs
                 }
                 StartWorker("agent", "grok", grokEnv, "");
             }
-            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
+            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot.Length == 0 || slot == "free" || slot == "paid"))
             {
-                string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
+                // FR #8730 / BOB-27: free first; paid when free is exhausted. Explicit paid stays paid.
+                if (slot != "paid")
+                {
+                    string chosen = OpencodeFreeThenPaid.ChooseFile(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE"));
+                    if (chosen == "paid")
+                    {
+                        slot = "paid";
+                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "paid", "reason", "free-exhausted");
+                    }
+                    else if (slot.Length == 0)
+                    {
+                        slot = "free";
+                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
+                    }
+                }
+                // FR #8732 / BOB-30: free uses the Opencode-Free row; paid uses the Opencode row.
+                string catalog = ModelsCatalogPath();
+                string rowAgent = slot == "free" ? "Opencode-Free" : "Opencode";
+                string webhook = OpencodeWebhookModel(catalog, rowAgent);
+                TrayLifecycle.Write("workers-opencode", "action", "webhook model", "model", webhook, "path", catalog, "agent", rowAgent, "slot", slot);
+                string model = webhook.Length > 0 ? webhook : WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
                 // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
+                // FR #8734 / BOB-29: the tray log names the model this click starts.
+                TrayLifecycle.Write("workers-opencode", "action", "model", "model", model, "slot", slot);
                 TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
             }
