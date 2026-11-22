@@ -21336,6 +21336,7 @@ def main(argv: Optional[list] = None) -> int:
         else:
             cwd = str(Path(args.install_root) / "worker")
         # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        # BOB-22 / FR #8720: a Cursor decision cites the Cursor webhook row, not the tray default.
         launch_section = {}
         try:
             import worker_start_model as _wsm
