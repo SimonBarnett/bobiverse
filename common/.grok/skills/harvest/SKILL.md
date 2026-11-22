@@ -25,6 +25,10 @@ depends_on: []
 >    `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
+>    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
+>    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
+>    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -234,6 +238,7 @@ routes to bobiverse via the split rule.
 The bullet archive is `lessons.md` beside this file (FR #8310). skill-dag refuses a skill body over 65536 bytes, so do not paste the archive back into this SKILL.md. New intake bullets still append under this heading until the file nears 60KiB, then move them into `lessons.md`.
 
 Do not land a second copy of a harvest-lesson MRB playbook in this book. Those playbooks belong in `bobiverse-bob-job-mrb`.
+- CAST IRON point 5 (Jeeves MONITORING): prefer deterministic fixes; when tested, FR them into the Jeeves token-less service (tools/monitor, jeeves/checks, common/scripts, chair helpers) so learnings become chair behaviour without an LLM. Skills are interim; durable home is the deterministic product. Same turn: skill harvest and product FR when the path is clear (PR #8851).
 - skill-dag index preference: over-cap seat copy yields to a later root at or under SKILL_RESOLVE_CAP_BYTES; an under-cap seat copy still wins (FR #7076 / #8323).
 - Any per-seat click state must persist the launch model next to the kind and every restart path must read it; a saved model that cannot start must refuse and report, never fall through to the free default.
 - When IRC _ssl_recv starts polling settimeout, run test_fr8120_ear_ssl_send_serialize.py and test_fr4980_ear_idle_keepalive.py with the new registration test before PASS.
@@ -299,3 +304,6 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
 - When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
 - Intake allowlist monitor: send an explicit User-Agent through Cloudflare; only JSON error=repo_not_allowed is allowlist drift, not bare HTTP 403 1010.
+- BOB-57 S1 needs a verified plan.ntsa.uk MSI URL from VIS-08 before any downloads card; homepage or guessed /plan.msi is not acceptance.
+- BOB-03 combos must not reuse models-catalog.json: BOB-01 Weights rows and BOB-02 PUT own that file; ship allow-list as models-valid-combos.json + validate_combo + POST /bob/v1/models/validate
+- !build UX: put BUILD_USAGE_LINES in builds_catalog (leaf), re-export from bobiverse_build; local-first catalog before HTTP; optional recipe= on BUILD v1 only for non-default yml paths.
