@@ -43,6 +43,17 @@ function Test-BobJobProcess {
     return ($hits.Count -gt 0)
 }
 
+function Get-BobStallFrIntake {
+    param([string]$Alert)
+    $text = if ($Alert) { $Alert } else { 'stall' }
+    [pscustomobject]@{
+        Repo  = 'SimonBarnett/bobiverse'
+        Kind  = 'fr'
+        Title = ('stall: ' + $text)
+        Body  = ('Stall path filed this FR. Alert: ' + $text)
+    }
+}
+
 function Get-BobStallAlerts {
     param(
         $Seen,
