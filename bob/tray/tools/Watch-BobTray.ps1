@@ -3983,6 +3983,18 @@ function Get-BobTrayWorkerAgentChoices {
     }
 }
 
+function Get-BobTrayOpencodeWebhookModel {
+    # FR #8732 / BOB-30: model field of the named Opencode agent row in models-catalog.json.
+    param([string]$CatalogPath, [string]$AgentName)
+    if ([string]::IsNullOrWhiteSpace($CatalogPath)) { return '' }
+    if (-not (Test-Path -LiteralPath $CatalogPath)) { return '' }
+    try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
+    foreach ($row in @($doc.agents)) {
+        if ([string]$row.agent -eq $AgentName) { return [string]$row.model }
+    }
+    return ''
+}
+
 function Update-BobTrayWorkerAgentsMenu {
     param($MenuItem, $Rows)
     if (-not $MenuItem) { return }
@@ -4018,7 +4030,17 @@ function Update-BobTrayWorkerAgentsMenu {
                 elseif ($picked -eq 'opencode') {
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode'
+                    # FR #8732 / BOB-30: cite the Opencode row (paid) and the Opencode-Free row.
+                    $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                    if ([string]::IsNullOrWhiteSpace($catalog)) {
+                        $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
+                        $catalog = Join-Path $install 'home\models-catalog.json'
+                    }
+                    $model = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode'
+                    $freeModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode-Free'
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $model + ' agent Opencode path ' + $catalog)
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $freeModel + ' agent Opencode-Free path ' + $catalog)
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode' -Model $model
                 }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
