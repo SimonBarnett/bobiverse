@@ -35,7 +35,7 @@ class _LinkCollector(HTMLParser):
 
 def _webhook_pages() -> list[Path]:
     pages = sorted(WEBHOOKS.glob("*.html"))
-    assert len(pages) == 9, f"expected 9 webhook docs, got {len(pages)}"
+    assert len(pages) == 12, f"expected 12 webhook docs, got {len(pages)}"
     return pages
 
 

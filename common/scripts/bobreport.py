@@ -1569,11 +1569,71 @@ def _job_entry_from_doing_worker(row: dict) -> dict:
     return entry
 
 
+def _normalize_machine_status_key(raw: object) -> str:
+    return (
+        str(raw or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+
+def _machine_status_is_out_of_fuel(ent: dict) -> bool:
+    key = _normalize_machine_status_key(ent.get("status"))
+    if key in ("out_of_fuel", "outoffuel"):
+        return True
+    return bool(ent.get("out_of_tokens"))
+
+
+def _machine_has_active_capacity_seat(ent: dict) -> bool:
+    """FR #8789: True when any seat is doing / offered / idle (capacity present)."""
+    for r in _coerce_worker_list(ent.get("worker_list")):
+        st = str(r.get("state") or "").strip().lower()
+        if st in ("doing", "offered", "idle"):
+            return True
+    workers = ent.get("workers")
+    if isinstance(workers, dict):
+        for w in workers.values():
+            if not isinstance(w, dict):
+                continue
+            st = str(w.get("state") or "").strip().lower()
+            if st in ("doing", "offered", "idle", "busy", "accepted"):
+                return True
+            wo = w.get("working_on")
+            if isinstance(wo, str) and wo.strip():
+                low = wo.lower()
+                if "out-of-fuel" in low or "out_of_fuel" in low:
+                    continue
+                return True
+    return False
+
+
+def clear_sticky_machine_out_of_fuel(ent: dict) -> bool:
+    """FR #8789: drop sticky machine ``out_of_fuel`` once a seat is actively working.
+
+    ``post_digest_out_of_fuel`` paints machine status=out_of_fuel; when a free
+    OpenCode seat recovers and is ``doing``, that machine string must clear so
+    monitors do not treat the box as zero capacity.
+    """
+    if not isinstance(ent, dict):
+        return False
+    if not _machine_status_is_out_of_fuel(ent):
+        return False
+    if not _machine_has_active_capacity_seat(ent):
+        return False
+    online = bool(ent.get("online", True))
+    ent["status"] = "I am online" if online else "I am offline"
+    ent["out_of_tokens"] = False
+    return True
+
+
 def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
     """FR #663 / #7499: working_on, jobs, running follow worker_list doing seats.
 
     FR #8137: when no seat is doing, surface a ``waiting`` work string so the
     tray shows waiting rebase/merge instead of a blank/done machine tile.
+    FR #8789: clear sticky machine out_of_fuel when a seat is doing/offered/idle.
     """
     rows = _coerce_worker_list(ent.get("worker_list"))
     doing: list[dict] = []
@@ -1607,6 +1667,7 @@ def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
         ent["jobs"] = [_job_entry_from_doing_worker(r) for r in doing]
     # FR #5687 / #7499: running = count of doing (via jobs); idle => 0.
     _sync_running_queued_from_jobs(ent)
+    clear_sticky_machine_out_of_fuel(ent)
 
 
 def _mirror_worker_list_to_legacy_workers(ent: dict, mid: str, nick: str) -> None:
@@ -3313,6 +3374,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             _restore_workers_last_good_if_empty(ent)
     if payload.get("status"):
         ent["status"] = str(payload["status"])
+    # FR #8789: a sticky out_of_fuel machine status must not survive active seats.
+    clear_sticky_machine_out_of_fuel(ent)
     # Period roll (weekly sand) → clear last period's weekly when the new window has no figure yet.
     weekly_rolled = _period_rolled(ent.get("period_end"), payload.get("period_end"))
     # t785u: the machine moved to a new weekly period but has no measured figure for it yet: last period's % must not
@@ -9502,6 +9565,22 @@ def parse_xai_billing_credits_response(
     }
 
 
+def format_xai_read_failure(exc: BaseException) -> str:
+    """FR #8773: stable, secret-free error for pool state / stale reports.
+
+    Bare ``TypeError`` alone is not actionable. Prefer
+    ``read-failed:<Class>:<short message>`` after crash_report redaction.
+    """
+    import crash_report as _cr
+
+    name = type(exc).__name__ or "Exception"
+    raw = str(exc or "").replace("\n", " ").strip()
+    msg = _cr.redact(raw)[:120].strip()
+    if not msg:
+        return f"read-failed:{name}"
+    return f"read-failed:{name}:{msg}"
+
+
 def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
     """FR #6274 / #7464: live weekly via CLI billing endpoint using the signed-in session.
 
@@ -9547,6 +9626,13 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         token, auth_err, selected_label, did_refresh = (
             None,
             "auth-file-unreadable",
+            None,
+            False,
+        )
+    except Exception as exc:  # noqa: BLE001 — FR #8773: never leak bare TypeError
+        token, auth_err, selected_label, did_refresh = (
+            None,
+            format_xai_read_failure(exc),
             None,
             False,
         )
@@ -9961,7 +10047,11 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
         if reading.get("period_end"):
             enriched["period_end"] = str(reading["period_end"])
         if reading.get("used_pct") is not None:
-            enriched["xai_weekly_used_pct"] = int(reading["used_pct"])
+            try:
+                enriched["xai_weekly_used_pct"] = int(reading["used_pct"])
+            except (TypeError, ValueError):
+                # FR #8773: bad used_pct must not abort the live apply as bare TypeError.
+                enriched["xai_weekly_used_pct"] = None
         else:
             enriched["xai_weekly_used_pct"] = None
         enriched["xai_weekly_source"] = str(reading.get("source") or "")
@@ -10267,15 +10357,24 @@ def publish_local_peer_fuel(
                     now=clock,
                     machine_id=mid,
                 )
+                # FR #8773: persist soft-fail meter so the next tick / stale
+                # reporter sees the real error, not a bare class name from state.
+                with contextlib.suppress(Exception):
+                    bobstat.write_peer(home, peer)
         else:
             _last_fuel_publish_diag["acquisition"] = "cached"
             # FR #7365: pool interval skip is not a successful apply.
             _last_fuel_publish_diag["xai_attempt"] = "cached-reading"
     except Exception as exc:
+        # FR #8773: flamingo filed last_fetch_error=TypeError with no message.
+        # Keep class + short redacted detail on both pool state and the meter.
+        detail = format_xai_read_failure(exc)
         _last_fuel_publish_diag["acquisition"] = "read-failed"
-        _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
-        mark_pool_fetch("xai", now_f, ok=False, error=type(exc).__name__)
-        peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
+        _last_fuel_publish_diag["xai_weekly_error"] = detail
+        mark_pool_fetch("xai", now_f, ok=False, error=detail)
+        peer = enrich_peer_keep_last_good_xai_weekly(peer, error=detail)
+        with contextlib.suppress(Exception):
+            bobstat.write_peer(home, peer)
     # FR #7503: stale xAI reading (>2 min without a live fetch) is an exception.
     try:
         import ear_pool_stale_report as _epsr

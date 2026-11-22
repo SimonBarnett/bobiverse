@@ -198,7 +198,19 @@ def check(
 
     for w in workers:
         nick = str(w.get("nick") or w.get("name") or "?")
-        age = _age_sec(w.get("updated") or w.get("updated_at"), now=now)
+        # FR #8795 / #8796: prefer accepted_ts over updated/last_progress (stream heartbeats).
+        age = None
+        for k in ("accepted_ts", "doing_ts", "offered_ts", "accepted_at"):
+            age = _age_sec(w.get(k), now=now)
+            if age is not None:
+                break
+        phase = str(w.get("progress_phase") or w.get("phase") or "").strip().lower()
+        heartbeat_only = phase == "stream" or w.get("last_progress") is not None
+        if age is None and not heartbeat_only:
+            age = _age_sec(w.get("updated") or w.get("updated_at"), now=now)
+        elif age is None and heartbeat_only:
+            # Still fall back to updated only when no accept stamp exists at all.
+            age = _age_sec(w.get("updated") or w.get("updated_at"), now=now)
         busy = _worker_busy(w)
         mismatch = bool(w.get("model_mismatch") or w.get("mismatch"))
         row = {
@@ -209,6 +221,9 @@ def check(
             "start_model": w.get("start_model") or w.get("model"),
             "work": w.get("work") or w.get("working_on"),
             "updated": w.get("updated") or w.get("updated_at"),
+            "accepted_ts": w.get("accepted_ts") or w.get("accepted_at"),
+            "progress_phase": phase or None,
+            "last_progress": w.get("last_progress"),
             "age_sec": int(age) if age is not None else None,
             "model_mismatch": mismatch,
             "busy": busy,
@@ -218,11 +233,13 @@ def check(
             findings.append(f"opencode seat {nick} model_mismatch=true")
             stuck.append({**row, "reason": "model_mismatch"})
         if busy and age is not None and age > max_age:
+            reason = "stream_heartbeat_stuck_age" if heartbeat_only else "stuck_age"
             findings.append(
-                f"opencode seat {nick} state={w.get('state')} age_sec={int(age)} "
-                f"(>{int(max_age)}) work={row.get('work')!r}"
+                f"opencode seat {nick} state={w.get('state')} accept_age_sec={int(age)} "
+                f"(>{int(max_age)}) progress_phase={phase or '-'} work={row.get('work')!r}"
+                + (" (stream heartbeat ignored)" if heartbeat_only else "")
             )
-            stuck.append({**row, "reason": "stuck_age"})
+            stuck.append({**row, "reason": reason})
         if busy and week_lim:
             reset = week.get("reset_label") if isinstance(week, dict) else None
             findings.append(
