@@ -4849,11 +4849,13 @@ try { Start-IrcWatcher } catch { Write-TrayLog ('irc watcher: ' + $_.Exception.M
 # Data/snapshot in a job; TipForm paint stays on this thread after the step returns or times out.
 [void](Invoke-BobTrayEngineStep -Name 'startup-update-hover' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
     param($Root, $Tools)
+    # FR #8973: do not Import-Module -Force in this job. That import exceeded the 45s
+    # step and filed engine-step.startup-update-hover. The startup seed already wrote
+    # tray-status.json. The poll step owns the first real hover.
+    # FR #8884: when hover is already loaded, refresh with -LocalOnly only.
+    if (-not (Get-Command Get-BobTrayHover -ErrorAction SilentlyContinue)) { return }
     $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
     if (Test-Path -LiteralPath $dialogs) { . $dialogs }
-    $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
-    # FR #8884: local snapshot only. Full hover (Win32_Process + peer peeks) is the poll step.
     $h = Get-BobTrayHover -LocalOnly
     if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
         $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
