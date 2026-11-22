@@ -19,6 +19,7 @@ using System.IO;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -112,6 +113,8 @@ namespace BobDialogs
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
         public const string DefaultOpencodeFreeModel = "opencode/deepseek-v4.1-flash-free";
         public const string DefaultOpencodePaidModel = "opencode-go/deepseek-v4-pro";
+        // FR #8695 / BOB-53: compiled default. Optional tray/config priorityMcpUrl must still be https://mcp.ntsa.uk.
+        public const string DefaultPriorityMcpUrl = "https://mcp.ntsa.uk/mcp";
 
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
         static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance)\b", RegexOptions.IgnoreCase);
@@ -999,9 +1002,17 @@ namespace BobDialogs
                     TrayLifecycle.Write("priority", "action", "priority-icon failed", "error", ex.Message);
                 }
             }
-            miPriority.Click += delegate { StartPriorityExe(); };
-            miAgents.DropDownItems.Add(miPriority);
+            // FR #8699 / BOB-50 start stays the first child. FR #8695 / BOB-53 adds Configure MCP.
             MenuItems.Add("Priority");
+            ToolStripMenuItem miPriorityStart = new ToolStripMenuItem("Start PriorityAgent");
+            miPriorityStart.Click += delegate { StartPriorityExe(); };
+            miPriority.DropDownItems.Add(miPriorityStart);
+            MenuItems.Add("Start PriorityAgent");
+            ToolStripMenuItem miPriorityMcp = new ToolStripMenuItem("Configure MCP (mcp.ntsa.uk)");
+            miPriorityMcp.Click += delegate { BeginConfigurePriorityMcp(); };
+            miPriority.DropDownItems.Add(miPriorityMcp);
+            MenuItems.Add("Configure MCP (mcp.ntsa.uk)");
+            miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
             // BOB-40: Agents > Jeeves uses the existing butler icon.
             string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
@@ -1938,6 +1949,23 @@ namespace BobDialogs
             return rows;
         }
 
+        // FR #8695 / BOB-53: off the UI thread, same as agent refresh.
+        void BeginConfigurePriorityMcp()
+        {
+            string install = root;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                PriorityMcp.Result result = PriorityMcp.Configure(install, null, true);
+                try
+                {
+                    MessageBox.Show(PriorityMcp.Summary(result), "Priority MCP", MessageBoxButtons.OK,
+                        result.state == "wrong" || result.state == "list-failed" || result.state == "grok-missing" || result.doctor == "failed"
+                            ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+                }
+                catch { }
+            });
+        }
+
         // FR #8686 / BOB-36: Jeeves requires a J: map. The click passes J:\. Tests can call the same check with a fixture path.
         bool JeevesJDrivePresent(string driveRoot)
         {
@@ -2589,6 +2617,13 @@ namespace BobDialogs
                 else Console.Write(body);
                 return ok ? 0 : 2;
             }
+            // FR #8695 / BOB-53: headless Priority MCP configure (no dialog).
+            string priorityMcpOut = Common.Arg(args, "--priority-mcp-configure");
+            if (priorityMcpOut.Length > 0)
+            {
+                PriorityMcp.Configure(root, priorityMcpOut, false);
+                return 0;
+            }
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
             // FR #8715 / BOB-12: exit-before-UI column dump for S1 tests.
@@ -2984,6 +3019,298 @@ namespace BobDialogs
             }
             catch { }
             return null;
+        }
+    }
+
+    // FR #8695 / BOB-53: register Grok user-level priority-catalog at https://mcp.ntsa.uk/mcp.
+    // A wrong URL or stdio entry is reported and left in place.
+    internal static class PriorityMcp
+    {
+        public const string Name = "priority-catalog";
+
+        public class Result
+        {
+            public string name = Name;
+            public string url = WorkerLauncher.DefaultPriorityMcpUrl;
+            public string state = "absent";
+            public string doctor = "skipped";
+            public string doctorMessage = "";
+            public string current = "";
+            public string version = "";
+            public string ts = "";
+        }
+
+        public static string Summary(Result result)
+        {
+            string text = "state=" + result.state + " url=" + result.url + " doctor=" + result.doctor;
+            if (result.state == "wrong" && result.current.Length > 0)
+                text += "\r\ncurrent=" + result.current;
+            if (result.doctorMessage.Length > 0)
+                text += "\r\ndoctorMessage=" + result.doctorMessage;
+            return text;
+        }
+
+        public static Result Configure(string root, string snapshotPath, bool logLifecycle)
+        {
+            Result result = new Result();
+            result.ts = DateTime.UtcNow.ToString("o");
+            result.version = ReadTrayVersion(root);
+            result.url = ResolveUrl(root);
+            string grok = ResolveGrok();
+            if (grok.Length == 0)
+            {
+                result.state = "grok-missing";
+                result.doctor = "skipped";
+                Finish(root, snapshotPath, result, logLifecycle);
+                return result;
+            }
+            string listOut;
+            int listCode = Run(grok, "mcp list", out listOut);
+            if (listCode != 0)
+            {
+                result.state = "list-failed";
+                result.doctor = "skipped";
+                Finish(root, snapshotPath, result, logLifecycle);
+                return result;
+            }
+            bool found;
+            string current = FindCatalog(listOut, out found);
+            if (!found)
+            {
+                string addOut;
+                int addCode = Run(grok, "mcp add --transport http " + Name + " " + result.url, out addOut);
+                if (addCode != 0)
+                {
+                    result.state = "absent";
+                    result.doctor = "skipped";
+                    Finish(root, snapshotPath, result, logLifecycle);
+                    return result;
+                }
+                result.state = "added";
+            }
+            else if (IsExpected(current, result.url))
+            {
+                result.state = "kept";
+                result.current = Short(current);
+            }
+            else
+            {
+                result.state = "wrong";
+                result.current = Short(current);
+                result.doctor = "skipped";
+                Finish(root, snapshotPath, result, logLifecycle);
+                return result;
+            }
+            string doctorOut;
+            int doctorCode = Run(grok, "mcp doctor " + Name, out doctorOut);
+            result.doctorMessage = Short(doctorOut);
+            bool ok = doctorCode == 0
+                && doctorOut.IndexOf("handshake OK", StringComparison.OrdinalIgnoreCase) >= 0
+                && doctorOut.IndexOf("handshake failed", StringComparison.OrdinalIgnoreCase) < 0;
+            result.doctor = ok ? "ok" : "failed";
+            Finish(root, snapshotPath, result, logLifecycle);
+            return result;
+        }
+
+        static void Finish(string root, string snapshotPath, Result result, bool logLifecycle)
+        {
+            string path = snapshotPath;
+            if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(root))
+                path = Path.Combine(root, "run", "tray-priority-mcp.json");
+            WriteSnapshot(path, result);
+            if (logLifecycle)
+            {
+                TrayLifecycle.Write("priority-mcp",
+                    "name", result.name,
+                    "url", result.url,
+                    "state", result.state,
+                    "doctor", result.doctor,
+                    "version", result.version);
+            }
+        }
+
+        public static void WriteSnapshot(string path, Result result)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            try
+            {
+                string dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                StringBuilder sb = new StringBuilder();
+                sb.Append("{\r\n");
+                sb.Append("  \"name\": \"").Append(Json(result.name)).Append("\",\r\n");
+                sb.Append("  \"url\": \"").Append(Json(result.url)).Append("\",\r\n");
+                sb.Append("  \"state\": \"").Append(Json(result.state)).Append("\",\r\n");
+                sb.Append("  \"doctor\": \"").Append(Json(result.doctor)).Append("\",\r\n");
+                sb.Append("  \"doctorMessage\": \"").Append(Json(result.doctorMessage)).Append("\",\r\n");
+                sb.Append("  \"ts\": \"").Append(Json(result.ts)).Append("\",\r\n");
+                sb.Append("  \"version\": \"").Append(Json(result.version)).Append("\"\r\n");
+                sb.Append("}\r\n");
+                File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        static string Json(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " ");
+        }
+
+        static string Short(string s)
+        {
+            if (s == null) return "";
+            string t = s.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (t.Length > 160) t = t.Substring(0, 160);
+            return t;
+        }
+
+        public static string ResolveUrl(string root)
+        {
+            string fallback = WorkerLauncher.DefaultPriorityMcpUrl;
+            foreach (string path in ShippedConfigPaths(root))
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                    if (doc == null || !doc.ContainsKey("priorityMcpUrl")) continue;
+                    string raw = Common.Str(doc, "priorityMcpUrl").Trim();
+                    if (raw.Length == 0) continue;
+                    if (AcceptUrl(raw)) return raw;
+                    TrayLifecycle.Write("priority-mcp", "action", "reject url", "reason", "not https mcp.ntsa.uk");
+                }
+                catch { }
+            }
+            return fallback;
+        }
+
+        public static bool AcceptUrl(string raw)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(raw ?? "", UriKind.Absolute, out uri)) return false;
+            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(uri.Host, "mcp.ntsa.uk", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.IsNullOrEmpty(uri.UserInfo)) return false;
+            if (!uri.IsDefaultPort && uri.Port != 443) return false;
+            return true;
+        }
+
+        static IEnumerable<string> ShippedConfigPaths(string root)
+        {
+            if (string.IsNullOrEmpty(root)) yield break;
+            yield return Path.Combine(root, "tray", "config", "default.json");
+            yield return Path.Combine(root, "bob", "tray", "config", "default.json");
+            yield return Path.Combine(root, "config", "default.json");
+        }
+
+        public static string ResolveGrok()
+        {
+            string home = Environment.GetEnvironmentVariable("USERPROFILE") ?? "";
+            if (home.Length > 0)
+            {
+                string preferred = Path.Combine(home, ".grok", "bin", "grok.exe");
+                if (File.Exists(preferred)) return preferred;
+            }
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] names = new string[] { "grok.exe", "grok.cmd", "grok.bat" };
+            foreach (string dir in path.Split(';'))
+            {
+                string folder = (dir ?? "").Trim();
+                if (folder.Length == 0) continue;
+                for (int i = 0; i < names.Length; i++)
+                {
+                    string candidate = Path.Combine(folder, names[i]);
+                    if (File.Exists(candidate)) return candidate;
+                }
+            }
+            return "";
+        }
+
+        static bool IsExpected(string current, string url)
+        {
+            if (string.IsNullOrEmpty(current)) return false;
+            if (current.IndexOf("stdio", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+            return current.IndexOf(url, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        static string FindCatalog(string output, out bool found)
+        {
+            found = false;
+            string text = output ?? "";
+            string[] lines = text.Replace("\r", "").Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                const string prefix = "priority-catalog:";
+                if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = true;
+                    return line.Substring(prefix.Length).Trim();
+                }
+            }
+            return "";
+        }
+
+        static int Run(string exe, string arguments, out string output)
+        {
+            output = "";
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.Arguments = arguments;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+                Process proc = Process.Start(psi);
+                if (proc == null) return -1;
+                string stdout = proc.StandardOutput.ReadToEnd();
+                string stderr = proc.StandardError.ReadToEnd();
+                if (!proc.WaitForExit(30000))
+                {
+                    try { proc.Kill(); } catch { }
+                    output = stdout + "\n" + stderr;
+                    return -1;
+                }
+                output = stdout + "\n" + stderr;
+                return proc.ExitCode;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        static string ReadTrayVersion(string root)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(root))
+                {
+                    string versionFile = Path.Combine(root, "VERSION");
+                    if (File.Exists(versionFile))
+                    {
+                        string line = (File.ReadAllText(versionFile, Encoding.UTF8) ?? "").Trim();
+                        int nl = line.IndexOfAny(new char[] { '\r', '\n' });
+                        if (nl >= 0) line = line.Substring(0, nl).Trim();
+                        if (line.Length > 0 && line.Length < 80) return line;
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                string loc = Assembly.GetExecutingAssembly().Location;
+                if (!string.IsNullOrEmpty(loc))
+                {
+                    FileVersionInfo info = FileVersionInfo.GetVersionInfo(loc);
+                    if (info != null && !string.IsNullOrEmpty(info.FileVersion)) return info.FileVersion;
+                }
+            }
+            catch { }
+            return "unknown";
         }
     }
 
