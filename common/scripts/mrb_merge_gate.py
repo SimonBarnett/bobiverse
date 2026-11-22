@@ -27,12 +27,10 @@ HOLD_CLEAR_RE = re.compile(
     r"\bhold\s+(?:is\s+)?(?:lifted|cleared|released|off)\b|"
     r"\bok\s+to\s+merge\b|\bclear(?:ed)?\s+to\s+merge\b)"
 )
-# FR #8107: full boards (Vision/Tests/Docs) often put Verdict well past 400
-# characters after ``## MRB board``. Keep a generous window and also accept
-# ``MRB PASS @ <sha>`` as an alternate marker (same cue gitclaim already uses).
-MRB_PASS_BOARD_WINDOW = 4000
+# FR #8107 / #8893: Verdict may sit anywhere after the board heading in the
+# same comment. A fixed window (400, then 4000) still missed long boards.
 MRB_PASS_BOARD_RE = re.compile(
-    rf"(?i)##\s*MRB\s+board[\s\S]{{0,{MRB_PASS_BOARD_WINDOW}}}?\*\*Verdict:\*\*\s*PASS\b"
+    r"(?is)##\s*MRB\s+board\b.*?\*\*Verdict:\*\*\s*PASS\b"
 )
 # Seats often write ``**MRB PASS @** `sha``` (markdown bold around the label).
 MRB_PASS_AT_SHA_RE = re.compile(
@@ -181,8 +179,8 @@ def find_active_owner_hold(comments: list[dict] | None) -> str | None:
 def find_mrb_pass_board(comments: list[dict] | None) -> str | None:
     """Return first comment body that looks like an MRB PASS board.
 
-    FR #8107: match ``**Verdict:** PASS`` within ``MRB_PASS_BOARD_WINDOW`` of
-    the board header, or ``MRB PASS @ <sha>`` anywhere after that header.
+    FR #8893: match ``**Verdict:** PASS`` anywhere after the board header in
+    the same comment, or ``MRB PASS @ <sha>`` anywhere after that header.
     MRB #8108: never treat a board with ``**Verdict:** FAIL`` as PASS via the
     ``MRB PASS @`` alternate marker.
     """
@@ -496,30 +494,65 @@ def assert_mrb_merge_allowed(repo: str, num: str, *, token: str | None = None) -
         raise RuntimeError(f"FR #3928 merge refused for {repo}#{num}: {reason}")
 
 
+def invoke_gh_pr_merge(repo: str, num: str, *, run: Callable[..., Any] | None = None) -> int:
+    """Run ``gh pr merge --auto --merge``. Caller must already have exit 0 from the gate."""
+    cmd = ["gh", "pr", "merge", str(num), "--repo", str(repo), "--auto", "--merge"]
+    if run is None:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            sys.stderr.write(err + "\n")
+        return int(proc.returncode)
+    return int(run(cmd))
+
+
+def finish_merge(gate_code: int, repo: str, num: str, *, run: Callable[..., Any] | None = None) -> int:
+    """FR #8977: exit 2 (and any non-zero gate) is a hard stop. Never call gh afterwards."""
+    if int(gate_code) != 0:
+        return int(gate_code)
+    return invoke_gh_pr_merge(repo, num, run=run)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    do_merge = False
+    if "--merge" in args:
+        do_merge = True
+        args = [a for a in args if a != "--merge"]
     if len(args) != 2 or args[0] in {"-h", "--help"}:
         sys.stderr.write(
-            "usage: mrb_merge_gate.py <owner/repo> <pr-number>\n"
+            "usage: mrb_merge_gate.py <owner/repo> <pr-number> [--merge]\n"
             "Exit 0 when merge allowed; 2 when refused; "
             "3 when comments unknown (HTTP 403/429, not a hold); 1 on error.\n"
+            "With --merge, gh pr merge --auto --merge runs only after exit 0. "
+            "Exit 2 does not call gh (FR #8977).\n"
         )
         return 1
     repo, num = args[0], args[1]
     try:
         assert_mrb_merge_allowed(repo, num)
+        gate_code = 0
     except CommentsUnavailable as e:
         sys.stderr.write(str(e) + "\n")
-        return 3
+        gate_code = 3
     except RuntimeError as e:
         msg = str(e)
         if msg.startswith("FR #3928 merge refused"):
             sys.stderr.write(msg + "\n")
-            return 2
-        sys.stderr.write(msg + "\n")
-        return 1
-    sys.stdout.write(f"ok: merge allowed for {repo}#{num}\n")
-    return 0
+            gate_code = 2
+        else:
+            sys.stderr.write(msg + "\n")
+            gate_code = 1
+    if not do_merge or gate_code != 0:
+        if gate_code == 0:
+            sys.stdout.write(f"ok: merge allowed for {repo}#{num}\n")
+        elif do_merge and gate_code == 2:
+            sys.stderr.write(
+                "FR #8977: merge-gate exit 2 is a hard stop; gh pr merge was not called\n"
+            )
+        return gate_code
+    sys.stdout.write(f"ok: merge allowed for {repo}#{num}; calling gh pr merge\n")
+    return finish_merge(0, repo, num)
 
 
 if __name__ == "__main__":

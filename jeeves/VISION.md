@@ -69,7 +69,7 @@ Appliance settings (FR #6436 + #6440 HTTP + #6441 auth + #6442 migrate + #6443 r
   └─ common/scripts/jeeves_settings_http.py --- loopback upstream for /jeeves (FR #7412); off by default
 
 MONITORING agent (jeeves CWD)
-  └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair
+  └─ Invoke-JeevesMonitorCheck* --- report via intake; may keep-queue-moving commands (FR #8827); never Ergo/merge/UAT
 ```
 
 Trust: no secrets in filings/logs; GitHub token / DPAPI / NickServ stay in chair home. Hotpatch restarts **ircJeeves** only; never touch Ergo / `BobIrcd`. `!recycle jeeves` restarts ircJeeves only.
@@ -92,7 +92,7 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - `needs_human` blocks every seat for auto-offer (FR #4336); only `!assign` may hand it out
 - CAST IRON harvest + intake every session; never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `ircJeeves`
-- MONITORING agent reports via intake and never `!assign` / queue edits
+- MONITORING agent reports via intake and may keep-queue-moving commands (FR #8827); never Ergo/merge/UAT/VERSION
 - FR #6453 bob.ntsa.uk static webhook/API docs: IIS www under `jeeves/www/irc-ntsa` (Install-BobWebhooks sync); read-only HTML; no new write endpoints; not a product website
 - FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; unused = no behaviour change (no server on import)
 - FR #7274 public /jeeves front door: operator URL https://bob.ntsa.uk/jeeves vs LAN/loopback settings upstream; cookie Path=/jeeves; secrets stay set/unset; no Cloudflare for the settings process (IIS prefix only)

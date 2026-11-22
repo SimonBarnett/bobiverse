@@ -2599,6 +2599,13 @@ function Update-BobTrayDigestPools {
             try { $opencodeWindows = $prev.opencode_windows } catch { }
             try { $opencodeWindowLines = @($prev.opencode_window_lines) } catch { $opencodeWindowLines = @() }
             try { $opencodeBars = @($prev.opencode_bars) } catch { $opencodeBars = @() }
+            try {
+                if ($null -ne $prev.ts -and [string]$prev.ts -ne '') {
+                    $age = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$prev.ts
+                    if ($age -lt 0) { $age = 0 }
+                    $note = (($note + ' last-good age=' + $age + 's').Trim())
+                }
+            } catch { }
         }
         # Marker for bob-tray.exe CrashHook (one report per failure window). FR #7604 helper.
         if (-not $wroteFail) {
@@ -3031,6 +3038,41 @@ function Test-BobLiveGrokIsFleetSeat {
     return $false
 }
 
+function Get-BobWin32ProcessTimed {
+    <#
+      FR #8891 / #8888: Get-CimInstance Win32_Process can hang past the 45s
+      update-hover-engine step even with a Name= filter. EnumerationOptions.Timeout
+      returns what it has (or nothing) instead of blocking the warm runspace.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$WqlWhere,
+        [int]$TimeoutSec = 8,
+        [string]$Select = 'ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath, CreationDate'
+    )
+    $rows = New-Object System.Collections.Generic.List[object]
+    try {
+        $scope = New-Object System.Management.ManagementScope
+        $query = New-Object System.Management.ObjectQuery ("SELECT {0} FROM Win32_Process WHERE {1}" -f $Select, $WqlWhere)
+        $opt = New-Object System.Management.EnumerationOptions
+        $opt.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
+        $opt.ReturnImmediately = $false
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+        foreach ($mo in @($searcher.Get())) {
+            $ppid = 0
+            try { $ppid = [int]$mo['ParentProcessId'] } catch { $ppid = 0 }
+            $rows.Add([pscustomobject]@{
+                ProcessId       = [int]$mo['ProcessId']
+                ParentProcessId = $ppid
+                Name            = [string]$mo['Name']
+                CommandLine     = [string]$mo['CommandLine']
+                ExecutablePath  = [string]$mo['ExecutablePath']
+                CreationDate    = $mo['CreationDate']
+            })
+        }
+    } catch { }
+    return @($rows.ToArray())
+}
+
 function Get-BobLiveGrokAgents {
     # grok.exe on this box, including sessions Bob did not start. Not Grok Bot.exe.
     # FR #5688: each row carries fleetSeat (bob-worker parent chain). Digest uses only fleet seats.
@@ -3048,10 +3090,15 @@ function Get-BobLiveGrokAgents {
     }
     $out = @()
     $procs = @()
+    $wmiTimeoutSec = 8
     try {
-        # FR #8404: a full Win32_Process enumeration on a busy host blows the
-        # 45s update-hover-engine budget. Ask WMI for grok.exe only.
-        $procs = @(Get-CimInstance Win32_Process -Filter "Name='grok.exe'" -ErrorAction SilentlyContinue)
+        $rawTo = [string]$env:BOB_LIVE_GROK_WMI_TIMEOUT_SEC
+        if ($rawTo -and $rawTo.Trim()) { $wmiTimeoutSec = [Math]::Max(1, [Math]::Min(30, [int]$rawTo.Trim())) }
+    } catch { $wmiTimeoutSec = 8 }
+    try {
+        # FR #8404: grok.exe only. FR #8891: EnumerationOptions.Timeout so a hung WMI
+        # host cannot burn the whole update-hover-engine 45s budget.
+        $procs = @(Get-BobWin32ProcessTimed -WqlWhere "Name='grok.exe'" -TimeoutSec $wmiTimeoutSec)
     }
     catch { return @() }
     $parentByPid = @{}
@@ -3083,7 +3130,8 @@ function Get-BobLiveGrokAgents {
             if ($parentByPid.ContainsKey($walk)) { $par = $parentByPid[$walk] }
             else {
                 try {
-                    $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $walk) -ErrorAction SilentlyContinue
+                    $parRows = @(Get-BobWin32ProcessTimed -WqlWhere ("ProcessId={0}" -f $walk) -TimeoutSec $wmiTimeoutSec)
+                    if ($parRows.Count -gt 0) { $par = $parRows[0] }
                 } catch { $par = $null }
                 $parentByPid[$walk] = $par
             }
@@ -4089,6 +4137,11 @@ function ConvertTo-BobTrayJobRow {
 }
 
 function Get-BobTrayHover {
+    <#
+      FR #8884: -LocalOnly skips Win32_Process (live grok) and peer peeks.
+      Startup hover must finish inside the 45s engine step.
+    #>
+    param([switch]$LocalOnly)
     $tier = '?'
     try {
         $path = Join-Path $env:USERPROFILE '.grok\settings_cache.json'
@@ -4163,6 +4216,7 @@ function Get-BobTrayHover {
         if ($b.sessionId) { $fleetSessions[[string]$b.sessionId] = $true }
         if ($b.id) { $fleetSessions[[string]$b.id] = $true }
     }
+    if (-not $LocalOnly) {
     foreach ($g in @(Get-BobLiveGrokAgents)) {
         if ($g.id -and ($localIds.ContainsKey([string]$g.id) -or $fleetSessions.ContainsKey([string]$g.id))) { continue }
         if ($g.sessionId -and $fleetSessions.ContainsKey([string]$g.sessionId)) { continue }
@@ -4170,6 +4224,7 @@ function Get-BobTrayHover {
         if (-not $row.line) { continue }
         $jobs += ,$row
         if ($row.id) { $localIds[$row.id] = $true }
+    }
     }
 
     $reg = $null
@@ -4341,6 +4396,7 @@ function Get-BobTrayHover {
         }
     }
 
+    if (-not $LocalOnly) {
     foreach ($mid in @($byMachine.Keys)) {
         if ($mid -eq $machineId) { continue }
         if (@($byMachine[$mid]).Count -gt 0) { continue }
@@ -4433,6 +4489,7 @@ function Get-BobTrayHover {
         else {
             $reachBy[$mid] = 'ok'
         }
+    }
     }
 
     if ($restrictTiles) {

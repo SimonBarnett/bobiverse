@@ -12,15 +12,19 @@
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
 > 3. BEFORE finishing ANY debugging session run the harvest step:
->    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
->    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/bobiverse -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/bobiverse -Flush` to resend anything that was queued while offline.
+>    BOB-41: Agents > Jeeves lessons stay on SimonBarnett/bobiverse. Do not file them on another repo.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
+>    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
+>    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
 
 ## First turn (FR #954) â€” do this NOW
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**), report delays via intake only, then loop on a schedule.
 
 Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` â€” deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
@@ -28,14 +32,14 @@ Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` �
 ## Role (MONITORING â€” not the chair, not a worker)
 
 * **Monitor** health, queue flow, idle seats, GIVEUP loops, stale digest, open issues not offered, stuck accepted rows, IRC/webhooks.
-* **Report only** via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
-* **Never act as chair**: never !assign, never !focus / !unfocus, never !ignore, never mutate the queue by hand, never speak as Jeeves.
-* **Never** touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs).
+* **Report** delays via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
+* **May run Jeeves commands to keep the queue moving** (FR #8827): `!ignore` / `!unignore`, `!focus` / `!unfocus`, `!assign`, `!sweep` / `!stuck`, `!resync`, `!cleargiveup`, `!pin` / `!unpin`, `!recycle` (careful), and reads (`!help` `!list` `!status` …). Prefer de-duped intake when a product bug is the root; use commands for operational unblock. Auth: nick `monitoring` (or `JEEVES_MONITOR_NICKS` / `JEEVES_MONITOR_ACCOUNTS`) or ear relay via `bob-<machine>` outbox — see `docs/jeeves-commands.md` / `docs/monitoring.md`.
+* **Still never**: touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; merge PRs / stamp UAT / bump `VERSION`; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs); speak *as* Jeeves; silent hand-edits of `queue.json`.
 * The chair itself stays deterministic and token-less; you are an overlay that keeps workers fed.
 
 ## Prefer token-free monitor scripts (t865u)
 
-Prefer **deterministic scripts that run without tokens** over reasoning. Run them first; only reason about failures (exit 1 findings / exit 2 errors). One JSON line on stdout. **Any repeated manual check becomes such a script** (file an FR / PR that adds it under `tools\monitor\` + a `scripts\Test-JeevesMonitor*.ps1` wrapper).
+Prefer **deterministic scripts that run without tokens** over reasoning. Run them first; only reason about failures (exit 1 findings / exit 2 errors). One JSON line on stdout. **Any repeated manual check becomes such a script** (file an FR / PR that adds it under `tools\monitor\` + a `scripts\Test-JeevesMonitor*.ps1` wrapper). When a monitor playbook is proven, promote it into the token-less chair the same way: FR + PR into `jeeves.exe` / `common/scripts` / `jeeves/checks`, so the learning survives without a monitoring LLM.
 
 | Check | Script | Python |
 |---|---|---|
@@ -52,6 +56,8 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | OpenCode seats (live /report) | `scripts\Test-JeevesMonitorOpencodeSeats.ps1` | `tools\monitor\opencode_seats.py` (FR #8583; flamingo kind=opencode age/quota; report-only) |
 | Intake allowlist drift (live 403) | `scripts\Test-JeevesMonitorIntakeAllowlist.ps1` | `tools\monitor\intake_allowlist.py` (FR #3117) |
 | Github resync focus starve | `scripts\Test-JeevesMonitorGithubResyncFocus.ps1` | `tools\monitor\github_resync_focus.py` (FR #3146) |
+| Depends-on still OPEN | `scripts\Test-JeevesMonitorDependsOn.ps1` | `tools\monitor\depends_on.py` (FR #8848; soft-ok until BOB-D is on tip) |
+| FR digest still held | `scripts\Test-JeevesMonitorFrDigest.ps1` | `tools\monitor\fr_digest.py` (FR #8849; after depends_on; soft-ok until BOB-G is on tip) |
 | Open PR non-default base | `scripts\Test-JeevesMonitorOpenPrStaleBase.ps1` | `tools\monitor\open_pr_stale_base.py` (FR #8333; fixture `JEEVES_OPEN_PR_STALE_BASE_FIXTURE`) |
 | Open PR missing MRB/FIX row | `scripts\Test-JeevesMonitorOpenPrMrbMissing.ps1` | `tools\monitor\open_pr_mrb_missing.py` (FR #8377; fixture `JEEVES_OPEN_PR_MRB_MISSING_FIXTURE`) |
 | Ticket closure (new closes) | `scripts\Test-JeevesMonitorTicketClosure.ps1` | `tools\monitor\ticket_closure.py` (FR #6063) |
@@ -71,7 +77,7 @@ When `jeeves.exe --heal` still fails, ONE rate-limited maintenance agent starts 
 
 ## Self-harvest loop (t865u)
 
-The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn.
+The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
 
 ## What you are looking at
 
@@ -86,7 +92,7 @@ Worker status on the digest: seats cycle **idle** â†’ **offered** â†’ 
 | Chair | `Jeeves` | `#bobiverse` (op) + every `#{machine}` (silent assign) |
 | Ear | `bob-<machine>` | own `#{machine}` + `#bobiverse` |
 | Worker seat | `<machine>-<pid>` | own `#{machine}` **only** â€” never `#bobiverse`, never PMs to claim jobs |
-| MONITORING agent (you) | your session | report via intake; do not drive shop assigns |
+| MONITORING agent (you) | session / nick `monitoring` / ear relay | intake + keep-queue-moving commands (FR #8827); never Ergo/merge/UAT/VERSION |
 
 ## Read first (in this order)
 
@@ -125,9 +131,11 @@ Restart-Service ircJeeves                                          # ONLY this s
 
 ## Do not
 
-- Act as chair (`!assign` / `!focus` / queue edits); invent Ergo PASS or stamp UAT; ship or edit bob/airc product skills in this tree
-- Run legacy `BobJeeves` with `ircJeeves`; bump VERSION / pack an MSI unless the operator asked
+- Touch Ergo / BobIrcd; invent Ergo PASS; stamp UAT; bump VERSION / pack an MSI unless the operator asked; merge PRs; silent `queue.json` hand-edits; ship or edit bob/airc product skills in this tree
+- Run legacy `BobJeeves` with `ircJeeves`
 - Print or commit secrets
+
+Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep` / …) are allowed per FR #8827 when seats are idle/stuck/held — see monitor skill playbook.
 
 
 ## Install dir = git work tree (t781u/t782u)

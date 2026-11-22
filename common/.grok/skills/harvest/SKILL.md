@@ -25,6 +25,10 @@ depends_on: []
 >    `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
+>    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
+>    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
+>    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -234,6 +238,7 @@ routes to bobiverse via the split rule.
 The bullet archive is `lessons.md` beside this file (FR #8310). skill-dag refuses a skill body over 65536 bytes, so do not paste the archive back into this SKILL.md. New intake bullets still append under this heading until the file nears 60KiB, then move them into `lessons.md`.
 
 Do not land a second copy of a harvest-lesson MRB playbook in this book. Those playbooks belong in `bobiverse-bob-job-mrb`.
+- CAST IRON point 5 (Jeeves MONITORING): prefer deterministic fixes; when tested, FR them into the Jeeves token-less service (tools/monitor, jeeves/checks, common/scripts, chair helpers) so learnings become chair behaviour without an LLM. Skills are interim; durable home is the deterministic product. Same turn: skill harvest and product FR when the path is clear (PR #8851).
 - skill-dag index preference: over-cap seat copy yields to a later root at or under SKILL_RESOLVE_CAP_BYTES; an under-cap seat copy still wins (FR #7076 / #8323).
 - Any per-seat click state must persist the launch model next to the kind and every restart path must read it; a saved model that cannot start must refuse and report, never fall through to the free default.
 - When IRC _ssl_recv starts polling settimeout, run test_fr8120_ear_ssl_send_serialize.py and test_fr4980_ear_idle_keepalive.py with the new registration test before PASS.
@@ -298,4 +303,31 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
 - BOB-09 About Show logs: bottom button on AboutForm + PS fallback opens watch_bob_tray.log via notepad (same path as Open log)
+- BOB-11 Status keep pool dialog: when Item(Status)/ShowStatus/StatusForm already on main, DONE with covering PR URL (#7521) and close the twin --- do not re-implement
 - When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
+- Intake allowlist monitor: send an explicit User-Agent through Cloudflare; only JSON error=repo_not_allowed is allowlist drift, not bare HTTP 403 1010.
+- When renaming a tray submenu label, update MenuItems.Add for --dump-menu in the same change; source pins can pass while the compiled dump-menu pin fails.
+- Recycleseat queue TTL must outlast a lagged tray tick (300s). Read the last numeric value from Launch output; do not cast the last pipeline object when the tray logs on the success stream.
+- BOB-57 S1 needs a verified plan.ntsa.uk MSI URL from VIS-08 before any downloads card; homepage or guessed /plan.msi is not acceptance.
+- require_machine offer gate: peel cold-digest <machine>-<pid> nicks, gate why-empty on row_require_machine re-infer, and stamp require_machine from honor-path GIVEUP so the next !bored skips wrong shops.
+- BOB-03 combos must not reuse models-catalog.json: BOB-01 Weights rows and BOB-02 PUT own that file; ship allow-list as models-valid-combos.json + validate_combo + POST /bob/v1/models/validate
+- !build UX: put BUILD_USAGE_LINES in builds_catalog (leaf), re-export from bobiverse_build; local-first catalog before HTTP; optional recipe= on BUILD v1 only for non-default yml paths.
+- A DIRTY product FIX folds origin/main in the job worktree, keeps both sides of a docs conflict, pins the review finding in the existing test, and pushes the same PR head.
+- Weights S1 is a modeless grid with columns Agent, CLI, Model, Context, Effort. Dump those headers with --dump-weights-columns before the tray UI starts.
+- Seed models-valid-combos from a shipped seed on BobCallback start: create if missing, append missing models, never rewrite a malformed store.
+- Workers > Cursor menu image is assets/menu-favicons/cursor.com.ico. Log worker-favicon with that path. Do not reuse the fuel badge.
+- A fresh Install-BobWebhooks.ps1 must write the same canonical web.config the second run would upsert, or site-kit CI fails with second install changed web.config bytes.
+- When neither home has queue.json, idle_seats uses one live /bob/v1/report estimate. A local queue never fetches. Unverified gates stay named and are not applied.
+- About Plan and Priority versions come from slice VERSION files or BOBIVERSE_PLAN_VERSION and BOBIVERSE_PRIORITY_VERSION, and fall back to the bob version so the fields are never blank.
+- A skill pin that forbids CR must normalize the checkout to LF before the assertion. autocrlf makes a clean LF blob look like CRLF on windows-latest.
+- Do not cap an MRB PASS verdict with a character window. Require the verdict after the board heading in the same comment.
+- Engine steps that call Win32_Process must pass a timeout or skip the scan. An unbounded CIM query is what files engine step timeoutSec=45.
+- When a PowerShell here-string is double-quoted, empty variables erase dollar names before commit. Write tray .ps1 with a single-quoted here-string or a file tool, then parse the file with the PowerShell language parser before push.
+- A PS 5.1 module import error pointing at ForEach-Object in the psm1 is often a Private script whose param names were stripped; restore names from the call sites before treating the failure as unrelated CI noise.
+- Zero live seats stay on the empty-online fill. Under-cap fill must return 0 when live is 0 so the two paths do not both fire.
+- After mrb_merge_gate exit 2, do not run gh pr merge --auto. A later exit 0 can still merge a phase-gated PR.
+- Unsigned exit 0xffffffff with only pager info/debug or TUI chrome is an external kill. Keep cli-failure when stderr contains failed, fatal, exception, or an error level.
+- When stall alerts are non-empty, call Get-BobStallFrIntake and log stall-fr with repo SimonBarnett/bobiverse.
+- Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
+- When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
+
