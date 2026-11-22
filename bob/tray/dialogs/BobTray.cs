@@ -1525,7 +1525,7 @@ namespace BobDialogs
             AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
             AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
             parent.DropDownItems.Add(oc);
-            if (record) MenuItems.Add("OpenCode");
+            if (record) MenuItems.Add("Open Code");
         }
 
         void OnAgentChoiceClick(object sender, EventArgs e)
