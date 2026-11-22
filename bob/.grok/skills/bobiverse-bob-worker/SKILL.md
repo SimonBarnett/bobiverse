@@ -18,6 +18,8 @@ description: >
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+>
+> **Workers > Grok harvest (FR #8724):** tray, worker, and Grok-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 
 Everything about starting and running a **worker agent** from the bob install (`<ai root>\bob`). The worker is one compiled program,
 `<ai root>\bob\worker\bob-worker.exe`, that starts ONE agent, keeps ITS OWN IRC connection and feeds IRC messages into that agent.
