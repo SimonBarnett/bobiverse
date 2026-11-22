@@ -1826,6 +1826,19 @@ namespace BobDialogs
         void StartPlanExe()
         {
             string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
+            if (string.IsNullOrEmpty(hook))
+                hook = Path.Combine(root, "run", "models-webhook.json");
+            try
+            {
+                if (File.Exists(hook))
+                {
+                    string line = PlanModelsWebhook.DryRunLine(File.ReadAllText(hook));
+                    if (line.Length > 0)
+                        TrayLifecycle.Write("plan-models", "webhook", line);
+                }
+            }
+            catch { }
             string mcpPath = PlanMcpConfig.WriteConfig(root);
             TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
             TrayLifecycle.Write("plan", "action", "start exe", "path", exe);

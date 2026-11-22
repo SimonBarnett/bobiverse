@@ -2112,6 +2112,20 @@ function Start-BobTrayPriorityExe {
 function Start-BobTrayPlanExe {
     # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
     $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    $hook = $env:BOB_MODELS_WEBHOOK_FILE
+    if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
+    if (Test-Path -LiteralPath $hook) {
+        $raw = Get-Content -LiteralPath $hook -Raw
+        if ($raw -match '"Plan"\s*:\s*\{([^}]+)\}') {
+            $body = $Matches[1]
+            $model = if ($body -match '"model"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+            $context = if ($body -match '"context"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+            $effort = if ($body -match '"effort"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+            if ($model -or $context -or $effort) {
+                Write-TrayLog ("plan-models webhook model=$model context=$context effort=$effort")
+            }
+        }
+    }
     $mcpDir = Join-Path $RepoRoot 'run'
     New-Item -ItemType Directory -Force -Path $mcpDir | Out-Null
     $mcpPath = Join-Path $mcpDir 'plan-mcp.json'
