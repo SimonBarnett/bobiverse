@@ -323,3 +323,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A PS 5.1 module import error pointing at ForEach-Object in the psm1 is often a Private script whose param names were stripped; restore names from the call sites before treating the failure as unrelated CI noise.
 - Zero live seats stay on the empty-online fill. Under-cap fill must return 0 when live is 0 so the two paths do not both fire.
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
+- FR #8811: wire row_fr_depends_blocked_reason beside every FR hold offer/purge/reconcile site (bob_d7_wire_hold); Depends-on OPEN skips offer but keeps the row
