@@ -383,6 +383,36 @@ def _check_live_report(chair, digest, qpath):
     return (payload, EXIT_OK if ok else EXIT_FINDING)
 
 
+def collect_under_cap(dig: dict, offerable: int, default_cap: int = 2) -> list:
+    """FR #8890: online machines with a known worker list below cap while work is offerable."""
+    if offerable < 1 or not isinstance(dig, dict):
+        return []
+    machines = dig.get("machines") or {}
+    if not isinstance(machines, dict):
+        return []
+    found = []
+    for mid, ent in machines.items():
+        if not isinstance(ent, dict) or not ent.get("online"):
+            continue
+        if "workers" not in ent:
+            continue
+        raw = ent.get("workers")
+        if isinstance(raw, dict):
+            rows = [v for v in raw.values() if isinstance(v, dict)]
+        elif isinstance(raw, list):
+            rows = [v for v in raw if isinstance(v, dict)]
+        else:
+            continue
+        cap = ent.get("seat_cap", ent.get("worker_cap", default_cap))
+        try:
+            cap_n = int(cap)
+        except (TypeError, ValueError):
+            cap_n = default_cap
+        if cap_n < 1 or len(rows) >= cap_n:
+            continue
+        found.append({"machine": str(mid), "live": len(rows), "cap": cap_n})
+    return found
+
 def check(args):
     chair, digest = resolve_homes(args)
     qpath = resolve_queue_path(chair, digest)
@@ -407,6 +437,17 @@ def check(args):
     if qpath.parent != home:
         home = qpath.parent
     offerable = count_offerable_for_live_seats(home, unaccepted, idle_nicks)
+    queue_doc = dig.get("queue") if isinstance(dig, dict) and isinstance(dig.get("queue"), dict) else {}
+    try:
+        fleet_offerable = int(queue_doc.get("offerable_count") or 0)
+    except (TypeError, ValueError):
+        fleet_offerable = 0
+    under_cap = collect_under_cap(dig if isinstance(dig, dict) else {}, fleet_offerable)
+    for row in under_cap:
+        findings.append(
+            f"under-cap {row['machine']} live={row['live']}/{row['cap']} "
+            f"offerable={fleet_offerable}"
+        )
     if idle and offerable > 0:
         findings.append(
             f"{len(idle)} idle seat(s) with {offerable} offerable row(s) "
@@ -438,6 +479,8 @@ def check(args):
             "idle_seats": idle,
             "unaccepted_count": len(unaccepted),
             "offerable_for_live_seats": offerable,
+            "fleet_offerable_count": fleet_offerable,
+            "under_cap": under_cap,
             "pending_offer_count": pending_offers,
             "healthy_idle_empty_offerable": healthy_idle,
             "queue_needs_human_only": bool(needs_human_only),

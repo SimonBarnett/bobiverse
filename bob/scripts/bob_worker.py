@@ -2642,9 +2642,10 @@ def explicit_cursor_si_decision(
         row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
+        # FR #8719 / BOB-23: MarchHare (si@ntsa.uk) fleet meter gate — not local box fuel.
         return Decision(
             "refuse",
-            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            "explicit cursor: MarchHare tokens exhausted (%s remaining=0)" % account,
             account=account,
         )
     rem = fill["remaining"] if fill["usable"] else "unknown"
@@ -17604,6 +17605,15 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #8721 / BOB-21 S1: stable cursor-agent token after successful Cursor spawn (wrapper PID).
+            if (self.kind or "").strip().lower() == "cursor":
+                try:
+                    _cc = resolve_cursor_cmd(env) or resolve_cursor_cmd() or "(unresolved)"
+                except Exception:
+                    _cc = "(unresolved)"
+                self.log(
+                    f"cursor-agent: cmd={_cc} pid={proc.pid} nick={self.nick} workspace={self.cwd}"
+                )
             # FR #4843: warn when the live install checkout is not on main.
             try:
                 log_install_root_guard(self._install_root_for_fuel(), self.log)
@@ -20159,6 +20169,25 @@ def _explicit_refusal_exit(
         log=log,
         filer_post=filer_post,
     )
+    # FR #8719 / BOB-23: MarchHare Cursor token gate — dialog then quit (EXIT_OUT_OF_FUEL).
+    reason_l = str(dec.reason or "").lower()
+    marchhare_gate = (
+        "marchhare tokens exhausted" in reason_l
+        or ("marchhare" in reason_l and "remaining=0" in reason_l)
+    )
+    if marchhare_gate:
+        try:
+            show_out_of_fuel_dialog(
+                pool="MarchHare Cursor",
+                remaining="0",
+                evidence=dec.reason or "",
+                nick="",
+                title="Bobiverse — MarchHare Cursor tokens",
+                log=log,
+            )
+        except Exception:
+            pass
+        return EXIT_OUT_OF_FUEL
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -21326,9 +21355,53 @@ def main(argv: Optional[list] = None) -> int:
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
-        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "agent": args.agent or "auto",
-                          "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
+        # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        launch_section = {}
+        try:
+            import worker_start_model as _wsm
+
+            settings = _wsm.resolved_start_settings(dec.kind, env=os.environ)
+            exe = ""
+            if dec.kind == "grok":
+                exe = str(ge or "")
+            elif dec.kind == "cursor":
+                exe = str(cc or "")
+            elif dec.kind == "opencode":
+                exe = str(oe or "")
+            cli_args = list(settings.get("cli_settings_args") or [])
+            if exe and cli_args:
+                final_args = [exe] + cli_args
+            elif exe:
+                final_args = [exe]
+            else:
+                final_args = list(cli_args)
+            launch_section = {
+                "kind": settings.get("kind") or dec.kind,
+                "mode": args.mode,
+                "settings_source": settings.get("settings_source") or "",
+                "model": settings.get("model") or "",
+                "context": settings.get("context") or "",
+                "effort": settings.get("effort") or "",
+                "setting_status": settings.get("setting_status") or {},
+                "cli_args": final_args,
+                "executable": exe,
+            }
+            _wsm.append_launch_dryrun(launch_section, env=os.environ)
+        except Exception as exc:
+            launch_section = {"error": str(exc)[:200]}
+        payload = {
+            "decision": dec.kind,
+            "reason": dec.reason,
+            "agent": args.agent or "auto",
+            "cursor_cmd": bool(cc),
+            "grok_exe": bool(ge),
+            "opencode_cmd": bool(oe),
+            "fuel": fuel.__dict__,
+            "cwd": cwd,
+            "mode": args.mode,
+            "launch": launch_section,
+        }
+        print(json.dumps(payload, sort_keys=True))
         return EXIT_OK
     if args.startup_grace_s is None:
         env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()

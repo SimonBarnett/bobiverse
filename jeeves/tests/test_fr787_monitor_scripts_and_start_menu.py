@@ -38,6 +38,7 @@ CHECKS = (
     "github_resync_focus",
     "ticket_closure",
     "depends_on",
+    "fr_digest",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -57,6 +58,7 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorGithubResyncFocus.ps1",
     "Test-JeevesMonitorTicketClosure.ps1",
     "Test-JeevesMonitorDependsOn.ps1",
+    "Test-JeevesMonitorFrDigest.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )
