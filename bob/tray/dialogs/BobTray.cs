@@ -1839,6 +1839,8 @@ namespace BobDialogs
                 }
             }
             catch { }
+            string mcpPath = PlanMcpConfig.WriteConfig(root);
+            TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
             TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
             if (!File.Exists(exe)) return;
             try
