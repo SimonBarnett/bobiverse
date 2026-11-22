@@ -3701,6 +3701,8 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
         f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
         f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
+        f"Workers > Grok harvest (FR #8724): tray, worker, and Grok-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
+        f"Workers > Cursor harvest (FR #8718): tray, worker, and Cursor-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
@@ -6018,11 +6020,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $env:TMP = $bobTmp",
             r"        $env:TMPDIR = $bobTmp",
             r"        $env:BOB_OPENCODE_SCRATCH = $bobTmp",
-            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
-            r"    } else {",
-            r"        $argList = @('run', '-m', $model, $line)",
             r"    }",
-            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
             # FR #7952: once per job, before the run. Never changes $model mid-turn.
             r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
@@ -6037,6 +6035,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
             r"        }",
             r"    }",
+            # FR #8734 / BOB-29: $argList is built after the pause-return model update
+            # so -m, the seat line and the job header name the same model.
+            r"    if ($ocDir) {",
+            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
+            r"    } else {",
+            r"        $argList = @('run', '-m', $model, $line)",
+            r"    }",
+            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
@@ -6083,6 +6089,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8553: never -NoNewWindow with redirects. Sharing the parent console
             # hangs opencode after the build banner (empty stdout) and can tear down the
             # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
+            # FR #8734 / BOB-29: stdout tee into seat-<nick>.log names the launched model.
+            r"        Write-Output ('opencode-run model=' + $model + ' job=' + [string]$jobKey)",
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
@@ -17575,6 +17583,11 @@ class Supervisor:
             self._session_cursor = CursorTurnWatcher(since_wall=time.time()) if self.kind == "cursor" else None
             spec.session_log = self.session_log
             self.session_log.write("start", f"kind={self.kind} session={spec.session_id}")
+            # FR #8734 / BOB-29: seat session log names the model stamped into the child.
+            if (self.kind or "").strip().lower() == "opencode":
+                oc_id = str((child.get("env") or {}).get("BOB_OPENCODE_MODEL") or "").strip()
+                if oc_id:
+                    self.session_log.write("model", f"opencode model={oc_id}")
             self.session_log.write("console-start", json.dumps(console_startup_state()))
             self.session_log.write("prompt", self._prompt() + (" " + note if note else ""))
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
@@ -21356,6 +21369,7 @@ def main(argv: Optional[list] = None) -> int:
         else:
             cwd = str(Path(args.install_root) / "worker")
         # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        # BOB-22 / FR #8720: a Cursor decision cites the Cursor webhook row, not the tray default.
         launch_section = {}
         try:
             import worker_start_model as _wsm
