@@ -908,14 +908,31 @@ namespace BobDialogs
 
             ToolStripMenuItem miStatus = Item("Status", delegate { ShowStatus(); });
             miStatus.Font = new Font(miStatus.Font, FontStyle.Bold);   // bold = the default action
-            // Agents submenu is filled without calling bob-worker (fuel read can take 90s).
-            // DropDownOpening refreshes from --list-agents on a background thread.
+            // FR #8713 / BOB-06: Status → Agents{Plan,Priority,Jeeves} → Workers{Grok,Cursor,Open Code} → Weights → About → Exit.
+            // Agents hold product agents; Workers hold CLI worker starts (was Agents seed).
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
-            SeedAgentChoices(miAgents, true);
-            miAgents.DropDownOpening += delegate { BeginRefreshAgentChoices(miAgents); };
+            ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
+            miPlan.Click += delegate { StartWorker("plan", ""); };
+            miAgents.DropDownItems.Add(miPlan);
+            MenuItems.Add("Plan");
+            ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
+            // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
+            miPriority.Click += delegate { TrayLifecycle.Write("priority", "via", "bob-tray-Priority"); };
+            miAgents.DropDownItems.Add(miPriority);
+            MenuItems.Add("Priority");
+            ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
+            miJeeves.Click += delegate { TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves"); };
+            miAgents.DropDownItems.Add(miJeeves);
+            MenuItems.Add("Jeeves");
             menu.Items.Add(miAgents);
-            Item("Plan", delegate { StartWorker("plan", ""); });
+            ToolStripMenuItem miWorkers = new ToolStripMenuItem("Workers");
+            MenuItems.Add("Workers");
+            SeedAgentChoices(miWorkers, true);
+            miWorkers.DropDownOpening += delegate { BeginRefreshAgentChoices(miWorkers); };
+            menu.Items.Add(miWorkers);
+            Item("Weights", delegate { ShowWeights(); });
+            Item("About", delegate { Acknowledge(); ShowAbout(); });
             // FR #7669: show the live seat target. The value is bridge config.json; no tray restart.
             ToolStripMenuItem miSeats = new ToolStripMenuItem("Seats: on");
             miSeats.Enabled = false;
@@ -925,7 +942,6 @@ namespace BobDialogs
             {
                 miSeats.Text = WorkerLauncher.SeatsOff() ? "Seats: off (seat target 0)" : "Seats: on";
             };
-            Item("Acknowledge", delegate { Acknowledge(); ShowAbout(); });
             Item("Open log", delegate { OpenLog(); });
             // FR #6309: TipForm masked OpenCode key set/select/remove.
             ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");
@@ -1440,6 +1456,21 @@ namespace BobDialogs
             catch { }
         }
 
+        // FR #8713 / BOB-06: Weights menu entry (full form is BOB-12/13); keep click path alive.
+        void ShowWeights()
+        {
+            try
+            {
+                TrayLifecycle.Write("weights", "via", "bob-tray-Weights");
+                MessageBox.Show(
+                    "Weights binds to the models webhook in later BOB slices (BOB-12/13).",
+                    "Bob — Weights",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch { }
+        }
+
         void ApplyEngineEnv()
         {
             // The worker must start with the environment the engine (the old tray) had: run\tray-env.json, written by the engine at start.
@@ -1479,7 +1510,8 @@ namespace BobDialogs
         void AddOpencodeModelSubmenu(ToolStripMenuItem parent, bool enabled, bool record)
         {
             // FR #6429: Agents > OpenCode > Start free/paid model (child-only BOB_OPENCODE_MODEL).
-            ToolStripMenuItem oc = new ToolStripMenuItem("OpenCode");
+            // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
+            ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
@@ -1493,7 +1525,7 @@ namespace BobDialogs
             AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
             AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
             parent.DropDownItems.Add(oc);
-            if (record) MenuItems.Add("OpenCode");
+            if (record) MenuItems.Add("Open Code");
         }
 
         void OnAgentChoiceClick(object sender, EventArgs e)

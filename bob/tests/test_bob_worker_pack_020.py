@@ -82,10 +82,13 @@ def _fn(text: str, name: str) -> str:
 def test_tray_agents_menu_lists_choices_and_plan_stays_one_click():
     t = _tray()
     block = t[t.index("$miStatus = $menu.Items.Add('Status')"): t.index("$notify.ContextMenuStrip = $menu")]
-    assert "$menu.Items.Add('Agents')" in block and "$menu.Items.Add('Plan')" in block
+    # FR #8713 / BOB-06: Agents submenu; Plan under Agents; Workers hold CLI seed.
+    assert "ToolStripMenuItem('Agents')" in block or "$menu.Items.Add('Agents')" in block
+    assert "ToolStripMenuItem('Plan')" in block or "DropDownItems.Add($miPlan)" in block
+    assert "ToolStripMenuItem('Workers')" in block or "$menu.Items.Add('Workers')" in block
     assert "Update-BobTrayWorkerAgentsMenu" in block
     assert "DropDownOpening" in block
-    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in block
+    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in t
     assert "Get-BobTrayWorkerAgentChoices" in t
     assert "--list-agents" in t
     assert "Start-BobTrayWorkerExe -Mode 'agent' -Agent" in t
