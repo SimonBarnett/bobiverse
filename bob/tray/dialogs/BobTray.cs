@@ -1949,17 +1949,16 @@ namespace BobDialogs
             try { if (weightsForm != null && !weightsForm.IsDisposed) weightsForm.Close(); } catch { }
         }
 
-        // Exit order unchanged (t798u): dialogs + icon go first, then the ircBob stop (detached, never waited for), then the engine is asked to leave.
+        // FR #9034: TipForm Exit is tray-only - dispose UI and ask the engine to leave; never stop ircBob.
         void ExitTray()
         {
             if (exiting) return;
             exiting = true;
             exitReason = "Exit";
-            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit");
+            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit", "ircBob", "left-running");
             TrayLifecycle.SuppressWatchdog("Exit");
             CloseWindows();
             notify.Visible = false;
-            Detached(Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\sc.exe"), "stop ircBob");
             Command("exit");
             FinishAfterEngine(4000);
         }

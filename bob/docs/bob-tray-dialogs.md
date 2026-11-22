@@ -51,8 +51,8 @@ It runs the Status and About windows in-process (no second process to start).
   Exe and engine talk only through files in `<root>\run`: `tray-status.json` (engine -> exe: `short` hover text, `alert`, `attention`,
   `attention_seq`, `pulse`, plus the dashboard model), `tray-env.json` (engine -> exe: the `BOB_*`/`AGENTIC_*`/`BOBIVERSE_*` environment for workers),
   `tray-cmd.txt` (exe -> engine: `ack`, `exit`, `restart`; operator/ear -> host: `reload` FR #5111). The engine leaves when the exe is gone; the exe restarts a dead engine (max 3 per 5 min).
-* **Exit** closes the windows, hides the icon, stops the ircBob service (detached) and ends the engine; **Restart** hides the icon and has the engine
-  re-launch the tray **without** restarting ircBob (FR #5111 `-SkipServiceRestart`). `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ForceNew, tidy unchanged; ircBob restart-on-start only when not skipped) and
+* **Exit** (FR #9034) closes the windows, hides the icon, and ends the tray/engine only — **never** stops the ircBob ear service. **Restart** hides the icon and has the engine
+  re-launch the tray **without** restarting ircBob (FR #5111 `-SkipServiceRestart`). Ear recycle is **Restart-BobEar**, not TipForm Exit. `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ForceNew, tidy unchanged; ircBob restart-on-start only when not skipped) and
   kills the old PowerShell tray; without the exe it starts the PowerShell tray as before, which stays a complete fallback.
   Restart allows up to 60 seconds for the graceful IRC logout and bootstrap (FR #5177). Commands are claimed before callbacks,
   and engine startup discards stale commands so an interrupted restart cannot replay.

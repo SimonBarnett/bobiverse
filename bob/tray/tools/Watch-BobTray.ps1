@@ -2999,25 +2999,24 @@ function Close-BobTrayDialogs {
     $script:tip = $null
 }
 
-# t798u: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop, 3) start the service stop detached
-# (fire and forget: sc.exe in its own process, never waited for). Nothing else runs before the icon is gone.
+# t798u / FR #9034: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop.
+# Never stop ircBob — the ear is a machine service, not a TipForm child (matches Restart -SkipServiceRestart).
 function Invoke-BobTrayExit {
     $script:trayExitReason = 'Exit'
-    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI, stop ircBob (detached)'
+    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI (ircBob left running; FR #9034)'
     # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch.
     try {
         if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
             Set-BobTrayWatchdogSuppress -Reason 'Exit'
         }
         if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
-            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit' }
+            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit'; ircBob = 'left-running' }
         }
     } catch { }
     [void](Invoke-BobTrayExitSequence `
             -CloseDialogs { Close-BobTrayDialogs } `
             -DisposeIcon { $notify.Visible = $false; $notify.Dispose() } `
-            -ExitUi { $ctx.ExitThread() } `
-            -StopService { [void](Stop-BobTrayService -ServiceName $script:trayServiceName) })
+            -ExitUi { $ctx.ExitThread() })
 }
 
 function Get-BobTrayCursorHelpTooltip {
