@@ -45,6 +45,9 @@ def test_is_skill_dag_down_reason_matches_wire_tokens():
     assert gitclaim.is_skill_dag_down_reason("skill_dag_down") is True
     assert gitclaim.is_skill_dag_down_reason("skill_dag_down:exit-1") is True
     assert gitclaim.is_skill_dag_down_reason("SKILL_DAG_DOWN:bad-json:skill=SKILL.md") is True
+    # FR #8846
+    assert gitclaim.is_skill_dag_down_reason("skill-dag-mcp-down") is True
+    assert gitclaim.is_skill_dag_down_reason("skill_dag_mcp_down:cli-failed") is True
     assert gitclaim.is_skill_dag_down_reason("out-of-fuel") is False
     assert gitclaim.is_skill_dag_down_reason("cannot review") is False
     assert gitclaim.is_skill_dag_down_reason("") is False

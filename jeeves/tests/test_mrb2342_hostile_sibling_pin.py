@@ -1,7 +1,8 @@
-"""MRB #2342 hostile: offer_focus_top with live digest must free ionos sibling when marchhare is pinned out.
+"""MRB #2342 hostile: offer_focus_top with live digest must free chair-host sibling when marchhare is pinned out.
 
 FR #6569 / #6591: seed liveness via worker_list (FR #4211) and give bobiverse rows an
 explicit needs-ionos cue (FR #4512). Bare require_machine stamps are re-inferred empty.
+FR #8653 / #8697: needs-ionos / require_machine ionos fold to walrus (live chair host).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ def _home(tmp_path, monkeypatch):
     for k in ("JEEVES_FOCUS_MUTATORS", "JEEVES_FOCUS_MUTATOR_ACCOUNTS", "BOB_CHANSERV_EXCLUDE"):
         monkeypatch.delenv(k, raising=False)
     registered_machines.save_registered(
-        tmp_path, {"ionos", "win-mpre8vi4u6u", "marchhare"}
+        tmp_path, {"ionos", "walrus", "win-mpre8vi4u6u", "marchhare"}
     )
     bobreport._SEAT_ROSTER_CACHE["key"] = None
     return tmp_path
@@ -69,6 +70,7 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     """MRB exact-seat (FR #2604) frees the sibling; needs-ionos pin excludes marchhare.
 
     FR #4512: bobiverse rows need a supported pin cue (label), not a bare stamp.
+    FR #8697: ionos pin folds to walrus — sibling seats are walrus-*, not win-mpre.
     """
     row = _row(
         "SimonBarnett/bobiverse",
@@ -77,8 +79,8 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
         7,
         require_machine="ionos",
         labels=["needs-ionos"],
-        author_seat="win-mpre8vi4u6u-14452",
-        implementer_seat="win-mpre8vi4u6u-14452",
+        author_seat="walrus-14452",
+        implementer_seat="walrus-14452",
         url="https://github.com/SimonBarnett/bobiverse/pull/2319",
     )
     _queue(_home, [row])
@@ -86,24 +88,25 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     _seed_live(
         _home,
         {
-            "win-mpre8vi4u6u": ["14452", "7764"],
+            "walrus": ["14452", "7764"],
             "marchhare": ["40208"],
         },
     )
     live = gitclaim.live_seat_nicks(_home)
     assert "marchhare-40208" in {n.lower() for n in live}
-    assert "win-mpre8vi4u6u-7764" in {n.lower() for n in live}
+    assert "walrus-7764" in {n.lower() for n in live}
 
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-14452", live) is True
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-7764", live) is False
+    assert gitclaim.review_blocked_for_author(row, "walrus-14452", live) is True
+    assert gitclaim.review_blocked_for_author(row, "walrus-7764", live) is False
     assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True
-    # Sibling machine match: ionos pin does not block win-mpre8vi4u6u seats.
-    assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-7764") is False
+    # Sibling machine match: folded ionos/walrus pin does not block walrus seats.
+    assert gitclaim.row_blocked_for_machine(row, "walrus-7764") is False
+    assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-7764") is True
 
     status, job = gitclaim.offer_focus_top(
         _home,
-        "win-mpre8vi4u6u-7764",
-        "#win-mpre8vi4u6u",
+        "walrus-7764",
+        "#walrus",
         pr_exists=None,
         is_pull=None,
         issue_open=None,
@@ -111,7 +114,7 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     assert status == "ok"
     assert job is not None
     assert str(job.get("id")) == "#2319"
-    assert job.get("offered_to") == "win-mpre8vi4u6u-7764"
+    assert job.get("offered_to") == "walrus-7764"
 
 
 def test_hostile_mrb_sibling_ok_when_other_machine_live(_home):
