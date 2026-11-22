@@ -137,6 +137,16 @@ TipForm and Status paint Copilot as a family header plus one left-aligned UsageR
 
 Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `bob/tests/test_fr6429_opencode_tray_submenu.py`, `common/tests/test_fr6301_opencode_keys.py`, `bob/tests/test_mrb6303_docs_pins.py`.
 
+## FR #8695 / BOB-53 Priority MCP (mcp.ntsa.uk)
+
+**Agents > Priority** is a submenu. **Start PriorityAgent** still launches `vendor\priority\PriorityAgent.exe` (BOB-50). **Configure MCP (mcp.ntsa.uk)** registers the Grok user-level server `priority-catalog` at `https://mcp.ntsa.uk/mcp`. The same registration is what `PriorityAgent.exe` adds; the tray also refuses a wrong URL instead of keeping it.
+
+- Compiled default `https://mcp.ntsa.uk/mcp`. Optional shipped `tray/config/default.json` key `priorityMcpUrl` is accepted only for scheme `https` and host `mcp.ntsa.uk`. Any other value is rejected and the constant is used. There is no `%LOCALAPPDATA%` override for this key.
+- Workflow: `grok mcp list`, `grok mcp add --transport http priority-catalog <url>` only when the entry is absent, then `grok mcp doctor priority-catalog`. A different URL or a `stdio` entry sets `state=wrong` and is not overwritten. `list` failure is `state=list-failed`. A missing `grok` is `state=grok-missing`.
+- Doctor is `ok` only when the exit code is 0, the output contains `handshake OK`, and it does not contain `handshake failed`.
+- Evidence file: `<root>\run\tray-priority-mcp.json` (`name`, `url`, `state`, `doctor`, `doctorMessage`, `ts`, `version`). One lifecycle line `priority-mcp` carries the same fields and no environment dump. Headless: `bob-tray.exe --priority-mcp-configure <out.json>` (no message box). The menu action shows a message box.
+- Grok resolution: `%USERPROFILE%\.grok\bin\grok.exe`, then `grok.exe` / `grok.cmd` / `grok.bat` on `PATH`.
+
 ## FR #6309 TipForm OpenCode keys menu
 
 Context menu **OpenCode keys** offers Set key (masked PasswordChar dialog), select among `config\opencode-keys\*.apikey` labels, and Remove key. Writes use SYSTEM+Administrators ACL (same as `Write-BobOpencodeGoApiKey.ps1`). Headless test flags: `--opencode-key-write|--opencode-key-select|--opencode-key-remove`. Removing the last key clears digest `opencode_account` via fuel merge `cleared[]`.
