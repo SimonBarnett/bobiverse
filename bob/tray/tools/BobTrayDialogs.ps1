@@ -227,6 +227,21 @@ function New-BobTrayStatusModel {
     }
 }
 
+function Update-BobTrayStatusHeartbeat {
+    # FR #8971: refresh tray-status.json mtime before a slow digest/hover step.
+    param([Parameter(Mandatory)][string]$Root)
+    try {
+        $path = Join-Path $Root 'run\tray-status.json'
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+        $raw = [IO.File]::ReadAllText($path)
+        $tmp = $path + '.hb.tmp'
+        [IO.File]::WriteAllText($tmp, $raw, (New-Object System.Text.UTF8Encoding $false))
+        [IO.File]::Replace($tmp, $path, [NullString]::Value)
+        return $path
+    }
+    catch { return $null }
+}
+
 function Write-BobTrayStatusSnapshot {
     # Atomic (temp + replace) so the open card never reads a half-written file. Never throws: the tray poll must not die on this.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)]$Model)
