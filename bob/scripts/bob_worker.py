@@ -4814,6 +4814,29 @@ def agent_stderr_evidence(text: str) -> str:
         return "(evidence unavailable)"
 
 
+
+def _stderr_is_opencode_stdout_oserror22_noise(text: str) -> bool:
+    """True when stderr is only OpenCode stdout TextIOWrapper OSError 22.
+
+    FR #9013: unsigned exit 0xffffffff with
+    ``Exception ignored in: <_io.TextIOWrapper ... stdout ... cp1252>``
+    plus ``OSError: [Errno 22] Invalid argument`` is teardown noise after the
+    console closes, not a CLI crash. A real Traceback stays a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if "traceback" in low or "error_kind" in low:
+        return False
+    if "errno 22" not in low and "[errno 22]" not in low:
+        return False
+    if "invalid argument" not in low:
+        return False
+    if "textiowrapper" not in low and "stdout" not in low:
+        return False
+    return True
+
+
 def agent_stderr_dedupe_line(text: str) -> str:
     """Normalised first nonempty stderr line for the intake key (FR #7671)."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
@@ -4902,7 +4925,11 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #9013: OpenCode stdout TextIOWrapper OSError 22 is external-kill teardown noise.
+    oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip() or oserror22_noise
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
@@ -4953,6 +4980,10 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if oserror22_noise:
+            what += (
+                "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
+            )
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
