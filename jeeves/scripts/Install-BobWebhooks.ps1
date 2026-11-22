@@ -39,7 +39,7 @@ if (-not (Test-Path -LiteralPath $PhysicalPath)) {
 
 $rules = @(
     @{ Name = 'BobReportWebhook'; Match = '^bob/v1/report$'; Url = "$Backend/bob/v1/report" },
-    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = "$Backend/bob/v1/digest" },
+    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = '/bob/v1/report'; Redirect = $true },
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
@@ -61,7 +61,7 @@ $rewriteXml = @"
         </rule>
         <rule name="BobDigestWebhook" stopProcessing="true">
           <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/digest" />
+          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
         </rule>
         <rule name="BobGitWebhook" stopProcessing="true">
           <match url="^bob/v1/git$" ignoreCase="true" />
@@ -320,7 +320,7 @@ function Get-BobOwnedRuleXml {
             return @"
         <rule name="BobDigestWebhook" stopProcessing="true">
           <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Rewrite" url="$BackendUrl/bob/v1/digest" />
+          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
         </rule>
 "@
         }

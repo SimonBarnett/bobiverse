@@ -3998,6 +3998,20 @@ function Update-BobTrayWorkerAgentsMenu {
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
+        # FR #8717 / BOB-24: Workers > Cursor shows the cursor.com favicon.
+        if ($id -eq 'cursor') {
+            $fav = Join-Path $PSScriptRoot '..\assets\menu-favicons\cursor.com.ico'
+            $favOk = '0'
+            if (Test-Path -LiteralPath $fav) {
+                try {
+                    $favIcon = New-Object System.Drawing.Icon $fav
+                    $item.Image = $favIcon.ToBitmap()
+                    $favIcon.Dispose()
+                    $favOk = '1'
+                } catch { $favOk = '0' }
+            }
+            Write-TrayLog ("worker-favicon id=cursor path={0} ok={1}" -f $fav, $favOk)
+        }
         # Sender is the clicked item. An empty tag must not start Automatic.
         $item.Add_Click({
                 param($sender, $e)
@@ -4014,6 +4028,11 @@ function Update-BobTrayWorkerAgentsMenu {
                     # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
                     Write-TrayLog 'Workers Grok: grok CLI start'
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
+                }
+                elseif ($picked -eq 'opencode') {
+                    # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
+                    Write-TrayLog 'Workers Open Code: opencode CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode'
                 }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'

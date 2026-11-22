@@ -28,11 +28,12 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <body>
 <header>
 <a class="brand" href="/"><img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" alt="NTSA" width="36" height="36"/><span class="brand-text"><strong>bob.ntsa.uk</strong><span>Webhooks</span></span></a> <span class="meta">· <a href="index.html">Webhooks</a> · Report / digest webhook</span>
-<h1>Report / digest webhook</h1>
+<h1>Digest / report webhook</h1>
 </header>
 <p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<p><strong>One webhook.</strong> <code>/bob/v1/digest</code> and <code>/bob/v1/report</code> are identical. Canonical URL is <code>/bob/v1/report</code>; <code>/bob/v1/digest</code> (and local <code>/digest</code>) respond with <strong>301</strong> to <code>/bob/v1/report</code>. There is no separate digest docs page.</p>
 <section id="report-get">
-<h2>Fleet digest (GET report) <span class="badge">GET /bob/v1/report</span></h2>
+<h2>Fleet digest (GET) <span class="badge">GET /bob/v1/report</span></h2>
 <p><strong>Direction:</strong> in · <strong>Purpose:</strong> Public fleet digest JSON for TipForm, UAT, and operators.</p>
 <p><strong>Who calls it:</strong> Browsers, TipForm, chair health probes, fleet scripts.</p>
 <p><strong>Auth (named only):</strong> None. Open GET on Cloudflare front-door.</p>
