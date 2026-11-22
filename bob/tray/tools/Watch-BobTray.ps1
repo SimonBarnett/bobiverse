@@ -4026,6 +4026,18 @@ function Get-BobTrayWorkerAgentChoices {
     }
 }
 
+function Get-BobTrayGrokWebhookModel {
+    # FR #8725 / BOB-17: model field of the Grok agent row in models-catalog.json.
+    param([string]$CatalogPath)
+    if ([string]::IsNullOrWhiteSpace($CatalogPath)) { return '' }
+    if (-not (Test-Path -LiteralPath $CatalogPath)) { return '' }
+    try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
+    foreach ($row in @($doc.agents)) {
+        if ([string]$row.agent -eq 'Grok') { return [string]$row.model }
+    }
+    return ''
+}
+
 function Update-BobTrayWorkerAgentsMenu {
     param($MenuItem, $Rows)
     if (-not $MenuItem) { return }
@@ -4079,7 +4091,15 @@ function Update-BobTrayWorkerAgentsMenu {
                 elseif ($picked -eq 'grok') {
                     # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
                     Write-TrayLog 'Workers Grok: grok CLI start'
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
+                    # FR #8725 / BOB-17: cite the Grok row from the models webhook before launch.
+                    $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                    if ([string]::IsNullOrWhiteSpace($catalog)) {
+                        $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
+                        $catalog = Join-Path $install 'home\models-catalog.json'
+                    }
+                    $model = Get-BobTrayGrokWebhookModel -CatalogPath $catalog
+                    Write-TrayLog ('Workers Grok: webhook model ' + $model + ' path ' + $catalog)
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
                 elseif ($picked -eq 'opencode') {
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
