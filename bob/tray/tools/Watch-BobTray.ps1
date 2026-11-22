@@ -4149,6 +4149,18 @@ $miJeeves.Add_Click({
                 return
             }
         }
+        $hook = $env:BOB_MODELS_WEBHOOK_FILE
+        if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
+        if (Test-Path -LiteralPath $hook) {
+            $raw = Get-Content -LiteralPath $hook -Raw
+            if ($raw -match '"Jeeves"\s*:\s*\{([^}]+)\}') {
+                $body = $Matches[1]
+                $model = if ($body -match '"model"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                $context = if ($body -match '"context"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                $effort = if ($body -match '"effort"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                Write-TrayLog ("jeeves-models webhook model=$model context=$context effort=$effort")
+            }
+        }
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
     })
