@@ -1,5 +1,7 @@
 // FR #8715 / BOB-12: Weights grid UI (Agent / CLI / Model / Context / Effort).
 // FR #8714 / BOB-13: load/save via GET/PUT /bob/v1/models only (no local store).
+
+// FR #9053 / BOB-WEIGHTS-NO-VALIDATE: no Validate button; form dropdowns only (no validate POST).
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -32,7 +34,7 @@ namespace BobDialogs
             Text = "Bob - Weights";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(720, 380);
+            ClientSize = new Size(720, 400);
             MaximizeBox = false;
             MinimizeBox = false;
             TopMost = true;
@@ -43,7 +45,7 @@ namespace BobDialogs
             grid = new DataGridView();
             grid.Name = "weightsGrid";
             grid.Location = new Point(12, 12);
-            grid.Size = new Size(696, 300);
+            grid.Size = new Size(696, 290);
             grid.AllowUserToAddRows = false;
             grid.AllowUserToDeleteRows = false;
             grid.AllowUserToOrderColumns = false;
@@ -79,27 +81,35 @@ namespace BobDialogs
 
             grid.Columns.AddRange(new DataGridViewColumn[] { colAgent, colCli, colModel, colContext, colEffort });
 
+            Label subtitle = new Label();
+            subtitle.Name = "weightsSubtitle";
+            subtitle.Location = new Point(12, 318);
+            subtitle.Size = new Size(500, 18);
+            subtitle.ForeColor = Color.FromArgb(154, 171, 187);
+            subtitle.Text = "GET|PUT /bob/v1/models — form dropdowns are validation";
+
             status = new Label();
             status.Name = "weightsStatus";
-            status.Location = new Point(12, 322);
-            status.Size = new Size(420, 40);
+            status.Location = new Point(12, 336);
+            status.Size = new Size(420, 28);
             status.Text = "Loading…";
 
             save = new Button();
             save.Name = "weightsSave";
             save.Text = "Save";
-            save.Location = new Point(520, 328);
+            save.Location = new Point(520, 348);
             save.Size = new Size(88, 28);
             save.Enabled = false;
             save.Click += delegate { BeginSave(); };
 
             close = new Button();
-            close.Text = "Close";
-            close.Location = new Point(620, 328);
+            close.Text = "Cancel";
+            close.Location = new Point(620, 348);
             close.Size = new Size(88, 28);
             close.Click += delegate { Close(); };
 
             Controls.Add(grid);
+            Controls.Add(subtitle);
             Controls.Add(status);
             Controls.Add(save);
             Controls.Add(close);
