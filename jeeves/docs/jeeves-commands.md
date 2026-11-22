@@ -33,7 +33,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!cleargiveup owner/repo#N [seat]` | `cleargiveup: owner/repo#N seat=all\|<seat> queue_rows=N ledger=N` / usage / denied | **Ops only (FR #5135).** Queue lock: clear giveup_seats / cooldown_until / giveup_ts / giveup_count / needs_human (or one named seat). Also clears seat-ledger giveup[owner/repo#n] for that seat or the whole key. |
 | `!recycle [machine\|all]` | bare / `all` = every roster seat: `Recycling all seats (a, b, ..).` then `recycle: routed to bob seat(s) (fleet fleet); Jeeves runs no host ops`, `recycle: steps=..`, `recycle: bob must announce restarting then execute (deterministic)`; `!recycle <machine>` = `Recycling <machine>.` | Jeeves only **routes**: a `RECYCLE` wire line goes to `#bobiverse` (fleet: `RECYCLE machine=fleet by=<nick> scope=fleet exec=local-bob-seat`; one machine: `RECYCLE v1 <machine>`) and the target `bob-<machine>` announces and executes. The chair's own machine recycles locally; `!recycle jeeves` restarts the chair. 120 s duplicate cooldown per target: `recycle: cooldown Ns (duplicate prevented)`; unknown: `recycle: unknown machine X (want: .., all)` |
 | `!recycle dry-run [machine\|all]` | `recycle dry-run: would recycle X (scope) as <owner\|ear>; nothing sent` + the route and steps | authorises and plans, sends nothing, no cooldown. Safe for tests (`dry`, `plan`, `check` also work) |
-| `!build` / `!build n [version] [ref] [--tests-only]` / `!build status\|cancel\|dry-run\|preflight\|tests-only n` | PM: numbered catalog / queued / dry-run plan / refused | **Ops only (simon / bob-*).** FR #4006/#4025/#8490: bare `!build` lists `builds-catalog.json` (GET `/bob/v1/builds`); `!build n` runs that entry's `yml` on the recipe machine, exports pack artifacts to catalog `output`, then reinstalls on `install` (`machinename` or `fleet` = `registered-machines.json` roster). Version/ref override catalog defaults; must be numeric `x.y.z` / `x.y.z.w` (#4186). `dep` is documentation only. Old `!build owner/repo` form refused. Chair announces `BUILD v1` with `output=` / `install=`; recipe machine enqueues + suites/pack/prerelease (never Latest) + export + local msiexec (recipe `install_test`) / remote `BUILD_INSTALL` queue jobs (WARN-and-continue; skip offline). Auto `release-blocker` issues. FR #7094 `--tests-only`: suites+pack (+export), no release/install filings. |
+| `!build` / `!build <n> [version] [ref]` / `!build tests-only\|dry-run <n> [version] [ref]` / `!build preflight\|status\|cancel <n>` / `!build status` / `!build help` | PM: numbered catalog / queued / dry-run plan / refused | **Ops only (simon / bob-*).** FR #4006/#4025/#8490/#8770: bare `!build` lists numbered catalog (local digest-home first, else GET `/bob/v1/builds`); rows show name/repo/install/version-next/ref (<=400 bytes). `!build n` uses catalog `yml` path as recipe, exports to `output`, reinstalls on `install` (machine or `fleet`). Blank version → next patch of latest `vX.Y.Z` tag; explicit version must be numeric `x.y.z` / `x.y.z.w` (#4186). Bare `!build status` lists running builds; bare cancel frees all (FR #6715). `dep` docs only. Old owner/repo form refused. `BUILD v1` may carry `recipe=` for non-default paths. FR #7094 tests-only: suites+pack (+export), no release/install. |
 | `!installtest <owner/repo> <version> [tag]` / `!installtest dry-run ...` | PM: queued / dry-run plan / refused (no install_test, wrong machine, denied) | **Ops only (simon / bob-*).** FR #4026 WP3 INSTALL-TEST: msiexec pre-release MSIs + post-checks; release-blocker on fail; recipe `install_test` on flamingo. |
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
 | `!register <#channel|machine>` | `ACK registered #<mid>` after ChanServ confirms; else `ERR !register ChanServ ...` / timeout; denied: `ERR !register denied (+o/+h required)` | +o/+h in #bobiverse (FR #4008 / #5274); ACK + roster + `REGISTERED v1 <mid>` on #bobiverse only after ChanServ REGISTER ok (or already-registered); operators.txt ignored |
@@ -73,15 +73,25 @@ A **principal** is derived per message from the nick plus the services account t
 |---|---|
 | **owner** | services account `JEEVES_OWNER_ACCOUNT` (default `simon`), or an account in `BOB_OP_ACCOUNTS` / `op-accounts.txt`. Nick `simon` with no account (unverified) is **not** the owner. |
 | **ear** | nick `bob-<machine>` (any case, e.g. the live `Bob-win-mpre8vi4u6u`) of a machine in the ChanServ roster - the same trust root that earns the ear its `+o` / `+h`. A `bob-x_` fallback nick, an unregistered machine, or a look-alike logged in to a different account is refused. |
+| **monitor** (FR #8827) | nick in `JEEVES_MONITOR_NICKS` (default `monitoring` when unset; empty string disables) **or** services account in `JEEVES_MONITOR_ACCOUNTS` (fail closed when unset). Same queue-mutator class as owner/ear for keep-the-queue-moving interventions. Unknown nicks stay denied. |
 | **allowlist** | nick in `JEEVES_FOCUS_MUTATORS` or account in `JEEVES_FOCUS_MUTATOR_ACCOUNTS` (additive, default empty) - `!focus` / `!unfocus` only. |
 | anyone else | read-only commands |
 
-| Command | owner | ear (`bob-<machine>`) | allowlist | anyone |
-|---|---|---|---|---|
-| `!help` `!list` `!filter` `!status` `!stuck` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes |
-| `!ignore` `!unignore` | yes | yes | no | no |
-| `!focus ..` `!unfocus ..` (write) | yes | yes | yes | no |
-| `!resync` `!sweep` `!recycle` `!assign` `!cleargiveup` `!pin` `!unpin` | yes | yes | no | no |
+| Command | owner | ear (`bob-<machine>`) | monitor | allowlist | anyone |
+|---|---|---|---|---|---|
+| `!help` `!list` `!filter` `!status` `!stuck` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes | yes |
+| `!ignore` `!unignore` | yes | yes | yes | no | no |
+| `!focus ..` `!unfocus ..` (write) | yes | yes | yes | yes | no |
+| `!resync` `!sweep` `!recycle` `!assign` `!cleargiveup` `!pin` `!unpin` | yes | yes | yes | no | no |
+
+### MONITORING agent auth (FR #8827) — no secrets in this doc
+
+The Start Menu **Start Jeeves Monitor** seat (`bob-worker.exe --mode monitor`) has **no IRC** of its own. To run chair commands it uses one of:
+
+1. **Ear relay (preferred on a fleet box):** append UTF-8 lines to the local ear outbox (`%USERPROFILE%\.bobiverse\outbox.txt` or the ear home outbox), e.g. `PRIVMSG #bobiverse :!ignore owner/repo` or `PRIVMSG Jeeves :!stuck`. The ear nick `bob-<machine>` is already an **ear** principal (full mutators). Pace ~3 s between lines; read chair `cmd-trace.log` for replies.
+2. **Direct monitor nick:** connect nick `monitoring` (or any nick listed in `JEEVES_MONITOR_NICKS`) to Ergo with a normal client/SASL services account. Optionally set `JEEVES_MONITOR_ACCOUNTS=<services-account>` on the **chair** host (ircJeeves env) so account-tag recognition works when the nick differs. PM or channel-command Jeeves as usual. Do not put passwords, NickServ GUIDs, or tokens in docs or filings.
+
+Monitor may use the full mutator matrix **only to keep the queue moving** (unblock idle/stuck/held/wrong-offer delays). It still must not touch Ergo/`ircd.yaml`/BobIrcd, merge PRs, stamp UAT, or bump `VERSION`. Tray Agents intervene UI is BOB-43 (#8681), out of scope here.
 
 `!assign <nick> <owner/repo> UAT 0` hands out the repo-level UAT row (`#0`).
 

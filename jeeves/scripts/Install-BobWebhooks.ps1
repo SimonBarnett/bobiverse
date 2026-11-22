@@ -75,6 +75,9 @@ $rewriteXml = @"
         </rule>
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+          </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
         <rule name="BobJeevesAppliance" stopProcessing="true">
@@ -214,10 +217,13 @@ if (Test-Path -LiteralPath $webConfig) {
         $updated = $updated -replace '</rules>', ($hoursRule + '</rules>')
     }
     if ($updated -notmatch 'bob/v1/models' -and $updated -match '</rules>') {
-        # FR #8707 / MRB #8766: GET /bob/v1/models public IIS front door.
+        # FR #8707 / MRB #8766 / FR #8708: GET|HEAD /bob/v1/models public IIS (PUT stays direct/LAN only).
         $modelsRule = @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+          </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
 "@
