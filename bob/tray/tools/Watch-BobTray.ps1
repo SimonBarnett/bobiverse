@@ -3995,6 +3995,15 @@ function Update-BobTrayWorkerAgentsMenu {
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
+        if ($id -eq 'grok') {
+            # FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon.
+            $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
+            Write-TrayLog ('Workers Grok: favicon ' + $grokIcon)
+            if (Test-Path -LiteralPath $grokIcon) {
+                try { $item.Image = (New-Object System.Drawing.Icon($grokIcon)).ToBitmap() }
+                catch { Write-TrayLog ('Workers Grok favicon failed: ' + $_.Exception.Message) }
+            }
+        }
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available

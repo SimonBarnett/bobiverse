@@ -1561,6 +1561,20 @@ namespace BobDialogs
             ToolStripMenuItem mi = new ToolStripMenuItem(text);
             mi.Tag = id;
             mi.Enabled = enabled;
+            if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon, not a generic icon.
+                string grokIcon = Path.Combine(root, "bob", "tray", "assets", "grok-favicon.ico");
+                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "path", grokIcon, "source", "https://grok.com/images/favicon.ico");
+                try
+                {
+                    if (File.Exists(grokIcon)) mi.Image = new Icon(grokIcon, 16, 16).ToBitmap();
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("workers-grok", "action", "grok favicon failed", "error", ex.Message);
+                }
+            }
             mi.Click += OnAgentChoiceClick;
             parent.DropDownItems.Add(mi);
             if (record) MenuItems.Add(text);
