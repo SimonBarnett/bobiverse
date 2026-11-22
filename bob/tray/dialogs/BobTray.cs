@@ -1025,6 +1025,8 @@ namespace BobDialogs
                 }
                 catch { }
 
+                // FR #8683 / BOB-39: lazy skill DAG on J: skills (resolve/get_skill; not eager full load).
+                TrayLifecycle.Write("jeeves-dag", "lazy", JeevesLazyDag.DryRunLine());
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
                 StartWorker("agent", "grok");
             };
