@@ -311,6 +311,8 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Agents",
         "Plan",
         "Priority",
+        "Start PriorityAgent",
+        "Configure MCP (mcp.ntsa.uk)",
         "Jeeves",
         "Workers",
         "Automatic - Grok, then Cursor, then OpenCode",

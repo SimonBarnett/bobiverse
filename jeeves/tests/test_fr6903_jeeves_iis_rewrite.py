@@ -118,7 +118,7 @@ def test_fr6903_inserts_into_existing_six_rule_config(tmp_path: Path):
         </rule>
         <rule name="BobDigestWebhook" stopProcessing="true">
           <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Rewrite" url="http://127.0.0.1:7700/bob/v1/digest" />
+          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
         </rule>
         <rule name="BobGitWebhook" stopProcessing="true">
           <match url="^bob/v1/git$" ignoreCase="true" />
