@@ -385,7 +385,8 @@ try {
 # IIS rewrite -> bobcallback :7700 (report/git/intake/jira)
 $installWh = Join-Path $here 'Install-BobWebhooks.ps1'
 if (Test-Path -LiteralPath $installWh) {
-    try { & $installWh } catch {
+    # FR #8887: keep publish backups under the install root, never inside IIS www.
+    try { & $installWh -BackupRoot $InstallRoot } catch {
         Write-Host "WARN Install-BobWebhooks: $($_.Exception.Message)"
     }
 }
