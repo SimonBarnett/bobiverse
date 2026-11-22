@@ -22,10 +22,13 @@ def test_fr7478_generator_parity_and_skips_home(tmp_path: Path, monkeypatch):
 
     assert not (tmp_path / "index.html").exists(), "generator must not write redesigned home"
     names = sorted(p.name for p in (tmp_path / "docs" / "webhooks").glob("*.html"))
-    assert names == sorted(p.name for p in checked.glob("*.html"))
-    # FR #8835 + main models-validate: models.html + builds.html + models-validate.html (was 9).
-    assert len(names) == 12
-    assert "models.html" in names and "builds.html" in names and "models-validate.html" in names
+    checked_names = sorted(p.name for p in checked.glob("*.html"))
+    # Hand stubs (digest-local redirect, models-validate retired notice) are not
+    # registry-generated; generator output must still match for every emitted page.
+    hand_stubs = {"digest-local.html", "models-validate.html"}
+    assert set(names) == set(checked_names) - hand_stubs
+    assert hand_stubs <= set(checked_names)
+    assert "models.html" in names and "builds.html" in names
     for name in names:
         got = _norm((tmp_path / "docs" / "webhooks" / name).read_text(encoding="utf-8"))
         want = _norm((checked / name).read_text(encoding="utf-8"))

@@ -313,8 +313,10 @@ def _inbound() -> list[DocEntry]:
             auth="None.",
             request_schema="No body. HEAD returns empty body.",
             response_schema=(
-                'JSON {"agents":[{"agent","cli","model","context","effort"}, ...]} '
-                "(BOB-01). Options catalog shape (clis) lands with #8819."
+                'JSON {"clis":{CLI:{models:{model:{contexts:{context:{efforts:[...]}}}}}},'
+                '"agents":[{"agent","cli","model","context","effort"}, ...]} '
+                "(BOB-01 / FR #8819). clis from digest-home models-valid-combos.json; "
+                "missing CLI yields models:{}."
             ),
             example_request="GET https://bob.ntsa.uk/bob/v1/models",
             status_codes="200 JSON; never invents secret fields.",
@@ -322,33 +324,33 @@ def _inbound() -> list[DocEntry]:
             rate_limits="Proxy only.",
             reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05",
+            fr="FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122",
             html_rel="docs/webhooks/models.html",
         ),
         DocEntry(
             slug="models-put",
-            title="Models catalog (PUT) — coming",
+            title="Models catalog (PUT)",
             method="PUT",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Persist Weights selections (BOB-02). Not served until #8708 lands.",
-            callers="Tray Weights form.",
-            auth="None once live (schema + rate).",
-            request_schema="JSON agents rows (cli read-only per #8819).",
-            response_schema="JSON ack or 4xx.",
+            purpose="Persist Weights full replace (BOB-02 / FR #8708 / FR #8819). Agent cli is read-only.",
+            callers="Tray Weights form (direct listener / allowlisted LAN peer).",
+            auth="None (schema + peer allowlist).",
+            request_schema="JSON agents rows; changing cli for a known agent returns 400.",
+            response_schema="204 when changed; 200 when unchanged; 4xx on schema/cli mutation.",
             example_request=(
-                "PUT https://bob.ntsa.uk/bob/v1/models\n"
+                "PUT http://127.0.0.1:7700/bob/v1/models\n"
                 "Content-Type: application/json\n\n"
                 '{"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}'
             ),
-            status_codes="Coming — 404 today.",
-            retry_idempotency="Idempotent replace when live.",
-            rate_limits="TBD with #8708.",
-            reachability="Not served yet.",
-            source="common/scripts/models_catalog.py (planned)",
-            fr="FR #8708 / BOB-02",
+            status_codes="204 / 200 / 400 / 403; public IIS rewrites GET|HEAD only.",
+            retry_idempotency="Idempotent full replace.",
+            rate_limits="Peer allowlist; proxy only on public GET.",
+            reachability="Direct bobcallback / allowlisted LAN. Public Cloudflare is GET|HEAD only.",
+            source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
+            fr="FR #8708 / BOB-02 · FR #8819 · FR #9122",
             html_rel="docs/webhooks/models.html",
-            status="coming",
+            status="live",
         ),
         DocEntry(
             slug="models-patch",

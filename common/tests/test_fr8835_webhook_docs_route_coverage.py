@@ -145,9 +145,15 @@ def test_fr8835_models_and_git_cards_present():
 
 def test_fr8835_coming_models_ops_marked():
     coming = {e.slug for e in docs.all_entries() if getattr(e, "status", "live") == "coming"}
-    assert {"models-put", "models-patch", "models-refresh"} <= coming
+    # FR #9122: models-put is live (BOB-02); PATCH + refresh remain coming.
+    assert "models-put" not in coming
+    assert {"models-patch", "models-refresh"} <= coming
     page = (WWW / "docs" / "webhooks" / "models.html").read_text(encoding="utf-8")
-    assert "Coming — not served" in page
+    assert "Coming" in page and "not served" in page
+    assert "clis" in page.lower()
+    put_live = [e for e in docs.all_entries() if e.slug == "models-put"][0]
+    assert getattr(put_live, "status", "live") == "live"
+
 
 
 def test_fr8835_fake_route_zzz_named_as_gap():
