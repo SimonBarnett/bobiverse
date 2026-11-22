@@ -9,6 +9,8 @@ from repo_layout import REPO
 
 WWW = REPO / "jeeves" / "www" / "irc-ntsa"
 WEBHOOKS = WWW / "docs" / "webhooks"
+# Bookmark stubs: digest-local → report; models-validate retired → models.
+STUB_REDIRECT_HTML = frozenset({"digest-local.html", "models-validate.html"})
 LOGO_SRC = "/jeeves/assets/ntsa-gut-logo.png"
 BRAND_RE = re.compile(
     r'<a\s+class=["\']brand["\']\s+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
@@ -39,8 +41,12 @@ def _webhook_pages() -> list[Path]:
     return pages
 
 
+def _chrome_webhook_pages() -> list[Path]:
+    return [p for p in _webhook_pages() if p.name not in STUB_REDIRECT_HTML]
+
+
 def test_fr7478_webhook_docs_have_logo_brand_home_anchor():
-    for path in _webhook_pages():
+    for path in _chrome_webhook_pages():
         html = path.read_text(encoding="utf-8")
         m = BRAND_RE.search(html)
         assert m, f"{path.name} missing a.brand href=/ logo anchor"
@@ -54,10 +60,25 @@ def test_fr7478_webhook_docs_have_logo_brand_home_anchor():
 
 
 def test_fr7478_detail_pages_keep_index_breadcrumb():
-    for path in _webhook_pages():
+    for path in _chrome_webhook_pages():
         if path.name == "index.html":
             continue
         html = path.read_text(encoding="utf-8")
         p = _LinkCollector()
         p.feed(html)
         assert "index.html" in p.hrefs, f"{path.name} must link back to index.html"
+
+
+def test_fr7478_stub_redirect_pages_refresh_to_canonical():
+    """Stub HTML keep old URLs; they meta-refresh to the live docs page."""
+    expect = {
+        "digest-local.html": "report.html",
+        "models-validate.html": "models.html",
+    }
+    for name, target in expect.items():
+        path = WEBHOOKS / name
+        assert path.is_file(), f"missing stub {name}"
+        html = path.read_text(encoding="utf-8")
+        assert f'url={target}' in html.lower() or f'url="{target}"' in html.lower()
+        assert target in html
+        assert 'rel="icon"' in html.lower() or "rel='icon'" in html.lower()
