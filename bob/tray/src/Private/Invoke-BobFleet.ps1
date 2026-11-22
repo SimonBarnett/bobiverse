@@ -48,6 +48,78 @@ function Read-FleetJob {
     return $null
 }
 
+
+function Test-BobFrBodyDispatched {
+    <#
+      FR #8760 S3: issue body that says dispatched beats older CodeRabbit park-only comments.
+    #>
+    param([string])
+     = [string]
+    if ([string]::IsNullOrWhiteSpace()) { return False }
+    if ( -match '(?i)\(dispatched\)') { return True }
+    if ( -match '(?i)dispatched[\s.:,-]') { return True }
+    if ( -match '(?i)\bdispatched\b') { return True }
+    return False
+}
+
+function Get-BobBuildLoopStatePath {
+    param(
+        [Parameter(Mandatory)][string],
+        [string] = 'bobiverse'
+    )
+     = ( -replace '[^a-zA-Z0-9._-]', '_').ToLowerInvariant()
+     = ( -replace '[^0-9]', '')
+    if (-not ) { throw 'issue required for build-loop state' }
+     = Join-Path (Get-BridgeRoot) 'loops'
+    New-Item -ItemType Directory -Force -Path  | Out-Null
+    Join-Path  ('{0}-{1}.json' -f , )
+}
+
+function Get-BobBuildLoopCurrentJob {
+    param(
+        [Parameter(Mandatory)][string],
+        [string] = 'bobiverse'
+    )
+     = Get-BobBuildLoopStatePath -Issue  -RepoSlug 
+     = Read-JsonFile 
+    if (-not ) { return  }
+    return [pscustomobject]@{
+        path         = 
+        currentJobId = 
+        machine      = 
+        updatedAt    = 
+    }
+}
+
+function Set-BobBuildLoopCurrentJob {
+    <#
+      FR #8760 S2: after enqueue, loop wait_pr must track this job id (not a cancelled prior).
+    #>
+    param(
+        [Parameter(Mandatory)][string],
+        [Parameter(Mandatory)][string],
+        [string],
+        [string] = 'bobiverse'
+    )
+     = Get-BobBuildLoopStatePath -Issue  -RepoSlug 
+     = [pscustomobject]@{
+        issue        = ( -replace '[^0-9]', '')
+        repo         = 
+        currentJobId = [string]
+        machine      = 
+        updatedAt    = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-JsonFile  
+    return 
+}
+
+function Resolve-BobFleetMachineRecord {
+    param([Parameter(Mandatory)][string])
+     = ConvertTo-MachineId 
+     = Join-Path (Initialize-FleetRoot) (Join-Path 'machines' ( + '.json'))
+    return (Read-JsonFile )
+}
+
 function Test-CwdAllowed {
     param(
         [Parameter(Mandatory)][string]$Cwd,

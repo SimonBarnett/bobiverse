@@ -75,6 +75,8 @@ def test_fr7000_worker_prompt_documents_once_fallback():
     # No constructed <worker-parent>\bob\scripts\skill_dag_mcp.py
     assert r"C:\ai\bob\bob\scripts\skill_dag_mcp.py" not in prompt
     assert r"C:\ai\bob\worker\..\bob\scripts" not in prompt.replace("/", "\\")
+    # Must not tell the agent to pass --job-worktree instead of --job-worktree-file
+    # (bare --job-worktree may still appear only as the forbidden wording; assert file form wins)
     assert "--job-worktree-file" in prompt
     # Forbid instructing bare --job-worktree as the config arg (old defective prompt)
     assert "`--root` / `--job-worktree` args" not in prompt
