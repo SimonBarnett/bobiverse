@@ -327,6 +327,68 @@ _VISION_PACK_FILE_RE = re.compile(r"(feature-request-[\w.-]+\.md)", re.I)
 _BOB_TITLE_ID_RE = re.compile(r"^\s*BOB-(\d+)\b", re.I)
 
 
+def linked_issue_hold_reason(
+    repo: str,
+    *,
+    body: str = "",
+    refs: tuple[str, ...] | list[str] = (),
+    issue_lookup=None,
+) -> str | None:
+    """FR #9080: hold on a Closes-linked issue blocks dirty-FIX / MRB requeue.
+
+    Operator policy (2026-11-22): ``hold`` is issues-only. Dirty-FIX and head-move
+    requeue must still respect the linked FR/issue hold even when the PR has no
+    ``hold`` label.
+    """
+    if issue_lookup is None:
+        return None
+    repo_c = canonical_queue_repo(repo)
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw in refs or ():
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if s.isdigit():
+            s = f"#{s}"
+        if not s.startswith("#"):
+            continue
+        if s not in seen:
+            seen.add(s)
+            ids.append(s)
+    for ident in extract_closes_issue_ids(str(body or ""), repo=repo_c):
+        if ident not in seen:
+            seen.add(ident)
+            ids.append(ident)
+    for ident in ids:
+        try:
+            issue = issue_lookup(repo_c, ident)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(issue, dict):
+            continue
+        labs = issue.get("labels") or ()
+        if isinstance(labs, str):
+            labs = [labs]
+        names: list[str] = []
+        for lab in labs:
+            if isinstance(lab, dict):
+                name = str(lab.get("name") or "").strip()
+            else:
+                name = str(lab or "").strip()
+            if name:
+                names.append(name)
+        why = fr_hold_reason(
+            title=str(issue.get("title") or ""),
+            body=str(issue.get("body") or ""),
+            labels=tuple(names),
+        )
+        if why:
+            return f"linked issue {ident} {why}"
+    return None
+
+
+
 def _bob_docs_root() -> Path | None:
     """Repo ``bob/docs`` next to common/scripts when present (chair install / worktree)."""
     here = Path(__file__).resolve()
@@ -2781,6 +2843,16 @@ def pop_done_mrb_rows(doc: dict, repo: str, ident: str) -> list[dict]:
     return removed
 
 
+def _queue_row_for(doc: dict, repo: str, task: str, ident: str) -> dict | None:
+    """First matching row in unaccepted / accepted / done (FR #9080 requeue refresh)."""
+    repo_c = canonical_queue_repo(repo)
+    for bucket in ("unaccepted", "accepted", "done"):
+        for row in doc.get(bucket) or []:
+            if isinstance(row, dict) and _same(row, repo_c, task, ident):
+                return row
+    return None
+
+
 def ensure_mrb_requeued_after_head_move(
     doc: dict,
     home: Path | None,
@@ -2789,12 +2861,23 @@ def ensure_mrb_requeued_after_head_move(
     pr: str,
     url: str = "",
     reason: str = "",
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    refs: tuple[str, ...] | list[str] = (),
+    pr_snapshot: dict | None = None,
+    fetch_pr=None,
 ) -> str:
-    """FR #4929: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
+    """FR #4929 / #9080: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
 
     Used when a FIX push (synchronize) or DONE FIX lands after a prior MRB PASS
     so the new head is offerable without waiting for ``!resync``.
     Returns ``added`` | ``duplicate`` | ``skipped`` | ``noop``.
+
+    FR #9080: refresh title / body / labels / refs from ``pr_snapshot``, optional
+    ``fetch_pr``, or a prior queue row before append. Never stamp empty labels that
+    hide a GitHub ``hold``. When ``pr_hold_reason`` hits, purge the unaccepted twin
+    and return ``skipped``.
     """
     repo_c = canonical_queue_repo(repo)
     num = str(pr or "").strip().lstrip("#")
@@ -2809,6 +2892,63 @@ def ensure_mrb_requeued_after_head_move(
             clear_mrb_done(home, repo_c, ident)
     pop_done_mrb_rows(doc, repo_c, ident)
     why = str(reason or "head-move").strip() or "head-move"
+
+    snap: dict = {}
+    if isinstance(pr_snapshot, dict):
+        snap = pr_snapshot
+    elif fetch_pr is False:
+        snap = {}
+    else:
+        getter = fetch_pr
+        if getter is None:
+            try:
+                import mrb_merge_on_green as _mog
+
+                getter = lambda r, n: _mog.fetch_pr_state(r, n)  # noqa: E731
+            except Exception:  # noqa: BLE001
+                getter = None
+        if getter is not None:
+            with contextlib.suppress(Exception):
+                got = getter(repo_c, num)
+                if isinstance(got, dict):
+                    snap = got
+
+    prior = _queue_row_for(doc, repo_c, "MRB", ident)
+    title_s = (
+        str(title or "").strip()
+        or str(snap.get("title") or "").strip()
+        or str((prior or {}).get("title") or "").strip()
+    )
+    body_s = (
+        str(body or "")
+        or str(snap.get("body") or "")
+        or str((prior or {}).get("body") or "")
+    )
+    labels_t: tuple[str, ...] = tuple(str(x) for x in (labels or ()) if str(x).strip())
+    if not labels_t:
+        labels_t = _label_names(snap.get("labels"))
+    if not labels_t and prior is not None:
+        pl = prior.get("labels") or ()
+        if isinstance(pl, str):
+            pl = [pl]
+        labels_t = tuple(str(x) for x in pl if str(x).strip())
+    refs_t: tuple[str, ...] = tuple(str(x) for x in (refs or ()) if str(x).strip())
+    if not refs_t and prior is not None and prior.get("refs"):
+        refs_t = tuple(str(x) for x in (prior.get("refs") or []) if str(x).strip())
+    if not refs_t:
+        refs_t = extract_closes_issue_ids(body_s, repo=repo_c)
+    if not title_s:
+        title_s = f"requeue after {why} (FR #4929)"
+
+    hold = pr_hold_reason(title=title_s, body=body_s, labels=labels_t)
+    if hold:
+        doc["unaccepted"] = [
+            r
+            for r in (doc.get("unaccepted") or [])
+            if not (isinstance(r, dict) and _same(r, repo_c, "MRB", ident))
+        ]
+        return "skipped"
+
     claim = GitClaim(
         repo=repo_c,
         task="MRB",
@@ -2816,9 +2956,10 @@ def ensure_mrb_requeued_after_head_move(
         event="pull_request",
         action="synchronize",
         line=pull,
-        title=f"requeue after {why} (FR #4929)",
-        body="",
-        labels=(),
+        title=title_s,
+        body=body_s,
+        labels=labels_t,
+        refs=refs_t,
     )
     return _append_unaccepted(doc, claim, url=pull)
 
@@ -3583,10 +3724,17 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
             if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
         ]
         return "skipped"
-    # FR #3928: never enqueue MRB for PRs on hold (label or body/title hold text).
+    # FR #3928 / #9080: never enqueue MRB for PRs on hold; purge any twin already queued
+    # (done-fix requeue used to stamp labels=() and leave a held tip offerable).
     if claim.task == "MRB" and pr_hold_reason(
         title=claim.title, body=claim.body, labels=claim.labels
     ):
+        store_repo = canonical_queue_repo(claim.repo)
+        doc["unaccepted"] = [
+            r
+            for r in (doc.get("unaccepted") or [])
+            if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
+        ]
         return "skipped"
     store_repo = canonical_queue_repo(claim.repo)
     if _already(doc, store_repo, claim.task, claim.id):
@@ -16463,6 +16611,18 @@ def resync_from_github(
             except Exception:  # noqa: BLE001
                 dirty_reason = ""
             if dirty_reason and head_sha:
+                hold_early = pr_hold_reason(
+                    title=str(pr.get("title") or ""),
+                    body=str(pr.get("body") or ""),
+                    labels=_label_names(pr.get("labels")),
+                )
+                if hold_early:
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync skip FIX dirty PR {repo}#{num} hold={hold_early}",
+                        flush=True,
+                    )
+                    continue
                 try:
                     import mrb_merge_on_green as _mog_dirty
 
