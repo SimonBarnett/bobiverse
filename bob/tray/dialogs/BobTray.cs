@@ -1587,6 +1587,35 @@ namespace BobDialogs
             if (record) MenuItems.Add("Open Code");
         }
 
+        // FR #8725 / BOB-17: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+        string ModelsCatalogPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            return Path.Combine(root, "home", "models-catalog.json");
+        }
+
+        string GrokWebhookModel(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null || !doc.ContainsKey("agents")) return "";
+                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
+                if (agents == null || doc["agents"] is string) return "";
+                foreach (object item in agents)
+                {
+                    Dictionary<string, object> row = Common.Dict(item);
+                    if (row == null) continue;
+                    if (!string.Equals(Common.Str(row, "agent"), "Grok", StringComparison.OrdinalIgnoreCase)) continue;
+                    return Common.Str(row, "model");
+                }
+            }
+            catch { }
+            return "";
+        }
+
         void OnAgentChoiceClick(object sender, EventArgs e)
         {
             ToolStripMenuItem mi = sender as ToolStripMenuItem;
@@ -1606,7 +1635,17 @@ namespace BobDialogs
             {
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
-                StartWorker("agent", "grok", null, "");
+                // FR #8725 / BOB-17: launch uses the Grok row from the models webhook catalog.
+                string catalog = ModelsCatalogPath();
+                string model = GrokWebhookModel(catalog);
+                TrayLifecycle.Write("workers-grok", "action", "webhook model", "model", model, "path", catalog, "agent", "Grok");
+                Hashtable grokEnv = null;
+                if (model.Length > 0)
+                {
+                    grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                    grokEnv["BOB_GROK_MODEL"] = model;
+                }
+                StartWorker("agent", "grok", grokEnv, "");
             }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
             {
