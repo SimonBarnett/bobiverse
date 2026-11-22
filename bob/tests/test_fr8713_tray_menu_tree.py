@@ -48,3 +48,12 @@ def test_tipform_menu_tree_structure():
     assert "About" in text
     assert "Priority" in text
     assert "Jeeves" in text
+
+
+def test_fr8713_tipform_opencode_label_stays_open_code_after_refresh_fallbacks():
+    """BOB-06: DropDownOpening refresh must not revert Workers > Open Code to OpenCode."""
+    watch = (ROOT / "bob" / "tray" / "tools" / "Watch-BobTray.ps1").read_text(encoding="utf-8")
+    assert "label = 'Open Code'" in watch
+    assert watch.count("id = 'opencode'; label = 'Open Code'") >= 3
+    worker = (ROOT / "bob" / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
+    assert '("opencode", "Open Code")' in worker
