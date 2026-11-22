@@ -10,8 +10,8 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/bob/v1/report` | Public fleet digest JSON (also `/bob/v1/digest`) |
-| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge|delete-worker|shop-down); **no secret; machine must be on the Jeeves roster** |
+| GET | `/bob/v1/report` | Public fleet digest JSON. `/bob/v1/digest` is the **same** webhook and **301**s here. |
+| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge|delete-worker|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
@@ -102,45 +102,9 @@ Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewr
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
 ```
 
-### POST models validate (BOB-03 / FR #8710)
+### Models validation (form-only — Si 2026-11-22)
 
-Non-persisting check of one `(cli, model, context, effort)` tuple against digest-home **`models-valid-combos.json`** (separate from Weights `models-catalog.json` so BOB-02 PUT cannot wipe the allow-list). Fail-closed: missing, unreadable, malformed, or empty catalogue -> **503** `{"error":"catalog_unavailable"}` (never accepts). Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs (403 off-list). Does not write, enqueue, or touch `models-catalog.json` / tray stores.
-
-**Request JSON keys**
-
-| key | required | notes |
-|-----|----------|-------|
-| `cli` | yes | `grok` \| `cursor` \| `opencode` (case-folded; launchable worker agents only - not `aider`) |
-| `model` | yes | Exact catalogue model id (placeholders like `auto` / `$model` and fuel-pool ids fail unless listed) |
-| `context` | yes | Exact catalogue context string (no token-window invention) |
-| `effort` | when the row lists efforts | Exact match after case-fold only. Empty `efforts` on a row means effort must be absent (non-Grok CLIs). Never uses `normalize_effort`. |
-
-**Catalogue schema** (digest-home `models-valid-combos.json`): top-level `version` (int) and `clis` object keyed by `grok`/`cursor`/`opencode`; each value is a list of `{model, contexts[], efforts[]}`. Duplicate model rows within one CLI keep the first. Invalid rows are skipped. **BOB-04 / FR #8709 seed:** BobCallback start calls `models_catalog.ensure_valid_combos_seeded(home)` which creates the store from `common/defaults/models-valid-combos.seed.json` when missing, or appends missing seeded `(cli, model)` rows while preserving operator rows; malformed stores are left unchanged. Seed rows carry provenance (CLI version + capture source). Fixture-only example remains `common/defaults/models-valid-combos.example.json`.
-
-**Responses**
-
-| status | body | when |
-|--------|------|------|
-| 200 | `{"ok":true}` | combination listed |
-| 400 | `{"error":"malformed"}` | non-object body or wrong types / missing required keys |
-| 400 | `{"error":"<code>","field":"<name>"}` | invalid combo |
-| 403 | empty | peer not on `BOB_REPORT_ALLOW` |
-| 405 | empty | non-POST |
-| 503 | `{"error":"catalog_unavailable"}` | catalogue missing/malformed/empty |
-
-Stable error codes: `unknown_cli`, `unknown_model`, `invalid_context`, `invalid_effort`, `effort_not_supported`, `catalog_unavailable`, `malformed`.
-
-**Rejection log (S1 tray/log evidence):** BobCallback stdout one line per reject:
-
-`INFO models validate reject error=<code> field=<name|-> cli=... model=... context=... effort=...`
-
-(never the raw request body). On the chair / digest host this is the BobCallback / Jeeves service log (NSSM or scheduled-task stdout for the `:7700` listener).
-
-```bash
-curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/validate" \
-  -H "Content-Type: application/json" \
-  -d "{\"cli\":\"grok\",\"model\":\"fixture-grok-a\",\"context\":\"128k\",\"effort\":\"medium\"}"
-```
+There is **no** `POST /bob/v1/models/validate`. Available model / context / effort per CLI belong on **GET `/bob/v1/models`**. The Weights systray form shows current values and offers those options as dropdowns — that is the validation. A POST to `/bob/v1/models/validate` returns **404** `no_models_validate`.
 
 ### POST report (status / ops)
 
