@@ -94,6 +94,10 @@ function Stage-BobAgentFolders([string]$Stage) {
     # FR #1481: also stage scripts\bob-ear.exe (frozen irc_agent) so ircBob does not need system Python for the ear.
     $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
     if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
+    # FR #8675 / BOB-10: stamp plan\VERSION from MSI-aligned pack identity.
+    $planCommit = ''
+    try { $planCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+    Write-BobiversePlanIdentity -Destination $Stage -Version $msiVersion -Commit $planCommit.Trim()
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
     } else {
