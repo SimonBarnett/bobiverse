@@ -22,6 +22,7 @@ on:
       - bob/scripts/opencode_delivery.py
       - common/scripts/opencode_fuel.py
       - common/scripts/worker_start_model.py
+      - common/scripts/models_webhook.py
       - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
@@ -47,6 +48,7 @@ on:
       - bob/scripts/opencode_delivery.py
       - common/scripts/opencode_fuel.py
       - common/scripts/worker_start_model.py
+      - common/scripts/models_webhook.py
       - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
