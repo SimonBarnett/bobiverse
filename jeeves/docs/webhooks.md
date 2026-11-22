@@ -78,7 +78,7 @@ curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 
 ### GET models / Weights rows (BOB-01 / FR #8707)
 
-Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (valid-combos BOB-03; seed values BOB-04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
+Serves `{"clis":{...},"agents":[...]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (valid-combos BOB-03; seed values BOB-04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/models"
@@ -90,6 +90,32 @@ Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewr
 
 ```bash
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
+```
+
+
+### POST models refresh (FR #8820)
+
+`POST /bob/v1/models/refresh` rebuilds the per-CLI `clis` catalog inside digest-home `models-catalog.json` from each CLI's official listing command (no scraping, no cloud API keys):
+
+| CLI | Command | Resolver order |
+|-----|---------|----------------|
+| Grok | `grok models` | `BOB_GROK_EXE`, PATH `grok`, `%USERPROFILE%\.grok\bin\grok.exe` |
+| Cursor | `agent models` | `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`) |
+| OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, PATH `opencode` |
+
+Vendor docs: [xAI CLI](https://docs.x.ai/docs/cli), Cursor agent changelog, [OpenCode CLI](https://opencode.ai). Captured fixture samples live under `common/tests/fixtures/models_refresh/` (dated headers).
+
+Rules:
+- A failed or empty listing leaves that CLI's existing catalog untouched and reports `status: failed` with a fixed reason (`not_installed`, `timeout`, `exit_nonzero`, `spawn_error`, `empty_listing`).
+- New models are stored with empty `contexts` / `efforts` (operator/seed enrich later). Existing listed rows keep their metadata.
+- Agent selections are never rewritten. GET `/bob/v1/models` adds response-only `stale: true` when a row's model is non-empty and absent from `clis[lower(cli)].models`.
+- Rate limit: one attempt per CLI per 60 s (in-memory; process restart resets). A second call inside the window returns **429** `rate_limited` with `retry_after_s` and changes nothing.
+- BOB-04 seeds (`models-valid-combos.json`) remain the starting allow-list until the first successful refresh writes `refreshed_at` on a CLI entry in `models-catalog.json`.
+- Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) already forwards `/refresh`.
+- Operator check: the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`.
+
+```bash
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh"
 ```
 
 ### Models validation (form-only — Si 2026-11-22)
