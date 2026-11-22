@@ -79,6 +79,9 @@ $rewriteXml = @"
         </rule>
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+          </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
         <rule name="BobJeevesAppliance" stopProcessing="true">
@@ -202,9 +205,13 @@ function Get-BobOwnedRuleXml {
 "@
         }
         'BobModelsWebhook' {
+            # FR #8708: public IIS rewrite is GET|HEAD only (PUT stays direct/LAN).
             return @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+          </conditions>
           <action type="Rewrite" url="$BackendUrl/bob/v1/models{R:1}" />
         </rule>
 "@

@@ -30,6 +30,7 @@
         Human-readable chair verbs for the shop. Settings login stays at
         <a href="/jeeves"><code>/jeeves</code></a>; this page is unauthenticated
         <code>/jeeves/commands</code>. Source of truth in-repo:
+        <code>common/scripts/chair_commands.py</code> (<code>COMMANDS</code>) plus
         <code>jeeves/docs/jeeves-commands.md</code>.
       </p>
       <div class="actions" style="margin-top:1rem">
@@ -47,13 +48,20 @@
         <tr><td><code>!list [all|repo|fr|mrb|uat]</code></td><td>anyone</td><td>Queue / work snapshot in focus order.</td></tr>
         <tr><td><code>!filter ...</code></td><td>anyone</td><td>Alias for <code>!list</code> with a filter.</td></tr>
         <tr><td><code>!status</code></td><td>anyone</td><td>Chair health, queue counts, roster, last resync.</td></tr>
+        <tr><td><code>!stuck</code></td><td>anyone</td><td>List stuck/held open jobs from the stuck-job sweep (FR #5510).</td></tr>
         <tr><td><code>!focus</code> / <code>!unfocus</code></td><td>read: anyone; write: owner / ear / allowlist</td><td>Prioritise or clear repos/items in the offer order.</td></tr>
         <tr><td><code>!ignore</code> / <code>!unignore</code> / <code>!ignored</code></td><td>owner / ear</td><td>Suppress or resume a repo in the queue.</td></tr>
         <tr><td><code>!assign &lt;seat&gt; &lt;repo&gt; FR|MRB|UAT|FIX &lt;n&gt;</code></td><td>owner / ear (simon or bob-*)</td><td>Hand a queued job to an idle seat (same gates as !bored).</td></tr>
         <tr><td><code>!resync</code></td><td>owner / ear</td><td>Force roster refresh + GitHub FR/MRB merge-resync.</td></tr>
+        <tr><td><code>!sweep [#chan]</code></td><td>owner / ear</td><td>Re-apply +h/+o privilege grants in a channel.</td></tr>
         <tr><td><code>!recycle [machine|all]</code></td><td>owner / ear</td><td>Route a RECYCLE wire line; Bob ear executes host ops.</td></tr>
+        <tr><td><code>!build</code> / <code>!build n [version] [ref] [--tests-only]</code> / <code>!build status|cancel|dry-run|preflight|tests-only n</code></td><td>owner / ear (ops)</td><td>Numbered catalog BUILD (FR #4006 / #8490): bare lists catalog; <code>n</code> runs that entry's yml, exports pack artifacts, reinstalls on install/fleet. Example: <code>!build 1 0.1.40</code>.</td></tr>
+        <tr><td><code>!installtest &lt;owner/repo&gt; &lt;version&gt; [tag]</code> / dry-run</td><td>owner / ear (ops)</td><td>Msiexec install-test pre-release MSIs + post-checks (FR #4026). Example: <code>!installtest SimonBarnett/bobiverse 0.1.32</code>.</td></tr>
+        <tr><td><code>!register &lt;#channel|machine&gt;</code></td><td>+o/+h in #bobiverse</td><td>ChanServ REGISTER shop channel and add to roster. Example: <code>!register ionos</code>.</td></tr>
+        <tr><td><code>!unregister &lt;#channel|machine&gt; [confirm]</code> / dry-run</td><td>+o/+h in #bobiverse</td><td>Inverse of !register: ChanServ UNREGISTER, drop roster, PART shop. Example: <code>!unregister dry-run ionos</code>.</td></tr>
         <tr><td><code>!pin</code> / <code>!unpin</code></td><td>owner / ear</td><td>Stamp or clear <code>require_machine</code> on a queue row.</td></tr>
         <tr><td><code>!cleargiveup</code></td><td>owner / ear</td><td>Clear give-up / needs_human stamps for a job.</td></tr>
+        <tr><td><code>!startworker [agent|plan] [machine]</code></td><td>verified owner / ear (Bob ear)</td><td>Ear-side (not chair): queue a tray worker start on the target machine (t810u). Example: <code>!startworker agent marchhare</code>.</td></tr>
         <tr><td><code>!bored</code> / <code>ACK</code> / <code>DONE</code> / <code>NACK</code> / <code>GIVEUP</code></td><td>shop wire</td><td>Seat readiness and job lifecycle (program posts !bored).</td></tr>
         <tr><td><code>ping</code></td><td>anyone</td><td>Reply <code>pong</code> (no bang).</td></tr>
       </tbody>
@@ -67,12 +75,12 @@
       <article class="card">
         <span class="pill">Anyone</span>
         <h3>Read</h3>
-        <p><code>!help</code>, <code>!list</code>, <code>!status</code>, <code>!ignored</code>, <code>!focus</code> (read), <code>ping</code>.</p>
+        <p><code>!help</code>, <code>!list</code>, <code>!status</code>, <code>!stuck</code>, <code>!ignored</code>, <code>!focus</code> (read), <code>ping</code>.</p>
       </article>
       <article class="card">
         <span class="pill">Owner / ear</span>
         <h3>Ops</h3>
-        <p><code>!assign</code>, <code>!resync</code>, <code>!recycle</code>, <code>!ignore</code>, <code>!pin</code>/<code>!unpin</code>, <code>!cleargiveup</code>, focus writes.</p>
+        <p><code>!assign</code>, <code>!resync</code>, <code>!sweep</code>, <code>!recycle</code>, <code>!build</code>, <code>!installtest</code>, <code>!register</code>/<code>!unregister</code>, <code>!ignore</code>, <code>!pin</code>/<code>!unpin</code>, <code>!cleargiveup</code>, focus writes. Ear also handles <code>!startworker</code>.</p>
       </article>
       <article class="card">
         <span class="pill">Settings</span>
@@ -82,7 +90,7 @@
     </div>
 
     <p style="margin-top:1.25rem;color:var(--ink-soft);font-size:0.92rem">
-      FR #7413 · generated from <code>jeeves/docs/jeeves-commands.md</code> · wire behaviour unchanged.
+      FR #7413 / #8840 · dispatcher <code>chair_commands.COMMANDS</code> · wire behaviour unchanged.
     </p>
 
     <footer class="site-footer">

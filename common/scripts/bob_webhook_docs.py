@@ -34,6 +34,8 @@ class DocEntry:
     source: str
     fr: str
     html_rel: str
+    # FR #8835: "coming" = documented but not served yet (PUT/PATCH/refresh).
+    status: str = "live"  # live | coming
 
 
 def www_root(repo_root: Path | None = None) -> Path:
@@ -299,6 +301,150 @@ def _inbound() -> list[DocEntry]:
             source="common/scripts/bobhours.py",
             fr="FR #3450",
             html_rel="docs/webhooks/hours.html",
+        ),
+        DocEntry(
+            slug="models-get",
+            title="Models catalog (GET)",
+            method="GET",
+            path=bobcallback.MODELS_PATH,
+            direction="in",
+            purpose="Fleet Weights agent rows plus CLI options catalog for the tray/forms.",
+            callers="Tray Weights form, Agents/Workers settings, operators.",
+            auth="None.",
+            request_schema="No body. HEAD returns empty body.",
+            response_schema=(
+                'JSON {"agents":[{"agent","cli","model","context","effort"}, ...]} '
+                "(BOB-01). Options catalog shape (clis) lands with #8819."
+            ),
+            example_request="GET https://bob.ntsa.uk/bob/v1/models",
+            status_codes="200 JSON; never invents secret fields.",
+            retry_idempotency="Safe GET.",
+            rate_limits="Proxy only.",
+            reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
+            source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
+            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05",
+            html_rel="docs/webhooks/models.html",
+        ),
+        DocEntry(
+            slug="models-put",
+            title="Models catalog (PUT) — coming",
+            method="PUT",
+            path=bobcallback.MODELS_PATH,
+            direction="in",
+            purpose="Persist Weights selections (BOB-02). Not served until #8708 lands.",
+            callers="Tray Weights form.",
+            auth="None once live (schema + rate).",
+            request_schema="JSON agents rows (cli read-only per #8819).",
+            response_schema="JSON ack or 4xx.",
+            example_request=(
+                "PUT https://bob.ntsa.uk/bob/v1/models\n"
+                "Content-Type: application/json\n\n"
+                '{"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}'
+            ),
+            status_codes="Coming — 404 today.",
+            retry_idempotency="Idempotent replace when live.",
+            rate_limits="TBD with #8708.",
+            reachability="Not served yet.",
+            source="common/scripts/models_catalog.py (planned)",
+            fr="FR #8708 / BOB-02",
+            html_rel="docs/webhooks/models.html",
+            status="coming",
+        ),
+        DocEntry(
+            slug="models-patch",
+            title="Models catalog (PATCH) — coming",
+            method="PATCH",
+            path=bobcallback.MODELS_PATH,
+            direction="in",
+            purpose="Partial Weights update (BOB-02). Not served until #8708 lands.",
+            callers="Tray Weights form.",
+            auth="None once live.",
+            request_schema="JSON partial agents update.",
+            response_schema="JSON ack or 4xx.",
+            example_request=(
+                "PATCH https://bob.ntsa.uk/bob/v1/models\n"
+                "Content-Type: application/json\n\n"
+                '{"agents":[{"agent":"Plan","model":"example-model"}]}'
+            ),
+            status_codes="Coming — not implemented today.",
+            retry_idempotency="Partial merge when live.",
+            rate_limits="TBD with #8708.",
+            reachability="Not served yet.",
+            source="common/scripts/models_catalog.py (planned)",
+            fr="FR #8708 / BOB-02",
+            html_rel="docs/webhooks/models.html",
+            status="coming",
+        ),
+        DocEntry(
+            slug="models-refresh",
+            title="Models refresh (POST) — coming",
+            method="POST",
+            path=bobcallback.MODELS_PATH + "/refresh",
+            direction="in",
+            purpose="Rebuild per-CLI options from each CLI listing (#8820). Not served yet.",
+            callers="Operators / tray refresh.",
+            auth="None once live (rate-limited).",
+            request_schema="Empty or optional CLI filter JSON.",
+            response_schema="JSON clis + refreshed_at + added/removed; failed CLI keeps prior.",
+            example_request="POST https://bob.ntsa.uk/bob/v1/models/refresh",
+            status_codes="Coming — 404 today; 429 when rate-limited once live.",
+            retry_idempotency="Safe to retry; fail-closed per CLI.",
+            rate_limits="TBD with #8820.",
+            reachability="Not served yet (same BobModelsWebhook prefix).",
+            source="planned with #8820",
+            fr="FR #8820",
+            html_rel="docs/webhooks/models.html",
+            status="coming",
+        ),
+        DocEntry(
+            slug="builds-get",
+            title="Builds catalog (GET)",
+            method="GET",
+            path=bobcallback.BUILDS_PATH,
+            direction="in",
+            purpose="List published bobiverse build artefacts for downloads / ops.",
+            callers="Downloads page, operators.",
+            auth="None.",
+            request_schema="No body.",
+            response_schema="JSON builds catalog from builds_catalog.py.",
+            example_request="GET https://bob.ntsa.uk/bob/v1/builds",
+            status_codes="200 JSON.",
+            retry_idempotency="Safe GET.",
+            rate_limits="Proxy only.",
+            reachability="Public Cloudflare when rewrite/deployed; see builds_catalog.",
+            source="common/scripts/builds_catalog.py, common/scripts/bobcallback.py",
+            fr="FR #6453 / builds catalog",
+            html_rel="docs/webhooks/builds.html",
+        ),
+        DocEntry(
+            slug="models-validate",
+            title="Models combo validate",
+            method="POST",
+            path=bobcallback.MODELS_VALIDATE_PATH,
+            direction="in",
+            purpose="Fail-closed check of (cli, model, context, effort) against models-valid-combos.json; never persists.",
+            callers="Weights / tray / BOB-02 before write; operators probing allow-list.",
+            auth="Peer IP must be on BOB_REPORT_ALLOW (same POST gate as report).",
+            request_schema=(
+                "JSON object: cli (grok|cursor|opencode), model, context, optional effort "
+                "(required when the catalogue row lists efforts; must be absent when efforts is empty)."
+            ),
+            response_schema=(
+                '200 {"ok":true}; 400 {"error":"malformed"} or '
+                '{"error":"<code>","field":"<name>"}; 503 {"error":"catalog_unavailable"}.'
+            ),
+            example_request=(
+                "POST https://bob.ntsa.uk/bob/v1/models/validate\n"
+                "Content-Type: application/json\n\n"
+                '{"cli":"grok","model":"fixture-grok-a","context":"128k","effort":"medium"}'
+            ),
+            status_codes="200 ok; 400 malformed/invalid; 403 peer; 405; 503 catalogue unavailable.",
+            retry_idempotency="Safe to retry; no side effects.",
+            rate_limits="Peer allow-list only (no separate app rate for this path).",
+            reachability="Public Cloudflare rewrite of /bob/v1/models* to BobCallback :7700.",
+            source="common/scripts/models_catalog.py, bobcallback.py",
+            fr="BOB-03 / FR #8710",
+            html_rel="docs/webhooks/models-validate.html",
         ),
     ]
 

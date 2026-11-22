@@ -89,6 +89,8 @@ def test_fr8803_websocket_rules_byte_identical_and_models_added(tmp_path: Path):
     assert "127.0.0.1:8097" in body1
     assert body1.count("127.0.0.1:7700") >= 1
     assert 'name="BobModelsWebhook"' in body1
+    models = re.search(r'(?s)<rule name="BobModelsWebhook".*?</rule>', body1)
+    assert models and 'REQUEST_METHOD' in models.group(0) and 'GET|HEAD' in models.group(0)
     assert 'name="BobJeevesAppliance"' in body1
     assert marker.read_text(encoding="utf-8") == "do-not-touch\n"
     assert not (site / "site.css").is_file(), "default run must not publish www"

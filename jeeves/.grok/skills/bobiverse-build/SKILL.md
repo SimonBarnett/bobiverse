@@ -51,14 +51,16 @@ No recipe => chair refuses. Same repo already building => refuse with running id
 
 Hard timeouts (FR #3965 class) via `run_command` kill + `timed_out` => `step_failure`.
 
-## Catalog UX (FR #8490)
+## Catalog UX (FR #8490 / #8770)
 
 | Mode | Who | What happens |
 |---|---|---|
-| bare `!build` | Chair (ops) | Numbered list from GET `/bob/v1/builds` (`builds-catalog.json` on digest home). Shows name, yml, install, dep, version, ref, output. |
-| `!build n [version] [ref] [--tests-only]` | Chair then recipe machine | Select catalog entry `n`. Version/ref override catalog defaults (numeric `x.y.z` / `x.y.z.w`, #4186). Wire `BUILD v1 ... output=... install=...`. Runner: suites → pack → **export** artifacts to `output` → prerelease → **install** (`machinename` or `fleet` via `registered-machines.json`). Local: msiexec via recipe `install_test` against exported MSIs. Remote: `BUILD_INSTALL` queue jobs. Offline / no `install_test`: WARN-and-continue. `dep` is documentation only. |
-| `!build dry-run n ...` | Chair (ops) | Plan only (includes install/output); nothing published. |
-| `!build status\|cancel\|preflight\|tests-only n` | Chair / recipe | Same verbs, keyed by catalog index `n`. |
+| bare `!build` | Chair (ops) | Numbered list: digest-home file first, else chair home, else GET `/bob/v1/builds`. Rows: name, repo, install, `version=next:Y` (or fixed), ref (<=400 bytes). Footer = `BUILD_USAGE_LINES`. |
+| `!build help` | Chair (ops) | Two canonical usage lines; no route/lock/recipe. |
+| `!build n [version] [ref]` | Chair then recipe machine | Catalog `yml` path is the recipe (optional `recipe=` on BUILD v1). Blank version → next patch of latest `vX.Y.Z[.W]` tag. Wire `BUILD v1 ... output=... install=...`. Runner: suites → pack → **export** → prerelease → **install** (machine or `fleet`). `dep` docs only. |
+| `!build dry-run n ...` | Chair (ops) | Plan only (includes install/output/dep); nothing published. |
+| `!build status` / `status n` | Chair | Bare lists running builds (`age`/`seen`/catalog indices); `n` is one entry. |
+| `!build cancel [n]` / preflight / tests-only | Chair / recipe | Cancel `n` or bare free-all (FR #6715). Preflight `n` checks installed recipe. |
 | Old `!build owner/repo ...` | — | **Refused**; use the numbered list. |
 
 Ops only (simon / bob-* ears). Workers never see `!build` in `!help`.
@@ -67,7 +69,7 @@ Announce extras: `BUILD export ... output=... n=N`, `BUILD install ... targets=.
 
 ## Preflight (FR #6492)
 
-`!build preflight <owner/repo>` announces `BUILDPREFLIGHT v1 repo=...` on `#bobiverse`. The recipe machine runs `run_bobiverse_build.py --preflight` and announces `build preflight: <name>=ok|missing ...` lines (never the token value). Setup steps: `bob/AGENTS.md` section Recipe machine BUILD setup.
+`!build preflight <n>` announces `BUILDPREFLIGHT v1 repo=...` on `#bobiverse` (catalog index, not owner/repo). The recipe machine runs `run_bobiverse_build.py --preflight` against the **installed** recipe and announces `build preflight: <name>=ok|missing ...` lines (never the token value). Setup steps: `bob/AGENTS.md` section Recipe machine BUILD setup.
 
 ## Reading BUILD announce / PM lines
 
@@ -104,5 +106,5 @@ WP3 INSTALL-TEST (FR #4026) remains available as a manual follow-on (`!installte
 
 - Docs: `docs/bobiverse-build.md`
 - Chair help: `!help build` (ops) / skill `bobiverse-jeeves-commands` section `!build`
-- Parent FR: #4006 (living umbrella --- do not `Closes` it from docs-only PRs); WP2 #4025; this skill book #4038; catalog #8490
-- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `common/tests/test_fr8490_*.py`, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release), `common/tests/test_fr7086_release_tag_already_exists.py` (FR #7086 idempotent pre-release)
+- Parent FR: #4006 (living umbrella --- do not `Closes` it from docs-only PRs); WP2 #4025; this skill book #4038; catalog #8490 / UX #8770
+- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `common/tests/test_fr8490_*.py`, `common/tests/test_fr8770_build_catalog_ux.py`, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release), `common/tests/test_fr7086_release_tag_already_exists.py` (FR #7086 idempotent pre-release)
