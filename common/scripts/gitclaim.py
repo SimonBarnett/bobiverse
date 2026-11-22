@@ -1550,6 +1550,11 @@ def issue_skip_fr_reason(
     # are not shop FR work. They must not be offered or stamped needs_human.
     if re.match(r"(?i)^stall:", title_s):
         return "stall_receipt"
+    # FR #9038: bob-worker files these when the agent CLI exits non-zero
+    # (report_agent_cli_nonzero_exit). They are detector receipts of FR #7593,
+    # already handled by GIVEUP + seat restart. Do not offer them as FR work.
+    if title_s == "bug: agent CLI nonzero exit (FR #7593)":
+        return "cli_exit_receipt"
     # FR #3658 / #3317: owner-missing hold titles (even with empty labels).
     if HARVEST_OWNER_MISSING_HOLD_TITLE_RE.search(title_s):
         return "owner_missing_hold_title"
