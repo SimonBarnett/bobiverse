@@ -4174,6 +4174,35 @@ function Sync-BobiverseAgentFolders {
     return $made
 }
 
+
+function Write-BobiversePlanIdentity {
+    <#
+      FR #8675 / BOB-10: stamp plan\VERSION + plan\BUILD.json after agent-folder sync.
+      Skip when -Version is empty (About then falls back to bob (via bob) / unknown).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Destination,
+        [string]$Version = '',
+        [string]$Commit = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Version)) { return }
+    $plan = Join-Path $Destination 'plan'
+    if (-not (Test-Path -LiteralPath $plan)) { return }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    $verText = $Version.Trim() + [Environment]::NewLine
+    [IO.File]::WriteAllText((Join-Path $plan 'VERSION'), $verText, $enc)
+    $sha = ([string]$Commit).Trim()
+    $obj = [ordered]@{
+        product   = 'plan'
+        version   = $Version.Trim()
+        built_utc = [datetime]::UtcNow.ToString('o')
+        commit    = $sha
+    }
+    $json = ($obj | ConvertTo-Json -Compress)
+    [IO.File]::WriteAllText((Join-Path $plan 'BUILD.json'), $json + [Environment]::NewLine, $enc)
+    Write-Host ("INFO FR #8675 plan identity version={0} commit={1}" -f $Version.Trim(), $(if ($sha) { $sha } else { '(none)' }))
+}
+
 function Install-BobiverseAgentLayer {
     param(
         [Parameter(Mandatory)][string]$RepoRoot,

@@ -2863,7 +2863,7 @@ function Show-BobTrayAbout {
         $ver.Location = New-Object System.Drawing.Point 130, 84
         $agents = New-Object System.Windows.Forms.Label
         $agents.Name = 'agentBuildVersions'
-        $agents.Text = ('Plan {0}    Priority {1}' -f (Get-BobTraySliceVersion -Slice 'plan'), (Get-BobTraySliceVersion -Slice 'priority'))
+        $agents.Text = ('plan {0}{1}priority {2}' -f (Get-BobTrayPlanVersion), [Environment]::NewLine, (Get-BobTrayPriorityVersion))
         $agents.Font = New-Object System.Drawing.Font 'Segoe UI', 9
         $agents.AutoSize = $true
         $agents.Location = New-Object System.Drawing.Point 130, 104
@@ -2873,7 +2873,7 @@ function Show-BobTrayAbout {
         $box.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
         $box.Font = New-Object System.Drawing.Font 'Consolas', 9
         $box.Text = $text
-        $box.Location = New-Object System.Drawing.Point 16, 128
+        $box.Location = New-Object System.Drawing.Point 16, 148
         $box.Size = New-Object System.Drawing.Size 548, 256
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
@@ -2993,35 +2993,79 @@ function Get-BobTrayDeployedSourceShortSha {
     return $scripts
 }
 
-function Get-BobTraySliceVersion {
-    param([string]$Slice)
-    $envName = if ($Slice -eq 'priority') { 'BOBIVERSE_PRIORITY_VERSION' } else { 'BOBIVERSE_PLAN_VERSION' }
-    $ver = [string][Environment]::GetEnvironmentVariable($envName)
-    if (-not $ver.Trim()) {
-        $ai = [string]$env:BOB_AI_ROOT
-        foreach ($cand in @(
-                (Join-Path $RepoRoot ($Slice + '\VERSION')),
-                (Join-Path $RepoRoot ('src\' + $Slice + '\VERSION')),
-                $(if ($ai) { Join-Path $ai ('bob\' + $Slice + '\VERSION') })
-            )) {
-            if ($cand -and (Test-Path -LiteralPath $cand)) {
-                try {
-                    $ver = ([string](Get-Content -LiteralPath $cand -TotalCount 1 -ErrorAction Stop)).Trim()
-                    if ($ver) { break }
+function Get-BobTrayPlanVersion {
+    param([string]$Root = $RepoRoot)
+    $vf = Join-Path $Root 'plan\VERSION'
+    if (Test-Path -LiteralPath $vf) {
+        try {
+            $v = ([string](Get-Content -LiteralPath $vf -TotalCount 1 -ErrorAction Stop)).Trim()
+            if ($v) {
+                $sha = ''
+                $bj = Join-Path $Root 'plan\BUILD.json'
+                if (Test-Path -LiteralPath $bj) {
+                    try {
+                        $b = Get-Content -LiteralPath $bj -Raw -ErrorAction Stop | ConvertFrom-Json
+                        $c = ([string]$b.commit).Trim()
+                        if ($c -match '^[0-9a-fA-F]{7,40}$') { $sha = $c.Substring(0, 7).ToLowerInvariant() }
+                    } catch { }
                 }
-                catch { }
+                if ($sha) { return ('{0} ({1})' -f $v, $sha) }
+                return $v
+            }
+        } catch { }
+    }
+    $bob = Get-BobTrayProductVersionLabel
+    if ($bob -and $bob -ne 'unknown') {
+        if ($bob.StartsWith('bob ')) { $bob = $bob.Substring(4) }
+        return ($bob.Trim() + ' (via bob)')
+    }
+    return 'unknown'
+}
+
+function Get-BobTrayPriorityVersion {
+    param([string]$Root = $RepoRoot, [string[]]$AiRoots = $null)
+    if ($null -eq $AiRoots) {
+        # When BOB_AI_ROOT is set, search only that root (tests + operator pin).
+        if ($env:BOB_AI_ROOT) {
+            $AiRoots = @([string]$env:BOB_AI_ROOT)
+        } else {
+            $AiRoots = @()
+            try { $AiRoots += (Split-Path -Parent $Root) } catch { }
+            $AiRoots += @('C:\ai', 'D:\ai')
+        }
+    }
+    $names = @('priority-agent', 'priority-mcp')
+    $seen = @{}
+    foreach ($ai in $AiRoots) {
+        if (-not $ai) { continue }
+        foreach ($n in $names) {
+            $dir = Join-Path $ai $n
+            $key = $dir.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            $vf = Join-Path $dir 'VERSION'
+            if (Test-Path -LiteralPath $vf) {
+                try {
+                    $v = ([string](Get-Content -LiteralPath $vf -TotalCount 1 -ErrorAction Stop)).Trim()
+                    if ($v) { return $v }
+                } catch { }
+            }
+            foreach ($exe in @('PriorityAgent.exe', 'priority-agent.exe')) {
+                $ep = Join-Path $dir $exe
+                if (Test-Path -LiteralPath $ep) {
+                    try {
+                        $pv = [string](Get-Item -LiteralPath $ep).VersionInfo.ProductVersion
+                        if ($pv.Trim()) { return $pv.Trim() }
+                    } catch { }
+                }
             }
         }
     }
-    if (-not $ver.Trim()) {
-        $bob = Get-BobTrayProductVersionLabel
-        if ($bob.StartsWith('bob ')) { $ver = $bob.Substring(4) } else { $ver = $bob }
-    }
-    if (-not $ver.Trim()) { $ver = 'unknown' }
-    return $ver.Trim()
+    return 'not installed'
 }
 
 function Get-BobTrayProductVersionLabel {
+
     # FR #6924: MSI VERSION + optional deployed short SHA; re-read on every TipForm paint.
     $ver = [string]$env:BOBIVERSE_BOB_VERSION
     if (-not $ver.Trim()) {

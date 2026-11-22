@@ -18,7 +18,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **Tech: C# WinForms, compiled by the in-box .NET Framework 4 `csc.exe`** (`scripts\Build-BobDialogs.ps1`, sources `dialogs\*.cs`).
   Why: ~26 KB exes, nothing to unpack at start (a PyInstaller one-file exe extracts ~10 MB to `%TEMP%` on **every** start and tkinter adds
   more), only NGEN'd framework DLLs, no extra toolchain on the build or target machine (csc ships with Windows 10/11).
-* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
+* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then `plan <version>` and `priority <version>` (FR #8675 / BOB-10), then one block of install inventory
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
 * **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326** / **#7510** / **#7580**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
@@ -32,7 +32,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **Packaging**: `Pack-BobiverseRelease.ps1` builds the exes into `stage\tools` (and ships `dialogs\`); `Sync-BobiverseFromRepo.ps1` mirrors
   `dialogs\` and compiles into `<install>\tools` when an exe is missing or older than its sources (a running dialog is replaced by rename);
   `Install-Bob.ps1` builds them on a repo install.
-* **Switches** (support/tests): `bob-about.exe --text-out f` (headless install text), `bob-status.exe --check snapshot.json --text-out f`,
+* **Switches** (support/tests): `bob-about.exe --text-out f` (headless install text), `bob-about.exe --versions-out f` (bob/plan/priority lines; FR #8675), `bob-status.exe --check snapshot.json --text-out f`,
   both `--png-out f` (render and exit) and `--timing-out f` (ms from process start to the first shown window), `--root <install root>`.
 
 ## Compiled systray (t832u)
@@ -83,6 +83,15 @@ rows with workers `{irc nick}: {doing|idle}`, digest-driven extra pool families 
 **FR #6285 / #7179 / #7248 CI (`build-bob-tray.yml`):** GitHub Actions on `windows-latest` compiles `bob-tray.exe` / `bob-status.exe` / `bob-about.exe` via `bob/scripts/Build-BobDialogs.ps1` on `push` to `main` and on `pull_request` whenever `bob/tray/**` (display scripts included), `bob/scripts/Build-BobDialogs.ps1`, `.github/workflows/build-bob-tray.yml`, or `bob/tests/test_fr6285_tray_build_ci.py` changes (plus `workflow_dispatch`). **FR #7248:** `Stage-BobTrayHotpatchArtifact.ps1` packs the exes **and** the tray display tree (`src\` BobBridge including `Get-BobTrayHover.ps1`, `tools\Watch-BobTray.ps1` and siblings, `assets\`) into the `bob-tray` artifact. `MANIFEST.json` `files` maps each relative path to SHA-256. A smoke check fails if the PE lacks UTF-16LE `xAI weekly` or still embeds `Cursor / xAI weekly` (throw text includes `missing UTF-16LE heading` / `still embeds stale heading`).
 
 **Slab tray hotpatch (FR #7248, no MSI):** download the `bob-tray` artifact. Back up `<install>\tools`, `<install>\src`, `<install>\assets`. Run `Install-BobTrayHotpatch.ps1 -InstallRoot <ai root>\bob -ArtifactDir <unzipped artifact>` (or copy those three folders plus `tools\MANIFEST.json`). **FR #7300:** the installer never writes install-root `MANIFEST.json` — tray identity is `tools\MANIFEST.json` only. Restart the tray (`Start-BobFleetTray -ForceNew` / TipForm Restart). Do **not** restart ircBob / Ergo. Rollback: copy the backup folders back. Hash-check files against `MANIFEST.json` `files`. Copying only `bob-tray.exe` does **not** update TipForm display (Watch-BobTray / Get-BobTrayHover stay old).
+
+## About Plan / Priority versions (FR #8675 / BOB-10)
+
+About (compiled + TipForm fallback) shows non-empty `plan <version>` and `priority <version>` under the bob line.
+
+- **Plan:** first line of `<bob root>\plan\VERSION`, optional short SHA from `plan\BUILD.json` `commit` (7-40 hex). If the stamp is missing, use the bob product version with ` (via bob)`; else `unknown`. Pack/Install/Sync stamp via `Write-BobiversePlanIdentity`.
+- **Priority:** first AI-root folder named `priority-agent` or `priority-mcp` (safe default). Read `VERSION`, else `PriorityAgent.exe` ProductVersion. Else `not installed`.
+- Headless: `bob-about.exe --versions-out <file>` writes bob/plan/priority lines (CRLF, no BOM). Does not change `--text-out`.
+- Readers: `Common.PlanVersion` / `Common.PriorityVersion`; `Get-BobTrayPlanVersion` / `Get-BobTrayPriorityVersion`; `Get-BobComponentVersions`.
 
 ## Tray version label (FR #6924 / **FR #7247**)
 

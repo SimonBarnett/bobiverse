@@ -231,7 +231,7 @@ namespace BobDialogs
             ver.Font = new Font("Segoe UI", 9f); ver.AutoSize = true; ver.Location = new Point(130, 84);
             Label agents = new Label();
             agents.Name = "agentBuildVersions";
-            agents.Text = "Plan " + Common.SliceVersion(root, "plan") + "    Priority " + Common.SliceVersion(root, "priority");
+            agents.Text = "plan " + Common.PlanVersion(root) + "\r\n" + "priority " + Common.PriorityVersion(root);
             agents.Font = new Font("Segoe UI", 9f); agents.AutoSize = true; agents.Location = new Point(130, 104);
             box = new TextBox();
             box.Multiline = true; box.ReadOnly = true; box.ScrollBars = ScrollBars.Vertical; box.Font = new Font("Consolas", 9f);
@@ -243,7 +243,7 @@ namespace BobDialogs
             AcceptButton = ok;
             Shown += delegate {
                 ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
-                agents.Text = "Plan " + Common.SliceVersion(root, "plan") + "    Priority " + Common.SliceVersion(root, "priority");
+                agents.Text = "plan " + Common.PlanVersion(root) + "\r\n" + "priority " + Common.PriorityVersion(root);
                 box.Select(0, 0); ok.Focus();
             };
             string r = root;
@@ -265,12 +265,20 @@ namespace BobDialogs
             CrashHook.Install("bob-about");
             string root = Common.Root(args);
             // Headless: write the install text to a file and exit (tests, support). No window, no single-instance lock.
+            // FR #8675 / BOB-10: headless versions seam (keep --text-out inventory-only).
+            string versionsOut = Common.Arg(args, "--versions-out");
+            if (versionsOut.Length > 0)
+            {
+                string lines = "bob " + Common.BobVersion(root) + "\r\n"
+                    + "plan " + Common.PlanVersion(root) + "\r\n"
+                    + "priority " + Common.PriorityVersion(root) + "\r\n";
+                File.WriteAllText(versionsOut, lines, new UTF8Encoding(false));
+                return 0;
+            }
             string textOut = Common.Arg(args, "--text-out");
             if (textOut.Length > 0)
             {
-                string head = "Plan version: " + Common.SliceVersion(root, "plan") + "\r\n"
-                    + "Priority version: " + Common.SliceVersion(root, "priority") + "\r\n";
-                File.WriteAllText(textOut, head + InstallInfo.Format(InstallInfo.Gather(root)), new UTF8Encoding(false));
+                File.WriteAllText(textOut, InstallInfo.Format(InstallInfo.Gather(root)), new UTF8Encoding(false));
                 return 0;
             }
             if (!Common.Single("About", "Bobiverse systray - about")) return 0;

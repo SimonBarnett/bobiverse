@@ -621,6 +621,17 @@ if ($skillsDirs.Count -gt 0) {
 if ($Product -eq 'bob') {
     try {
         [void](Sync-BobiverseAgentFolders -RepoRoot $clone -Destination $InstallRoot)
+        # FR #8675 / BOB-10: stamp plan identity (warn-on-failure; do not stop sync).
+        $planVer = ''
+        try {
+            $vf = Join-Path $InstallRoot 'VERSION'
+            if (Test-Path -LiteralPath $vf) { $planVer = ([string](Get-Content -LiteralPath $vf -TotalCount 1 -ErrorAction Stop)).Trim() }
+        } catch { }
+        $planCommit = ''
+        try { $planCommit = [string](& git -C $clone rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+        try { Write-BobiversePlanIdentity -Destination $InstallRoot -Version $planVer -Commit $planCommit.Trim() } catch {
+            Write-Host ("WARN FR #8675 plan identity: {0}" -f $_.Exception.Message)
+        }
     } catch { Write-Host ("WARN sync worker/plan folders: {0}" -f $_.Exception.Message) }
 }
 
