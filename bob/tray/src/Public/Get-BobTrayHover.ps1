@@ -2599,6 +2599,13 @@ function Update-BobTrayDigestPools {
             try { $opencodeWindows = $prev.opencode_windows } catch { }
             try { $opencodeWindowLines = @($prev.opencode_window_lines) } catch { $opencodeWindowLines = @() }
             try { $opencodeBars = @($prev.opencode_bars) } catch { $opencodeBars = @() }
+            try {
+                if ($null -ne $prev.ts -and [string]$prev.ts -ne '') {
+                    $age = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$prev.ts
+                    if ($age -lt 0) { $age = 0 }
+                    $note = (($note + ' last-good age=' + $age + 's').Trim())
+                }
+            } catch { }
         }
         # Marker for bob-tray.exe CrashHook (one report per failure window). FR #7604 helper.
         if (-not $wroteFail) {
