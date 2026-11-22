@@ -1662,6 +1662,13 @@ def main() -> None:
     args = p.parse_args()
     home = Path(args.home).expanduser() if args.home else bobreport.digest_path(Path(".")).parent
     assert_home_usable(home)
+    # BOB-04 / FR #8709: seed models-valid-combos.json before serving validate.
+    try:
+        import models_catalog as _models_catalog
+
+        _models_catalog.ensure_valid_combos_seeded(home)
+    except Exception as exc:  # noqa: BLE001 - never block listen on seed faults
+        print(f"WARN models-valid-combos seed skipped err={exc}", flush=True)
     try:
         httpd = serve(home, host=args.bind, port=args.port)
     except OSError as exc:

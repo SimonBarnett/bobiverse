@@ -70,7 +70,10 @@ def local_name(tag: str) -> str:
 
 
 def assert_web_config(path: Path) -> None:
-    """Well-formed XML and a single copy of each guarded section."""
+    """Well-formed XML and a single copy of each guarded section.
+
+    FR #8887: also require .bak denied and denyUrlSequences for _backup- / .bak/.
+    """
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as exc:
@@ -83,6 +86,25 @@ def assert_web_config(path: Path) -> None:
     dupes = {k: v for k, v in counts.items() if v > 1}
     if dupes:
         raise KitError(f"duplicate web.config sections: {dupes}")
+    bak_denied = [
+        el
+        for el in root.iter()
+        if local_name(el.tag) == "add"
+        and el.attrib.get("fileExtension") == ".bak"
+        and el.attrib.get("allowed", "").lower() == "false"
+    ]
+    if len(bak_denied) != 1:
+        raise KitError(
+            f"FR #8887 expected one .bak allowed=false add, found {len(bak_denied)}"
+        )
+    seqs = {
+        el.attrib.get("sequence")
+        for el in root.iter()
+        if local_name(el.tag) == "add" and "sequence" in el.attrib
+    }
+    for need in ("_backup-", ".bak/"):
+        if need not in seqs:
+            raise KitError(f"FR #8887 missing denyUrlSequences add sequence={need!r}")
 
 
 def _normalize_ref(raw: str) -> str | None:

@@ -893,7 +893,7 @@ namespace BobDialogs
         string lastEngineExitCode = "";
         DateTime lastDigestFetchFailReportUtc = DateTime.MinValue; // FR #7580: one CrashHook per failure window
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
-        StatusForm statusForm; AboutForm aboutForm;
+        StatusForm statusForm; AboutForm aboutForm; WeightsForm weightsForm;
         public readonly List<string> MenuItems = new List<string>();
         public string ExitReason { get { return exitReason ?? ""; } }
 
@@ -1456,17 +1456,16 @@ namespace BobDialogs
             catch { }
         }
 
-        // FR #8713 / BOB-06: Weights menu entry (full form is BOB-12/13); keep click path alive.
+        // FR #8715 / BOB-12: Weights grid form (modeless; BOB-13 binds webhook).
         void ShowWeights()
         {
             try
             {
                 TrayLifecycle.Write("weights", "via", "bob-tray-Weights");
-                MessageBox.Show(
-                    "Weights binds to the models webhook in later BOB slices (BOB-12/13).",
-                    "Bob — Weights",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                if (weightsForm != null && !weightsForm.IsDisposed) { weightsForm.Activate(); weightsForm.BringToFront(); return; }
+                weightsForm = new WeightsForm();
+                weightsForm.FormClosed += delegate { weightsForm = null; };
+                weightsForm.Show();
             }
             catch { }
         }
@@ -1796,6 +1795,7 @@ namespace BobDialogs
         {
             try { if (statusForm != null && !statusForm.IsDisposed) statusForm.Close(); } catch { }
             try { if (aboutForm != null && !aboutForm.IsDisposed) aboutForm.Close(); } catch { }
+            try { if (weightsForm != null && !weightsForm.IsDisposed) weightsForm.Close(); } catch { }
         }
 
         // Exit order unchanged (t798u): dialogs + icon go first, then the ircBob stop (detached, never waited for), then the engine is asked to leave.
@@ -2177,6 +2177,13 @@ namespace BobDialogs
             }
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
+            // FR #8715 / BOB-12: exit-before-UI column dump for S1 tests.
+            string dumpWeightsCols = Common.Arg(args, "--dump-weights-columns");
+            if (dumpWeightsCols.Length > 0)
+            {
+                File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
+                return 0;
+            }
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.
             if (!timing && dumpMenu.Length == 0 && !Common.Single(Common.TrayMutexKey(root), ""))
             {

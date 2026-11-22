@@ -18,7 +18,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **Tech: C# WinForms, compiled by the in-box .NET Framework 4 `csc.exe`** (`scripts\Build-BobDialogs.ps1`, sources `dialogs\*.cs`).
   Why: ~26 KB exes, nothing to unpack at start (a PyInstaller one-file exe extracts ~10 MB to `%TEMP%` on **every** start and tkinter adds
   more), only NGEN'd framework DLLs, no extra toolchain on the build or target machine (csc ships with Windows 10/11).
-* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
+* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then `plan <version>` and `priority <version>` (FR #8675 / BOB-10), then one block of install inventory
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
 * **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326** / **#7510** / **#7580**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
@@ -32,7 +32,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **Packaging**: `Pack-BobiverseRelease.ps1` builds the exes into `stage\tools` (and ships `dialogs\`); `Sync-BobiverseFromRepo.ps1` mirrors
   `dialogs\` and compiles into `<install>\tools` when an exe is missing or older than its sources (a running dialog is replaced by rename);
   `Install-Bob.ps1` builds them on a repo install.
-* **Switches** (support/tests): `bob-about.exe --text-out f` (headless install text), `bob-status.exe --check snapshot.json --text-out f`,
+* **Switches** (support/tests): `bob-about.exe --text-out f` (headless install text), `bob-about.exe --versions-out f` (bob/plan/priority lines; FR #8675), `bob-status.exe --check snapshot.json --text-out f`,
   both `--png-out f` (render and exit) and `--timing-out f` (ms from process start to the first shown window), `--root <install root>`.
 
 ## Compiled systray (t832u)
@@ -41,9 +41,9 @@ now owns everything the user touches: the notify icon and its robot images (idle
 pre-created, so the first right-click is as fast as the tenth), click / double-click handling, the flashing, and the hover text.
 It runs the Status and About windows in-process (no second process to start).
 
-* **Menu**: **Status** (bold, the default), **Agents** (Automatic, Grok, Cursor, OpenCode), **Plan**, Acknowledge, Open log, separator, Restart, Reload engine (FR #5111), Exit. Left click = acknowledge + Status;
-  double click = Status. Agents does not call `bob-worker --list-agents` while the icon is created. Opening the submenu asks `bob-worker.exe --list-agents` on a background thread (30 s list, 60 s `--refresh-fuel`). A fresh fuel cache is shown as known. A missing, slow, or failed listing never greys installed agents: keep last-good rows, else enabled unknown rows. Only a missing `bob-worker.exe` or an exe that truly lacks `--list-agents` (exit 2 plus `unrecognized arguments`) disables explicit rows, with that reason on the label. Fuel state never greys a start option. Launch still reads fuel and refuses a real miss. It does not substitute another agent.
-* **Agents / Plan** are native (`BobTray.cs` `WorkerLauncher.Launch`). Plan stays one click with no `--agent`. Automatic omits `--agent`. Grok, Cursor, and OpenCode pass `--agent` and the worker refuses instead of starting a different agent. The 2-worker cap is the **union** of IRC agent seat marker pids (live) and live agent `bob-worker` roots (FR #3181 / FR #4307 / MRB #4311). The worker exe runs from the sha256
+* **Menu** (FR #8713 / BOB-06): **Status** (bold, the default), **Agents** (Plan, Priority, Jeeves), **Workers** (Automatic, Grok, Cursor, Open Code), **Weights**, **About**, **Exit**. Left click = acknowledge + Status;
+  double click = Status. Workers does not call `bob-worker --list-agents` while the icon is created. Opening the Workers submenu asks `bob-worker.exe --list-agents` on a background thread (30 s list, 60 s `--refresh-fuel`). A fresh fuel cache is shown as known. A missing, slow, or failed listing never greys installed agents: keep last-good rows, else enabled unknown rows. Only a missing `bob-worker.exe` or an exe that truly lacks `--list-agents` (exit 2 plus `unrecognized arguments`) disables explicit rows, with that reason on the label. Fuel state never greys a start option. Launch still reads fuel and refuses a real miss. It does not substitute another agent.
+* **Workers / Agents** are native (`BobTray.cs` `WorkerLauncher.Launch`). Workers > Cursor starts an explicit Cursor seat (`--agent cursor`). After a successful spawn the worker writes one `worker.log` line starting with `cursor-agent:` (cmd path, wrapper PID, nick, workspace) — FR #8721 / BOB-21 S1. Automatic omits `--agent`. Grok, Cursor, and Open Code pass `--agent` and the worker refuses instead of starting a different agent. The 2-worker cap is the **union** of IRC agent seat marker pids (live) and live agent `bob-worker` roots (FR #3181 / FR #4307 / MRB #4311). The worker exe runs from the sha256
   run-copy under `%LOCALAPPDATA%\Bobiverse\worker\bin`, and it opens its own console window (same rules as the PowerShell launcher). Rebuild `bob-tray.exe` and `bob-worker.exe` together (`scripts\Build-BobDialogs.ps1`, `scripts\Build-BobWorker.ps1`). Keep `scripts\opencode_fuel.py` on the install.
 * **The engine** - the data collection (digest, Grok / Cursor pools, alerts, BobBridge) is still PowerShell. `bob-tray.exe` starts
   `tools\_Watch-BobTray-<machine>.ps1` hidden with `BOB_TRAY_ENGINE=1` and `BOB_TRAY_EXE_PID`; in that mode the script never shows an icon.
@@ -83,6 +83,15 @@ rows with workers `{irc nick}: {doing|idle}`, digest-driven extra pool families 
 **FR #6285 / #7179 / #7248 CI (`build-bob-tray.yml`):** GitHub Actions on `windows-latest` compiles `bob-tray.exe` / `bob-status.exe` / `bob-about.exe` via `bob/scripts/Build-BobDialogs.ps1` on `push` to `main` and on `pull_request` whenever `bob/tray/**` (display scripts included), `bob/scripts/Build-BobDialogs.ps1`, `.github/workflows/build-bob-tray.yml`, or `bob/tests/test_fr6285_tray_build_ci.py` changes (plus `workflow_dispatch`). **FR #7248:** `Stage-BobTrayHotpatchArtifact.ps1` packs the exes **and** the tray display tree (`src\` BobBridge including `Get-BobTrayHover.ps1`, `tools\Watch-BobTray.ps1` and siblings, `assets\`) into the `bob-tray` artifact. `MANIFEST.json` `files` maps each relative path to SHA-256. A smoke check fails if the PE lacks UTF-16LE `xAI weekly` or still embeds `Cursor / xAI weekly` (throw text includes `missing UTF-16LE heading` / `still embeds stale heading`).
 
 **Slab tray hotpatch (FR #7248, no MSI):** download the `bob-tray` artifact. Back up `<install>\tools`, `<install>\src`, `<install>\assets`. Run `Install-BobTrayHotpatch.ps1 -InstallRoot <ai root>\bob -ArtifactDir <unzipped artifact>` (or copy those three folders plus `tools\MANIFEST.json`). **FR #7300:** the installer never writes install-root `MANIFEST.json` — tray identity is `tools\MANIFEST.json` only. Restart the tray (`Start-BobFleetTray -ForceNew` / TipForm Restart). Do **not** restart ircBob / Ergo. Rollback: copy the backup folders back. Hash-check files against `MANIFEST.json` `files`. Copying only `bob-tray.exe` does **not** update TipForm display (Watch-BobTray / Get-BobTrayHover stay old).
+
+## About Plan / Priority versions (FR #8675 / BOB-10)
+
+About (compiled + TipForm fallback) shows non-empty `plan <version>` and `priority <version>` under the bob line.
+
+- **Plan:** first line of `<bob root>\plan\VERSION`, optional short SHA from `plan\BUILD.json` `commit` (7-40 hex). If the stamp is missing, use the bob product version with ` (via bob)`; else `unknown`. Pack/Install/Sync stamp via `Write-BobiversePlanIdentity`.
+- **Priority:** first AI-root folder named `priority-agent` or `priority-mcp` (safe default). Read `VERSION`, else `PriorityAgent.exe` ProductVersion. Else `not installed`.
+- Headless: `bob-about.exe --versions-out <file>` writes bob/plan/priority lines (CRLF, no BOM). Does not change `--text-out`.
+- Readers: `Common.PlanVersion` / `Common.PriorityVersion`; `Get-BobTrayPlanVersion` / `Get-BobTrayPriorityVersion`; `Get-BobComponentVersions`.
 
 ## Tray version label (FR #6924 / **FR #7247**)
 
