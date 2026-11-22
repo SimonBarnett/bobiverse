@@ -1076,6 +1076,11 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # FR #9053: POST /bob/v1/models/validate is not served (form-only validation).
+    # Answer before the POST_ROUTES gate so the body is JSON, not an empty 404.
+    if verb == "POST" and route == MODELS_VALIDATE_PATH:
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return 404, b'{"error":"no_models_validate","hint":"use GET /bob/v1/models catalog; Weights form validates"}'
     gate = _check_post_route(verb, route, peer_ip, allow_ips)
     if gate[0] != 0:
         return gate[0], gate[1]
@@ -1091,10 +1096,6 @@ def handle_request(
         return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
         return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
-    # No POST /bob/v1/models/validate — Weights form dropdowns are the validation (Si 2026-11-22).
-    if route == MODELS_VALIDATE_PATH:
-        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
-        return 404, b'{"error":"no_models_validate","hint":"use GET /bob/v1/models catalog; Weights form validates"}'
     return handle_report_post(headers, body, home, briefer_nick, filer=filer, rate=report_rate)
 
 
@@ -1680,8 +1681,7 @@ def main() -> None:
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
         f"PUT {MODELS_PATH} "
-        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
-        f"POST {MODELS_VALIDATE_PATH}",
+        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
         flush=True,
     )
     try:
