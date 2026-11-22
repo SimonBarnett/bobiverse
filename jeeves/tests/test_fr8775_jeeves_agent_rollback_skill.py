@@ -56,8 +56,9 @@ HARVEST_MARKS = (
 def _utf8(path: Path) -> str:
     raw = path.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf"), f"BOM in {path}"
-    text = raw.decode("utf-8")
-    assert "\r" not in text, f"CR in {path}"
+    # FR #8775 / MRB #8826: Windows autocrlf checks out LF blobs as CRLF.
+    # Normalize before ASCII/content pins; refuse BOM only.
+    text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     return text
 
 
