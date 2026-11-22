@@ -33,6 +33,9 @@ try:
 except Exception:  # pragma: no cover - PyYAML may be absent in slim envs
     yaml = None  # type: ignore
 
+# FR #8770: re-export from leaf module (acyclic; chair_commands imports builds_catalog).
+from builds_catalog import BUILD_USAGE_LINES, DEFAULT_RECIPE_REL  # noqa: F401
+
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RELEASE_BLOCKER_LABEL = "release-blocker"
 FEATURE_REQUEST_LABEL = "feature-request"
@@ -70,16 +73,29 @@ class RecipeError(ValueError):
     pass
 
 
+class TagLookupError(Exception):
+    """FR #8770: remote v-tag listing failed (distinct from empty tag set)."""
+
+
 def recipe_path(repo_root: Path, rel: str = "") -> Path:
     """Return the build.yml path under *repo_root*.
 
     FR #8490: *rel* may be a catalog ``yml`` relative path (e.g.
     ``pack/build.yml``). Empty / default → ``.bobiverse/build.yml``.
+    FR #8770: resolved path must stay inside *repo_root* (symlink-aware).
     """
+    root = Path(repo_root).resolve()
     text = (rel or "").strip().lstrip("/\\").replace("\\", "/")
     if not text or text in (".bobiverse/build.yml", ".bobiverse\\build.yml"):
-        return Path(repo_root) / ".bobiverse" / "build.yml"
-    return Path(repo_root) / Path(*text.split("/"))
+        return root / ".bobiverse" / "build.yml"
+    if ".." in text.split("/") or any(ch in text for ch in "?#%"):
+        raise RecipeError(f"build: recipe path escapes repo root: {rel!r}")
+    joined = (root / Path(*text.split("/"))).resolve()
+    try:
+        joined.relative_to(root)
+    except ValueError as exc:
+        raise RecipeError(f"build: recipe path escapes repo root: {rel!r}") from exc
+    return joined
 
 
 def load_recipe(repo_root: Path, rel: str = "") -> BuildRecipe:
@@ -700,8 +716,9 @@ class BuildDecision:
 
 # FR #6715: reserved verbs are recognised before the args are read as a build request,
 # so a mistyped/unknown subcommand can never fall through to a runner start.
+# FR #8770: help returns BUILD_USAGE_LINES (ok, no route/lock/recipe).
 BUILD_SUBCOMMANDS = frozenset(
-    ("status", "cancel", "dry-run", "dryrun", "dry", "preflight", "tests-only")
+    ("status", "cancel", "dry-run", "dryrun", "dry", "preflight", "tests-only", "help")
 )
 
 _OLD_BUILD_FORM_HINT = (
@@ -772,6 +789,21 @@ def version_refusal(version: str) -> str | None:
     )
 
 
+def _call_recipe_loader(
+    recipe_loader: Callable,
+    repo: str,
+    rel: str = "",
+) -> BuildRecipe | None:
+    """Pass ``rel=`` when non-default; TypeError falls back to one-arg loaders (FR #8770)."""
+    text = (rel or "").strip().replace("\\", "/")
+    if text and text != DEFAULT_RECIPE_REL:
+        try:
+            return recipe_loader(repo, rel=text)
+        except TypeError:
+            return recipe_loader(repo)
+    return recipe_loader(repo)
+
+
 def decide_build(
     *,
     who,  # chair_commands.Principal
@@ -786,8 +818,9 @@ def decide_build(
     dead_max_age_s: float | None = None,
     catalog_entries: list | None = None,
     catalog_loader: Callable[[], list] | None = None,
+    version_resolver: Callable[[str], str | None] | None = None,
 ) -> BuildDecision | None:
-    """FR #8490: numbered catalog UX (bare list / ``!build n``); old owner/repo refused."""
+    """FR #8490 / #8770: numbered catalog UX; auto version; catalog yml path."""
     import builds_catalog as bc
 
     parsed = parse_build(body)
@@ -799,22 +832,76 @@ def decide_build(
 
     ignored_set = {normalize_repo(x) for x in ignored}
     entries = _resolve_catalog_entries(catalog_entries, catalog_loader)
-    usage_lines = [
-        "build: usage !build | !build n [version] [ref] [--tests-only]",
-        "build: also !build status|cancel|dry-run|preflight|tests-only n",
-    ]
+    usage_lines = list(BUILD_USAGE_LINES)
+
+    if sub == "help":
+        return BuildDecision(True, "help", list(BUILD_USAGE_LINES), status_only=True)
 
     if sub == "list":
-        lines = bc.format_catalog_lines(entries)
+        next_versions: dict[str, str] = {}
+        if version_resolver is not None:
+            deadline = time.time() + 7.0
+            needed: list[str] = []
+            seen_repos: set[str] = set()
+            for e in entries:
+                if (e.version or "").strip():
+                    continue
+                repo_key = e.repo
+                if repo_key in seen_repos:
+                    continue
+                seen_repos.add(repo_key)
+                needed.append(repo_key)
+            for i, repo_key in enumerate(needed):
+                if time.time() >= deadline:
+                    for rem in needed[i:]:
+                        next_versions[rem] = "?"
+                    break
+                try:
+                    resolved = version_resolver(repo_key)
+                except TagLookupError:
+                    next_versions[repo_key] = "?"
+                except Exception:
+                    next_versions[repo_key] = "?"
+                else:
+                    next_versions[repo_key] = resolved if resolved else "-"
+        lines = bc.format_catalog_lines(
+            entries,
+            next_versions=next_versions or None,
+        )
         return BuildDecision(True, "list", lines, status_only=True)
 
     if sub == "status":
         rest_s = (rest or "").strip()
         if not rest_s:
+            running = lock.running() if lock else []
+            if not running:
+                return BuildDecision(
+                    True,
+                    "status",
+                    ["build: no build running"],
+                    status_only=True,
+                )
+            status_lines: list[str] = []
+            for held_repo, rid in running:
+                age = lock.age_s(held_repo) if lock else None
+                seen = lock.last_seen_age_s(held_repo) if lock else None
+                idxs = [
+                    str(i)
+                    for i, e in enumerate(entries, 1)
+                    if normalize_repo(e.repo) == normalize_repo(held_repo)
+                ]
+                entries_bit = ",".join(idxs) if idxs else "-"
+                age_n = int(age) if age is not None else 0
+                seen_n = int(seen) if seen is not None else 0
+                status_lines.append(
+                    f"build: running {held_repo} id={rid} "
+                    f"age={age_n}s seen={seen_n}s entries={entries_bit}"
+                )
             return BuildDecision(
                 True,
                 "status",
-                ["build status: use !build status n"],
+                status_lines,
+                [r for r, _rid in running],
                 status_only=True,
             )
         n, leftover = _leading_catalog_index(rest_s)
@@ -823,11 +910,11 @@ def decide_build(
             if REPO_RE.match(first):
                 return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
             return BuildDecision(
-                False, "usage", ["build: usage !build status n"]
+                False, "usage", list(BUILD_USAGE_LINES)
             )
         if leftover:
             return BuildDecision(
-                False, "usage", ["build: usage !build status n"]
+                False, "usage", list(BUILD_USAGE_LINES)
             )
         entry = bc.entry_at(entries, n)
         if entry is None:
@@ -879,11 +966,11 @@ def decide_build(
             if REPO_RE.match(first):
                 return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
             return BuildDecision(
-                False, "usage", ["build: usage !build cancel [n]"]
+                False, "usage", list(BUILD_USAGE_LINES)
             )
         if leftover:
             return BuildDecision(
-                False, "usage", ["build: usage !build cancel [n]"]
+                False, "usage", list(BUILD_USAGE_LINES)
             )
         entry = bc.entry_at(entries, n)
         if entry is None:
@@ -930,13 +1017,13 @@ def decide_build(
             return BuildDecision(
                 False,
                 "usage",
-                ["build: usage !build preflight n"],
+                list(BUILD_USAGE_LINES),
             )
         if leftover:
             return BuildDecision(
                 False,
                 "usage",
-                ["build: usage !build preflight n"],
+                list(BUILD_USAGE_LINES),
             )
         entry = bc.entry_at(entries, n)
         if entry is None:
@@ -956,7 +1043,8 @@ def decide_build(
                 catalog_name=entry.name,
             )
         try:
-            recipe = recipe_loader(repo)
+            # Preflight still checks the installed/default recipe (FR #8770).
+            recipe = _call_recipe_loader(recipe_loader, repo, entry.recipe_rel)
         except RecipeError as exc:
             return BuildDecision(
                 False,
@@ -1009,7 +1097,7 @@ def decide_build(
             return BuildDecision(
                 False,
                 "usage",
-                ["build: usage !build dry-run n [version] [ref]"],
+                list(BUILD_USAGE_LINES),
                 dry_run=True,
             )
         return BuildDecision(False, "usage", usage_lines, dry_run=dry)
@@ -1028,36 +1116,54 @@ def decide_build(
     ref = tokens[1] if len(tokens) > 1 else (entry.ref or "HEAD")
     if len(tokens) > 2:
         return BuildDecision(False, "usage", usage_lines, dry_run=dry)
-    if not version:
+
+    try:
+        repo, recipe_rel = bc.parse_yml_field(entry.yml)
+    except ValueError as exc:
         return BuildDecision(
             False,
-            "usage",
-            [
-                f"build: catalog entry {n}) {entry.name} has no version; "
-                f"pass !build {n} <version> [ref]"
-            ],
+            "bad_yml",
+            [f"build: catalog entry {n} {exc}"],
             dry_run=dry,
             catalog_index=n,
             catalog_name=entry.name,
         )
+
+    if not version:
+        if version_resolver is not None:
+            try:
+                version = version_resolver(repo) or ""
+            except TagLookupError as exc:
+                why = str(exc).strip() or "error"
+                return BuildDecision(
+                    False,
+                    "tag_lookup",
+                    [
+                        f"build: catalog entry {n}) {entry.name}: tag lookup failed "
+                        f"({why}); pass !build {n} <version> [ref]"
+                    ],
+                    dry_run=dry,
+                    catalog_index=n,
+                    catalog_name=entry.name,
+                )
+        if not version:
+            return BuildDecision(
+                False,
+                "usage",
+                [
+                    f"build: catalog entry {n}) {entry.name} has no version; "
+                    f"pass !build {n} <version> [ref]"
+                ],
+                dry_run=dry,
+                catalog_index=n,
+                catalog_name=entry.name,
+            )
     refusal = version_refusal(version)
     if refusal:
         return BuildDecision(
             False,
             "bad_version",
             [refusal],
-            dry_run=dry,
-            catalog_index=n,
-            catalog_name=entry.name,
-        )
-
-    try:
-        repo, _rel = bc.parse_yml_field(entry.yml)
-    except ValueError as exc:
-        return BuildDecision(
-            False,
-            "bad_yml",
-            [f"build: catalog entry {n} {exc}"],
             dry_run=dry,
             catalog_index=n,
             catalog_name=entry.name,
@@ -1085,7 +1191,7 @@ def decide_build(
         lines.append(f"build: {repo} is ignored; nothing started")
     else:
         try:
-            recipe = recipe_loader(repo)
+            recipe = _call_recipe_loader(recipe_loader, repo, recipe_rel)
         except RecipeError as exc:
             lines.append(
                 str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}"
@@ -1170,6 +1276,9 @@ def decide_build(
             route += f" output={output}"
         if install:
             route += f" install={install}"
+        # FR #8770: recipe= only for non-default catalog paths (legacy routes stay identical).
+        if recipe_rel and recipe_rel != DEFAULT_RECIPE_REL:
+            route += f" recipe={recipe_rel}"
     return BuildDecision(
         bool(ok_repos) or (dry and bool(lines)),
         "dry_run" if dry else ("ok" if ok_repos else "refused"),
@@ -1205,7 +1314,8 @@ def dry_run_plan(recipe: BuildRecipe, *, repo: str, version: str, ref: str) -> l
 BUILD_V1_RE = re.compile(
     r"^BUILD\s+v1\s+repos=(?P<repos>\S+)\s+version=(?P<version>\S+)\s+ref=(?P<ref>\S+)"
     r"(?:\s+id=(?P<id>\S+))?(?:\s+tests_only=(?P<tests_only>\S+))?"
-    r"(?:\s+output=(?P<output>\S+))?(?:\s+install=(?P<install>\S+))?\s*$",
+    r"(?:\s+output=(?P<output>\S+))?(?:\s+install=(?P<install>\S+))?"
+    r"(?:\s+recipe=(?P<recipe>\S+))?\s*$",
     re.IGNORECASE,
 )
 
@@ -1243,8 +1353,9 @@ INSTALLTEST_V1_RE = re.compile(
 BUILD_RUNNER_REQUIRED_IMPORTS = ("yaml",)
 
 # Fallback DIGEST_ID_FOLD when bobreport is not importable (tests / slim envs).
+# FR #8653 / #8697: ionos folds to walrus (live chair host), not win-mpre.
 _BUILD_ID_FOLD = {
-    "ionos": "win-mpre8vi4u6u",
+    "ionos": "walrus",
     "dev1": "ce-priority-dev1",
 }
 
@@ -1278,6 +1389,7 @@ def parse_build_v1_route(text: str) -> dict | None:
         "tests_only": str(m.group("tests_only") or "").strip().lower() in ("1", "true", "yes"),
         "output": (m.group("output") or "").strip(),
         "install": (m.group("install") or "").strip(),
+        "recipe_rel": (m.group("recipe") or "").strip(),
         "raw": raw,
     }
 
@@ -1936,7 +2048,7 @@ def recipe_max_run_s(recipe: BuildRecipe | None, *, cap: float | None = None) ->
 
 
 def fold_build_machine(mid: str) -> str:
-    """DIGEST_ID_FOLD: ``ionos`` -> ``win-mpre8vi4u6u`` (canonical). Prefer bobreport."""
+    """DIGEST_ID_FOLD: ``ionos`` -> ``walrus`` (canonical chair host). Prefer bobreport."""
     s = str(mid or "").strip().lstrip("#").lower()
     if not s:
         return ""
@@ -3919,6 +4031,7 @@ def enqueue_build_job(
         "tests_only": bool(route.get("tests_only")),
         "output": str(route.get("output") or "").strip(),
         "install": str(route.get("install") or "").strip(),
+        "recipe_rel": str(route.get("recipe_rel") or "").strip(),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
@@ -4639,24 +4752,143 @@ class InstallTestRunner:
 # ------------------------------------------------------------------ live helpers (hotpatch-build)
 
 
+_V_TAG_NAME_RE = re.compile(r"^v\d+\.\d+\.\d+(?:\.\d+)?$")
+
+
+def list_remote_v_tags(
+    repo: str,
+    *,
+    gh_runner: Callable | None = None,
+    timeout: float = 8.0,
+) -> list[str]:
+    """List ``v*`` tag ref names via ``gh api --paginate`` (FR #8770).
+
+    Raises ``TagLookupError`` on non-zero exit, timeout, bad JSON, or 404.
+    Never maps failure to an empty list.
+    """
+    import json as _json
+    import subprocess as _sp
+
+    runner = gh_runner or _sp.run
+    api = f"repos/{normalize_repo(repo)}/git/matching-refs/tags/v"
+    try:
+        cp = runner(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                api,
+                "-H",
+                "Accept: application/vnd.github+json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=float(timeout),
+        )
+    except _sp.TimeoutExpired as exc:
+        raise TagLookupError(f"timeout after {timeout}s") from exc
+    except TypeError:
+        # Injected runners may not accept timeout=.
+        cp = runner(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                api,
+                "-H",
+                "Accept: application/vnd.github+json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    code = int(getattr(cp, "returncode", 0) or 0)
+    out = getattr(cp, "stdout", "") or ""
+    err = getattr(cp, "stderr", "") or ""
+    blob = err + out
+    if code != 0:
+        if "404" in blob or "Not Found" in blob:
+            raise TagLookupError("404")
+        raise TagLookupError(f"gh api rc={code}")
+    try:
+        data = _json.loads(out) if out.strip() else []
+    except _json.JSONDecodeError as exc:
+        raise TagLookupError("bad JSON") from exc
+    if not isinstance(data, list):
+        raise TagLookupError("bad JSON shape")
+    names: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref") or "").strip()
+        if ref.startswith("refs/tags/"):
+            names.append(ref[len("refs/tags/") :])
+        elif ref:
+            names.append(ref)
+    return names
+
+
+def next_patch_from_v_tags(tags: Iterable[str]) -> str | None:
+    """Bump last component of the highest ``vX.Y.Z[.W]`` tag (FR #8770).
+
+    On equal numeric prefix prefer the longer (4-part) tag. Keep the same arity.
+    """
+    best: tuple[tuple[int, ...], int, tuple[int, ...]] | None = None
+    for raw in tags:
+        name = (raw or "").strip()
+        if name.startswith("refs/tags/"):
+            name = name[len("refs/tags/") :]
+        if not _V_TAG_NAME_RE.match(name):
+            continue
+        parts = tuple(int(p) for p in name[1:].split("."))
+        # Sort key: zero-padded numeric prefix (len 4), then prefer longer arity.
+        padded = parts + (0,) * (4 - len(parts))
+        key = (padded, len(parts), parts)
+        if best is None or key > best:
+            best = key
+    if best is None:
+        return None
+    parts = list(best[2])
+    parts[-1] += 1
+    return ".".join(str(p) for p in parts)
+
+
+def resolve_next_build_version(
+    repo: str,
+    *,
+    gh_runner: Callable | None = None,
+    timeout: float = 8.0,
+) -> str | None:
+    """Latest numeric v-tag + 1 patch, or None when no matching tags (FR #8770)."""
+    tags = list_remote_v_tags(repo, gh_runner=gh_runner, timeout=timeout)
+    return next_patch_from_v_tags(tags)
+
+
 def fetch_remote_recipe(
     repo: str,
     *,
     ref: str | None = None,
+    rel: str = "",
     gh_runner: Callable | None = None,
 ) -> BuildRecipe | None:
-    """Load ``.bobiverse/build.yml`` from GitHub for ``repo``; None when the repo has none.
+    """Load build.yml from GitHub for ``repo``; None when the repo has none.
 
     Optional *ref* is passed as ``?ref=`` (FR #6484). Empty / ``HEAD`` maps to ``main``.
+    FR #8770: *rel* selects the contents path (default ``.bobiverse/build.yml``);
+    path segments and the ref query value are URL-encoded.
     """
     import subprocess as _sp
     import tempfile as _tf
+    import urllib.parse as _up
 
     runner = gh_runner or _sp.run
-    api = f"repos/{normalize_repo(repo)}/contents/.bobiverse/build.yml"
+    recipe_rel = (rel or "").strip().replace("\\", "/") or DEFAULT_RECIPE_REL
+    encoded = "/".join(_up.quote(seg, safe="") for seg in recipe_rel.split("/") if seg)
+    api = f"repos/{normalize_repo(repo)}/contents/{encoded}"
     ref_s = (ref or "").strip()
     if ref_s and ref_s.upper() != "HEAD":
-        api = f"{api}?ref={ref_s}"
+        api = f"{api}?ref={_up.quote(ref_s, safe='')}"
     elif ref_s.upper() == "HEAD":
         api = f"{api}?ref=main"
     cp = runner(
@@ -4676,10 +4908,12 @@ def fetch_remote_recipe(
             return None
         raise RecipeError(f"build: {repo} recipe lookup failed rc={code}")
     with _tf.TemporaryDirectory() as td:
-        p = Path(td) / ".bobiverse"
-        p.mkdir()
-        (p / "build.yml").write_text(out, encoding="utf-8")
-        return load_recipe(Path(td))
+        td_path = Path(td)
+        # Preserve relative layout so load_recipe(root, rel) resolves correctly.
+        dest = recipe_path(td_path, recipe_rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(out, encoding="utf-8")
+        return load_recipe(td_path, recipe_rel)
 
 
 def load_bobiverse_recipe_local_or_remote(
@@ -4687,26 +4921,35 @@ def load_bobiverse_recipe_local_or_remote(
     repo: str,
     *,
     ref: str | None = None,
+    rel: str = "",
     gh_runner: Callable | None = None,
     ensure_token: Callable[[], None] | None = None,
 ) -> BuildRecipe:
-    """Local ``.bobiverse/build.yml`` first; else GitHub fetch (FR #6484 packaged chair).
+    """Local recipe first; else GitHub fetch (FR #6484 packaged chair).
 
     FR #6487: a present local file that fails to parse/validate is not treated as
     missing — the real ``RecipeError`` propagates (no silent remote fallback).
+    FR #8770: optional *rel* selects a non-default catalog path.
     Raises ``RecipeError`` with the familiar ``nothing started`` line when both miss.
     """
+    recipe_rel = (rel or "").strip().replace("\\", "/") or DEFAULT_RECIPE_REL
     for cand in candidates:
         root = Path(cand)
-        if not recipe_path(root).is_file():
+        try:
+            path = recipe_path(root, recipe_rel)
+        except RecipeError:
             continue
-        return load_recipe(root)
+        if not path.is_file():
+            continue
+        return load_recipe(root, recipe_rel)
     if ensure_token is not None:
         try:
             ensure_token()
         except Exception:
             pass
-    recipe = fetch_remote_recipe(repo, ref=ref, gh_runner=gh_runner)
+    recipe = fetch_remote_recipe(
+        repo, ref=ref, rel=recipe_rel, gh_runner=gh_runner
+    )
     if recipe is None:
         raise RecipeError(f"build: {repo} has no .bobiverse/build.yml; nothing started")
     return recipe

@@ -169,6 +169,7 @@ EXIT_LAUNCH_FAIL = 6
 EXIT_REFUSED = 7  # t815u: already the maximum number of workers running
 EXIT_STALE_BUILD = 8  # FR #2782 legacy; FR #3180 keeps the seat running and asks for a manual restart instead
 EXIT_XAI_AUTH_EXPIRED = 9  # FR #7345: Grok sign-in missing/expired; do not launch interactive auth
+EXIT_OUT_OF_FUEL = 10  # FR #8814: fuel exhausted — dialog then quit (no out_of_fuel zombie seat)
 
 def _default_install_root() -> str:
     """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
@@ -2583,6 +2584,17 @@ def explicit_opencode_decision(
             % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
     if not opencode_pool_has_tokens(fuel, pool, start_model=mid):
+        # FR #8758: a free start model with free known 0 must not refuse when
+        # paid/Go can still be tried. resolve_opencode_model (FR #8454 / #8541)
+        # picks the paid tray slot after this Decision; refusing here stranded
+        # redqueen seats on flash-free with free=0 go=None.
+        if pool == "opencode_free" and _opencode_free_known_zero(fuel):
+            if _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel):
+                return Decision(
+                    "opencode",
+                    "explicit opencode: free exhausted, trying paid (model=%s free=%s go=%s)"
+                    % (mid or "-", fuel.opencode_free, fuel.opencode_go),
+                )
         return Decision(
             "refuse",
             "explicit opencode: no usable fuel (model=%s pool=%s free=%s go=%s)"
@@ -2725,7 +2737,7 @@ def list_worker_agents(
             "reason": "Grok, then Cursor, then OpenCode",
         }
     ]
-    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "OpenCode"))
+    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "Open Code"))  # FR #8713 / BOB-06
     installed = {"grok": bool(grok_exe), "cursor": bool(cursor_cmd), "opencode": bool(opencode_cmd)}
     for agent_id, label in labels:
         present = installed[agent_id]
@@ -2767,7 +2779,7 @@ def unknown_agent_list_rows() -> list[dict]:
         },
         {"id": "grok", "label": "Grok", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
         {"id": "cursor", "label": "Cursor", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
-        {"id": "opencode", "label": "OpenCode", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+        {"id": "opencode", "label": "Open Code", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
     ]
 
 
@@ -3599,10 +3611,16 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"FR #7000 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI instead — "
-        f"`python {Path(worker_dir).parent}\\bob\\scripts\\skill_dag_mcp.py` with the same `--root` / `--job-worktree` args as "
-        f"`{worker_dir}\\.cursor\\mcp.json`, plus `--once resolve --seed FR` then `--once get_skill --path <matched path>` "
-        f"(JSON on stdout). Do not invent skill bodies. "
+        f"FR #7000 / #8785 / #8846 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
+        f"`{worker_dir}\\.cursor\\mcp.json` -> mcpServers.skill-dag only: run its `command` with **all** `args` unchanged "
+        f"(script is args[0]; keep every `--root` and `--job-worktree-file`), then append "
+        f"`--once resolve --seed <job-type token>` (e.g. FR or MRB) and `--once get_skill --path <matched[].path>` "
+        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path. "
+        f"PowerShell: `$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
+        f"& $cfg.command @($cfg.args) --once resolve --seed MRB`. Do not invent skill bodies. "
+        f"CAST IRON (FR #8846): a missing or dead skill-dag MCP is never fixed by grepping job skills from disk. "
+        f"If mcp.json is missing, MCP unreachable, and the mcp.json --once CLI also fails, ACK then GIVEUP with reason "
+        f"`skill-dag-mcp-down` (optional diagnostic only on that GIVEUP line). Do not continue the FR/MRB/UAT job. "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -3620,7 +3638,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
-        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. FR #8852: before worktree add, Assert-BobiverseJobWorktreePath on $wt (dot common\\scripts\\Bobiverse-Common.ps1, never common\\Bobiverse-Common.ps1); refuse empty/relative paths that would create <install>\\origin\\main. "
         f"FR #8022: open-PR MRB/FIX worktrees must start at gh pr view headRefOid (verify git rev-parse HEAD); never base an open MRB review tree on origin/main. Quote that SHA on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         f"Windows PowerShell 5.1 only (FR #6341): use Get-ChildItem -Depth (not -MaxDepth); use Select-String. Do not run Unix grep or head. Job worktrees: use $env:BOB_JOB_WORKTREE_BASE (and $env:BOB_JOB_WORKTREE when set); never search drives for ai\\worktrees. "
         f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
@@ -3808,7 +3826,7 @@ def maintenance_icon_path(folder: Path) -> Optional[Path]:
 def rules_text(folder: str, kind: str) -> str:
     extra = {
         "plan": "PLAN SEAT ONLY: no IRC, no builds.",
-        "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; never act as chair; prefer token-free monitor scripts; self-harvest after every finding.",
+        "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; may run Jeeves commands via ear relay/nick monitoring to keep the queue moving (FR #8827); never Ergo/merge/UAT/VERSION; prefer token-free monitor scripts; self-harvest after every finding.",
         "maintenance": "JEEVES MAINTENANCE ONLY (FR #2412/#2522): diagnose after heal still failing; safe hotpatch only; file intake issue; check/test changes only via PR+MRB; harvest BEFORE writing the done file; never Ergo/BobIrcd; never act as chair.",
         # FR #3623: headless shop seats must never block on interactive ask_user_question.
         "agent": (
@@ -3824,6 +3842,8 @@ def rules_text(folder: str, kind: str) -> str:
         skill_line = (
             f"Read {folder}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
             f"(do not read every skill in {folder}\\.grok\\skills). "
+            f"FR #8846: if skill-dag MCP and the mcp.json --once CLI both fail, GIVEUP skill-dag-mcp-down — "
+            f"never continue FR/MRB/UAT by reading job skills from disk. "
         )
     return (f"{head}{skill_line}"
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
@@ -9860,6 +9880,132 @@ def _http_post_json(
     return False
 
 
+def out_of_fuel_quit_enabled(env: Optional[dict] = None) -> bool:
+    """FR #8814: after fuel GIVEUP, dialog + quit by default (no zombie out_of_fuel seat).
+
+    Set ``BOB_WORKER_OUT_OF_FUEL_QUIT=0`` to keep the legacy FR #3012 hold until fuel returns.
+    """
+    env = os.environ if env is None else env
+    raw = str(env.get("BOB_WORKER_OUT_OF_FUEL_QUIT", "1") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def format_out_of_fuel_dialog_text(
+    *,
+    pool: str = "",
+    remaining: str = "",
+    reset_hint: str = "",
+    evidence: str = "",
+    nick: str = "",
+) -> str:
+    """User-visible dialog body for FR #8814 fuel-exhausted quit."""
+    lines = ["Fuel exhausted for this seat."]
+    pool_s = (pool or "").strip()
+    if pool_s:
+        lines.append(f"Pool: {pool_s}")
+    rem_s = (remaining or "").strip()
+    if rem_s:
+        lines.append(f"Remaining: {rem_s}")
+    reset_s = (reset_hint or "").strip()
+    if reset_s:
+        lines.append(f"Reset: {reset_s}")
+    nick_s = (nick or "").strip()
+    if nick_s:
+        lines.append(f"Seat: {nick_s}")
+    preview = one_line(evidence or "", 160)
+    if preview:
+        lines.append(preview)
+    lines.append("This seat will close now so it leaves the digest.")
+    return "\n".join(lines)
+
+
+def show_out_of_fuel_dialog(
+    *,
+    pool: str = "",
+    remaining: str = "",
+    reset_hint: str = "",
+    evidence: str = "",
+    nick: str = "",
+    title: str = "Bobiverse — out of fuel",
+    show_fn: Optional[Callable[[str, str], None]] = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """Show fuel-exhausted dialog (FR #8814). Returns True when a dialog path ran.
+
+    ``show_fn(text, title)`` is injectable for tests. When unset, uses Win32 MessageBoxW
+    unless ``BOB_WORKER_FUEL_DIALOG=0`` (headless / CI skip).
+    """
+    env = os.environ if env is None else env
+    text = format_out_of_fuel_dialog_text(
+        pool=pool,
+        remaining=remaining,
+        reset_hint=reset_hint,
+        evidence=evidence,
+        nick=nick,
+    )
+    if show_fn is not None:
+        show_fn(text, title)
+        return True
+    raw = str(env.get("BOB_WORKER_FUEL_DIALOG", "1") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        if log:
+            try:
+                log("out-of-fuel: dialog skipped (BOB_WORKER_FUEL_DIALOG=0)")
+            except Exception:
+                pass
+        return False
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        MB_OK = 0x00000000
+        MB_ICONWARNING = 0x00000030
+        user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+        return True
+    except Exception as e:
+        if log:
+            try:
+                log(f"out-of-fuel: dialog failed {type(e).__name__}")
+            except Exception:
+                pass
+        return False
+
+
+def post_digest_worker_remove(
+    *,
+    machine: str,
+    nick: str,
+    pid: int | str | None = None,
+    url: str | None = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """FR #8814: remove the seat nick from digest workers so out_of_fuel zombies leave."""
+    env = os.environ if env is None else env
+    report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
+    nick_s = (nick or "").strip()
+    if not report or not nick_s:
+        return False
+    mid = normalize_machine_id(machine) or str(machine or "").strip().lower()
+    row: dict = {
+        "op": "worker-remove",
+        "machine": mid,
+        "id": mid,
+        "nick": nick_s,
+    }
+    if pid is not None and str(pid).strip() != "":
+        try:
+            row["pid"] = int(str(pid))
+        except (TypeError, ValueError):
+            pass
+    ok = bool(_http_post_json(report, row, log=log))
+    if not ok and log:
+        try:
+            log(f"post_digest_worker_remove failed mid={mid} nick={nick_s}")
+        except Exception:
+            pass
+    return ok
+
+
 def post_digest_out_of_fuel(
     *,
     machine: str,
@@ -9874,6 +10020,7 @@ def post_digest_out_of_fuel(
 
     FR #5032: include weekly=0 so peers paint exhausted (0%% red) instead of a stale %.
     FR #8494: also POST worker-work ``state=out_of_fuel`` so the seat row is not idle.
+    FR #8814: callers that quit the seat should follow with ``post_digest_worker_remove``.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -10451,6 +10598,9 @@ class Relay:
         self.ack_refuse_reason: Optional[Callable[[str], Optional[str]]] = None
         # True when a live turn belongs to another job (NACK busy, no inject).
         self.turn_busy_other_job: Optional[Callable[[str], bool]] = None
+        # FR #8738: True while the prior job's closing turn is still open. Held assigns
+        # stay parked (no inject) until that turn has ended.
+        self.defer_flush_while: Optional[Callable[[], bool]] = None
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
         with self._lock:
@@ -11011,6 +11161,9 @@ class Relay:
         FR #4180: while out-of-fuel refuse is active, NACK parked assigns instead of injecting.
         Otherwise (FR #4115): inject only the first held assign; extra assigns are NACKed via
         the seat outbox (``busy, holding <first>``) without spending an agent turn.
+        FR #8738: while ``defer_flush_while`` says the prior job's closing turn is still
+        open, keep the assigns parked (return 0). Every flush caller (turn watcher,
+        harvest expiry, watchdog, post_bored) goes through this one gate.
         """
         with self._lock:
             keep: list = []
@@ -11060,6 +11213,21 @@ class Relay:
                         self.on_refuse_assign(line)
                     except Exception:
                         pass
+            return 0
+        defer = False
+        if flush:
+            try:
+                defer = bool(self.defer_flush_while and self.defer_flush_while())
+            except Exception:
+                defer = False
+        if defer:
+            with self._lock:
+                # Put them back in front, in order, ahead of anything parked meanwhile.
+                self._pending = list(flush) + [p for p in self._pending if p not in flush]
+            self.log(
+                f"relay: kept {len(flush)} held assign(s) parked - prior job's closing "
+                "turn still open (FR #8738)"
+            )
             return 0
         # FR #6134: NACK hostile MRB/UAT that were held before kind was known / seat restarted.
         kept = []
@@ -11134,6 +11302,16 @@ class Relay:
                 if assign_job_ref(line):
                     return True
         return False
+
+    def pending_assign_keys(self) -> set:
+        """FR #8738: lower-cased typed keys of assigns still parked (not injected)."""
+        keys: set = set()
+        with self._lock:
+            for line in list(self._pending) + list(self._overflow):
+                k = assign_job_key(line)
+                if k:
+                    keys.add(k.lower())
+        return keys
 
     def close(self) -> None:
         with self._lock:
@@ -13998,10 +14176,16 @@ class BoredEmitter:
       * FR #5505: ACK-on-receipt for a still-parked assign must not clear harvest_hold; when harvest
         expires (or held-assign watchdog fires), always release_held_assigns even if free/done !bored
         is still pending, so an ACKed hold cannot sit idle forever;
+      * FR #8738: DONE/NACK/GIVEUP written inside an open turn, or the done-miss reminder, opens
+        the prior job's *closing turn*. Until that turn ends (``finish_turn_hold_max_s`` safety cap,
+        default 1800 s) incoming assigns stay parked and Relay never flushes into it; the reminder
+        turn counts as open before the watcher reports turn_started; done-miss ``!bored`` waits
+        while the reminder turn shows agent I/O; a parked ACKed-on-receipt assign is not a done-miss;
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
         second per reason; only the seat's own shop; never after IRC loss/shutdown (stop()).
     Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END,
-    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S, BOB_WORKER_HELD_ASSIGN_WATCHDOG_S.
+    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S, BOB_WORKER_HELD_ASSIGN_WATCHDOG_S,
+    BOB_WORKER_FINISH_TURN_HOLD_MAX_S.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
@@ -14009,7 +14193,8 @@ class BoredEmitter:
                  nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
                  turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None,
                  done_miss_reply_s: float | None = None,
-                 ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None):
+                 ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None,
+                 finish_turn_hold_max_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.kind = ""  # FR #7265: seat kind on turn-end !bored logs
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
@@ -14058,6 +14243,20 @@ class BoredEmitter:
             else _env_float("BOB_WORKER_HELD_ASSIGN_WATCHDOG_S", 180.0, 30.0, 3600.0)
         )
         self._held_assign_since: Optional[float] = None
+        # FR #8738: the prior job's closing turn (DONE/NACK/GIVEUP written mid-turn, or the
+        # done-miss reminder turn) is still running. Parked assigns stay parked and
+        # done-miss !bored stays quiet until that turn ends (or this safety cap).
+        self.finish_turn_hold_max_s = (
+            float(finish_turn_hold_max_s) if finish_turn_hold_max_s is not None
+            else _env_float("BOB_WORKER_FINISH_TURN_HOLD_MAX_S", 1800.0, 90.0, 7200.0)
+        )
+        self._finish_turn_at: Optional[float] = None
+        self._finish_turn_key: Optional[str] = None
+        # True while the closing turn is the done-miss reminder and the turn watcher has
+        # not yet seen it start (Cursor/Grok transcript lag): treat it as an open turn.
+        self._finish_turn_unseen = False
+        # FR #8738: closing turn ended with assigns parked - flush on the next tick.
+        self._flush_after_closing = False
         self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
         self._ready = False
@@ -14140,6 +14339,8 @@ class BoredEmitter:
         self.out_of_fuel_release_fn: Optional[Callable[[str], None]] = None
         # FR #4180: always run once when entering the hold (clear ack-miss / HangDetector).
         self.out_of_fuel_enter_fn: Optional[Callable[[], None]] = None
+        # FR #8814: after enter+release, quit the seat (dialog + digest worker-remove + shutdown).
+        self.out_of_fuel_quit_fn: Optional[Callable[[str], None]] = None
         self.fuel_check_fn: Optional[Callable[[], bool]] = None
         # FR #3019: while ACK open, True => mid-job fuel lost (Cursor/Grok reading exhausted).
         self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
@@ -14163,11 +14364,78 @@ class BoredEmitter:
             or (self._free_key and self._free_key != self._last_free_key)
         )
 
+    def _relay_parks(self, key: str) -> bool:
+        """FR #8738: True when ``key`` is an assign still parked in the Relay."""
+        if self.relay is None or not key:
+            return False
+        try:
+            fn = getattr(self.relay, "pending_assign_keys", None)
+            return bool(fn) and key.lower() in fn()
+        except Exception:
+            return False
+
+    def _turn_live(self) -> bool:
+        """FR #8738: watcher-open turn, or a done-miss reminder turn not yet seen to start."""
+        return bool(
+            self._turn_open
+            or (self._finish_turn_at is not None and self._finish_turn_unseen)
+        )
+
+    def _clear_finish_turn(self, why: str = "") -> None:
+        """FR #8738: drop the prior job's closing-turn mark. Caller holds ``_cv``."""
+        if self._finish_turn_at is not None and why:
+            self.log(
+                f"bored: closing turn for {self._finish_turn_key or 'job'} over ({why})"
+            )
+        self._finish_turn_at = None
+        self._finish_turn_key = None
+        self._finish_turn_unseen = False
+
+    def _note_finish_turn(self, now: float, key: Optional[str], *, unseen: bool = False) -> None:
+        """FR #8738: the prior job is closing inside a turn that has not ended yet."""
+        if self._finish_turn_at is None:
+            self._finish_turn_at = now
+            self._finish_turn_key = key or self._finish_turn_key
+            self.log(
+                f"bored: closing turn open for {key or 'job'} - park new assigns until turn_ended"
+            )
+        elif key and not self._finish_turn_key:
+            self._finish_turn_key = key
+        if unseen:
+            self._finish_turn_unseen = True
+
+    def _closing_turn_live(self, now: float) -> bool:
+        """FR #8738: True while the prior job's closing turn is still running.
+
+        Set when DONE/NACK/GIVEUP lands while a turn is open, or when the done-miss
+        reminder is injected. Cleared on ``turn_ended`` (or stand-down / out-of-fuel /
+        reply-window give-up). ``finish_turn_hold_max_s`` is the safety cap for a lost
+        ``turn_ended``. Caller holds ``_cv``.
+        """
+        at = self._finish_turn_at
+        if at is None:
+            return False
+        if not self._turn_live():
+            self._clear_finish_turn()
+            return False
+        if now - float(at) >= float(self.finish_turn_hold_max_s):
+            self._clear_finish_turn(
+                f"no turn_ended after {self.finish_turn_hold_max_s:.0f}s; safety net"
+            )
+            return False
+        return True
+
+    @property
+    def closing_turn_open(self) -> bool:
+        """FR #8738: Relay must not flush held assigns into the prior job's closing turn."""
+        with self._cv:
+            return self._closing_turn_live(self.clock())
+
     def _extend_hold_for_open_turn(self, now: float) -> bool:
         """FR #2834: keep harvest busy while turn open, until turn_ended or turn_hold_max_s."""
         if not bored_on_turn_end_enabled():
             return False
-        if not self._turn_watcher_armed or not self._turn_open:
+        if not self._turn_watcher_armed or not self._turn_live():
             return False
         if self._hold_started_at is None or not self._pending_harvest_fire():
             return False
@@ -14189,7 +14457,11 @@ class BoredEmitter:
             now = self.clock()
             if self._harvest_until is not None and now < float(self._harvest_until):
                 return True
-            return self._extend_hold_for_open_turn(now)
+            if self._extend_hold_for_open_turn(now):
+                return True
+            # FR #8738: past the !bored safety cap (or after a done-miss reminder the
+            # watcher has not seen start) the prior job's turn may still be closing.
+            return self._closing_turn_live(now)
 
     def note_held_assign(self) -> None:
         """FR #2811: Relay parked an assign; stay offer-pending until flush."""
@@ -14368,6 +14640,9 @@ class BoredEmitter:
                 f"{self._opencode_finish_attempt}/{opencode_finish_run_max()} progress=pending"
             )
         self.log(f"done-miss: reminder injected for {key}")
+        # FR #8738: the reminder starts the job's closing turn even before the watcher
+        # reports turn_started; nothing new is delivered into it until it ends.
+        self._note_finish_turn(now, key, unseen=not self._turn_open)
         fn = self.done_miss_remind_fn
         if fn is not None:
             # FR #8268: caller holds _cv. The reminder takes supervisor RLock
@@ -14396,6 +14671,8 @@ class BoredEmitter:
         self._release_gen = self._turn_gen
         self._arm_skip = True
         self._hold_release_at = now
+        # FR #8738: the closing turn is over (turn_ended) or judged dead (reply window).
+        self._clear_finish_turn()
         self.log(f"done-miss: still no DONE for {key} after reminder - releasing seat")
 
     def _maybe_expire_done_miss_reply(self, now: float) -> None:
@@ -14411,8 +14688,23 @@ class BoredEmitter:
         until = self._done_miss_reply_until
         if until is None or now < float(until):
             return
+        # FR #8738: the reminder turn may be running without a turn_started seen yet.
+        # Agent I/O since the reminder (inside ack_quiet_s) is that turn: stay busy.
+        if self._reminder_turn_active(now):
+            return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._arm_done_miss_release(now, key)
+
+    def _reminder_turn_active(self, now: float) -> bool:
+        """FR #8738: agent I/O after the done-miss reminder, inside ``ack_quiet_s``."""
+        if self._finish_turn_at is None or not self._finish_turn_unseen:
+            return False
+        if not self._closing_turn_live(now):
+            return False
+        active = self._agent_active_at
+        if active is None or float(active) < float(self._finish_turn_at):
+            return False
+        return (now - float(active)) < float(self.ack_quiet_s)
 
     def _ack_held(self, now: float) -> bool:
         """ACK still owns the seat (FR #4827).
@@ -14457,24 +14749,29 @@ class BoredEmitter:
             return bool(self._out_of_fuel)
 
     def note_out_of_fuel(self, evidence: str = "") -> Optional[str]:
-        """FR #3012: mark out-of-fuel, clear ACK/done-miss, invoke release_fn once with the job key.
+        """FR #3012: mark out-of-fuel, clear ACK/done-miss, invoke out_of_fuel_release_fn once with the job key.
 
         Returns the job key that was open (for shop GIVEUP / digest), or None.
         FR #4180: also invoke ``out_of_fuel_enter_fn`` once so Supervisors can disarm
         ack-miss / HangDetector even when no ACK was open.
+        FR #8814: then ``out_of_fuel_quit_fn`` (dialog + worker-remove + seat exit) unless
+        ``BOB_WORKER_OUT_OF_FUEL_QUIT=0``.
         """
         release_key: Optional[str] = None
         fn: Optional[Callable[[str], None]] = None
         enter_fn: Optional[Callable[[], None]] = None
+        quit_fn: Optional[Callable[[str], None]] = None
+        evidence_s = evidence or ""
         with self._cv:
             if self._out_of_fuel:
                 return None  # already held; no second GIVEUP
             now = self.clock()
             self._out_of_fuel = True
             self._out_of_fuel_at = now
-            self._out_of_fuel_hard_402 = is_hard_402_out_of_fuel_text(evidence or "")
+            self._out_of_fuel_hard_402 = is_hard_402_out_of_fuel_text(evidence_s)
             self._out_of_fuel_clear_reason = None
             self._clear_done_miss()
+            self._clear_finish_turn()
             self._inject_pending = False
             self._inject_at = None
             self._nak_due = None
@@ -14493,10 +14790,16 @@ class BoredEmitter:
             self._harvest_until = None
             fn = self.out_of_fuel_release_fn
             enter_fn = self.out_of_fuel_enter_fn
-            preview = one_line(evidence or "out-of-fuel", 100)
+            quit_fn = self.out_of_fuel_quit_fn
+            preview = one_line(evidence_s or "out-of-fuel", 100)
             hard = " hard-402" if self._out_of_fuel_hard_402 else ""
+            quit_soon = quit_fn is not None and out_of_fuel_quit_enabled()
             self.log(
-                f"out-of-fuel: holding seat{hard}"
+                (
+                    f"out-of-fuel: quitting seat after dialog{hard}"
+                    if quit_soon
+                    else f"out-of-fuel: holding seat{hard}"
+                )
                 + (f" (was ACK {release_key})" if release_key else "")
                 + f" - {preview}"
             )
@@ -14511,6 +14814,12 @@ class BoredEmitter:
                 fn(release_key)
             except Exception as e:
                 self.log(f"out-of-fuel: release_fn failed {type(e).__name__}")
+        # FR #8814: dialog + digest remove + process exit (no zombie out_of_fuel worker).
+        if quit_fn is not None and out_of_fuel_quit_enabled():
+            try:
+                quit_fn(evidence_s)
+            except Exception as e:
+                self.log(f"out-of-fuel: quit_fn failed {type(e).__name__}")
         return release_key
 
     def clear_out_of_fuel(self, reason: str = "reading") -> None:
@@ -14664,6 +14973,7 @@ class BoredEmitter:
             self._agent_active_at = None
             self._turn_open = False
             self._clear_done_miss()
+            self._clear_finish_turn()
             now = self.clock()
             self._idle_since = now
             self.log(f"bored: stand down {want}")
@@ -14696,7 +15006,7 @@ class BoredEmitter:
         skip_clock = (
             bored_on_turn_end_enabled()
             and self._turn_watcher_armed
-            and (not self._turn_open)
+            and (not self._turn_live())
             and self._turn_gen > 0
         )
         if skip_clock:
@@ -14729,6 +15039,8 @@ class BoredEmitter:
             if self._done_miss_armed_at is not None and not self._done_miss_reminded:
                 self._done_miss_armed_at = None
                 self._done_miss_key = None
+            # FR #8738: the reminder (closing) turn is now visible to the watcher.
+            self._finish_turn_unseen = False
             self._hb_notify_all()
 
 
@@ -14750,6 +15062,11 @@ class BoredEmitter:
             with self._cv:
                 now = float(self.clock() if at is None else at)
                 self._turn_open = False
+                # FR #8738: the prior job's closing turn is over (a stale turn_ended from
+                # before the mark was set does not count).
+                if self._finish_turn_at is not None and now >= float(self._finish_turn_at):
+                    self._clear_finish_turn("turn_ended")
+                    self._flush_after_closing = True
                 # FR #4858: successful turn clears hard 402 hold without min hold.
                 # Soft holds (FR #6119 fast-done-miss / mid-job on-demand) stay until a
                 # fuel reading clears them — a later turn_ended must not re-arm !bored.
@@ -14757,6 +15074,16 @@ class BoredEmitter:
                     clear_hard_fuel = True
                 # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
                 if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
+                    self._hb_notify_all()
+                    return
+                # FR #8738: the open ACK is an assign ACKed on receipt that is still parked
+                # (never injected). This turn was the prior job's - not a done-miss for it.
+                if self._ack_open and self._ack_job_key and self._relay_parks(self._ack_job_key):
+                    self._flush_after_closing = True
+                    self.log(
+                        f"bored: turn ended with {self._ack_job_key} ACKed but still parked "
+                        "- not a done-miss; flush it now (FR #8738)"
+                    )
                     self._hb_notify_all()
                     return
                 # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
@@ -15115,6 +15442,9 @@ class BoredEmitter:
                             f"bored: done-miss armed for open ACK {self._ack_job_key} after cross-job DONE"
                         )
                 else:
+                    # FR #8738: DONE inside a still-open turn - that turn is closing this job.
+                    if self._turn_live():
+                        self._note_finish_turn(now, job or self._ack_job_key)
                     self._ack_open = False
                     self._ack_job_key = None
                     self._clear_done_miss()
@@ -15151,6 +15481,9 @@ class BoredEmitter:
                     self._clear_done_miss()
                     self.log(f"bored: free-rx matched ({verb}) during out-of-fuel - no !bored")
                 else:
+                    # FR #8738: NACK/GIVEUP inside a still-open turn closes this job there.
+                    if self._turn_live():
+                        self._note_finish_turn(now, job or self._ack_job_key)
                     self._ack_open = False
                     self._ack_job_key = None
                     self._clear_done_miss()
@@ -15179,6 +15512,9 @@ class BoredEmitter:
         if self._out_of_fuel:
             return True
         if self._ack_held(now):
+            return True
+        # FR #8738: done-miss !bored never fires while the closing turn still runs.
+        if self._done_miss_release_pending and self._closing_turn_live(now):
             return True
         if self._harvest_until is not None and now < self._harvest_until:
             return True
@@ -15222,6 +15558,9 @@ class BoredEmitter:
         """
         if self._turn_open or self.held_assign_watchdog_s <= 0:
             return
+        # FR #8738: never flush into the prior job's closing turn.
+        if self._closing_turn_live(now):
+            return
         pending = False
         try:
             pending = bool(self.relay is not None and self.relay.has_pending_work())
@@ -15254,6 +15593,9 @@ class BoredEmitter:
         while the assign stays parked. Skip only while a turn is still open.
         """
         if self._turn_open:
+            return
+        # FR #8738: the prior job's closing turn (incl. an unseen reminder turn) is open.
+        if self._closing_turn_live(now):
             return
         had_held = bool(self._held_assign)
         released = 0
@@ -15294,6 +15636,16 @@ class BoredEmitter:
                 self._harvest_used_fallback = True
                 self.log("bored: fallback timer, no turn_ended seen")
             self._flush_held_on_harvest_expiry(now, why="harvest expired")
+        # FR #8738: the prior job's closing turn just ended - deliver what was parked.
+        if self._flush_after_closing and not self._turn_open:
+            self._flush_after_closing = False
+            pending = False
+            try:
+                pending = bool(self.relay is not None and self.relay.has_pending_work())
+            except Exception:
+                pending = False
+            if pending or self._held_assign:
+                self._flush_held_on_harvest_expiry(now, why="closing turn ended")
         # FR #5505: ACKed-on-receipt hold never injected — watchdog injects after deadline.
         self._flush_held_assign_watchdog(now)
         if self._busy(now):
@@ -15394,6 +15746,15 @@ class BoredEmitter:
         ):
             if self._harvest_until is None or now >= float(self._harvest_until):
                 wakes.append(float(self._held_assign_since) + float(self.held_assign_watchdog_s))
+        # FR #8738: wake at the closing-turn safety cap / reminder-turn quiet window.
+        if self._finish_turn_at is not None:
+            wakes.append(float(self._finish_turn_at) + float(self.finish_turn_hold_max_s))
+            if (
+                self._finish_turn_unseen
+                and self._agent_active_at is not None
+                and self._done_miss_reminded
+            ):
+                wakes.append(float(self._agent_active_at) + float(self.ack_quiet_s))
         # FR #2834: while open-turn extends past harvest_hold_s, wake at the safety cap.
         if self._extend_hold_for_open_turn(now) and self._hold_started_at is not None:
             wakes.append(float(self._hold_started_at) + float(self.turn_hold_max_s))
@@ -15787,6 +16148,7 @@ class Supervisor:
         if self.bored is not None:
             self.bored.out_of_fuel_release_fn = self._release_out_of_fuel_job
             self.bored.out_of_fuel_enter_fn = self._on_out_of_fuel_enter
+            self.bored.out_of_fuel_quit_fn = self._quit_after_out_of_fuel
             self.bored.fuel_check_fn = self._fuel_available_again
             self.bored.fuel_lost_check_fn = self._fuel_lost_mid_job
         relay.on_inject = self._on_inject
@@ -15802,6 +16164,8 @@ class Supervisor:
         )
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)
+        # FR #8738: flush only after the prior job's closing turn has ended.
+        relay.defer_flush_while = lambda: bool(self.bored and self.bored.closing_turn_open)
         relay.on_hold_assign = lambda _line: (
             self.bored.note_held_assign() if self.bored else None
         )
@@ -16227,16 +16591,21 @@ class Supervisor:
         """FR #3012: shop GIVEUP + digest so Jeeves / tray see out-of-fuel immediately."""
         line = out_of_fuel_giveup_line(job_key)
         shop = self.irc.shop if self.irc else shop_channel(self.machine)
+        quit_soon = out_of_fuel_quit_enabled(
+            self.base_env if isinstance(getattr(self, "base_env", None), dict) else None
+        )
         if self.irc and self.irc.alive:
             try:
                 self.irc.say(shop, line)
             except Exception as e:
                 self.log(f"out-of-fuel: GIVEUP say failed {type(e).__name__}")
             try:
-                self.irc.say(
-                    shop,
-                    f"out-of-fuel: {self.nick} released `{job_key}` (402/usage exhausted) - quiet until fuel returns",
+                follow = (
+                    f"out-of-fuel: {self.nick} released `{job_key}` (402/usage exhausted) - closing seat"
+                    if quit_soon
+                    else f"out-of-fuel: {self.nick} released `{job_key}` (402/usage exhausted) - quiet until fuel returns"
                 )
+                self.irc.say(shop, follow)
             except Exception:
                 pass
         # Bookkeeping without arming harvest !bored (BoredEmitter._out_of_fuel already set).
@@ -16266,6 +16635,91 @@ class Supervisor:
         except Exception as e:
             self.log(f"out-of-fuel: digest post failed {type(e).__name__}: {e}")
         self.log(f"out-of-fuel: posted {line}")
+
+    def _out_of_fuel_dialog_pool_bits(self, evidence: str = "") -> tuple[str, str, str]:
+        """Best-effort pool / remaining / reset strings for the FR #8814 dialog."""
+        kind = (self.kind or "").strip().lower() or "worker"
+        pool = kind
+        remaining = "0"
+        reset_hint = ""
+        env = self.base_env if isinstance(getattr(self, "base_env", None), dict) else os.environ
+        model = str(env.get("BOB_OPENCODE_MODEL") or env.get("BOB_WORKER_MODEL") or "").strip()
+        if kind == "opencode":
+            ev = (evidence or "").lower()
+            if "fuel-exhausted:opencode-free" in ev or "free usage" in ev:
+                pool = "opencode_free"
+            else:
+                pool = "opencode"
+            if model:
+                pool = f"{pool} ({model})"
+        try:
+            fuel = load_fresh_agent_list_fuel(max_age_s=3600.0, env=env)
+        except Exception:
+            fuel = None
+        if fuel is not None:
+            try:
+                if kind == "opencode":
+                    remaining = f"free={getattr(fuel, 'opencode_free', '?')} go={getattr(fuel, 'opencode_go', '?')}"
+                elif kind == "cursor":
+                    remaining = f"high={getattr(fuel, 'cursor_high', '?')} low={getattr(fuel, 'cursor_low', '?')}"
+                elif kind == "grok":
+                    remaining = f"pct={getattr(fuel, 'grok_pct', '?')} state={getattr(fuel, 'grok_state', '?')}"
+            except Exception:
+                pass
+        if "reset" in (evidence or "").lower():
+            reset_hint = one_line(evidence or "", 80)
+        return pool, remaining, reset_hint
+
+    def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
+        """FR #8814: dialog + worker-remove + shutdown so the nick leaves the digest."""
+        if getattr(self, "_out_of_fuel_quit_started", False):
+            return
+        self._out_of_fuel_quit_started = True
+        env = self.base_env if isinstance(getattr(self, "base_env", None), dict) else os.environ
+        if not out_of_fuel_quit_enabled(env):
+            self.log("out-of-fuel: quit skipped (BOB_WORKER_OUT_OF_FUEL_QUIT=0)")
+            return
+        pool, remaining, reset_hint = self._out_of_fuel_dialog_pool_bits(evidence)
+        show_fn = getattr(self, "_out_of_fuel_dialog_show_fn", None)
+        try:
+            show_out_of_fuel_dialog(
+                pool=pool,
+                remaining=remaining,
+                reset_hint=reset_hint,
+                evidence=evidence or "",
+                nick=self.nick,
+                show_fn=show_fn,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: dialog path failed {type(e).__name__}")
+        pid = None
+        try:
+            if self.proc is not None:
+                pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
+        if pid is None:
+            try:
+                pid = os.getpid()
+            except Exception:
+                pid = None
+        try:
+            post_digest_worker_remove(
+                machine=self.machine,
+                nick=self.nick,
+                pid=pid,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
+        self.log("out-of-fuel: closing seat (FR #8814)")
+        try:
+            self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+        except Exception as e:
+            self.log(f"out-of-fuel: shutdown failed {type(e).__name__}")
 
     def _try_opencode_switch_free_to_paid(self, evidence: str) -> bool:
         """FR #8537: pause free, rebind to paid, continue ACK. True when switched."""

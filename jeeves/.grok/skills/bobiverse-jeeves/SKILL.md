@@ -39,7 +39,7 @@ deterministic and token-less except the optional GitHub token used for filing is
 | Digest home (`digest.json`, `registered-machines.json`, `chair-outbox.txt`, `webhook-queue`) | `BOB_DIGEST_HOME` = `~\.bobiverse` |
 | Ergo (IRC server, separate service `BobIrcd`) | `<ai root>\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
 | Webhook receiver | task `BobCallback` (SYSTEM) `python scripts\bobcallback.py --home <digest home> --bind 127.0.0.1 --port 7700` |
-| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450) -> 127.0.0.1:7700 |
+| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450), `/builds`, `/models` (FR #8835) -> 127.0.0.1:7700 |
 | Ports | 6697 TLS (public), 6667 plaintext loopback, 7700 bobcallback loopback |
 | Logs | `<ai root>\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
 | Chair-home files | `cmd-trace.log` (time/nick/command/reply), `webhook-health.json`, `resync-token-source.log`, `operators.txt`, `identity.json` (DPAPI) |
@@ -120,6 +120,8 @@ Do this on **walrus** (not ionos).
 `jeeves.exe --self-test` runs the builtins (`imports`, `locks`, `http`, `queue`, `offer`; `health` on request) **plus** every `check_<name>.py` plugin found in `jeeves/checks` (bundled into the exe by `Build-Jeeves.ps1`; `JEEVES_CHECKS_DIR` overrides for tests). A plugin defines `CHECK_NAME` and `run(home, chair_home) -> (detail, findings, errors)`; `INCLUDE_IN_DEFAULT = False` makes it `--check <name>` only. Add/change checks and their pytest only via PR + MRB - never by editing the running exe.
 
 ## Harvested lessons (intake)
+
+- **FR #8835:** every `/bob/v1/*` BobCallback route (plus local health/digest and outbound stall/wake) needs a home Webhooks & API card, a `docs/webhooks/*.html` page, and a hub index row. Registry `common/scripts/bob_webhook_docs.py`; inventory `bob_route_inventory.py`; CI `test_fr8835_webhook_docs_route_coverage.py`. Coming ops use `DocEntry.status="coming"`. Publish HTML with static copy of `jeeves/www/irc-ntsa/**` excluding `web.config` --- never re-run `Install-BobWebhooks.ps1` for content-only (#8803).
 
 - **FR #7334 / #7338:** when an offerable MRB stays `no_eligible_reviewer` for >5 minutes, `chair_health` stall-heal calls `maybe_recycle_stuck_no_eligible_reviewer` to `!recycleseat` the idle author with the fewest commits (counts from GitHub via `author_commit_counts`), posts one `#bobiverse` notice, and restarts `no_eligible_since` so the next scan does not recycle another author. Busy seats are never recycled; a fresh nick is not an author.
 
