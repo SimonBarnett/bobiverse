@@ -8,6 +8,7 @@
 // poll cannot starve the ear's !startworker heartbeat check.
 // FR #4136: HealEngine also restarts when engine.alive (written by the PS queue tick) is stale while the process
 // is still alive; tray.alive carries engine_last_tick for the ear's engine_stale NACK.
+// FR #9011: never block the WinForms pump with digest WaitForExit or WMI heal — dead NotifyIcon clicks while process stays up.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -940,6 +941,8 @@ namespace BobDialogs
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
         System.Threading.Timer aliveTimer;
         System.Threading.Timer digestPoolsTimer; // FR #7510: digest pool refresh independent of engine
+        int digestPoolsBusy; // FR #9011: one WaitForExit at a time on the pool timer
+        int watchdogBusy; // FR #9011: WMI/heal off the WinForms pump
         int digestPoolsPid; // FR #8971: one pools child; a slow GET must not stack processes
         readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
@@ -1100,7 +1103,8 @@ namespace BobDialogs
 
             flash.Interval = 450; flash.Tick += delegate { Flash(); };
             poll.Interval = 2000; poll.Tick += delegate { Reload(); };
-            watchdog.Interval = 15000; watchdog.Tick += delegate { Watchdog(); };
+            // FR #9011: Forms.Timer only queues; WMI/heal runs on ThreadPool so NotifyIcon stays clickable.
+            watchdog.Interval = 15000; watchdog.Tick += delegate { QueueWatchdog(); };
 
             IntPtr pre = menu.Handle;                    // build the native menu now: the first right-click is as fast as the tenth
             Reload();
@@ -1109,8 +1113,8 @@ namespace BobDialogs
             WriteTrayAlive();
             aliveTimer = new System.Threading.Timer(delegate { WriteTrayAlive(); }, null, 2000, 2000);
             // FR #7510: poll digest every 60s into run\tray-digest-pools.json whether the engine is alive or not.
-            RefreshDigestPools();
-            digestPoolsTimer = new System.Threading.Timer(delegate { RefreshDigestPools(); }, null, 60000, 60000);
+            // FR #9011: never WaitForExit on the WinForms ctor/UI thread (dead NotifyIcon clicks).
+            digestPoolsTimer = new System.Threading.Timer(delegate { RefreshDigestPools(); }, null, 0, 60000);
             flash.Start(); poll.Start(); watchdog.Start();
 
             string timing = Common.Arg(args, "--timing-out");
@@ -1197,6 +1201,17 @@ namespace BobDialogs
         }
 
         // FR #3180: public for headless --watchdog-ticks harness (tests).
+        void QueueWatchdog()
+        {
+            if (exiting) return;
+            if (System.Threading.Interlocked.Exchange(ref watchdogBusy, 1) == 1) return;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { Watchdog(); }
+                finally { System.Threading.Interlocked.Exchange(ref watchdogBusy, 0); }
+            });
+        }
+
         public void Watchdog()
         {
             if (exiting) return;
@@ -2217,17 +2232,16 @@ namespace BobDialogs
             try { if (weightsForm != null && !weightsForm.IsDisposed) weightsForm.Close(); } catch { }
         }
 
-        // Exit order unchanged (t798u): dialogs + icon go first, then the ircBob stop (detached, never waited for), then the engine is asked to leave.
+        // FR #9034: TipForm Exit is tray-only - dispose UI and ask the engine to leave; never stop ircBob.
         void ExitTray()
         {
             if (exiting) return;
             exiting = true;
             exitReason = "Exit";
-            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit");
+            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit", "ircBob", "left-running");
             TrayLifecycle.SuppressWatchdog("Exit");
             CloseWindows();
             notify.Visible = false;
-            Detached(Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\sc.exe"), "stop ircBob");
             Command("exit");
             FinishAfterEngine(4000);
         }
@@ -2257,8 +2271,10 @@ namespace BobDialogs
         // FR #7510 / #7580: host-owned digest pool refresh (powershell -File); never requires the PS engine.
         // On digest fetch failure the helper keeps last rows and writes tray-digest-fetch-fail.json;
         // CrashHook.Report once per 30 min (ties FR #7505).
+        // FR #9011: ThreadPool/timer only; Interlocked skip when a prior WaitForExit is still running.
         void RefreshDigestPools()
         {
+            if (System.Threading.Interlocked.Exchange(ref digestPoolsBusy, 1) == 1) return;
             try
             {
                 string script = Path.Combine(root, "tools\\Update-BobTrayDigestPools.ps1");
@@ -2307,6 +2323,7 @@ namespace BobDialogs
                 MaybeReportDigestFetchFail();
             }
             catch { }
+            finally { System.Threading.Interlocked.Exchange(ref digestPoolsBusy, 0); }
         }
 
         void MaybeReportDigestFetchFail()
@@ -2639,6 +2656,22 @@ namespace BobDialogs
             {
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
                 return 0;
+            }
+            // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
+            string dumpWeightsValid = Common.Arg(args, "--dump-weights-valid");
+            if (dumpWeightsValid.Length > 0)
+            {
+                BobModelsResult catalog = BobModelsClient.Get(root);
+                Dictionary<string, List<BobModelsComboRow>> clis =
+                    catalog != null ? catalog.Clis : null;
+                File.WriteAllText(dumpWeightsValid, WeightsForm.DumpValidOptions(clis), new UTF8Encoding(false));
+                TrayLifecycle.Write(
+                    "weights_valid_dump",
+                    "host", catalog != null ? (catalog.UrlHost ?? "") : "",
+                    "status", catalog != null ? catalog.Status.ToString() : "0",
+                    "clis", clis != null ? clis.Count.ToString() : "0",
+                    "ok", catalog != null && catalog.Ok ? "1" : "0");
+                return catalog != null && catalog.Ok && clis != null && clis.Count > 0 ? 0 : 2;
             }
             // FR #8714 / BOB-13: headless Weights GET/PUT against /bob/v1/models (exit before UI).
             string weightsGetOut = Common.Arg(args, "--weights-get");

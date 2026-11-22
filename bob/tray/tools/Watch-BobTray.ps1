@@ -2963,6 +2963,7 @@ function Show-BobTrayAbout {
         $rows = @(Get-BobInstallInfo -RepoRoot $RepoRoot)
         $text = Format-BobInstallInfo -Rows $rows
         $mid = [string]$env:BOB_MACHINE_ID
+        $logPath = Join-Path $env:USERPROFILE '.grok\long-running-background-tasks\watch_bob_tray.log'
         $form = New-Object System.Windows.Forms.Form
         $form.Text = 'Bobiverse systray - about'
         $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -3007,11 +3008,19 @@ function Show-BobTrayAbout {
         $box.Text = $text
         $box.Location = New-Object System.Drawing.Point 16, 148
         $box.Size = New-Object System.Drawing.Size 548, 256
+        $logs = New-Object System.Windows.Forms.Button
+        $logs.Text = 'Show logs'
+        $logs.Location = New-Object System.Drawing.Point 350, 398
+        $logs.Size = New-Object System.Drawing.Size 100, 23
+        $logs.Add_Click({
+            # FR #8677 / BOB-09: same tray log as menu Open log
+            if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
+        })
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
         $ok.Add_Click({ $script:aboutForm.Close() })
-        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $ok)) { $form.Controls.Add($c) }
+        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $logs, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
         $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
@@ -3042,25 +3051,24 @@ function Close-BobTrayDialogs {
     $script:tip = $null
 }
 
-# t798u: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop, 3) start the service stop detached
-# (fire and forget: sc.exe in its own process, never waited for). Nothing else runs before the icon is gone.
+# t798u / FR #9034: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop.
+# Never stop ircBob — the ear is a machine service, not a TipForm child (matches Restart -SkipServiceRestart).
 function Invoke-BobTrayExit {
     $script:trayExitReason = 'Exit'
-    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI, stop ircBob (detached)'
+    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI (ircBob left running; FR #9034)'
     # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch.
     try {
         if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
             Set-BobTrayWatchdogSuppress -Reason 'Exit'
         }
         if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
-            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit' }
+            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit'; ircBob = 'left-running' }
         }
     } catch { }
     [void](Invoke-BobTrayExitSequence `
             -CloseDialogs { Close-BobTrayDialogs } `
             -DisposeIcon { $notify.Visible = $false; $notify.Dispose() } `
-            -ExitUi { $ctx.ExitThread() } `
-            -StopService { [void](Stop-BobTrayService -ServiceName $script:trayServiceName) })
+            -ExitUi { $ctx.ExitThread() })
 }
 
 function Get-BobTrayCursorHelpTooltip {
@@ -4383,6 +4391,32 @@ $flash.Add_Tick({
         catch { }
     })
 
+function Update-BobTrayWatchDigestPools {
+    # FR #9046: bob-tray.exe owns the 60s digest-pools timer. When that exe is parked,
+    # Watch is the only poll, so tray-digest-pools.json must refresh from here.
+    # Do not wait on the UI thread. Skip while the previous helper is still running.
+    try {
+        if ($script:digestPoolsProc -and -not $script:digestPoolsProc.HasExited) { return }
+    } catch { $script:digestPoolsProc = $null }
+    $now = [datetime]::UtcNow
+    if ($script:digestPoolsAt -and (($now - $script:digestPoolsAt).TotalSeconds -lt 55)) { return }
+    $scriptPath = Join-Path $RepoRoot 'tools\Update-BobTrayDigestPools.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        $alt = Join-Path $PSScriptRoot 'Update-BobTrayDigestPools.ps1'
+        if (Test-Path -LiteralPath $alt) { $scriptPath = $alt } else { return }
+    }
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $ps)) { $ps = 'powershell.exe' }
+    $script:digestPoolsAt = $now
+    try {
+        $script:digestPoolsProc = Start-Process -FilePath $ps -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-Root', $RepoRoot
+        ) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+    } catch {
+        Write-TrayLog ('digest pools refresh: ' + $_.Exception.Message)
+    }
+}
+
 $poll = New-Object System.Windows.Forms.Timer
 $poll.Interval = [Math]::Max(5000, $PollSec * 1000)
 $poll.Add_Tick({
@@ -4474,6 +4508,8 @@ $poll.Add_Tick({
                 # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
                 # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
                 if (-not $engine) {
+                    # FR #9046: exe timer is absent while bob-tray.exe is parked.
+                    try { Update-BobTrayWatchDigestPools } catch { }
                     Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
                     $swW = [System.Diagnostics.Stopwatch]::StartNew()
                     try {
@@ -4718,14 +4754,26 @@ $startWorkerTimer.Add_Tick({
                             }
                             $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
                             if ($fill -gt 0) {
+                                # FR #9000: pin opencode free when grok remaining is known 0.
+                                $choice = [pscustomobject]@{ agent = ''; slot = '' }
+                                if (Get-Command Get-BobTrayEmptyOnlineFillAgentChoice -ErrorAction SilentlyContinue) {
+                                    try { $choice = Get-BobTrayEmptyOnlineFillAgentChoice -Root $RepoRoot } catch { }
+                                }
                                 $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                 for ($i = 0; $i -lt $fill; $i++) {
                                     $rid = 'empty-{0}-{1}' -f $now, $i
-                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    $bodyHash = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) }
+                                    if ($choice.agent) {
+                                        $bodyHash.agent = [string]$choice.agent
+                                        if ($choice.slot) { $bodyHash.slot = [string]$choice.slot }
+                                    }
+                                    $body = $bodyHash | ConvertTo-Json -Compress
                                     Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
                                 }
                                 Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
-                                Write-TrayLog ('empty-online fill reqs={0}' -f $fill)
+                                $agentLog = if ($choice.agent) { [string]$choice.agent } else { 'auto' }
+                                $slotLog = if ($choice.slot) { [string]$choice.slot } else { '-' }
+                                Write-TrayLog ('empty-online fill reqs={0} agent={1} slot={2}' -f $fill, $agentLog, $slotLog)
                             }
                             # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
                             if ($fill -eq 0) {
@@ -4752,7 +4800,15 @@ $startWorkerTimer.Add_Tick({
                     if (Test-BobTrayEngineMode) {
                         [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
                                 -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
-                                -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'; [Environment]::Exit(0) })
+                                -ParentGone {
+                                    $restored = $null
+                                    if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
+                                        $restored = Restore-BobTrayExeFromClickfixPark -Root $RepoRoot
+                                    }
+                                    if ($restored) { Write-TrayLog 'FR #9044 restored bob-tray.exe from clickfix-park (park kept)' }
+                                    Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'
+                                    [Environment]::Exit(0)
+                                })
                     }
                 }
                 catch [System.Management.Automation.PipelineStoppedException] { return }
@@ -4870,6 +4926,10 @@ try {
 }
 catch { Write-TrayLog ('digest startup: ' + $_.Exception.Message) }
 # TipForm handle only on click - startup CreateHandle caused hover stub.
+if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
+    $restoredExe = Restore-BobTrayExeFromClickfixPark -Root $RepoRoot
+    if ($restoredExe) { Write-TrayLog 'FR #9044 restored bob-tray.exe from clickfix-park (park kept)' }
+}
 if (Test-BobTrayEngineMode) { Write-TrayLog 'engine mode: bob-tray.exe owns the icon and the menu (this process is headless)'; [void](Write-BobTrayEngineEnv -Root $RepoRoot) }
 else { $notify.Visible = $true }
 # FR #4142: headless engine — do not thrash NotifyIcon flash/pulse on a hidden icon.
