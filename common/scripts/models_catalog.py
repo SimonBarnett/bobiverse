@@ -120,3 +120,147 @@ def handle_models_get(home: Path | str) -> tuple[int, bytes]:
     """BobCallback GET /bob/v1/models → fleet agent rows JSON (never 404)."""
     rows = load_catalog_file(home)
     return 200, catalog_to_json(rows)
+
+
+# --- BOB-02 / FR #8708: PUT replace Weights ---
+
+import contextlib
+import os
+import tempfile
+import threading
+import time
+
+MODELS_LOCK_NAME = "models-catalog.lock"
+MODELS_PUT_MAX_BYTES = 64 * 1024
+_KNOWN_AGENTS = frozenset(a for a, _cli in _DEFAULT_ROWS)
+_MODELS_THREAD_LOCK = threading.Lock()
+
+
+class ModelsCatalogBusy(Exception):
+    """HTTP 503 when the catalog lock cannot be taken."""
+
+
+def models_lock_path(home: Path | str) -> Path:
+    return Path(home) / MODELS_LOCK_NAME
+
+
+@contextlib.contextmanager
+def models_catalog_lock(home: Path | str, timeout_s: float = 5.0):
+    """Bounded thread lock for models-catalog.json replace (FR #8708)."""
+    deadline = time.monotonic() + float(timeout_s)
+    while True:
+        if _MODELS_THREAD_LOCK.acquire(blocking=False):
+            break
+        if time.monotonic() >= deadline:
+            raise ModelsCatalogBusy("models-catalog.lock busy")
+        time.sleep(0.05)
+    try:
+        Path(home).mkdir(parents=True, exist_ok=True)
+        yield
+    finally:
+        _MODELS_THREAD_LOCK.release()
+
+
+def _row_secretish(row: dict[str, str]) -> bool:
+    try:
+        import bobreport
+    except ImportError:
+        return False
+    blob = " ".join(str(row.get(k) or "") for k in _ROW_KEYS)
+    return bool(bobreport.looks_like_secret(blob))
+
+
+def validate_put_agents(raw: Any) -> tuple[list[dict[str, str]] | None, str]:
+    """Full-replace Weights body: {\"agents\":[...]} with known agents only."""
+    if not isinstance(raw, dict):
+        return None, "payload must be a JSON object"
+    items = raw.get("agents")
+    if not isinstance(items, list):
+        return None, "agents must be a list"
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        row, why = validate_agent_row(item)
+        if row is None:
+            return None, why or "invalid agent row"
+        if row["agent"] not in _KNOWN_AGENTS:
+            return None, f"unknown agent {row['agent']}"
+        if row["agent"] in seen:
+            return None, f"duplicate agent {row['agent']}"
+        if _row_secretish(row):
+            return None, "malformed JSON"
+        seen.add(row["agent"])
+        out.append(row)
+    missing = [a for a, _ in _DEFAULT_ROWS if a not in seen]
+    if missing:
+        return None, "missing agents: " + ",".join(missing)
+    # Stable order matching defaults.
+    by_name = {r["agent"]: r for r in out}
+    ordered = [by_name[a] for a, _ in _DEFAULT_ROWS]
+    return ordered, ""
+
+
+def replace_catalog_file(home: Path | str, rows: list[dict[str, str]]) -> bool:
+    """Atomically replace models-catalog.json. Return True when content changed."""
+    path = catalog_path(home)
+    new_bytes = catalog_to_json(rows)
+    old_bytes = b""
+    if path.is_file():
+        try:
+            old_bytes = path.read_bytes()
+        except OSError:
+            old_bytes = b""
+    if old_bytes == new_bytes:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix="models-catalog.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(new_bytes)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+    return True
+
+
+def handle_models_put(body: bytes | str, home: Path | str) -> tuple[int, bytes]:
+    """BobCallback PUT /bob/v1/models → persist Weights; 204 changed, 200 unchanged."""
+    raw = body if isinstance(body, (bytes, bytearray)) else (body or "").encode("utf-8")
+    if len(raw) > MODELS_PUT_MAX_BYTES:
+        return 413, b'{"error":"body too large"}'
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError:
+        return 400, b'{"error":"malformed JSON"}'
+    try:
+        import bobreport
+
+        if bobreport.looks_like_secret(text):
+            return 400, b'{"error":"malformed JSON"}'
+    except ImportError:
+        pass
+    try:
+        payload = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return 400, b'{"error":"malformed JSON"}'
+    rows, why = validate_put_agents(payload)
+    if rows is None:
+        err = json.dumps({"error": why or "invalid"}, separators=(",", ":")).encode("utf-8")
+        return 400, err
+    try:
+        with models_catalog_lock(home):
+            changed = replace_catalog_file(home, rows)
+    except ModelsCatalogBusy:
+        return 503, b'{"error":"busy"}'
+    except OSError:
+        return 500, b'{"error":"write failed"}'
+    if changed:
+        return 204, b""
+    return 200, catalog_to_json(rows)
+
