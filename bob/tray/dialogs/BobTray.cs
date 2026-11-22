@@ -937,6 +937,7 @@ namespace BobDialogs
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
         System.Threading.Timer aliveTimer;
         System.Threading.Timer digestPoolsTimer; // FR #7510: digest pool refresh independent of engine
+        int digestPoolsPid; // FR #8971: one pools child; a slow GET must not stack processes
         readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
         DateTime lastWrite = DateTime.MinValue; long lastLen = -1;
@@ -970,16 +971,84 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            miPlan.Click += delegate { StartPlanExe(); };
+            miPlan.Click += delegate {
+                // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
+                string fuel = PlanFuelPath();
+                if (PlanFuelEmpty(fuel))
+                {
+                    TrayLifecycle.Write("plan", "action", "no tokens", "quit", "1", "path", fuel);
+                    MessageBox.Show("Plan: this box has no tokens. The Plan seat will quit instead of starting without fuel.", "Plan - no tokens", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                StartPlanExe();
+            };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
-            // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
+            // FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+            string priorityIco = Path.Combine(root, "vendor\\priority\\priority.ico");
+            if (File.Exists(priorityIco))
+            {
+                try
+                {
+                    using (Icon ico = new Icon(priorityIco)) { miPriority.Image = ico.ToBitmap(); }
+                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", "vendor/priority/priority.ico");
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("priority", "action", "priority-icon failed", "error", ex.Message);
+                }
+            }
             miPriority.Click += delegate { StartPriorityExe(); };
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
+            // BOB-40: Agents > Jeeves uses the existing butler icon.
+            string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
+            if (!File.Exists(butler))
+            {
+                DirectoryInfo parent = Directory.GetParent(root);
+                if (parent != null)
+                    butler = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
+            }
+            if (File.Exists(butler))
+            {
+                using (Icon ico = new Icon(butler))
+                    miJeeves.Image = ico.ToBitmap();
+                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico");
+            }
             miJeeves.Click += delegate {
+                // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
+                if (!JeevesJDrivePresent(@"J:\"))
+                {
+                    TrayLifecycle.Write("jeeves", "action", "J: map missing", "quit", "1");
+                    MessageBox.Show("J: is not mapped. Jeeves will not start.", "Bob - Jeeves", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (JeevesNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_JEEVES_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(JeevesNoTokenGate.Body, JeevesNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("jeeves", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
+                string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
+                if (string.IsNullOrEmpty(hook))
+                    hook = System.IO.Path.Combine(root, "run", "models-webhook.json");
+                try
+                {
+                    if (System.IO.File.Exists(hook))
+                    {
+                        string line = JeevesModelsWebhook.DryRunLine(System.IO.File.ReadAllText(hook));
+                        if (line.Length > 0)
+                            TrayLifecycle.Write("jeeves-models", "webhook", line);
+                    }
+                }
+                catch { }
+
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
                 StartWorker("agent", "grok");
             };
@@ -1586,6 +1655,20 @@ namespace BobDialogs
             ToolStripMenuItem mi = new ToolStripMenuItem(text);
             mi.Tag = id;
             mi.Enabled = enabled;
+            if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon, not a generic icon.
+                string grokIcon = Path.Combine(root, "bob", "tray", "assets", "grok-favicon.ico");
+                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "path", grokIcon, "source", "https://grok.com/images/favicon.ico");
+                try
+                {
+                    if (File.Exists(grokIcon)) mi.Image = new Icon(grokIcon, 16, 16).ToBitmap();
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("workers-grok", "action", "grok favicon failed", "error", ex.Message);
+                }
+            }
             mi.Click += OnAgentChoiceClick;
             ApplyWorkerFavicon(mi, id);
             parent.DropDownItems.Add(mi);
@@ -1598,6 +1681,17 @@ namespace BobDialogs
             // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
             ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
+            // FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
+            string ocIcon = Path.Combine(root, "bob", "tray", "assets", "opencode-favicon.ico");
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "path", ocIcon, "source", "https://opencode.ai/favicon-v3.ico");
+            try
+            {
+                if (File.Exists(ocIcon)) oc.Image = new Icon(ocIcon, 16, 16).ToBitmap();
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("workers-opencode", "action", "opencode favicon failed", "error", ex.Message);
+            }
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
@@ -1611,6 +1705,57 @@ namespace BobDialogs
             AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
             parent.DropDownItems.Add(oc);
             if (record) MenuItems.Add("Open Code");
+        }
+
+
+        // FR #8725 / BOB-17 + FR #8732 / BOB-30: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+        string ModelsCatalogPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            return Path.Combine(root, "home", "models-catalog.json");
+        }
+
+        string GrokWebhookModel(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null || !doc.ContainsKey("agents")) return "";
+                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
+                if (agents == null || doc["agents"] is string) return "";
+                foreach (object item in agents)
+                {
+                    Dictionary<string, object> row = Common.Dict(item);
+                    if (row == null) continue;
+                    if (!string.Equals(Common.Str(row, "agent"), "Grok", StringComparison.OrdinalIgnoreCase)) continue;
+                    return Common.Str(row, "model");
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        string OpencodeWebhookModel(string path, string agentName)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null || !doc.ContainsKey("agents")) return "";
+                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
+                if (agents == null || doc["agents"] is string) return "";
+                foreach (object item in agents)
+                {
+                    Dictionary<string, object> row = Common.Dict(item);
+                    if (row == null) continue;
+                    if (!string.Equals(Common.Str(row, "agent"), agentName, StringComparison.OrdinalIgnoreCase)) continue;
+                    return Common.Str(row, "model");
+                }
+            }
+            catch { }
+            return "";
         }
 
         void OnAgentChoiceClick(object sender, EventArgs e)
@@ -1630,16 +1775,59 @@ namespace BobDialogs
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
             else if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
             {
+                // FR #8726 / BOB-18: empty local Grok fuel shows a dialog and does not start.
+                if (GrokNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_GROK_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(GrokNoTokenGate.Body, GrokNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("workers-grok", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
-                StartWorker("agent", "grok", null, "");
+                // FR #8725 / BOB-17: launch uses the Grok row from the models webhook catalog.
+                string catalog = ModelsCatalogPath();
+                string model = GrokWebhookModel(catalog);
+                TrayLifecycle.Write("workers-grok", "action", "webhook model", "model", model, "path", catalog, "agent", "Grok");
+                Hashtable grokEnv = null;
+                if (model.Length > 0)
+                {
+                    grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                    grokEnv["BOB_GROK_MODEL"] = model;
+                }
+                StartWorker("agent", "grok", grokEnv, "");
             }
-            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
+            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot.Length == 0 || slot == "free" || slot == "paid"))
             {
-                string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
+                // FR #8730 / BOB-27: free first; paid when free is exhausted. Explicit paid stays paid.
+                if (slot != "paid")
+                {
+                    string chosen = OpencodeFreeThenPaid.ChooseFile(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE"));
+                    if (chosen == "paid")
+                    {
+                        slot = "paid";
+                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "paid", "reason", "free-exhausted");
+                    }
+                    else if (slot.Length == 0)
+                    {
+                        slot = "free";
+                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
+                    }
+                }
+                // FR #8732 / BOB-30: free uses the Opencode-Free row; paid uses the Opencode row.
+                string catalog = ModelsCatalogPath();
+                string rowAgent = slot == "free" ? "Opencode-Free" : "Opencode";
+                string webhook = OpencodeWebhookModel(catalog, rowAgent);
+                TrayLifecycle.Write("workers-opencode", "action", "webhook model", "model", webhook, "path", catalog, "agent", rowAgent, "slot", slot);
+                string model = webhook.Length > 0 ? webhook : WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
                 // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
+                // FR #8734 / BOB-29: the tray log names the model this click starts.
+                TrayLifecycle.Write("workers-opencode", "action", "model", "model", model, "slot", slot);
                 TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
             }
@@ -1750,6 +1938,13 @@ namespace BobDialogs
             return rows;
         }
 
+        // FR #8686 / BOB-36: Jeeves requires a J: map. The click passes J:\. Tests can call the same check with a fixture path.
+        bool JeevesJDrivePresent(string driveRoot)
+        {
+            if (string.IsNullOrEmpty(driveRoot)) return false;
+            return Directory.Exists(driveRoot);
+        }
+
         // FR #8699 / BOB-50: Agents > Priority starts vendor\priority\PriorityAgent.exe.
         void StartPriorityExe()
         {
@@ -1770,10 +1965,55 @@ namespace BobDialogs
             }
         }
 
+        // FR #8692 / BOB-46: fuel file for this box. BOB_PLAN_FUEL_FILE overrides the local default.
+        string PlanFuelPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_PLAN_FUEL_FILE");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(local, "Bobiverse", "plan-fuel.json");
+        }
+
+        bool PlanFuelEmpty(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))); }
+            catch { return false; }
+            if (doc == null) return false;
+            if (doc.ContainsKey("status") && doc["status"] != null)
+            {
+                string st = ("" + doc["status"]).Trim().ToLowerInvariant();
+                if (st == "empty" || st == "exhausted" || st == "out-of-fuel" || st == "out_of_fuel") return true;
+            }
+            foreach (string key in new string[] { "remaining_pct", "remaining", "tokens_remaining" })
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null || ("" + doc[key]).Trim().Length == 0) continue;
+                int n;
+                if (int.TryParse(("" + doc[key]).Trim(), out n)) return n <= 0;
+            }
+            return false;
+        }
+
         // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
         void StartPlanExe()
         {
             string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
+            if (string.IsNullOrEmpty(hook))
+                hook = Path.Combine(root, "run", "models-webhook.json");
+            try
+            {
+                if (File.Exists(hook))
+                {
+                    string line = PlanModelsWebhook.DryRunLine(File.ReadAllText(hook));
+                    if (line.Length > 0)
+                        TrayLifecycle.Write("plan-models", "webhook", line);
+                }
+            }
+            catch { }
+            string mcpPath = PlanMcpConfig.WriteConfig(root);
+            TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
             TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
             if (!File.Exists(exe)) return;
             try
@@ -2000,6 +2240,16 @@ namespace BobDialogs
                     if (File.Exists(alt)) script = alt;
                     else return;
                 }
+                int already = System.Threading.Interlocked.CompareExchange(ref digestPoolsPid, 0, 0);
+                if (already > 0)
+                {
+                    try
+                    {
+                        Process prior = Process.GetProcessById(already);
+                        if (prior != null && !prior.HasExited) return;
+                    }
+                    catch { }
+                }
                 string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
                 ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + root + "\"");
                 psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
@@ -2007,10 +2257,23 @@ namespace BobDialogs
                 {
                     if (p != null)
                     {
-                        if (!p.WaitForExit(25000))
+                        System.Threading.Interlocked.Exchange(ref digestPoolsPid, p.Id);
+                        // FR #8971: 15s hard cap. A slow digest must not stall the tray or stack children.
+                        if (!p.WaitForExit(15000))
                         {
                             try { p.Kill(); } catch { }
+                            try
+                            {
+                                ProcessStartInfo kill = new ProcessStartInfo("taskkill.exe", "/T /F /PID " + p.Id);
+                                kill.CreateNoWindow = true; kill.UseShellExecute = false;
+                                using (Process killer = Process.Start(kill))
+                                {
+                                    if (killer != null) killer.WaitForExit(3000);
+                                }
+                            }
+                            catch { }
                         }
+                        System.Threading.Interlocked.Exchange(ref digestPoolsPid, 0);
                     }
                 }
                 MaybeReportDigestFetchFail();
