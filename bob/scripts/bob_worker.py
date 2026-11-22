@@ -2642,9 +2642,10 @@ def explicit_cursor_si_decision(
         row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
+        # FR #8719 / BOB-23: MarchHare (si@ntsa.uk) fleet meter gate — not local box fuel.
         return Decision(
             "refuse",
-            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            "explicit cursor: MarchHare tokens exhausted (%s remaining=0)" % account,
             account=account,
         )
     rem = fill["remaining"] if fill["usable"] else "unknown"
@@ -20168,6 +20169,25 @@ def _explicit_refusal_exit(
         log=log,
         filer_post=filer_post,
     )
+    # FR #8719 / BOB-23: MarchHare Cursor token gate — dialog then quit (EXIT_OUT_OF_FUEL).
+    reason_l = str(dec.reason or "").lower()
+    marchhare_gate = (
+        "marchhare tokens exhausted" in reason_l
+        or ("marchhare" in reason_l and "remaining=0" in reason_l)
+    )
+    if marchhare_gate:
+        try:
+            show_out_of_fuel_dialog(
+                pool="MarchHare Cursor",
+                remaining="0",
+                evidence=dec.reason or "",
+                nick="",
+                title="Bobiverse — MarchHare Cursor tokens",
+                log=log,
+            )
+        except Exception:
+            pass
+        return EXIT_OUT_OF_FUEL
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
