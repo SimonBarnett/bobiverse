@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!-- FR #6453 webhook-docs pin; keep when regenerating (FR #8817: no obsolete acme marketing text) -->
   <title>bob.ntsa.uk — Bobiverse</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon"/>
   <link rel="stylesheet" href="site.css"/>
@@ -116,6 +117,12 @@
         <h3>Models</h3>
         <p><code>GET /bob/v1/models</code> — fleet Weights rows (PUT/PATCH + <code>/refresh</code> coming).</p>
         <a class="btn btn-primary" href="docs/webhooks/models.html">Models docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Validate</span>
+        <h3>Models validate</h3>
+        <p><code>POST /bob/v1/models/validate</code> - fail-closed combo check (BOB-03).</p>
+        <a class="btn btn-primary" href="docs/webhooks/models-validate.html">Validate docs</a>
       </article>
       <article class="card">
         <span class="pill">Git</span>

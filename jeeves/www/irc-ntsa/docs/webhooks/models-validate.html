@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Models combo validate — bob.ntsa.uk</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon"/>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem;display:flex;flex-wrap:wrap;align-items:center;gap:.75rem 1rem}
+h1{font-size:1.6rem;margin:0 0 .4rem;flex:1 1 100%}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+a.brand{display:inline-flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit}
+a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
+.brand-logo{display:block;flex:0 0 auto}
+.brand-text{display:flex;flex-direction:column;line-height:1.2;font-size:.92rem}
+.brand-text strong{font-size:1rem}
+@media (max-width:400px){header{gap:.5rem}.brand-text{font-size:.85rem}}
+</style>
+</head>
+<body>
+<header>
+<a class="brand" href="/"><img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" alt="NTSA" width="36" height="36"/><span class="brand-text"><strong>bob.ntsa.uk</strong><span>Webhooks</span></span></a> <span class="meta">· <a href="index.html">Webhooks</a> · Models combo validate</span>
+<h1>Models combo validate</h1>
+</header>
+<p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<section id="models-validate">
+<h2>Models combo validate <span class="badge">POST /bob/v1/models/validate</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Fail-closed check of (cli, model, context, effort) against models-valid-combos.json; never persists.</p>
+<p><strong>Who calls it:</strong> Weights / tray / BOB-02 before write; operators probing allow-list.</p>
+<p><strong>Auth (named only):</strong> Peer IP must be on BOB_REPORT_ALLOW (same POST gate as report).</p>
+<p><strong>Request schema:</strong> JSON object: cli (grok|cursor|opencode), model, context, optional effort (required when the catalogue row lists efforts; must be absent when efforts is empty).</p>
+<p><strong>Response schema:</strong> 200 {&quot;ok&quot;:true}; 400 {&quot;error&quot;:&quot;malformed&quot;} or {&quot;error&quot;:&quot;&lt;code&gt;&quot;,&quot;field&quot;:&quot;&lt;name&gt;&quot;}; 503 {&quot;error&quot;:&quot;catalog_unavailable&quot;}.</p>
+<p><strong>Status codes:</strong> 200 ok; 400 malformed/invalid; 403 peer; 405; 503 catalogue unavailable.</p>
+<p><strong>Retry / idempotency:</strong> Safe to retry; no side effects.</p>
+<p><strong>Rate limits:</strong> Peer allow-list only (no separate app rate for this path).</p>
+<p><strong>Reachability:</strong> Public Cloudflare rewrite of /bob/v1/models* to BobCallback :7700.</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, bobcallback.py</code> · <strong>Related:</strong> BOB-03 / FR #8710</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://bob.ntsa.uk/bob/v1/models/validate
+Content-Type: application/json
+
+{&quot;cli&quot;:&quot;grok&quot;,&quot;model&quot;:&quot;fixture-grok-a&quot;,&quot;context&quot;:&quot;128k&quot;,&quot;effort&quot;:&quot;medium&quot;}</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>

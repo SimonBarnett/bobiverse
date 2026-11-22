@@ -416,6 +416,36 @@ def _inbound() -> list[DocEntry]:
             fr="FR #6453 / builds catalog",
             html_rel="docs/webhooks/builds.html",
         ),
+        DocEntry(
+            slug="models-validate",
+            title="Models combo validate",
+            method="POST",
+            path=bobcallback.MODELS_VALIDATE_PATH,
+            direction="in",
+            purpose="Fail-closed check of (cli, model, context, effort) against models-valid-combos.json; never persists.",
+            callers="Weights / tray / BOB-02 before write; operators probing allow-list.",
+            auth="Peer IP must be on BOB_REPORT_ALLOW (same POST gate as report).",
+            request_schema=(
+                "JSON object: cli (grok|cursor|opencode), model, context, optional effort "
+                "(required when the catalogue row lists efforts; must be absent when efforts is empty)."
+            ),
+            response_schema=(
+                '200 {"ok":true}; 400 {"error":"malformed"} or '
+                '{"error":"<code>","field":"<name>"}; 503 {"error":"catalog_unavailable"}.'
+            ),
+            example_request=(
+                "POST https://bob.ntsa.uk/bob/v1/models/validate\n"
+                "Content-Type: application/json\n\n"
+                '{"cli":"grok","model":"fixture-grok-a","context":"128k","effort":"medium"}'
+            ),
+            status_codes="200 ok; 400 malformed/invalid; 403 peer; 405; 503 catalogue unavailable.",
+            retry_idempotency="Safe to retry; no side effects.",
+            rate_limits="Peer allow-list only (no separate app rate for this path).",
+            reachability="Public Cloudflare rewrite of /bob/v1/models* to BobCallback :7700.",
+            source="common/scripts/models_catalog.py, bobcallback.py",
+            fr="BOB-03 / FR #8710",
+            html_rel="docs/webhooks/models-validate.html",
+        ),
     ]
 
 
