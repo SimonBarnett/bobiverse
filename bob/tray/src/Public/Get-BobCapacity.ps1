@@ -713,6 +713,7 @@ function Select-BobGitWorker {
         [switch]$AllowOnDemand,
         [switch]$AllowCopilot,
         [string]$Repo,
+        [string]$Cwd,
         [ValidateSet('mrb', 'build')][string]$Kind = 'build'
     )
     if (-not $Capacity) {
@@ -762,6 +763,30 @@ function Select-BobGitWorker {
         if ($Kind -eq 'mrb' -and -not (Test-BobMachineGhIssuePostingReady $m)) {
             return [pscustomobject]@{ wait = $true; machine = $null; fuel = $null; reason = 'pin rejected (gh issue posting not ready)' }
         }
+        # FR #8760 S4: target machine busy -> waiting for capacity (named), not silent wait_pr.
+        $jobs = Get-BobMachineJobCount $m
+        if ($jobs -ne 0) {
+            return [pscustomobject]@{
+                wait    = $true
+                machine = [string]$m.id
+                fuel    = $wantFuel
+                reason  = ('waiting for capacity machine={0} running={1}' -f [string]$m.id, $jobs)
+                error   = 'capacity'
+            }
+        }
+        if ($Cwd) {
+            $rec = $null
+            try { $rec = Resolve-BobFleetMachineRecord -Machine ([string]$m.id) } catch { }
+            if ($rec -and -not (Test-CwdAllowed -Cwd $Cwd -MachineRecord $rec)) {
+                return [pscustomobject]@{
+                    wait    = $true
+                    machine = $null
+                    fuel    = $null
+                    reason  = ('cwd_not_on_machine machine={0} cwd={1}' -f [string]$m.id, $Cwd)
+                    error   = 'cwd_not_on_machine'
+                }
+            }
+        }
         return [pscustomobject]@{ wait = $false; machine = [string]$m.id; fuel = $wantFuel }
     }
 
@@ -779,6 +804,11 @@ function Select-BobGitWorker {
             }
             if (-not $alive) { continue }
             if ((Get-BobMachineJobCount $m) -ne 0) { continue }
+            if ($Cwd) {
+                $crec = $null
+                try { $crec = Resolve-BobFleetMachineRecord -Machine ([string]$m.id) } catch { }
+                if ($crec -and -not (Test-CwdAllowed -Cwd $Cwd -MachineRecord $crec)) { continue }
+            }
             if (-not (Test-BobMachineCanStrikeFuel -Machine $m -Fuel $fuelName)) { continue }
             if (-not (Test-BobFuelHasIncluded -Capacity $Capacity -Machine $m -Fuel $fuelName -AllowOnDemand:$AllowOnDemand)) { continue }
             if ($Kind -eq 'mrb' -and -not (Test-BobMachineGhIssuePostingReady $m)) { continue }
@@ -843,6 +873,22 @@ function Select-BobGitWorker {
             fuel    = $null
             reason  = 'needs Simon: API key'
             error   = 'no_tokens'
+        }
+    }
+    # FR #8760 S4: if a target machine was named and is busy, say so.
+    if ($wantMachine) {
+        $tm = Find-BobCapacityMachine $wantMachine
+        if ($tm) {
+            $tj = Get-BobMachineJobCount $tm
+            if ($tj -ne 0) {
+                return [pscustomobject]@{
+                    wait    = $true
+                    machine = [string]$tm.id
+                    fuel    = $(if ($wantFuel) { $wantFuel } else { $null })
+                    reason  = ('waiting for capacity machine={0} running={1}' -f [string]$tm.id, $tj)
+                    error   = 'capacity'
+                }
+            }
         }
     }
     return [pscustomobject]@{ wait = $true; machine = $null; fuel = $null; reason = 'no eligible worker' }
