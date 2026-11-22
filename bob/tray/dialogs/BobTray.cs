@@ -994,6 +994,16 @@ namespace BobDialogs
                 TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico");
             }
             miJeeves.Click += delegate {
+                if (JeevesNoTokenGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_JEEVES_FUEL_FILE")))
+                {
+                    try
+                    {
+                        MessageBox.Show(JeevesNoTokenGate.Body, JeevesNoTokenGate.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("jeeves", "action", "dialog-quit", "reason", "no-tokens");
+                    return;
+                }
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
                 StartWorker("agent", "grok");
             };
