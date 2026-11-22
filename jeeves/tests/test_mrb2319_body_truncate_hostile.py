@@ -66,9 +66,11 @@ def test_mrb2319_blank_line_before_trailing_pin():
     }
     gitclaim._stamp_require_machine(row, None)
     assert row.get("require_machine") == "walrus"
-    # Use legacy short nicks so seat parse works without a digest roster.
+    # Short nicks parse without a digest roster (SHORT_ID). FR #8697: chair pin is
+    # walrus (w-wa-*), not the legacy w-io / win-mpre hostname.
     assert gitclaim.row_blocked_for_machine(row, "w-mh-9") is True
-    assert gitclaim.row_blocked_for_machine(row, "w-io-9") is False
+    assert gitclaim.row_blocked_for_machine(row, "w-wa-9") is False
+    assert gitclaim.row_blocked_for_machine(row, "w-io-9") is True
 
 
 def test_mrb2319_ce_priority_trailing_pin():

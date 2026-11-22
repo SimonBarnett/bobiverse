@@ -22,35 +22,86 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 .brand-logo{display:block;flex:0 0 auto}
 .brand-text{display:flex;flex-direction:column;line-height:1.2;font-size:.92rem}
 .brand-text strong{font-size:1rem}
+@media (max-width:400px){header{gap:.5rem}.brand-text{font-size:.85rem}}
 </style>
 </head>
 <body>
 <header>
 <a class="brand" href="/"><img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" alt="NTSA" width="36" height="36"/><span class="brand-text"><strong>bob.ntsa.uk</strong><span>Webhooks</span></span></a> <span class="meta">· <a href="index.html">Webhooks</a> · Models webhook</span>
 <h1>Models webhook</h1>
+<p><strong>No POST validate.</strong> Available model / context / effort per CLI are on <code>GET /bob/v1/models</code>. Weights form dropdowns are the validation (Si 2026-11-22).</p>
 </header>
 <p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
-<section id="models">
-<h2>Models catalog <span class="badge">GET /bob/v1/models</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Publish agent/CLI model rows (Plan, Priority, Jeeves, Grok, Cursor, OpenCode, …) for Weights and start consumers (BOB-01 / BOB-05).</p>
-<p><strong>Who calls it:</strong> TipForm tray Weights, worker start contract, Priority/Plan dry-runs (<code>Get-BobModelsWebhook*</code>).</p>
-<p><strong>Auth (named only):</strong> None on the public read path. No secrets in the body. Optional future roster gates do not put tokens in JSON.</p>
-<p><strong>Request schema:</strong> Empty GET. No query secrets.</p>
-<p><strong>Response schema:</strong> HTTP 200 JSON with an <code>agents</code> array. Each row includes at least <code>id</code> (or <code>agent</code>/<code>name</code>), <code>cli</code>, <code>model</code>, <code>context</code>, <code>effort</code>.</p>
-<p><strong>Status codes:</strong> 200 OK; 404 if the route is not yet deployed (BOB-01); 5xx on chair faults.</p>
-<p><strong>Retry / idempotency:</strong> Safe to retry. Cache-friendly GET.</p>
-<p><strong>Reachability:</strong> Public <code>https://bob.ntsa.uk/bob/v1/models</code>.</p>
-<p><strong>Source:</strong> BOB-01 models webhook · <strong>Related:</strong> FR #8702 (BOB-05 docs), theme systray Agents/Workers/Weights</p>
+<section id="models-get">
+<h2>Models catalog (GET) <span class="badge">GET /bob/v1/models</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Fleet Weights agent rows plus CLI options catalog for the tray/forms.</p>
+<p><strong>Who calls it:</strong> Tray Weights form, Agents/Workers settings, operators.</p>
+<p><strong>Auth (named only):</strong> None.</p>
+<p><strong>Request schema:</strong> No body. HEAD returns empty body.</p>
+<p><strong>Response schema:</strong> JSON {&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]} (BOB-01). Options catalog shape (clis) lands with #8819.</p>
+<p><strong>Status codes:</strong> 200 JSON; never invents secret fields.</p>
+<p><strong>Retry / idempotency:</strong> Safe GET.</p>
+<p><strong>Rate limits:</strong> Proxy only.</p>
+<p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook rewrite when deployed.</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8835 / BOB-05</p>
 <p><strong>Redacted example</strong></p>
-<pre>GET https://bob.ntsa.uk/bob/v1/models
-
-{
-  "agents": [
-    {"id": "priority", "cli": "grok", "model": "grok-4.6", "context": 512, "effort": "med"},
-    {"id": "plan", "cli": "grok", "model": "grok-4.6", "context": 512, "effort": "med"}
-  ]
-}</pre>
+<pre>GET https://bob.ntsa.uk/bob/v1/models</pre>
 </section>
-<footer class="meta" style="margin-top:2.5rem">BOB-05 / FR #8702 · static read-only docs · no secrets</footer>
+
+<section id="models-put">
+<h2>Models catalog (PUT) — coming <span class="badge">PUT /bob/v1/models</span> <span class="badge">Coming — not served</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Persist Weights selections (BOB-02). Not served until #8708 lands.</p>
+<p><strong>Who calls it:</strong> Tray Weights form.</p>
+<p><strong>Auth (named only):</strong> None once live (schema + rate).</p>
+<p><strong>Request schema:</strong> JSON agents rows (cli read-only per #8819).</p>
+<p><strong>Response schema:</strong> JSON ack or 4xx.</p>
+<p><strong>Status codes:</strong> Coming — 404 today.</p>
+<p><strong>Retry / idempotency:</strong> Idempotent replace when live.</p>
+<p><strong>Rate limits:</strong> TBD with #8708.</p>
+<p><strong>Reachability:</strong> Not served yet.</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py (planned)</code> · <strong>Related:</strong> FR #8708 / BOB-02</p>
+<p><strong>Redacted example</strong></p>
+<pre>PUT https://bob.ntsa.uk/bob/v1/models
+Content-Type: application/json
+
+{&quot;agents&quot;:[{&quot;agent&quot;:&quot;Plan&quot;,&quot;cli&quot;:&quot;Grok&quot;,&quot;model&quot;:&quot;&quot;,&quot;context&quot;:&quot;&quot;,&quot;effort&quot;:&quot;&quot;}]}</pre>
+</section>
+
+<section id="models-patch">
+<h2>Models catalog (PATCH) — coming <span class="badge">PATCH /bob/v1/models</span> <span class="badge">Coming — not served</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Partial Weights update (BOB-02). Not served until #8708 lands.</p>
+<p><strong>Who calls it:</strong> Tray Weights form.</p>
+<p><strong>Auth (named only):</strong> None once live.</p>
+<p><strong>Request schema:</strong> JSON partial agents update.</p>
+<p><strong>Response schema:</strong> JSON ack or 4xx.</p>
+<p><strong>Status codes:</strong> Coming — not implemented today.</p>
+<p><strong>Retry / idempotency:</strong> Partial merge when live.</p>
+<p><strong>Rate limits:</strong> TBD with #8708.</p>
+<p><strong>Reachability:</strong> Not served yet.</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py (planned)</code> · <strong>Related:</strong> FR #8708 / BOB-02</p>
+<p><strong>Redacted example</strong></p>
+<pre>PATCH https://bob.ntsa.uk/bob/v1/models
+Content-Type: application/json
+
+{&quot;agents&quot;:[{&quot;agent&quot;:&quot;Plan&quot;,&quot;model&quot;:&quot;example-model&quot;}]}</pre>
+</section>
+
+<section id="models-refresh">
+<h2>Models refresh (POST) — coming <span class="badge">POST /bob/v1/models/refresh</span> <span class="badge">Coming — not served</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options from each CLI listing (#8820). Not served yet.</p>
+<p><strong>Who calls it:</strong> Operators / tray refresh.</p>
+<p><strong>Auth (named only):</strong> None once live (rate-limited).</p>
+<p><strong>Request schema:</strong> Empty or optional CLI filter JSON.</p>
+<p><strong>Response schema:</strong> JSON clis + refreshed_at + added/removed; failed CLI keeps prior.</p>
+<p><strong>Status codes:</strong> Coming — 404 today; 429 when rate-limited once live.</p>
+<p><strong>Retry / idempotency:</strong> Safe to retry; fail-closed per CLI.</p>
+<p><strong>Rate limits:</strong> TBD with #8820.</p>
+<p><strong>Reachability:</strong> Not served yet (same BobModelsWebhook prefix).</p>
+<p><strong>Source:</strong> <code>planned with #8820</code> · <strong>Related:</strong> FR #8820</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://bob.ntsa.uk/bob/v1/models/refresh</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
 </body>
 </html>
