@@ -2031,6 +2031,17 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     return $childPid
 }
 
+function Start-BobTrayPriorityExe {
+    # FR #8699 / BOB-50: vendored PriorityAgent.exe.
+    $exe = Join-Path $RepoRoot 'vendor\priority\PriorityAgent.exe'
+    Write-TrayLog ('Priority: start exe ' + $exe)
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-TrayLog ('Priority exe missing: ' + $exe)
+        return
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+}
+
 function Start-BobTrayWorkerExe {
     <#
     .SYNOPSIS
@@ -3930,7 +3941,7 @@ $notify.ContextMenuStrip = $menu
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-$miPriority.Add_Click({ Write-TrayLog 'Priority: menu click (BOB-06 tree; start is later BOB)' })
+$miPriority.Add_Click({ Start-BobTrayPriorityExe })
 $miJeeves.Add_Click({ Write-TrayLog 'Jeeves: menu click (BOB-06 tree; start is later BOB)' })
 $miWeights.Add_Click({
         Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'
