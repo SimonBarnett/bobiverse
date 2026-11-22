@@ -1,0 +1,1 @@
+{"agents":[{"agent":"Grok","cli":"Grok","model":"grok-4","context":"200k","effort":"high"},{"agent":"Cursor","cli":"Cursor","model":"composer","context":"","effort":""}]}
