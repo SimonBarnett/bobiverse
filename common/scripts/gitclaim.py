@@ -413,7 +413,10 @@ def row_fr_depends_blocked_reason(
     *,
     docs_root: Path | None = None,
 ) -> str | None:
-    """FR #8754: why an FR must wait on open Depends-on backlog, else None.
+    """FR #8754 / BOB-D7 (FR #8811): why an FR must wait on open Depends-on, else None.
+
+    bob_d7_wire_hold: call this beside every ``fr_hold_reason`` / ``row_fr_hold_reason``
+    offer, enqueue, purge, and reconcile site. Distinct from hold / HOLD: stamps.
 
     Does not purge the row — when depends leave the queue, the FR becomes offerable.
     """
@@ -15200,10 +15203,19 @@ def enqueue_open_github_item(
                 title=claim.title, body=claim.body, labels=claim.labels
             ) or ""
         elif not why and claim.task == "FR":
+            # bob_d7_wire_hold: Depends gate beside hold in skip detail.
+            _dep_probe = {
+                "task": "FR",
+                "repo": claim.repo,
+                "id": claim.id,
+                "title": claim.title,
+                "body": claim.body,
+            }
             why = (
                 fr_hold_reason(
                     title=claim.title, body=claim.body, labels=claim.labels
                 )
+                or row_fr_depends_blocked_reason(_dep_probe, doc)
                 or issue_skip_fr_reason(
                     title=claim.title,
                     body=claim.body,
@@ -15686,6 +15698,10 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
                 if task == "FR" and row_fr_hold_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
+                    continue
+                # bob_d7_wire_hold: Depends-on OPEN is offer-skip only — keep the row.
+                if task == "FR" and row_fr_depends_blocked_reason(row, doc):
+                    keep.append(row)
                     continue
                 # FR #846: drop FR rows whose URL is a pull request.
                 if task == "FR" and not fr_row_offerable(row):
@@ -17060,6 +17076,10 @@ def resync_from_github(
                 if task_u == "FR" and row_fr_hold_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
                     continue  # FR #4009: hold label / HOLD body stamp
+                # bob_d7_wire_hold: Depends-on OPEN is offer-skip only — keep the row.
+                if task_u == "FR" and row_fr_depends_blocked_reason(row, doc):
+                    keep.append(row)
+                    continue
                 if task_u == "FR" and not fr_row_offerable(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_not_offerable")
                     continue  # FR #846: /pull/ URL is never an FR
