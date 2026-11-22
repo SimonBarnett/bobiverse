@@ -2529,6 +2529,51 @@ function Test-BobiverseScriptNewlines {
     return [pscustomobject]@{ Ok = [bool]$ok; Path = $Path; Lf = $lf; Bytes = $bytes.Length; Reason = $reason }
 }
 
+function Sync-BobiverseTraySrcFromCanonical {
+    # FR #9035: bob\tray\src is canonical. A stripped third_party\bob-tray\src
+    # must not survive to the install src robocopy (a1a94bd7 class).
+    param([Parameter(Mandatory)][string]$CloneRoot)
+    $canon = Join-Path $CloneRoot 'bob\tray\src'
+    $legacy = Join-Path $CloneRoot 'third_party\bob-tray\src'
+    if (-not (Test-Path -LiteralPath $canon -PathType Container)) {
+        return [pscustomobject]@{ Ok = $true; Source = $legacy; Reason = 'no bob\tray\src' }
+    }
+    if (Test-Path -LiteralPath $legacy -PathType Container) {
+        $root = $canon.TrimEnd('\')
+        Get-ChildItem -LiteralPath $canon -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\')
+            $dest = Join-Path $legacy $rel
+            $parent = Split-Path -Parent $dest
+            if (-not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Source = $canon; Reason = 'canonical bob\tray\src' }
+}
+
+function Assert-BobiverseInvokeBobFleetParses {
+    # FR #9035: refuse promote when src\Private\Invoke-BobFleet.ps1 has a nameless
+    # param([string]) or Parser::ParseFile errors (dollar-name strip).
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    $path = Join-Path $InstallRoot 'src\Private\Invoke-BobFleet.ps1'
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{ Ok = $true; Reason = 'Invoke-BobFleet.ps1 absent'; Path = $path }
+    }
+    $text = [IO.File]::ReadAllText($path)
+    $nameless = [regex]::IsMatch($text, 'param\s*\(\s*\[string\]\s*\)')
+    $tokens = $null
+    $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)
+    $nErr = @($errs).Count
+    if ($nameless -or $nErr -gt 0) {
+        $reason = "FR #9035 nameless param([string]) or parse errors in $path nameless=$nameless parseErrors=$nErr"
+        return [pscustomobject]@{ Ok = $false; Reason = $reason; Path = $path }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = 'Invoke-BobFleet.ps1 parses'; Path = $path }
+}
+
 function Assert-BobiverseScriptsHaveNewlines {
     # FR #4783: compose/Sync gate - fail when any .ps1 under scripts\ or
     # common\scripts\ is larger than MinBytes and has lf=0.

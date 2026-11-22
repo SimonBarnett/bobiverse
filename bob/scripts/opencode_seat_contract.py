@@ -124,19 +124,34 @@ def gh_auth_blocks(stdout: str, stderr: str, exit_code: int) -> tuple[bool, str]
     """Classify ``gh auth status`` text. Never opens a credential file.
 
     The returned message does not include the CLI output (it can echo an account).
+
+    FR #8999: a stale/invalid token can still print ``Active account: true``
+    (and occasionally exit 0) while also saying ``Failed to log in`` /
+    ``re-authenticate``. Failure cues win over ``active account`` alone so
+    OpenCode keeps refusing with ``gh_auth_missing`` until the operator runs
+    ``gh auth login`` on that Windows user. Never invent GH_TOKEN / read
+    hosts.yml from here.
     """
     blob = ((stdout or "") + "\n" + (stderr or "")).lower()
     code = int(exit_code)
-    logged_in = code == 0 and ("logged in" in blob or "active account" in blob)
-    if logged_in:
-        return False, ""
-    if (
+    # Stale-token / re-auth cues first (FR #8999). Do not trust Active account
+    # when the CLI also reports login failure.
+    stale = (
+        "failed to log in" in blob
+        or "re-authenticate" in blob
+        or ("token" in blob and ("invalid" in blob or "expired" in blob))
+        or "authentication failed" in blob
+    )
+    if stale or (
         "gh auth login" in blob
         or "to get started with github cli" in blob
         or "not logged" in blob
         or code != 0
     ):
         return True, GH_BLOCK_MESSAGE
+    logged_in = code == 0 and ("logged in" in blob or "active account" in blob)
+    if logged_in:
+        return False, ""
     return True, (
         "opencode-ready: blocked gh_auth_unknown. "
         "Next: gh auth status. Do not read credential files."
