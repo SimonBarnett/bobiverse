@@ -72,15 +72,25 @@ A **principal** is derived per message from the nick plus the services account t
 |---|---|
 | **owner** | services account `JEEVES_OWNER_ACCOUNT` (default `simon`), or an account in `BOB_OP_ACCOUNTS` / `op-accounts.txt`. Nick `simon` with no account (unverified) is **not** the owner. |
 | **ear** | nick `bob-<machine>` (any case, e.g. the live `Bob-win-mpre8vi4u6u`) of a machine in the ChanServ roster - the same trust root that earns the ear its `+o` / `+h`. A `bob-x_` fallback nick, an unregistered machine, or a look-alike logged in to a different account is refused. |
+| **monitor** (FR #8827) | nick in `JEEVES_MONITOR_NICKS` (default `monitoring` when unset; empty string disables) **or** services account in `JEEVES_MONITOR_ACCOUNTS` (fail closed when unset). Same queue-mutator class as owner/ear for keep-the-queue-moving interventions. Unknown nicks stay denied. |
 | **allowlist** | nick in `JEEVES_FOCUS_MUTATORS` or account in `JEEVES_FOCUS_MUTATOR_ACCOUNTS` (additive, default empty) - `!focus` / `!unfocus` only. |
 | anyone else | read-only commands |
 
-| Command | owner | ear (`bob-<machine>`) | allowlist | anyone |
-|---|---|---|---|---|
-| `!help` `!list` `!filter` `!status` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes |
-| `!ignore` `!unignore` | yes | yes | no | no |
-| `!focus ..` `!unfocus ..` (write) | yes | yes | yes | no |
-| `!resync` `!sweep` `!recycle` `!assign` `!cleargiveup` `!pin` `!unpin` | yes | yes | no | no |
+| Command | owner | ear (`bob-<machine>`) | monitor | allowlist | anyone |
+|---|---|---|---|---|---|
+| `!help` `!list` `!filter` `!status` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes | yes |
+| `!ignore` `!unignore` | yes | yes | yes | no | no |
+| `!focus ..` `!unfocus ..` (write) | yes | yes | yes | yes | no |
+| `!resync` `!sweep` `!recycle` `!assign` `!cleargiveup` `!pin` `!unpin` | yes | yes | yes | no | no |
+
+### MONITORING agent auth (FR #8827) — no secrets in this doc
+
+The Start Menu **Start Jeeves Monitor** seat (`bob-worker.exe --mode monitor`) has **no IRC** of its own. To run chair commands it uses one of:
+
+1. **Ear relay (preferred on a fleet box):** append UTF-8 lines to the local ear outbox (`%USERPROFILE%\.bobiverse\outbox.txt` or the ear home outbox), e.g. `PRIVMSG #bobiverse :!ignore owner/repo` or `PRIVMSG Jeeves :!stuck`. The ear nick `bob-<machine>` is already an **ear** principal (full mutators). Pace ~3 s between lines; read chair `cmd-trace.log` for replies.
+2. **Direct monitor nick:** connect nick `monitoring` (or any nick listed in `JEEVES_MONITOR_NICKS`) to Ergo with a normal client/SASL services account. Optionally set `JEEVES_MONITOR_ACCOUNTS=<services-account>` on the **chair** host (ircJeeves env) so account-tag recognition works when the nick differs. PM or channel-command Jeeves as usual. Do not put passwords, NickServ GUIDs, or tokens in docs or filings.
+
+Monitor may use the full mutator matrix **only to keep the queue moving** (unblock idle/stuck/held/wrong-offer delays). It still must not touch Ergo/`ircd.yaml`/BobIrcd, merge PRs, stamp UAT, or bump `VERSION`. Tray Agents intervene UI is BOB-43 (#8681), out of scope here.
 
 `!assign <nick> <owner/repo> UAT 0` hands out the repo-level UAT row (`#0`).
 

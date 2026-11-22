@@ -1,8 +1,8 @@
 """FR #756: Jeeves install ships a MONITORING-agent AGENTS/GROK/skills layer.
 
 An agent with CWD <ai root>\\jeeves is the monitoring overlay for the deterministic
-chair: keep work flowing to workers, report delays via intake (de-duped), never act
-as chair / never !assign / never touch Ergo.
+chair: keep work flowing to workers, report delays via intake (de-duped), may run
+Jeeves commands to keep the queue moving (FR #8827), never touch Ergo / merge / UAT.
 """
 from __future__ import annotations
 
@@ -38,11 +38,12 @@ ROLE_MARKS = (
     "not a worker",
 )
 NEVER_MARKS = (
-    "never !assign",
-    "never !focus",
+    "keep the queue moving",
     "Ergo",
     "BobIrcd",
     "no secrets",
+    "UAT",
+    "VERSION",
 )
 INTAKE_MARKS = (
     "Report-BobiverseIntakeIssue.ps1",

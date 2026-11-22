@@ -3824,7 +3824,7 @@ def maintenance_icon_path(folder: Path) -> Optional[Path]:
 def rules_text(folder: str, kind: str) -> str:
     extra = {
         "plan": "PLAN SEAT ONLY: no IRC, no builds.",
-        "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; never act as chair; prefer token-free monitor scripts; self-harvest after every finding.",
+        "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; may run Jeeves commands via ear relay/nick monitoring to keep the queue moving (FR #8827); never Ergo/merge/UAT/VERSION; prefer token-free monitor scripts; self-harvest after every finding.",
         "maintenance": "JEEVES MAINTENANCE ONLY (FR #2412/#2522): diagnose after heal still failing; safe hotpatch only; file intake issue; check/test changes only via PR+MRB; harvest BEFORE writing the done file; never Ergo/BobIrcd; never act as chair.",
         # FR #3623: headless shop seats must never block on interactive ask_user_question.
         "agent": (

@@ -13,6 +13,7 @@ AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
     ------------------------------   ---------  ------- --------- ------ -------- ------ ------- --------
     owner: services account simon*   yes        yes     yes       yes    yes      yes    yes     yes
     ear: bob-<registered machine>**  yes        yes     yes       yes    yes      yes    yes     yes
+    monitor: MONITORING principal*** yes        yes     yes       yes    yes      yes    yes     yes
     allowlist (JEEVES_FOCUS_MUT*)    yes        no      no        yes    yes      no     no      no
     anyone else                      yes        no      no        no     no       no     no      no
 
@@ -21,6 +22,8 @@ AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
     ** Nick ``bob-<machine>`` of a machine in the ChanServ roster - the same trust root that earns the ear
        its +o/+h (chan_privs). If the server told us the nick is logged in to a DIFFERENT, non-owner
        account it is refused (someone else holding a look-alike nick).
+    *** FR #8827: nick in ``JEEVES_MONITOR_NICKS`` (default ``monitoring``) or services account in
+        ``JEEVES_MONITOR_ACCOUNTS``. Same queue-mutator class as owner/ear; still no Ergo/merge/UAT.
 """
 from __future__ import annotations
 
@@ -243,22 +246,39 @@ def _csv_env(name: str) -> set:
     return {p.strip().lower() for p in (os.environ.get(name) or "").split(",") if p.strip()}
 
 
+# FR #8827: MONITORING principal — same queue-mutator class as owner/ear.
+# Default nick ``monitoring`` when JEEVES_MONITOR_NICKS is unset; empty env disables nick default.
+# Services accounts listed in JEEVES_MONITOR_ACCOUNTS (fail closed when unset).
+_DEFAULT_MONITOR_NICKS = frozenset({"monitoring"})
+
+
+def monitor_nicks() -> set:
+    raw = os.environ.get("JEEVES_MONITOR_NICKS")
+    if raw is None:
+        return set(_DEFAULT_MONITOR_NICKS)
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def monitor_accounts() -> set:
+    return _csv_env("JEEVES_MONITOR_ACCOUNTS")
+
+
 @dataclass(frozen=True)
 class Principal:
-    kind: str                     # owner | ear | allowlist | none
+    kind: str                     # owner | ear | monitor | allowlist | none
     nick: str = ""
     account: str = ""
     machine: str = ""             # ear: roster machine id
 
     @property
     def ops(self) -> bool:
-        return self.kind in ("owner", "ear")
+        return self.kind in ("owner", "ear", "monitor")
 
     @property
     def roles(self) -> frozenset:
         if self.kind == "owner":
             return ALL_ROLES
-        if self.kind == "ear":
+        if self.kind in ("ear", "monitor"):
             return frozenset({ROLE_BOB, ROLE_WORKER})
         return frozenset({ROLE_WORKER})
 
@@ -275,6 +295,11 @@ def classify(nick, account=None, *, ear_machine: Callable = lambda n: None) -> P
         if acct and acct not in (low, low.rstrip("_")) and not acct.startswith("bob-"):
             return Principal("none", n, acct)          # look-alike nick under someone else's account
         return Principal("ear", n, acct, mid)
+    # FR #8827: MONITORING principal (keep-queue-moving mutators). Before focus-only allowlist.
+    if acct and acct in monitor_accounts():
+        return Principal("monitor", n, acct)
+    if low and low in monitor_nicks():
+        return Principal("monitor", n, acct)
     if acct and acct in _csv_env("JEEVES_FOCUS_MUTATOR_ACCOUNTS"):
         return Principal("allowlist", n, acct)
     if low and low in _csv_env("JEEVES_FOCUS_MUTATORS"):
@@ -297,7 +322,7 @@ def may(cmd: str, who: Principal) -> bool:
     if rule == "any":
         return True
     if rule == "ops+allow":
-        return who.kind in ("owner", "ear", "allowlist")
+        return who.ops or who.kind == "allowlist"
     return who.ops
 
 
