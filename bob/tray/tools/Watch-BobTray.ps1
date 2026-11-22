@@ -4453,6 +4453,19 @@ $startWorkerTimer.Add_Tick({
                                 Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
                                 Write-TrayLog ('empty-online fill reqs={0}' -f $fill)
                             }
+                            # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
+                            if ($fill -eq 0) {
+                                $offerable = [int](Get-BobTrayCachedOfferableCount)
+                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable
+                                if ($under -gt 0) {
+                                    $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
+                                    $rid = 'undercap-{0}' -f $now
+                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
+                                    Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                    Write-TrayLog ('under-cap fill live={0} offerable={1}' -f $liveN, $offerable)
+                                }
+                            }
                         }
                     } catch { Write-TrayLog ('empty-online fill: ' + $_.Exception.Message) }
                     # FR #5059: elevated recycle of a named seat (stop+verify, then start)
