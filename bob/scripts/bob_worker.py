@@ -3701,6 +3701,8 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
         f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
         f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
+        f"Workers > OpenCode harvest (FR #8731): tray, worker, and OpenCode-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
+        f"Workers > Grok harvest (FR #8724): tray, worker, and Grok-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Workers > Cursor harvest (FR #8718): tray, worker, and Cursor-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
@@ -4814,6 +4816,57 @@ def agent_stderr_evidence(text: str) -> str:
         return "(evidence unavailable)"
 
 
+
+
+def _stderr_is_opencode_stdout_oserror22_noise(text: str) -> bool:
+    """True when stderr is only OpenCode stdout TextIOWrapper OSError 22.
+
+    FR #9013: unsigned exit 0xffffffff with
+    ``Exception ignored in: <_io.TextIOWrapper ... stdout ... cp1252>``
+    plus ``OSError: [Errno 22] Invalid argument`` is teardown noise after the
+    console closes, not a CLI crash. A real Traceback stays a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if "traceback" in low or "error_kind" in low:
+        return False
+    if "errno 22" not in low and "[errno 22]" not in low:
+        return False
+    if "invalid argument" not in low:
+        return False
+    if "textiowrapper" not in low and "stdout" not in low:
+        return False
+    return True
+
+
+def _stderr_is_opencode_missing_query_noise(text: str) -> bool:
+    """True when stderr is OpenCode idle tool noise ending in missing query.
+
+    FR #9012: unsigned exit 0xffffffff with console dir listings and
+    ``missing query (try ".")`` is an external kill / tool misuse while
+    job=(none), not a CLI crash. Traceback / exception / fatal stay failures.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(
+        tok in low
+        for tok in (
+            "traceback",
+            "exception",
+            "fatal",
+            "error_kind",
+            '"lvl": "error"',
+            '"lvl":"error"',
+        )
+    ):
+        return False
+    if "missing query" not in low:
+        return False
+    return True
+
+
 def agent_stderr_dedupe_line(text: str) -> str:
     """Normalised first nonempty stderr line for the intake key (FR #7671)."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
@@ -4821,6 +4874,37 @@ def agent_stderr_dedupe_line(text: str) -> str:
     norm = re.sub(r"\s+", " ", first).strip().lower()
     norm = re.sub(r"[^a-z0-9 .:_-]+", "", norm)[:80]
     return norm or "none"
+
+
+def grok_worker_spawn_connect_failure(text: str) -> bool:
+    """FR #8972: grok exited because its own worker_spawn could not connect.
+
+    That is a grok-internal connect blip, not a bob CLI bug. The seat still
+    recycles and GIVEUPs an accepted job. It does not open another intake issue.
+    """
+    raw = str(text or "")
+    return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
+
+def unsigned_exit_stderr_is_noise(text: str) -> bool:
+    """FR #8969 / #8970: 0xffffffff plus progress or TUI chrome is an external kill.
+
+    grok-pager info/debug and the live Grok prompt are not a CLI error. A real
+    failure word or an error/warn level stays a cli-failure.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return True
+    if re.search(
+        r'(?i)traceback|\bexception\b|\bfatal\b|\bfailed\b|\berror_kind\b|'
+        r'"lvl"\s*:\s*"(error|warn|warning|fatal)"',
+        raw,
+    ):
+        return False
+    return bool(re.search(
+        r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
+        raw,
+    ))
 
 
 def _intake_disabled_by_env() -> bool:
@@ -4883,6 +4967,23 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "no-ack-still-running"}
+    # FR #9025: fuel-exhausted / out-of-fuel recycle while the process is still running is
+    # expected (dialog+quit path / fuel gate). Do not open "seat stopped making progress".
+    _fuel_reason = str(reason or "").strip().lower()
+    if exit_code is None and (
+        _fuel_reason == "fuel-exhausted"
+        or _fuel_reason.startswith("fuel-exhausted:")
+        or _fuel_reason in ("out-of-fuel", "out_of_fuel")
+    ):
+        if log:
+            try:
+                log(
+                    "worker: fuel-exhausted recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9025)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "fuel-exhausted-recycle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -4899,10 +5000,29 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
+    # FR #8972: grok worker_spawn connect is logged by the caller and recycled.
+    # Do not open "bug: agent CLI nonzero exit" for that signature.
+    if grok_worker_spawn_connect_failure(stderr_tail) or grok_worker_spawn_connect_failure(evidence):
+        if log:
+            try:
+                log("worker: skip agent-cli-nonzero-exit intake (grok worker_spawn connect; FR #8972)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "grok-worker-spawn-connect"}
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #9013: OpenCode stdout TextIOWrapper OSError 22 is external-kill teardown noise.
+    # FR #9012: OpenCode idle missing-query console dump is external-kill noise.
+    # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
+    oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
+    missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip()
+        or oserror22_noise
+        or missing_query_noise
+        or unsigned_exit_stderr_is_noise(evidence)
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
@@ -4953,6 +5073,14 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if oserror22_noise:
+            what += (
+                "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
+            )
+        if missing_query_noise:
+            what += (
+                "Stderr was OpenCode idle missing-query tool noise only (not a CLI crash). FR #9012.\n"
+            )
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
@@ -6019,11 +6147,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $env:TMP = $bobTmp",
             r"        $env:TMPDIR = $bobTmp",
             r"        $env:BOB_OPENCODE_SCRATCH = $bobTmp",
-            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
-            r"    } else {",
-            r"        $argList = @('run', '-m', $model, $line)",
             r"    }",
-            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
             # FR #7952: once per job, before the run. Never changes $model mid-turn.
             r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
@@ -6038,6 +6162,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
             r"        }",
             r"    }",
+            # FR #8734 / BOB-29: $argList is built after the pause-return model update
+            # so -m, the seat line and the job header name the same model.
+            r"    if ($ocDir) {",
+            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
+            r"    } else {",
+            r"        $argList = @('run', '-m', $model, $line)",
+            r"    }",
+            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
@@ -6084,6 +6216,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8553: never -NoNewWindow with redirects. Sharing the parent console
             # hangs opencode after the build banner (empty stdout) and can tear down the
             # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
+            # FR #8734 / BOB-29: stdout tee into seat-<nick>.log names the launched model.
+            r"        Write-Output ('opencode-run model=' + $model + ' job=' + [string]$jobKey)",
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
@@ -10011,22 +10145,32 @@ def show_out_of_fuel_dialog(
         evidence=evidence,
         nick=nick,
     )
-    if show_fn is not None:
-        show_fn(text, title)
-        return True
     raw = str(env.get("BOB_WORKER_FUEL_DIALOG", "1") or "1").strip().lower()
-    if raw in ("0", "false", "no", "off"):
+    if show_fn is None and raw in ("0", "false", "no", "off"):
         if log:
             try:
                 log("out-of-fuel: dialog skipped (BOB_WORKER_FUEL_DIALOG=0)")
             except Exception:
                 pass
         return False
+    # FR #8991 / #9016: never block worker-remove / shutdown on MessageBoxW (Session 0
+    # hang) or a slow injected show_fn. Daemon thread + short join; process can exit.
     try:
-        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        MB_OK = 0x00000000
-        MB_ICONWARNING = 0x00000030
-        user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+        def _box() -> None:
+            try:
+                if show_fn is not None:
+                    show_fn(text, title)
+                    return
+                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+                MB_OK = 0x00000000
+                MB_ICONWARNING = 0x00000030
+                user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+            except Exception:
+                pass
+
+        th = threading.Thread(target=_box, name="out-of-fuel-dialog", daemon=True)
+        th.start()
+        th.join(5.0)
         return True
     except Exception as e:
         if log:
@@ -16738,7 +16882,11 @@ class Supervisor:
         return pool, remaining, reset_hint
 
     def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
-        """FR #8814: dialog + worker-remove + shutdown so the nick leaves the digest."""
+        """FR #8814 / #8991 / #9016: worker-remove + dialog + shutdown (no fuel-hold zombie).
+
+        Remove the nick before any dialog so digest capacity frees. Dialog is
+        best-effort and must not block exit (daemon MessageBox / short join).
+        """
         if getattr(self, "_out_of_fuel_quit_started", False):
             return
         self._out_of_fuel_quit_started = True
@@ -16746,6 +16894,29 @@ class Supervisor:
         if not out_of_fuel_quit_enabled(env):
             self.log("out-of-fuel: quit skipped (BOB_WORKER_OUT_OF_FUEL_QUIT=0)")
             return
+        pid = None
+        try:
+            if self.proc is not None:
+                pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
+        if pid is None:
+            try:
+                pid = os.getpid()
+            except Exception:
+                pid = None
+        # FR #8991 / #9016: remove before dialog so Session 0 MessageBox cannot
+        # leave the nick painted out_of_fuel while fuel-hold heartbeats continue.
+        try:
+            post_digest_worker_remove(
+                machine=self.machine,
+                nick=self.nick,
+                pid=pid,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
         pool, remaining, reset_hint = self._out_of_fuel_dialog_pool_bits(evidence)
         show_fn = getattr(self, "_out_of_fuel_dialog_show_fn", None)
         try:
@@ -16761,28 +16932,7 @@ class Supervisor:
             )
         except Exception as e:
             self.log(f"out-of-fuel: dialog path failed {type(e).__name__}")
-        pid = None
-        try:
-            if self.proc is not None:
-                pid = getattr(self.proc, "pid", None)
-        except Exception:
-            pid = None
-        if pid is None:
-            try:
-                pid = os.getpid()
-            except Exception:
-                pid = None
-        try:
-            post_digest_worker_remove(
-                machine=self.machine,
-                nick=self.nick,
-                pid=pid,
-                env=env,
-                log=self.log,
-            )
-        except Exception as e:
-            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
-        self.log("out-of-fuel: closing seat (FR #8814)")
+        self.log("out-of-fuel: closing seat (FR #8814 / #9016)")
         try:
             self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
         except Exception as e:
@@ -17576,6 +17726,11 @@ class Supervisor:
             self._session_cursor = CursorTurnWatcher(since_wall=time.time()) if self.kind == "cursor" else None
             spec.session_log = self.session_log
             self.session_log.write("start", f"kind={self.kind} session={spec.session_id}")
+            # FR #8734 / BOB-29: seat session log names the model stamped into the child.
+            if (self.kind or "").strip().lower() == "opencode":
+                oc_id = str((child.get("env") or {}).get("BOB_OPENCODE_MODEL") or "").strip()
+                if oc_id:
+                    self.session_log.write("model", f"opencode model={oc_id}")
             self.session_log.write("console-start", json.dumps(console_startup_state()))
             self.session_log.write("prompt", self._prompt() + (" " + note if note else ""))
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
@@ -18661,6 +18816,22 @@ class Supervisor:
             self.log(
                 f"agent: exited by itself code={code} (u32={exit_label}); {kill_line}"
             )
+        # FR #9016: CLI teardown (0xffffffff / OSError 22) after fuel-quit or while
+        # out-of-fuel must close the seat cleanly — no cli-failure intake, no recycle hang.
+        fuel_hold = bool(self.bored and getattr(self.bored, "out_of_fuel", False))
+        fuel_quit = bool(getattr(self, "_out_of_fuel_quit_started", False))
+        if fuel_hold or fuel_quit:
+            self.log(
+                f"agent: exit during out-of-fuel code={code} (u32={exit_label}); "
+                f"closing seat (FR #9016); {kill_line}"
+            )
+            try:
+                self.restart_agent("agent-cli-nonzero-exit")
+            except Exception as e:
+                self.log(f"agent: fuel-hold exit close failed {type(e).__name__}")
+                if not getattr(self, "_shutting", False):
+                    self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+            return
         # FR #7593: zero exit ends the seat (unchanged). Nonzero → report, GIVEUP accepted
         # job (no fake DONE), restart the supported way so the replacement !bored's.
         if exit_u == 0:
@@ -18881,7 +19052,13 @@ class Supervisor:
         now_mono = float(self.clock())
         # FR #8494: out-of-fuel hold still heartbeats so digest ``updated`` stays fresh
         # and state paints ``out_of_fuel`` (not quiet idle). ACK may already be clear.
+        # FR #9016: after quit decision, never post fuel-hold (that kept redqueen OC
+        # zombies alive after ``quitting seat after dialog``).
         if snap.out_of_fuel:
+            if getattr(self, "_out_of_fuel_quit_started", False) or getattr(
+                self, "_shutting", False
+            ):
+                return
             self._post_fuel_hold_heartbeat(now_mono=now_mono)
             return
         if not snap.ack_open:
@@ -19438,11 +19615,31 @@ class Supervisor:
 
     def restart_agent(self, reason: str) -> None:
         # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
+        # FR #9016: after fuel-quit (or hold with quit enabled), closing the agent
+        # must shut the seat down — refusing restart alone left fuel-hold zombies
+        # after CLI ``0xffffffff`` / OSError 22 teardown.
         if self.bored and self.bored.out_of_fuel:
             self.log(
                 f"agent: HUNG ({reason}) ignored - out-of-fuel hold (no respawn; FR #4180)"
             )
             self._clear_watchdogs_for_out_of_fuel()
+            quit_started = bool(getattr(self, "_out_of_fuel_quit_started", False))
+            env = (
+                self.base_env
+                if isinstance(getattr(self, "base_env", None), dict)
+                else None
+            )
+            if quit_started or out_of_fuel_quit_enabled(env):
+                if not getattr(self, "_shutting", False):
+                    self.log(
+                        "agent: out-of-fuel + agent exit → closing seat (FR #9016)"
+                    )
+                    try:
+                        self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+                    except Exception as e:
+                        self.log(
+                            f"agent: fuel-quit shutdown failed {type(e).__name__}"
+                        )
             return
         # FR #7123: never silently drop an accepted job on hang-recycle.
         if self.bored and getattr(self.bored, "_ack_open", False) and getattr(self.bored, "_ack_job_key", None):
