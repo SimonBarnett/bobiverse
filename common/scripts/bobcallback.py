@@ -77,6 +77,7 @@ DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
 POST_ROUTES = frozenset(
     {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_VALIDATE_PATH}
 )
+PUT_ROUTES = frozenset({MODELS_PATH})  # BOB-02 / FR #8708
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
 MAX_BODY_BYTES = 1024 * 1024          # hard cap for any POST body (413 above)
 MAX_REPORT_BYTES = 256 * 1024         # /bob/v1/report bodies are tiny status docs
@@ -158,6 +159,22 @@ def _check_post_route(
         return 403, b""
     return 0, allow
 
+
+
+
+def _check_put_route(
+    verb: str, route: str, peer_ip: str, allow_ips: set[str] | None
+) -> tuple[int, set[str]] | tuple[int, bytes]:
+    """BOB-02: PUT /bob/v1/models — unknown 404, wrong method 405, peer 403."""
+    allow = allow_ips if allow_ips is not None else load_allow_ips()
+    if route not in PUT_ROUTES:
+        return 404, b""
+    if verb != "PUT":
+        return 405, b""
+    ip = (peer_ip or "").split("%", 1)[0]
+    if allow and ip not in allow:
+        return 403, b""
+    return 0, allow
 
 def report_rate_per_min() -> int:
     try:
@@ -1025,6 +1042,18 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # BOB-02 / FR #8708: PUT replace Weights (PATCH stays 501 via BaseHTTPRequestHandler).
+    if route == MODELS_PATH:
+        if verb == "PUT":
+            gate = _check_put_route(verb, route, peer_ip, allow_ips)
+            if gate[0] != 0:
+                return gate[0], gate[1]
+            code, payload = models_catalog.handle_models_put(body, home)
+            if code in (200, 400, 413, 500, 503) and payload:
+                stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, payload
+        if verb in ("POST", "DELETE"):
+            return 405, b""
     if verb in ("GET", "HEAD") and route.startswith(INTAKE_PATH + "/"):
         iid = route[len(INTAKE_PATH) + 1 :].strip("/")
         if not iid or "/" in iid:
@@ -1642,6 +1671,7 @@ def main() -> None:
     host, port = httpd.server_address[:2]
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
+        f"PUT {MODELS_PATH} "
         f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
         f"POST {MODELS_VALIDATE_PATH}",
         flush=True,

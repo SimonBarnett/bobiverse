@@ -22,6 +22,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/bob/v1/models` | Fleet agent Weights rows JSON (`{"agents":[…]}`) from digest-home `models-catalog.json` or built-in defaults (BOB-01 / FR #8707); **open, no secret** |
+| PUT | `/bob/v1/models` | Persist Weights full replace (direct/LAN; IIS GET|HEAD only) |
 | POST | `/bob/v1/models/validate` | Fail-closed `(cli, model, context, effort)` check against digest-home `models-valid-combos.json` (BOB-03 / FR #8710); **peer allow-list** (`BOB_REPORT_ALLOW`); never persists |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
@@ -84,15 +85,23 @@ Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / 
 curl -sS "https://bob.ntsa.uk/bob/v1/models"
 ```
 
+### PUT models / Weights rows (BOB-02 / FR #8708)
+
+Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged.
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
+```
+
 ### POST models validate (BOB-03 / FR #8710)
 
-Non-persisting check of one `(cli, model, context, effort)` tuple against digest-home **`models-valid-combos.json`** (separate from Weights `models-catalog.json` so BOB-02 PUT cannot wipe the allow-list). Fail-closed: missing, unreadable, malformed, or empty catalogue → **503** `{"error":"catalog_unavailable"}` (never accepts). Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs (403 off-list). Does not write, enqueue, or touch `models-catalog.json` / tray stores.
+Non-persisting check of one `(cli, model, context, effort)` tuple against digest-home **`models-valid-combos.json`** (separate from Weights `models-catalog.json` so BOB-02 PUT cannot wipe the allow-list). Fail-closed: missing, unreadable, malformed, or empty catalogue -> **503** `{"error":"catalog_unavailable"}` (never accepts). Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs (403 off-list). Does not write, enqueue, or touch `models-catalog.json` / tray stores.
 
 **Request JSON keys**
 
 | key | required | notes |
 |-----|----------|-------|
-| `cli` | yes | `grok` \| `cursor` \| `opencode` (case-folded; launchable worker agents only — not `aider`) |
+| `cli` | yes | `grok` \| `cursor` \| `opencode` (case-folded; launchable worker agents only - not `aider`) |
 | `model` | yes | Exact catalogue model id (placeholders like `auto` / `$model` and fuel-pool ids fail unless listed) |
 | `context` | yes | Exact catalogue context string (no token-window invention) |
 | `effort` | when the row lists efforts | Exact match after case-fold only. Empty `efforts` on a row means effort must be absent (non-Grok CLIs). Never uses `normalize_effort`. |
@@ -114,7 +123,7 @@ Stable error codes: `unknown_cli`, `unknown_model`, `invalid_context`, `invalid_
 
 **Rejection log (S1 tray/log evidence):** BobCallback stdout one line per reject:
 
-`INFO models validate reject error=<code> field=<name|-> cli=… model=… context=… effort=…`
+`INFO models validate reject error=<code> field=<name|-> cli=... model=... context=... effort=...`
 
 (never the raw request body). On the chair / digest host this is the BobCallback / Jeeves service log (NSSM or scheduled-task stdout for the `:7700` listener).
 
