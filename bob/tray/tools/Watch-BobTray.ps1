@@ -1572,6 +1572,61 @@ function Test-BobTrayAgentFuelExhausted {
     return ($remain -le 0)
 }
 
+# FR #8719 / BOB-23: MarchHare Cursor token gate uses fleet-cursor-private.json (si@ntsa.uk),
+# never Get-BobTrayCursorFuelRemaining (local box). Fail-when is "gates on local box only".
+function Test-BobTrayMarchHareCursorExhausted {
+    param(
+        [string]$InstallRoot = ''
+    )
+    $roots = New-Object System.Collections.Generic.List[string]
+    foreach ($c in @(
+            $InstallRoot,
+            $script:RepoRoot,
+            $env:BOB_DIGEST_HOME,
+            $env:BOB_HOME,
+            $(if ($script:RepoRoot) { Join-Path $script:RepoRoot 'home' } else { '' })
+        )) {
+        $t = ([string]$c).Trim()
+        if ($t -and -not $roots.Contains($t)) { [void]$roots.Add($t) }
+    }
+    foreach ($root in $roots) {
+        $path = Join-Path $root 'fleet-cursor-private.json'
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+            $doc = $raw | ConvertFrom-Json
+        }
+        catch { continue }
+        if (-not $doc) { continue }
+        $fresh = $false
+        try { $fresh = [bool]$doc.fresh } catch { $fresh = $false }
+        if (-not $fresh) { continue }
+        $rem = $null
+        try {
+            if ($null -ne $doc.remaining -and [string]$doc.remaining -ne '') {
+                $rem = [int]$doc.remaining
+            }
+        }
+        catch { $rem = $null }
+        if ($null -eq $rem) { continue }
+        return ($rem -le 0)
+    }
+    return $false
+}
+
+function Show-BobTrayMarchHareCursorGateDialog {
+    Write-TrayLog 'agents: MarchHare Cursor tokens exhausted - dialog + quit (FR #8719 / BOB-23)'
+    try {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "MarchHare has no Cursor tokens remaining.`r`nNot starting a Cursor seat (fleet si@ntsa.uk meter).",
+            'Bobiverse — MarchHare Cursor tokens',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+    catch { }
+}
+
 function Show-BobTraySessionApiKeyDialog {
     param(
         [string]$Title = 'Session API key',
@@ -1664,6 +1719,11 @@ function Start-BobTrayAgentWatch {
     }
     $kind = ([string]$Agent.kind).ToLowerInvariant()
     $sessionEnv = $null
+    # FR #8719 / BOB-23: MarchHare fleet meter before any local Cursor fuel / BYOK prompt.
+    if ($kind -eq 'cursor' -and (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot)) {
+        Show-BobTrayMarchHareCursorGateDialog
+        return
+    }
     if ($kind -eq 'grok') {
         # Local weekly first (CAST IRON); digest xai_weekly only fills nulls (FR #7498).
         $fuel = Resolve-BobTrayGrokFuelAtStart
@@ -2031,6 +2091,28 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     return $childPid
 }
 
+function Start-BobTrayPriorityExe {
+    # FR #8699 / BOB-50: vendored PriorityAgent.exe.
+    $exe = Join-Path $RepoRoot 'vendor\priority\PriorityAgent.exe'
+    Write-TrayLog ('Priority: start exe ' + $exe)
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-TrayLog ('Priority exe missing: ' + $exe)
+        return
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+}
+
+function Start-BobTrayPlanExe {
+    # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
+    $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    Write-TrayLog ('Plan: start exe ' + $exe)
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-TrayLog ('Plan exe missing: ' + $exe)
+        return
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+}
+
 function Start-BobTrayWorkerExe {
     <#
     .SYNOPSIS
@@ -2051,6 +2133,13 @@ function Start-BobTrayWorkerExe {
         [switch]$Quiet,
         [switch]$Restore
     )
+    # FR #8719 / BOB-23: Workers > Cursor — MarchHare token gate (dialog + quit; not local box fuel).
+    if ($Mode -eq 'agent' -and ([string]$Agent).ToLowerInvariant() -eq 'cursor') {
+        if (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot) {
+            Show-BobTrayMarchHareCursorGateDialog
+            return
+        }
+    }
     try {
         # FR #7669: seat target 0 refuses every start path. Running seats are not stopped here.
         if ($Mode -eq 'agent' -and (Test-BobTraySeatsOff)) {
@@ -3909,6 +3998,20 @@ function Update-BobTrayWorkerAgentsMenu {
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
+        # FR #8717 / BOB-24: Workers > Cursor shows the cursor.com favicon.
+        if ($id -eq 'cursor') {
+            $fav = Join-Path $PSScriptRoot '..\assets\menu-favicons\cursor.com.ico'
+            $favOk = '0'
+            if (Test-Path -LiteralPath $fav) {
+                try {
+                    $favIcon = New-Object System.Drawing.Icon $fav
+                    $item.Image = $favIcon.ToBitmap()
+                    $favIcon.Dispose()
+                    $favOk = '1'
+                } catch { $favOk = '0' }
+            }
+            Write-TrayLog ("worker-favicon id=cursor path={0} ok={1}" -f $fav, $favOk)
+        }
         # Sender is the clicked item. An empty tag must not start Automatic.
         $item.Add_Click({
                 param($sender, $e)
@@ -3920,6 +4023,16 @@ function Update-BobTrayWorkerAgentsMenu {
                 }
                 if ($picked -eq 'auto') {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent '' -Trigger 'menu'
+                }
+                elseif ($picked -eq 'grok') {
+                    # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
+                    Write-TrayLog 'Workers Grok: grok CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
+                }
+                elseif ($picked -eq 'opencode') {
+                    # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
+                    Write-TrayLog 'Workers Open Code: opencode CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode'
                 }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
@@ -4006,10 +4119,13 @@ $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
+$miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-$miPriority.Add_Click({ Write-TrayLog 'Priority: menu click (BOB-06 tree; start is later BOB)' })
-$miJeeves.Add_Click({ Write-TrayLog 'Jeeves: menu click (BOB-06 tree; start is later BOB)' })
+$miPriority.Add_Click({ Start-BobTrayPriorityExe })
+$miJeeves.Add_Click({
+        Write-TrayLog 'Jeeves: grok start'
+        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
+    })
 $miWeights.Add_Click({
         Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'
         [void][System.Windows.Forms.MessageBox]::Show(
@@ -4385,6 +4501,19 @@ $startWorkerTimer.Add_Tick({
                                 }
                                 Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
                                 Write-TrayLog ('empty-online fill reqs={0}' -f $fill)
+                            }
+                            # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
+                            if ($fill -eq 0) {
+                                $offerable = [int](Get-BobTrayCachedOfferableCount)
+                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable
+                                if ($under -gt 0) {
+                                    $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
+                                    $rid = 'undercap-{0}' -f $now
+                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
+                                    Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                    Write-TrayLog ('under-cap fill live={0} offerable={1}' -f $liveN, $offerable)
+                                }
                             }
                         }
                     } catch { Write-TrayLog ('empty-online fill: ' + $_.Exception.Message) }

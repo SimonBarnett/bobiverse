@@ -2642,9 +2642,10 @@ def explicit_cursor_si_decision(
         row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
+        # FR #8719 / BOB-23: MarchHare (si@ntsa.uk) fleet meter gate — not local box fuel.
         return Decision(
             "refuse",
-            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            "explicit cursor: MarchHare tokens exhausted (%s remaining=0)" % account,
             account=account,
         )
     rem = fill["remaining"] if fill["usable"] else "unknown"
@@ -3700,6 +3701,7 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
         f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
         f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
+        f"Workers > Cursor harvest (FR #8718): tray, worker, and Cursor-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
@@ -20168,6 +20170,25 @@ def _explicit_refusal_exit(
         log=log,
         filer_post=filer_post,
     )
+    # FR #8719 / BOB-23: MarchHare Cursor token gate — dialog then quit (EXIT_OUT_OF_FUEL).
+    reason_l = str(dec.reason or "").lower()
+    marchhare_gate = (
+        "marchhare tokens exhausted" in reason_l
+        or ("marchhare" in reason_l and "remaining=0" in reason_l)
+    )
+    if marchhare_gate:
+        try:
+            show_out_of_fuel_dialog(
+                pool="MarchHare Cursor",
+                remaining="0",
+                evidence=dec.reason or "",
+                nick="",
+                title="Bobiverse — MarchHare Cursor tokens",
+                log=log,
+            )
+        except Exception:
+            pass
+        return EXIT_OUT_OF_FUEL
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
