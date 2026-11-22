@@ -13,6 +13,7 @@ description: >
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+>    **Workers > Cursor harvest (FR #8718):** tray, worker, and Cursor-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 > 3. BEFORE finishing ANY debugging session run the harvest step:
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
@@ -309,7 +310,7 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #8008:** Hard-ceiling progress is output/worktree only (CPU/descendants refresh beat, not stall). After repeated ceiling GIVEUPs stamp giveup_agent_kinds so recycled OpenCode nicks cannot re-take the job. Product home is bob_worker + gitclaim/shop_listen (PR #8046). Do not park under harvest/SKILL.md (moved from tip #8047).
 - When turn_ended GIVEUP shows only exit, check Write-OpencodeTurnMarker/BoredEmitter: snip last stderr into reason and keep hitLimit as distinct out-of-fuel class.
 - Changing skill_dag_mcp_script_path must keep a literal _resolve_installed_worker_script("skill_dag_mcp.py") call or worker_shipped_scripts drops it from the bob-worker artifact (MRB #8075 / CI build-bob-worker)
-- **FR #8846 / #8785:** skill-dag MCP down is not a disk-skills success path. Use only seat `.cursor/mcp.json` mcpServers.skill-dag for the --once CLI (never invent `bob\bob\scripts`); if MCP and that CLI both fail, GIVEUP `skill-dag-mcp-down`. Never continue FR/MRB/UAT by grepping skills from disk.
+- **FR #8846 / #8785 / #8911:** skill-dag MCP down is not a disk-skills success path. A handshake `connection closed: initialize response` with only `skill-dag-core` in the bound cwd still uses seat `.cursor/mcp.json` mcpServers.skill-dag for `python <scripts>/skill_dag_mcp.py --once resolve` then `get_skill` (never invent `bob\bob\scripts`). If that CLI works, continue from its output. If MCP and that CLI both fail, GIVEUP `skill-dag-mcp-down`. Never continue FR/MRB/UAT by grepping skills from disk or by reading `SKILL.md` from another job worktree.
 - Before calling install-root .ps1 with new switches, probe param() (or retry on NamedParameterNotFound); prefer shipped/common scripts over stale flat scripts\; ship Clear+Common with bob-worker (FR #7910 path).
 - OpenCode finish/done-miss/corrective text must follow job type: MRB posts PASS/FAIL (fix PR on FAIL only); FIX pushes existing head; FR/UAT still gh pr create (FR #8248 / PR #8263).
 - Done-miss FINISH remind must release BoredEmitter._cv around the inject callback (same as failed-turn retry) so start_agent holding RLock then set_ready cannot deadlock (FR #8268 / PR #8272).
