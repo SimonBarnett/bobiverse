@@ -52,13 +52,14 @@ function Read-FleetJob {
 function Test-BobFrBodyDispatched {
     <#
       FR #8760 S3: issue body that says dispatched beats older CodeRabbit park-only comments.
+      FR #8877: dollar names were stripped on commit a1a94bd7; keep them.
     #>
     param([string]$Body)
-    $Body = [string]$Body
-    if ([string]::IsNullOrWhiteSpace($Body)) { return $false }
-    if ($Body -match '(?i)\(dispatched\)') { return $true }
-    if ($Body -match '(?i)dispatched[\s.:,-]') { return $true }
-    if ($Body -match '(?i)\bdispatched\b') { return $true }
+    $text = [string]$Body
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    if ($text -match '(?i)\(dispatched\)') { return $true }
+    if ($text -match '(?i)dispatched[\s.:,-]') { return $true }
+    if ($text -match '(?i)\bdispatched\b') { return $true }
     return $false
 }
 
@@ -81,13 +82,13 @@ function Get-BobBuildLoopCurrentJob {
         [string]$RepoSlug = 'bobiverse'
     )
     $path = Get-BobBuildLoopStatePath -Issue $Issue -RepoSlug $RepoSlug
-    $job = Read-JsonFile $path
-    if (-not $job) { return $null }
+    $row = Read-JsonFile $path
+    if (-not $row) { return $null }
     return [pscustomobject]@{
         path         = $path
-        currentJobId = $job.currentJobId
-        machine      = $job.machine
-        updatedAt    = $job.updatedAt
+        currentJobId = $row.currentJobId
+        machine      = $row.machine
+        updatedAt    = $row.updatedAt
     }
 }
 
@@ -102,15 +103,15 @@ function Set-BobBuildLoopCurrentJob {
         [string]$RepoSlug = 'bobiverse'
     )
     $path = Get-BobBuildLoopStatePath -Issue $Issue -RepoSlug $RepoSlug
-    $doc = [pscustomobject]@{
+    $row = [pscustomobject]@{
         issue        = ($Issue -replace '[^0-9]', '')
         repo         = $RepoSlug
         currentJobId = [string]$JobId
         machine      = $Machine
         updatedAt    = [DateTime]::UtcNow.ToString('o')
     }
-    Write-JsonFile $path $doc
-    return $doc
+    Write-JsonFile $path $row
+    return $row
 }
 
 function Resolve-BobFleetMachineRecord {
