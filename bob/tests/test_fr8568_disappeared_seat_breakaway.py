@@ -27,6 +27,19 @@ def test_fr8568_create_breakaway_constant_and_launch_flags():
     w = _read(WATCH)
     assert "CREATE_BREAKAWAY_FROM_JOB" in w
     assert "CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_BREAKAWAY_FROM_JOB" in w
+    # FR #9078: Access Denied (5) retry without BREAKAWAY in ConsoleLauncher.
+    assert "ERROR_ACCESS_DENIED" in w
+    start = w.index("public static int Start(")
+    end = w.index("function Start-BobTrayVisibleProcessWithSessionEnv", start)
+    body = w[start:end]
+    assert "ERROR_ACCESS_DENIED" in body
+    assert "FR #9078" in body
+    assert body.count("CreateProcessW(app, new StringBuilder(commandLine)") >= 2
+    retry = body.split("ERROR_ACCESS_DENIED", 1)[1]
+    assert "CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT, block" in retry
+    assert "CREATE_BREAKAWAY_FROM_JOB" not in retry.split(
+        "CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT, block", 1
+    )[0]
 
 
 def test_fr8568_watchdog_handles_disappear_without_restart():

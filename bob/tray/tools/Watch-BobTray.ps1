@@ -2017,6 +2017,8 @@ public static class ConsoleLauncher {
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     // FR #8568: break away from parent job objects (monitor/shell kill-on-close).
     const uint CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
+    // FR #9078: Access Denied when the parent job forbids breakaway (e.g. schtasks TipForm).
+    const int ERROR_ACCESS_DENIED = 5;
     public static int Start(string app, string commandLine, string cwd, string title, IDictionary overrides) {
         var env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (DictionaryEntry e in Environment.GetEnvironmentVariables()) { env[(string)e.Key] = (string)e.Value; }
@@ -2032,14 +2034,28 @@ public static class ConsoleLauncher {
         IntPtr block = Marshal.StringToHGlobalUni(sb.ToString());
         sb.Clear();
         try {
+            string cwdArg = string.IsNullOrEmpty(cwd) ? null : cwd;
             var si = new STARTUPINFO();
             si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
             si.lpTitle = string.IsNullOrEmpty(title) ? null : title;
             PROCESS_INFORMATION pi;
             if (!CreateProcessW(app, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
                     CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_BREAKAWAY_FROM_JOB, block,
-                    string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) {
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    cwdArg, ref si, out pi)) {
+                int err = Marshal.GetLastWin32Error();
+                if (err != ERROR_ACCESS_DENIED) {
+                    throw new System.ComponentModel.Win32Exception(err);
+                }
+                // FR #9078: retry without BREAKAWAY. Seat stays in the parent job and can die
+                // if that job closes with KILL_ON_JOB_CLOSE (weaker than FR #8568 breakaway).
+                si = new STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+                si.lpTitle = string.IsNullOrEmpty(title) ? null : title;
+                if (!CreateProcessW(app, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
+                        CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT, block,
+                        cwdArg, ref si, out pi)) {
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                }
             }
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
