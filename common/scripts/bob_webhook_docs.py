@@ -60,7 +60,7 @@ def _inbound() -> list[DocEntry]:
             status_codes="200 OK; 503 when digest.lock is wedged (retry).",
             retry_idempotency="Safe to retry. Idempotent read.",
             rate_limits="Cloudflare + reverse proxy only (no app per-IP GET quota).",
-            reachability="Public via https://bob.ntsa.uk (Cloudflare). Local :7700 also serves aliases.",
+            reachability="Public via https://bob.ntsa.uk (Cloudflare). /bob/v1/digest 301s to this path.",
             source="common/scripts/bobcallback.py, bobreport.py",
             fr="FR #149 / #174 / #2458",
             html_rel="docs/webhooks/report.html",
@@ -416,60 +416,30 @@ def _inbound() -> list[DocEntry]:
             fr="FR #6453 / builds catalog",
             html_rel="docs/webhooks/builds.html",
         ),
-        DocEntry(
-            slug="models-validate",
-            title="Models combo validate",
-            method="POST",
-            path=bobcallback.MODELS_VALIDATE_PATH,
-            direction="in",
-            purpose="Fail-closed check of (cli, model, context, effort) against models-valid-combos.json; never persists.",
-            callers="Weights / tray / BOB-02 before write; operators probing allow-list.",
-            auth="Peer IP must be on BOB_REPORT_ALLOW (same POST gate as report).",
-            request_schema=(
-                "JSON object: cli (grok|cursor|opencode), model, context, optional effort "
-                "(required when the catalogue row lists efforts; must be absent when efforts is empty)."
-            ),
-            response_schema=(
-                '200 {"ok":true}; 400 {"error":"malformed"} or '
-                '{"error":"<code>","field":"<name>"}; 503 {"error":"catalog_unavailable"}.'
-            ),
-            example_request=(
-                "POST https://bob.ntsa.uk/bob/v1/models/validate\n"
-                "Content-Type: application/json\n\n"
-                '{"cli":"grok","model":"fixture-grok-a","context":"128k","effort":"medium"}'
-            ),
-            status_codes="200 ok; 400 malformed/invalid; 403 peer; 405; 503 catalogue unavailable.",
-            retry_idempotency="Safe to retry; no side effects.",
-            rate_limits="Peer allow-list only (no separate app rate for this path).",
-            reachability="Public Cloudflare rewrite of /bob/v1/models* to BobCallback :7700.",
-            source="common/scripts/models_catalog.py, bobcallback.py",
-            fr="BOB-03 / FR #8710",
-            html_rel="docs/webhooks/models-validate.html",
-        ),
     ]
 
 
 def _local() -> list[DocEntry]:
     return [
         DocEntry(
-            slug="digest-local",
-            title="Local digest alias",
+            slug="digest-alias",
+            title="Digest alias (301 to report)",
             method="GET",
             path=bobcallback.DIGEST_PATH,
-            direction="local",
-            purpose="Same JSON as GET report; local BobCallback only.",
-            callers="Local tools on the chair host.",
-            auth="None.",
+            direction="in",
+            purpose="Same webhook as GET/POST /bob/v1/report; responds 301 Location: /bob/v1/report.",
+            callers="Legacy clients using /bob/v1/digest.",
+            auth="None (redirect only).",
             request_schema="No body.",
-            response_schema="Same as GET /bob/v1/report.",
-            example_request="GET http://127.0.0.1:7700/bob/v1/digest",
-            status_codes="200 local; public IIS historically 404 for /bob/v1/digest unless rewrite present.",
-            retry_idempotency="Safe GET.",
+            response_schema="Empty body; Location: /bob/v1/report.",
+            example_request="GET https://bob.ntsa.uk/bob/v1/digest",
+            status_codes="301 Permanent Redirect to /bob/v1/report.",
+            retry_idempotency="Follow redirect to report.",
             rate_limits="n/a",
-            reachability="Loopback / LAN to :7700. Prefer public /bob/v1/report on bob.ntsa.uk.",
-            source="common/scripts/bobcallback.py",
-            fr="FR #149 / #354",
-            html_rel="docs/webhooks/digest-local.html",
+            reachability="Public + local :7700; IIS BobDigestWebhook Redirect Permanent.",
+            source="common/scripts/bobcallback.py, Install-BobWebhooks.ps1",
+            fr="FR #149 / docs dedupe 2026-11-22",
+            html_rel="docs/webhooks/report.html",
         ),
         DocEntry(
             slug="health-local",

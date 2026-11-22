@@ -2091,6 +2091,13 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     return $childPid
 }
 
+function Test-BobTrayJeevesDrive {
+    # FR #8686 / BOB-36: J: must be mapped. Pass -DriveRoot in a fixture; the menu uses the default.
+    param([string]$DriveRoot = 'J:\')
+    if ([string]::IsNullOrWhiteSpace($DriveRoot)) { return $false }
+    return [bool](Test-Path -LiteralPath $DriveRoot)
+}
+
 function Start-BobTrayPriorityExe {
     # FR #8699 / BOB-50: vendored PriorityAgent.exe.
     $exe = Join-Path $RepoRoot 'vendor\priority\PriorityAgent.exe'
@@ -2121,6 +2128,26 @@ function Test-BobTrayPlanFuelEmpty {
 function Start-BobTrayPlanExe {
     # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
     $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    $hook = $env:BOB_MODELS_WEBHOOK_FILE
+    if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
+    if (Test-Path -LiteralPath $hook) {
+        $raw = Get-Content -LiteralPath $hook -Raw
+        if ($raw -match '"Plan"\s*:\s*\{([^}]+)\}') {
+            $body = $Matches[1]
+            $model = if ($body -match '"model"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+            $context = if ($body -match '"context"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+            $effort = if ($body -match '"effort"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+            if ($model -or $context -or $effort) {
+                Write-TrayLog ("plan-models webhook model=$model context=$context effort=$effort")
+            }
+        }
+    }
+    $mcpDir = Join-Path $RepoRoot 'run'
+    New-Item -ItemType Directory -Force -Path $mcpDir | Out-Null
+    $mcpPath = Join-Path $mcpDir 'plan-mcp.json'
+    $mcpUrl = 'https://plan.ntsa.uk/mcp'
+    Set-Content -LiteralPath $mcpPath -Encoding utf8 -Value ('{"mcpServers":{"plan":{"url":"' + $mcpUrl + '"}}}')
+    Write-TrayLog ('plan-mcp url=' + $mcpUrl + ' config=' + $mcpPath)
     Write-TrayLog ('Plan: start exe ' + $exe)
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-TrayLog ('Plan exe missing: ' + $exe)
@@ -4014,6 +4041,20 @@ function Update-BobTrayWorkerAgentsMenu {
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
+        # FR #8717 / BOB-24: Workers > Cursor shows the cursor.com favicon.
+        if ($id -eq 'cursor') {
+            $fav = Join-Path $PSScriptRoot '..\assets\menu-favicons\cursor.com.ico'
+            $favOk = '0'
+            if (Test-Path -LiteralPath $fav) {
+                try {
+                    $favIcon = New-Object System.Drawing.Icon $fav
+                    $item.Image = $favIcon.ToBitmap()
+                    $favIcon.Dispose()
+                    $favOk = '1'
+                } catch { $favOk = '0' }
+            }
+            Write-TrayLog ("worker-favicon id=cursor path={0} ok={1}" -f $fav, $favOk)
+        }
         # Sender is the clicked item. An empty tag must not start Automatic.
         $item.Add_Click({
                 param($sender, $e)
@@ -4094,6 +4135,16 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
+# BOB-40: Agents > Jeeves uses the existing butler icon.
+$butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
+}
+if (Test-Path -LiteralPath $butler) {
+    $ico = New-Object System.Drawing.Icon $butler
+    $miJeeves.Image = $ico.ToBitmap()
+    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+}
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
 [void]$miAgents.DropDownItems.Add($miJeeves)
@@ -4140,6 +4191,43 @@ $miPlan.Add_Click({
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Start-BobTrayPriorityExe })
 $miJeeves.Add_Click({
+        if (-not (Test-BobTrayJeevesDrive)) {
+            Write-TrayLog 'Jeeves: J: map missing; quit'
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'J: is not mapped. Jeeves will not start.',
+                'Bob - Jeeves',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        $fuelPath = $env:BOB_JEEVES_FUEL_FILE
+        if (-not $fuelPath) { $fuelPath = Join-Path $RepoRoot 'run\jeeves-fuel.json' }
+        if (Test-Path -LiteralPath $fuelPath) {
+            $doc = Get-Content -LiteralPath $fuelPath -Raw
+            if ($doc -match '"remaining_pct"\s*:\s*(-?\d+)' -and [int]$Matches[1] -le 0) {
+                Write-TrayLog 'jeeves dialog-quit reason=no-tokens'
+                try {
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        'No tokens on this box. Jeeves will quit.',
+                        'Bobiverse - Jeeves',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning)
+                } catch { }
+                return
+            }
+        }
+        $hook = $env:BOB_MODELS_WEBHOOK_FILE
+        if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
+        if (Test-Path -LiteralPath $hook) {
+            $raw = Get-Content -LiteralPath $hook -Raw
+            if ($raw -match '"Jeeves"\s*:\s*\{([^}]+)\}') {
+                $body = $Matches[1]
+                $model = if ($body -match '"model"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                $context = if ($body -match '"context"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                $effort = if ($body -match '"effort"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+                Write-TrayLog ("jeeves-models webhook model=$model context=$context effort=$effort")
+            }
+        }
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
     })
@@ -4256,6 +4344,10 @@ $poll.Add_Tick({
                 if ($sa.ok -and $sa.output) {
                     try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
                     try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
+                }
+                if ($alerts.Count -gt 0) {
+                    $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
+                    Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
                 }
                 if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
                 elseif ($alerts.Count -gt 0 -and $engine) {
