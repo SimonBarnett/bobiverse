@@ -1025,8 +1025,12 @@ namespace BobDialogs
                 }
                 catch { }
 
+                // FR #8682 / BOB-38: skill-dag MCP root is J:\.grok\skills (config/log shows J: path).
+                TrayLifecycle.Write("jeeves-mcp", "path", JeevesJMcp.DryRunLine());
+                System.Collections.Hashtable jeevesEnv = new System.Collections.Hashtable();
+                jeevesEnv[JeevesJMcp.EnvName] = JeevesJMcp.SkillsRoot;
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok");
+                StartWorker("agent", "grok", jeevesEnv, "");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
