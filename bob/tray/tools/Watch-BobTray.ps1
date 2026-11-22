@@ -4016,9 +4016,13 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
                 }
                 elseif ($picked -eq 'opencode') {
+                    # FR #8734 / BOB-29: log the model this click starts.
+                    $ocModel = ([string]$env:BOB_OPENCODE_MODEL).Trim()
+                    if (-not $ocModel) { $ocModel = 'opencode/deepseek-v4.1-flash-free' }
+                    Write-TrayLog ('workers-opencode model=' + $ocModel)
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Trigger 'workers-opencode'
                 }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
