@@ -4403,7 +4403,8 @@ try { Start-IrcWatcher } catch { Write-TrayLog ('irc watcher: ' + $_.Exception.M
     if (Test-Path -LiteralPath $dialogs) { . $dialogs }
     $psd1 = Join-Path $Root 'src\BobBridge.psd1'
     if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
-    $h = Get-BobTrayHover
+    # FR #8884: local snapshot only. Full hover (Win32_Process + peer peeks) is the poll step.
+    $h = Get-BobTrayHover -LocalOnly
     if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
         $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
         [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)

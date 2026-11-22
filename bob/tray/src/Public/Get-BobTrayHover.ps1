@@ -4089,6 +4089,11 @@ function ConvertTo-BobTrayJobRow {
 }
 
 function Get-BobTrayHover {
+    <#
+      FR #8884: -LocalOnly skips Win32_Process (live grok) and peer peeks.
+      Startup hover must finish inside the 45s engine step.
+    #>
+    param([switch]$LocalOnly)
     $tier = '?'
     try {
         $path = Join-Path $env:USERPROFILE '.grok\settings_cache.json'
@@ -4163,6 +4168,7 @@ function Get-BobTrayHover {
         if ($b.sessionId) { $fleetSessions[[string]$b.sessionId] = $true }
         if ($b.id) { $fleetSessions[[string]$b.id] = $true }
     }
+    if (-not $LocalOnly) {
     foreach ($g in @(Get-BobLiveGrokAgents)) {
         if ($g.id -and ($localIds.ContainsKey([string]$g.id) -or $fleetSessions.ContainsKey([string]$g.id))) { continue }
         if ($g.sessionId -and $fleetSessions.ContainsKey([string]$g.sessionId)) { continue }
@@ -4170,6 +4176,7 @@ function Get-BobTrayHover {
         if (-not $row.line) { continue }
         $jobs += ,$row
         if ($row.id) { $localIds[$row.id] = $true }
+    }
     }
 
     $reg = $null
@@ -4341,6 +4348,7 @@ function Get-BobTrayHover {
         }
     }
 
+    if (-not $LocalOnly) {
     foreach ($mid in @($byMachine.Keys)) {
         if ($mid -eq $machineId) { continue }
         if (@($byMachine[$mid]).Count -gt 0) { continue }
@@ -4433,6 +4441,7 @@ function Get-BobTrayHover {
         else {
             $reachBy[$mid] = 'ok'
         }
+    }
     }
 
     if ($restrictTiles) {
