@@ -75,6 +75,14 @@ Every other backlog ID. Implementation is after park when dispatched.
 - Park-only until human dispatch
 - Cross-link index + depends-on
 
+## Dispatch evidence (FR #8695)
+
+Human dispatch: owner comment UNHOLD on 2026-11-22 (pinned prerequisite BOB-50 closed). This seat is the dispatched implementer. No UAT stamp.
+
+- `origin/main` at dispatch: `c30a23b6` (Merge pull request #8920). BOB-50 is on that tip: Agents > Priority calls `StartPriorityExe` (`vendor\priority\PriorityAgent.exe`). This slice keeps that start as the first submenu item and adds Configure MCP.
+- PRI-03 is `SimonBarnett/priority-mcp#743` (still open). The owner unhold named BOB-50 only. S1 here is the tray registration of `https://mcp.ntsa.uk/mcp`, not the priority-mcp skills slice.
+- S1 measurement: `bob-tray.exe --priority-mcp-configure` writes `name`, `url=https://mcp.ntsa.uk/mcp`, `state`, `doctor`. Live install hotpatch hash is not claimed in this PR.
+
 ## UNKNOWN
 
 - Exact initial models matrix seed values (BOB-04) until CLI `--help` / Simon seed
