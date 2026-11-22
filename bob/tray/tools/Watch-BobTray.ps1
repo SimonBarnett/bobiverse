@@ -4092,6 +4092,16 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
+# BOB-40: Agents > Jeeves uses the existing butler icon.
+$butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
+}
+if (Test-Path -LiteralPath $butler) {
+    $ico = New-Object System.Drawing.Icon $butler
+    $miJeeves.Image = $ico.ToBitmap()
+    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+}
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
 [void]$miAgents.DropDownItems.Add($miJeeves)
