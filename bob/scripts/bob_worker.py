@@ -11230,6 +11230,13 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            # FR #9056: re-delivery of an already-open same job while holding — no-op.
+            # Do not append another pending copy or emit NACK ack-not-sent.
+            if self._ack_refuse_is_duplicate(line):
+                self.log(
+                    "relay: ignore re-offer of already-ACKed open job " + (line or "")[:120]
+                )
+                return "duplicate"
             first_held = False
             with self._lock:
                 if line == self._last_line and not self._consume_context_refusal(line):
@@ -11242,9 +11249,15 @@ class Relay:
                     del self._pending[0]
             # FR #4115: ACK the first held assign on receipt (before inject / turn end).
             # FR #8246: if that ACK is suppressed, drop the hold and do not inject later.
-            if first_held and not self._ack_offer_or_refuse(line):
-                self._drop_pending_line(line)
-                return "ack_not_sent"
+            # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK).
+            if first_held:
+                ack_st = self._ack_offer_or_refuse(line)
+                if ack_st == "refused":
+                    self._drop_pending_line(line)
+                    return "ack_not_sent"
+                if ack_st == "duplicate":
+                    self._drop_pending_line(line)
+                    return "duplicate"
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -11286,10 +11299,17 @@ class Relay:
                 ack_first = bool(assign_job_ref(line))
         # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
         # FR #8246: a suppressed ACK is one decision with inject — do not deliver the job.
-        if ack_first and not self._ack_offer_or_refuse(line):
-            if not do_inject:
-                self._drop_pending_line(line)
-            return "ack_not_sent"
+        # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK / no re-inject).
+        if ack_first:
+            ack_st = self._ack_offer_or_refuse(line)
+            if ack_st == "refused":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "ack_not_sent"
+            if ack_st == "duplicate":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "duplicate"
         if do_inject:
             return self._do_inject(line)
         return "held"
@@ -11298,10 +11318,23 @@ class Relay:
         with self._lock:
             self._pending = [p for p in self._pending if p != line]
 
-    def _ack_offer_or_refuse(self, line: str) -> bool:
-        """FR #8246: fresh offer clears the finished mark, then ACK.
+    def _ack_refuse_is_duplicate(self, line: str) -> bool:
+        """FR #9056: True when program ACK for this job is already open."""
+        ack = ack_on_receipt_line(line)
+        if not ack or not self.ack_refuse_reason:
+            return False
+        try:
+            return self.ack_refuse_reason(ack) == "duplicate ACK"
+        except Exception:
+            return False
 
-        Returns False when the ACK would be dropped. Caller must not inject.
+    def _ack_offer_or_refuse(self, line: str) -> str:
+        """FR #8246 / #9056: fresh offer clears the finished mark, then ACK.
+
+        Returns:
+          ``"acked"`` — ACK written; caller may inject/hold.
+          ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
         if self.prepare_offer:
             try:
@@ -11315,6 +11348,11 @@ class Relay:
                 reason = self.ack_refuse_reason(ack)
             except Exception:
                 reason = None
+        if reason == "duplicate ACK":
+            # FR #9056: program already ACK'd this in-flight job (held flush / receipt).
+            # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
+            self.log(f"relay: ACK already open for same job; no-op ({reason})")
+            return "duplicate"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -11324,9 +11362,9 @@ class Relay:
                     self.write_outbox(nack)
                 except Exception:
                     pass
-            return False
+            return "refused"
         self._ack_on_receipt(line)
-        return True
+        return "acked"
 
     def _ack_on_receipt(self, line: str) -> None:
         """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
@@ -11474,7 +11512,8 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
-            if self._ack_offer_or_refuse(line):
+            # FR #9056: only inject on a fresh ACK; duplicate/refused skip re-inject.
+            if self._ack_offer_or_refuse(line) == "acked":
                 self._do_inject(line)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
@@ -17515,19 +17554,24 @@ class Supervisor:
             if ref:
                 self.bored.note_stand_down(ref)
 
-    def may_send_outbox(self, payload: str) -> bool:
-        """FR #4730: drop replayed ACK for a finished job before it hits IRC.
+    def may_send_outbox(self, payload: str):
+        """FR #4730 / #9056: drop replayed ACK for a finished or already-open job.
 
-        Used for the run-dir outbox. Do not apply the OpenCode job-key filter here
+        Used for the run-dir outbox. Returns True, or ``(False, reason)`` so drain
+        logs ``duplicate ACK`` / ``finished-job ACK replay`` instead of bare
+        ``stale replay``. Do not apply the OpenCode job-key filter here
         (FR #6333 MRB): program NACKs for a new key can arrive while `_opencode_job_key`
         is still the previous job. Job-key filtering is `may_send_job_outbox` only.
         """
         if self.bored is None:
             return True
         try:
-            return bool(self.bored.should_forward_outbox(payload))
+            reason = self.bored.outbox_ack_refuse_reason(payload)
         except Exception:
             return True
+        if reason:
+            return (False, reason)
+        return True
 
     def may_send_job_outbox(self, payload: str):
         """FR #6333 / #6472: worktree ``.bob/outbox.txt`` job-key filter then ACK rules.
