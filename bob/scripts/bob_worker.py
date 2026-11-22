@@ -21335,9 +21335,53 @@ def main(argv: Optional[list] = None) -> int:
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
-        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "agent": args.agent or "auto",
-                          "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
+        # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        launch_section = {}
+        try:
+            import worker_start_model as _wsm
+
+            settings = _wsm.resolved_start_settings(dec.kind, env=os.environ)
+            exe = ""
+            if dec.kind == "grok":
+                exe = str(ge or "")
+            elif dec.kind == "cursor":
+                exe = str(cc or "")
+            elif dec.kind == "opencode":
+                exe = str(oe or "")
+            cli_args = list(settings.get("cli_settings_args") or [])
+            if exe and cli_args:
+                final_args = [exe] + cli_args
+            elif exe:
+                final_args = [exe]
+            else:
+                final_args = list(cli_args)
+            launch_section = {
+                "kind": settings.get("kind") or dec.kind,
+                "mode": args.mode,
+                "settings_source": settings.get("settings_source") or "",
+                "model": settings.get("model") or "",
+                "context": settings.get("context") or "",
+                "effort": settings.get("effort") or "",
+                "setting_status": settings.get("setting_status") or {},
+                "cli_args": final_args,
+                "executable": exe,
+            }
+            _wsm.append_launch_dryrun(launch_section, env=os.environ)
+        except Exception as exc:
+            launch_section = {"error": str(exc)[:200]}
+        payload = {
+            "decision": dec.kind,
+            "reason": dec.reason,
+            "agent": args.agent or "auto",
+            "cursor_cmd": bool(cc),
+            "grok_exe": bool(ge),
+            "opencode_cmd": bool(oe),
+            "fuel": fuel.__dict__,
+            "cwd": cwd,
+            "mode": args.mode,
+            "launch": launch_section,
+        }
+        print(json.dumps(payload, sort_keys=True))
         return EXIT_OK
     if args.startup_grace_s is None:
         env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()
