@@ -4294,6 +4294,10 @@ $poll.Add_Tick({
                     try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
                     try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
                 }
+                if ($alerts.Count -gt 0) {
+                    $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
+                    Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
+                }
                 if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
                 elseif ($alerts.Count -gt 0 -and $engine) {
                     # Exe owns the icon; still record alerts in log / lastAlerts without NotifyIcon flash.
