@@ -10073,11 +10073,22 @@ def show_out_of_fuel_dialog(
             except Exception:
                 pass
         return False
+    # FR #8991: MessageBoxW on Session 0 / no desktop hangs forever and blocked
+    # worker-remove. Show on a daemon thread and do not wait more than a few seconds.
     try:
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         MB_OK = 0x00000000
         MB_ICONWARNING = 0x00000030
-        user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+
+        def _box() -> None:
+            try:
+                user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+            except Exception:
+                pass
+
+        th = threading.Thread(target=_box, name="out-of-fuel-dialog", daemon=True)
+        th.start()
+        th.join(5.0)
         return True
     except Exception as e:
         if log:
@@ -16789,7 +16800,11 @@ class Supervisor:
         return pool, remaining, reset_hint
 
     def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
-        """FR #8814: dialog + worker-remove + shutdown so the nick leaves the digest."""
+        """FR #8814 / #8991: worker-remove + shutdown so the nick leaves the digest.
+
+        Dialog is best-effort and must not block remove/exit. Grok seats that painted
+        ``out_of_fuel`` while MessageBox hung were the redqueen zombies after #8798.
+        """
         if getattr(self, "_out_of_fuel_quit_started", False):
             return
         self._out_of_fuel_quit_started = True
@@ -16797,6 +16812,28 @@ class Supervisor:
         if not out_of_fuel_quit_enabled(env):
             self.log("out-of-fuel: quit skipped (BOB_WORKER_OUT_OF_FUEL_QUIT=0)")
             return
+        pid = None
+        try:
+            if self.proc is not None:
+                pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
+        if pid is None:
+            try:
+                pid = os.getpid()
+            except Exception:
+                pid = None
+        # FR #8991: remove the nick before any dialog so digest capacity frees.
+        try:
+            post_digest_worker_remove(
+                machine=self.machine,
+                nick=self.nick,
+                pid=pid,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
         pool, remaining, reset_hint = self._out_of_fuel_dialog_pool_bits(evidence)
         show_fn = getattr(self, "_out_of_fuel_dialog_show_fn", None)
         try:
@@ -16812,28 +16849,7 @@ class Supervisor:
             )
         except Exception as e:
             self.log(f"out-of-fuel: dialog path failed {type(e).__name__}")
-        pid = None
-        try:
-            if self.proc is not None:
-                pid = getattr(self.proc, "pid", None)
-        except Exception:
-            pid = None
-        if pid is None:
-            try:
-                pid = os.getpid()
-            except Exception:
-                pid = None
-        try:
-            post_digest_worker_remove(
-                machine=self.machine,
-                nick=self.nick,
-                pid=pid,
-                env=env,
-                log=self.log,
-            )
-        except Exception as e:
-            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
-        self.log("out-of-fuel: closing seat (FR #8814)")
+        self.log("out-of-fuel: closing seat (FR #8814 / #8991)")
         try:
             self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
         except Exception as e:
