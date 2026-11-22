@@ -1608,8 +1608,23 @@ namespace BobDialogs
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
                 StartWorker("agent", "grok", null, "");
             }
-            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
+            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot.Length == 0 || slot == "free" || slot == "paid"))
             {
+                // FR #8730 / BOB-27: free first; paid when free is exhausted. Explicit paid stays paid.
+                if (slot != "paid")
+                {
+                    string chosen = OpencodeFreeThenPaid.ChooseFile(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE"));
+                    if (chosen == "paid")
+                    {
+                        slot = "paid";
+                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "paid", "reason", "free-exhausted");
+                    }
+                    else if (slot.Length == 0)
+                    {
+                        slot = "free";
+                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
+                    }
+                }
                 string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
