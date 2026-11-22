@@ -125,6 +125,12 @@ $verFile = $verCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 if ($verFile) {
     $argList += @('--add-data', ($verFile + ';.'))
 }
+# BOB-04 / FR #8709: bundle valid-combos seed into _MEIPASS/defaults for receiver start-up.
+$seedFile = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\defaults\models-valid-combos.seed.json'
+if (-not $seedFile -or -not (Test-Path -LiteralPath $seedFile)) {
+    throw 'Build-Jeeves requires common\defaults\models-valid-combos.seed.json (FR #8709)'
+}
+$argList += @('--add-data', ($seedFile + ';defaults'))
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 
 $argText = (($argList | ForEach-Object {

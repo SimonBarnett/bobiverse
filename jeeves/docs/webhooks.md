@@ -106,7 +106,7 @@ Non-persisting check of one `(cli, model, context, effort)` tuple against digest
 | `context` | yes | Exact catalogue context string (no token-window invention) |
 | `effort` | when the row lists efforts | Exact match after case-fold only. Empty `efforts` on a row means effort must be absent (non-Grok CLIs). Never uses `normalize_effort`. |
 
-**Catalogue schema** (digest-home `models-valid-combos.json`): top-level `version` (int) and `clis` object keyed by `grok`/`cursor`/`opencode`; each value is a list of `{model, contexts[], efforts[]}`. Duplicate model rows within one CLI keep the first. Invalid rows are skipped. BOB-04 owns real seed values; until then the catalogue is unavailable and validate returns 503. Fixture-shaped example: `common/defaults/models-valid-combos.example.json`.
+**Catalogue schema** (digest-home `models-valid-combos.json`): top-level `version` (int) and `clis` object keyed by `grok`/`cursor`/`opencode`; each value is a list of `{model, contexts[], efforts[]}`. Duplicate model rows within one CLI keep the first. Invalid rows are skipped. **BOB-04 / FR #8709 seed:** BobCallback start calls `models_catalog.ensure_valid_combos_seeded(home)` which creates the store from `common/defaults/models-valid-combos.seed.json` when missing, or appends missing seeded `(cli, model)` rows while preserving operator rows; malformed stores are left unchanged. Seed rows carry provenance (CLI version + capture source). Fixture-only example remains `common/defaults/models-valid-combos.example.json`.
 
 **Responses**
 
