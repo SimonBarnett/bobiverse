@@ -328,4 +328,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
 
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
-
+- FR #9097: compiled WorkerLauncher same Access Denied retry as ConsoleLauncher FR #9078; land BobTray.cs source + pins; authorised bob-tray.exe rebuild is a separate ops step
