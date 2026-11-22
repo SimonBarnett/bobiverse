@@ -27,7 +27,7 @@ Canonical playbook: jeeves/.grok/skills/bobiverse-build/SKILL.md and docs/bobive
 
 ## Harvested lessons (intake)
 
-- FR #8490: bare `!build` lists GET `/bob/v1/builds`; `!build n` builds catalog `yml`, exports pack artifacts to `output`, reinstalls on `install` (machine or `fleet` via `registered-machines.json`). Local msiexec needs recipe `install_test`; remote targets get `BUILD_INSTALL` queue jobs (WARN-and-continue). `dep` is documentation only; old `owner/repo` form refused.
+- FR #8490 / #8770: bare `!build` lists catalog local-first (digest-home, chair home, else GET `/bob/v1/builds`); rows name/repo/install/version-next/ref (<=400 bytes). `!build n` uses catalog `yml` path (optional `recipe=` on BUILD v1); blank version → next patch of latest `vX.Y.Z` tag. Bare `!build status` / `!build help`. Exports to `output`, reinstalls on `install` (machine or `fleet`). `dep` docs only; old `owner/repo` form refused.
 - BUILD suite command-not-found (Win 9009 / is not recognized): environment failure, no release-blocker comments; prepend BOBIVERSE_PYTHON dir+Scripts to PATH. FR #6490 / PR #6493.
 - Live `#bobiverse` progress during BUILD (FR #6585): runner writes `progress.jsonl`; ear watcher posts `BUILD progress ... version=... id=...` (steps, suite counts, solo reruns, 10m heartbeat). Rate-limit ~30s; redact secrets; sink failure never fails the build; terminal BUILD ok/fail unchanged.
 - Build-work root (FR #6655): `BOBIVERSE_BUILD_WORK_DIR` else alias `BOBIVERSE_BUILD_WORK` else `%ProgramData%/Bobiverse/build-work`; preflight `work_dir_free` refuses under `BOBIVERSE_BUILD_WORK_MIN_FREE_GB` (default 2); prune finished/dead siblings keep `BOBIVERSE_BUILD_WORK_KEEP` (default 2), never active names / recent heartbeats.

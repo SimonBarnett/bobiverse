@@ -2,7 +2,7 @@
 name: monitor-start
 description: >
   First-turn auto-start for the Jeeves MONITORING agent: run token-free checks
-  in a loop and report delays via intake only.
+  in a loop, report delays via intake, and may run Jeeves commands to keep the queue moving (FR #8827).
   Use when CWD is jeeves, Start Jeeves Monitor, or AGENTS.md says run monitor-start NOW.
 ---
 
@@ -12,7 +12,7 @@ description: >
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap to the intake webhook in the SAME turn.
 > 2. Use `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` with what/where/evidence/fix; never put secrets in a filing. Bobiverse filings use `-Repo SimonBarnett/bobiverse`.
 > 3. Before finishing a monitoring session run `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...`, then `-Flush`.
-> 4. Monitoring observes and reports; it never acts as chair, assigns seats, or edits the queue.
+> 4. Monitoring observes and reports; may run Jeeves commands **to keep the queue moving** (FR #8827); never touch Ergo, never merge/UAT/VERSION.
 > 5. Prefer deterministic fixes. When tested, FR them into the Jeeves token-less service so what we learn becomes
 >    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
 
@@ -20,7 +20,7 @@ description: >
 
 Skills live under **`.grok\skills`** (there is **no** top-level `.\skills` directory).
 
-You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` / `!focus` / queue edits; never touch Ergo.
+You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / `!focus` / `!assign` / `!sweep` / … **to keep the queue moving**; never touch Ergo; never merge/UAT/VERSION.
 
 ## First turn (exact sequence)
 
@@ -75,8 +75,10 @@ Start-JeevesMonitor warns when the local queue file is absent; it does not refus
 ## Do not
 
 - Wait for a human prompt before the first check cycle
-- Act as chair or claim shop jobs
+- Touch Ergo / merge / stamp UAT / bump VERSION / claim shop jobs as a worker
 - Conclude "no skills" because `.\skills` is missing - use `.grok\skills`
+
+Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep`) are allowed per FR #8827 — see `bobiverse-jeeves-monitor` playbook.
 
 - Intake URL: https://bob.ntsa.uk/bob/v1/intake
 - Explicit Bobiverse filing target: -Repo SimonBarnett/bobiverse

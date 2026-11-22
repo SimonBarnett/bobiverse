@@ -9,7 +9,7 @@ description: >
 
 ## Keep the flow of work to the workers going
 
-**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service (not the chair, not a worker). Jeeves itself files stall issues (FR #5164: self-review deadlock, all-gave-up, sticky auto-pin, resync fail, stale ACK, !bored latency) with a stable fingerprint, twin comment, and rate cap. Keep-it-running is a light 2-hourly check of that path. Never `!assign` / `!focus`; never touch Ergo/BobIrcd; no secrets.
+**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service (not the chair, not a worker). Jeeves itself files stall issues (FR #5164: self-review deadlock, all-gave-up, sticky auto-pin, resync fail, stale ACK, !bored latency) with a stable fingerprint, twin comment, and rate cap. Keep-it-running is a light 2-hourly check of that path. **FR #8827:** may run Jeeves commands to **keep the queue moving**; never touch Ergo/BobIrcd; never merge/UAT/VERSION; no secrets.
 
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
@@ -41,7 +41,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!assign <worker-nick> <repo> <FR\|MRB\|UAT> <num>` | owner, ears | make Jeeves post the normal assign line to one idle seat (seats only obey Jeeves); the seat's ACK accepts it. Rules: seat not busy, no self-MRB/UAT (seat ledger), row queued + unaccepted (or **accepted only under a departed nick** --- FR #3400 releases with `prior ACK void` then offers), not cooldown/given-up/machine-pinned. **FR #7186 / #7224:** presence is #{machine} JOIN/NAMES/PART/QUIT/NICK (not `!bored`); `!bored` only marks idle wanting work. `!assign` sends NAMES and **waits for 366** (short bound) so membership is applied before a presence refuse; it does not block the IRC reader. Snapshot `members_at=` on a true refuse. **FR #6211:** ordinary `!assign` honors the automatic MRB CodeRabbit current-head hold (refuse `coderabbit_hold` with age/rem; no `offered_to`). **FR #4336:** `needs_human` FR/MRB may still be handed out via `!assign` (auto-offer stays blocked; FIX `needs_human` refused). Never steal from a live accepted holder. UAT is per repo: `UAT 0` = the repo-level UAT, queued only when every issue is closed and every PR merged. Reply by PM |
 | `!cleargiveup owner/repo#N [seat]` | owner, ears | FR #5135: clear queue giveup stamps + seat-ledger giveup key (or one seat); PM summary |
 | `!recycle [machine\|all\|dry-run [machine\|all]]` | owner, ears | route a seat recycle (bare/all = fleet; 120 s cooldown). `dry-run` only prints the plan. `!recycle jeeves` restarts `ircJeeves` only |
-| `!build` / `!build n [version] [ref]` / dry-run/status/cancel n | owner, ears | FR #4006/#4025/#8490 numbered catalog BUILD (GET `/bob/v1/builds`); export+install/fleet |
+| `!build` / `!build <n> [version] [ref]` / help/status/cancel/dry-run/preflight/tests-only | owner, ears | FR #4006/#4025/#8490/#8770 numbered catalog BUILD (local-first + GET `/bob/v1/builds`); auto next-patch version; export+install/fleet |
 | `!installtest <owner/repo> <version> [tag]` / dry-run | owner, ears | FR #4026 WP3 INSTALL-TEST: msiexec + post-checks; release-blocker on fail |
 | `!register / !unregister (FR #4008 / #5161 / #5274) <machine>` | +o/+h in #bobiverse | ChanServ REGISTER/UNREGISTER `#<machine>`; !register ACK + `REGISTERED v1` only after ChanServ confirms (else ERR/timeout); dry-run/confirm; core refuse; airc -> #wonderland; unregister tombstones the shop so a lagging ChanServ LIST cannot re-add or rejoin |
 | `ping` / `ping <glob>` | anyone | bare word (no `!`), channel or PM -> `pong` |
@@ -51,6 +51,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 
 - **owner** = a verified NickServ account in `JEEVES_OWNER_ACCOUNT`/`BOB_OP_ACCOUNTS` (the nick alone is never enough).
 - **ear** = nick `bob-<roster machine>` (case-insensitive), refused if logged in to a different non-bob account.
+- **monitor** (FR #8827) = nick in `JEEVES_MONITOR_NICKS` (default `monitoring`) or account in `JEEVES_MONITOR_ACCOUNTS` — same queue mutators as owner/ear (keep the queue moving).
 - **allowlist** = `JEEVES_FOCUS_MUTATORS` / `JEEVES_FOCUS_MUTATOR_ACCOUNTS`, focus/unfocus only.
 - Denials reply like gh-Jeeves (`focus: denied (owner account required)`, `ignore: denied (simon or bob-* ops only)`); `!sweep` denial is a one-line reply.
 
@@ -73,9 +74,9 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 - **!unregister (FR #4008 / #4040 / #5161):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland; dry-run/confirm plan lists `*_console` nicks seen in `#<mid>` (or `none seen`). Unregister is final locally: the roster tombstones the shop and ignores a lagging ChanServ LIST (no re-add, no JOIN) until LIST confirms the channel is gone.
 - **FR #4181 out-of-fuel giveup-offer:** after `GIVEUP … out-of-fuel`, chair marks `seat-out-of-fuel.json`, skips giveup-offer, and refuses offers until a fresh `!bored` clears the mark; other GIVEUP reasons keep FR #2811 giveup-offer (do not park this under `harvest/SKILL.md`).
 
-## !build (FR #4006 / #8490 / skill FR #4038)
+## !build (FR #4006 / #8490 / #8770 / skill FR #4038)
 
-Ops-only. Bare `!build` lists the numbered catalog (`builds-catalog.json` / GET `/bob/v1/builds`). `!build n [version] [ref] [--tests-only]` builds that entry's `yml`, exports pack artifacts to catalog `output`, and reinstalls on `install` (machine id or `fleet` via `registered-machines.json`). Subcommands take `n`: `status|cancel|dry-run|preflight|tests-only`. `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). `dep` is documentation only; old `!build owner/repo` form is refused. Chair is token-less decide + announce; suite/pack/export/install run on the recipe machine (WP2). Full playbook: skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
+Ops-only. Bare `!build` lists the numbered catalog (digest-home first, else chair home, else GET `/bob/v1/builds`). `!build n [version] [ref]` builds that entry's `yml` path, exports to `output`, reinstalls on `install` (machine or `fleet`). Blank version → next patch of latest `vX.Y.Z` tag. `!build help` prints the two usage lines; bare `!build status` lists running builds; bare cancel frees all (FR #6715). Explicit `<version>` must be numeric `x.y.z` or `x.y.z.w` (#4186). `dep` docs only; old owner/repo form refused. Chair is token-less decide + announce; suite/pack/export/install run on the recipe machine (WP2). Full playbook: skill `bobiverse-build` / `docs/bobiverse-build.md`.
 
 ## Repo onboard + give-up clear (FR #5134)
 

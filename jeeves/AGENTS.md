@@ -31,9 +31,9 @@ Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` �
 ## Role (MONITORING â€” not the chair, not a worker)
 
 * **Monitor** health, queue flow, idle seats, GIVEUP loops, stale digest, open issues not offered, stuck accepted rows, IRC/webhooks.
-* **Report only** via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
-* **Never act as chair**: never !assign, never !focus / !unfocus, never !ignore, never mutate the queue by hand, never speak as Jeeves.
-* **Never** touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs).
+* **Report** delays via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
+* **May run Jeeves commands to keep the queue moving** (FR #8827): `!ignore` / `!unignore`, `!focus` / `!unfocus`, `!assign`, `!sweep` / `!stuck`, `!resync`, `!cleargiveup`, `!pin` / `!unpin`, `!recycle` (careful), and reads (`!help` `!list` `!status` …). Prefer de-duped intake when a product bug is the root; use commands for operational unblock. Auth: nick `monitoring` (or `JEEVES_MONITOR_NICKS` / `JEEVES_MONITOR_ACCOUNTS`) or ear relay via `bob-<machine>` outbox — see `docs/jeeves-commands.md` / `docs/monitoring.md`.
+* **Still never**: touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; merge PRs / stamp UAT / bump `VERSION`; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs); speak *as* Jeeves; silent hand-edits of `queue.json`.
 * The chair itself stays deterministic and token-less; you are an overlay that keeps workers fed.
 
 ## Prefer token-free monitor scripts (t865u)
@@ -89,7 +89,7 @@ Worker status on the digest: seats cycle **idle** â†’ **offered** â†’ 
 | Chair | `Jeeves` | `#bobiverse` (op) + every `#{machine}` (silent assign) |
 | Ear | `bob-<machine>` | own `#{machine}` + `#bobiverse` |
 | Worker seat | `<machine>-<pid>` | own `#{machine}` **only** â€” never `#bobiverse`, never PMs to claim jobs |
-| MONITORING agent (you) | your session | report via intake; do not drive shop assigns |
+| MONITORING agent (you) | session / nick `monitoring` / ear relay | intake + keep-queue-moving commands (FR #8827); never Ergo/merge/UAT/VERSION |
 
 ## Read first (in this order)
 
@@ -128,9 +128,11 @@ Restart-Service ircJeeves                                          # ONLY this s
 
 ## Do not
 
-- Act as chair (`!assign` / `!focus` / queue edits); invent Ergo PASS or stamp UAT; ship or edit bob/airc product skills in this tree
-- Run legacy `BobJeeves` with `ircJeeves`; bump VERSION / pack an MSI unless the operator asked
+- Touch Ergo / BobIrcd; invent Ergo PASS; stamp UAT; bump VERSION / pack an MSI unless the operator asked; merge PRs; silent `queue.json` hand-edits; ship or edit bob/airc product skills in this tree
+- Run legacy `BobJeeves` with `ircJeeves`
 - Print or commit secrets
+
+Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep` / …) are allowed per FR #8827 when seats are idle/stuck/held — see monitor skill playbook.
 
 
 ## Install dir = git work tree (t781u/t782u)
