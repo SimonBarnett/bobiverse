@@ -984,7 +984,20 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
-            // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
+            // FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+            string priorityIco = Path.Combine(root, "vendor\\priority\\priority.ico");
+            if (File.Exists(priorityIco))
+            {
+                try
+                {
+                    using (Icon ico = new Icon(priorityIco)) { miPriority.Image = ico.ToBitmap(); }
+                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", "vendor/priority/priority.ico");
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("priority", "action", "priority-icon failed", "error", ex.Message);
+                }
+            }
             miPriority.Click += delegate { StartPriorityExe(); };
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
@@ -1641,6 +1654,20 @@ namespace BobDialogs
             ToolStripMenuItem mi = new ToolStripMenuItem(text);
             mi.Tag = id;
             mi.Enabled = enabled;
+            if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon, not a generic icon.
+                string grokIcon = Path.Combine(root, "bob", "tray", "assets", "grok-favicon.ico");
+                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "path", grokIcon, "source", "https://grok.com/images/favicon.ico");
+                try
+                {
+                    if (File.Exists(grokIcon)) mi.Image = new Icon(grokIcon, 16, 16).ToBitmap();
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("workers-grok", "action", "grok favicon failed", "error", ex.Message);
+                }
+            }
             mi.Click += OnAgentChoiceClick;
             ApplyWorkerFavicon(mi, id);
             parent.DropDownItems.Add(mi);
@@ -1666,6 +1693,35 @@ namespace BobDialogs
             AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
             parent.DropDownItems.Add(oc);
             if (record) MenuItems.Add("Open Code");
+        }
+
+        // FR #8725 / BOB-17: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+        string ModelsCatalogPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            return Path.Combine(root, "home", "models-catalog.json");
+        }
+
+        string GrokWebhookModel(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null || !doc.ContainsKey("agents")) return "";
+                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
+                if (agents == null || doc["agents"] is string) return "";
+                foreach (object item in agents)
+                {
+                    Dictionary<string, object> row = Common.Dict(item);
+                    if (row == null) continue;
+                    if (!string.Equals(Common.Str(row, "agent"), "Grok", StringComparison.OrdinalIgnoreCase)) continue;
+                    return Common.Str(row, "model");
+                }
+            }
+            catch { }
+            return "";
         }
 
         void OnAgentChoiceClick(object sender, EventArgs e)
@@ -1698,7 +1754,17 @@ namespace BobDialogs
                 }
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
-                StartWorker("agent", "grok", null, "");
+                // FR #8725 / BOB-17: launch uses the Grok row from the models webhook catalog.
+                string catalog = ModelsCatalogPath();
+                string model = GrokWebhookModel(catalog);
+                TrayLifecycle.Write("workers-grok", "action", "webhook model", "model", model, "path", catalog, "agent", "Grok");
+                Hashtable grokEnv = null;
+                if (model.Length > 0)
+                {
+                    grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                    grokEnv["BOB_GROK_MODEL"] = model;
+                }
+                StartWorker("agent", "grok", grokEnv, "");
             }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
             {

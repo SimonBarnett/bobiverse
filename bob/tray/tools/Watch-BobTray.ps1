@@ -4026,6 +4026,18 @@ function Get-BobTrayWorkerAgentChoices {
     }
 }
 
+function Get-BobTrayGrokWebhookModel {
+    # FR #8725 / BOB-17: model field of the Grok agent row in models-catalog.json.
+    param([string]$CatalogPath)
+    if ([string]::IsNullOrWhiteSpace($CatalogPath)) { return '' }
+    if (-not (Test-Path -LiteralPath $CatalogPath)) { return '' }
+    try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
+    foreach ($row in @($doc.agents)) {
+        if ([string]$row.agent -eq 'Grok') { return [string]$row.model }
+    }
+    return ''
+}
+
 function Update-BobTrayWorkerAgentsMenu {
     param($MenuItem, $Rows)
     if (-not $MenuItem) { return }
@@ -4038,6 +4050,15 @@ function Update-BobTrayWorkerAgentsMenu {
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
+        if ($id -eq 'grok') {
+            # FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon.
+            $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
+            Write-TrayLog ('Workers Grok: favicon ' + $grokIcon)
+            if (Test-Path -LiteralPath $grokIcon) {
+                try { $item.Image = (New-Object System.Drawing.Icon($grokIcon)).ToBitmap() }
+                catch { Write-TrayLog ('Workers Grok favicon failed: ' + $_.Exception.Message) }
+            }
+        }
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
@@ -4087,7 +4108,15 @@ function Update-BobTrayWorkerAgentsMenu {
                     }
                     # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
                     Write-TrayLog 'Workers Grok: grok CLI start'
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
+                    # FR #8725 / BOB-17: cite the Grok row from the models webhook before launch.
+                    $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                    if ([string]::IsNullOrWhiteSpace($catalog)) {
+                        $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
+                        $catalog = Join-Path $install 'home\models-catalog.json'
+                    }
+                    $model = Get-BobTrayGrokWebhookModel -CatalogPath $catalog
+                    Write-TrayLog ('Workers Grok: webhook model ' + $model + ' path ' + $catalog)
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
                 elseif ($picked -eq 'opencode') {
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
@@ -4151,6 +4180,19 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
+# FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+$priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
+if (Test-Path -LiteralPath $priorityIco) {
+    try {
+        $priorityIcon = New-Object System.Drawing.Icon $priorityIco
+        $miPriority.Image = $priorityIcon.ToBitmap()
+        $priorityIcon.Dispose()
+        Write-TrayLog 'priority-icon path=vendor/priority/priority.ico'
+    }
+    catch {
+        Write-TrayLog ('priority-icon failed: ' + $_.Exception.Message)
+    }
+}
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
 # BOB-40: Agents > Jeeves uses the existing butler icon.
 $butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
