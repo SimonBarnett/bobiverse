@@ -2642,9 +2642,10 @@ def explicit_cursor_si_decision(
         row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
+        # FR #8719 / BOB-23: MarchHare (si@ntsa.uk) fleet meter gate — not local box fuel.
         return Decision(
             "refuse",
-            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            "explicit cursor: MarchHare tokens exhausted (%s remaining=0)" % account,
             account=account,
         )
     rem = fill["remaining"] if fill["usable"] else "unknown"
@@ -3604,7 +3605,72 @@ def describe_agent_child_launch(
     return out
 
 
+def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
+    """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
+    install = str(Path(worker_dir).parent)
+    pairs = (
+        ("@@WORKER_DIR@@", worker_dir),
+        ("@@OUTBOX@@", str(outbox_path_for_run(home))),
+        ("@@INSTALL@@", install),
+        ("@@NICK@@", nick),
+        ("@@MACHINE@@", machine),
+    )
+    out = text
+    for token, value in pairs:
+        out = out.replace(token, value)
+    return out
+
+
+def _worker_prompt_from_install_tip(worker_dir: str, home: str, machine: str, nick: str) -> str | None:
+    """FR #8865: prefer the install-root tip template over text frozen into bob-worker.exe.
+
+    Flat ``<install>\\scripts`` and ``<install>\\bob\\scripts`` win over the exe-adjacent
+    copy so a tip-heal updates the seat prompt without a new hashed exe. A template that
+    still names ``bob/bob/scripts`` (pre-#8785 FR #7000 path) is ignored.
+    """
+    name = "worker_prompt_template.txt"
+    install = Path(worker_dir).parent
+    ordered = [
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+        Path(worker_dir) / "scripts" / name,
+    ]
+    seen: set[str] = set()
+    for cand in ordered:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not cand.is_file():
+                continue
+            raw = cand.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "@@WORKER_DIR@@" not in raw or "@@NICK@@" not in raw or "@@MACHINE@@" not in raw:
+            continue
+        if "bob/bob/scripts" in raw.replace("\\", "/"):
+            continue
+        rendered = _apply_worker_prompt_tokens(raw, worker_dir, home, machine, nick)
+        if "bob/bob/scripts" in rendered.replace("\\", "/"):
+            continue
+        if "@@" in rendered:
+            continue
+        return rendered
+    return None
+
+
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
+    tipped = _worker_prompt_from_install_tip(worker_dir, home, machine, nick)
+    if tipped:
+        return tipped
+    return _worker_prompt_builtin(worker_dir, home, machine, nick)
+
+
+def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) -> str:
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
@@ -17539,6 +17605,15 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #8721 / BOB-21 S1: stable cursor-agent token after successful Cursor spawn (wrapper PID).
+            if (self.kind or "").strip().lower() == "cursor":
+                try:
+                    _cc = resolve_cursor_cmd(env) or resolve_cursor_cmd() or "(unresolved)"
+                except Exception:
+                    _cc = "(unresolved)"
+                self.log(
+                    f"cursor-agent: cmd={_cc} pid={proc.pid} nick={self.nick} workspace={self.cwd}"
+                )
             # FR #4843: warn when the live install checkout is not on main.
             try:
                 log_install_root_guard(self._install_root_for_fuel(), self.log)
@@ -20094,6 +20169,25 @@ def _explicit_refusal_exit(
         log=log,
         filer_post=filer_post,
     )
+    # FR #8719 / BOB-23: MarchHare Cursor token gate — dialog then quit (EXIT_OUT_OF_FUEL).
+    reason_l = str(dec.reason or "").lower()
+    marchhare_gate = (
+        "marchhare tokens exhausted" in reason_l
+        or ("marchhare" in reason_l and "remaining=0" in reason_l)
+    )
+    if marchhare_gate:
+        try:
+            show_out_of_fuel_dialog(
+                pool="MarchHare Cursor",
+                remaining="0",
+                evidence=dec.reason or "",
+                nick="",
+                title="Bobiverse — MarchHare Cursor tokens",
+                log=log,
+            )
+        except Exception:
+            pass
+        return EXIT_OUT_OF_FUEL
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -21261,9 +21355,53 @@ def main(argv: Optional[list] = None) -> int:
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
-        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "agent": args.agent or "auto",
-                          "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
+        # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        launch_section = {}
+        try:
+            import worker_start_model as _wsm
+
+            settings = _wsm.resolved_start_settings(dec.kind, env=os.environ)
+            exe = ""
+            if dec.kind == "grok":
+                exe = str(ge or "")
+            elif dec.kind == "cursor":
+                exe = str(cc or "")
+            elif dec.kind == "opencode":
+                exe = str(oe or "")
+            cli_args = list(settings.get("cli_settings_args") or [])
+            if exe and cli_args:
+                final_args = [exe] + cli_args
+            elif exe:
+                final_args = [exe]
+            else:
+                final_args = list(cli_args)
+            launch_section = {
+                "kind": settings.get("kind") or dec.kind,
+                "mode": args.mode,
+                "settings_source": settings.get("settings_source") or "",
+                "model": settings.get("model") or "",
+                "context": settings.get("context") or "",
+                "effort": settings.get("effort") or "",
+                "setting_status": settings.get("setting_status") or {},
+                "cli_args": final_args,
+                "executable": exe,
+            }
+            _wsm.append_launch_dryrun(launch_section, env=os.environ)
+        except Exception as exc:
+            launch_section = {"error": str(exc)[:200]}
+        payload = {
+            "decision": dec.kind,
+            "reason": dec.reason,
+            "agent": args.agent or "auto",
+            "cursor_cmd": bool(cc),
+            "grok_exe": bool(ge),
+            "opencode_cmd": bool(oe),
+            "fuel": fuel.__dict__,
+            "cwd": cwd,
+            "mode": args.mode,
+            "launch": launch_section,
+        }
+        print(json.dumps(payload, sort_keys=True))
         return EXIT_OK
     if args.startup_grace_s is None:
         env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()
