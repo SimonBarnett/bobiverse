@@ -2402,10 +2402,12 @@ function Update-BobTrayDigestPools {
                 if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
                     throw 'Invoke-BobDigestHttpGet missing'
                 }
-                $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
-                # FR #8049: one immediate retry on transient 503 before failing the poll.
-                if ($got -and [int]$got.StatusCode -eq 503) {
-                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
+                # FR #8988: 12s budget plus one retry on GetResponse/503 (not only 503).
+                if (Get-Command Invoke-BobDigestHttpGetWithRetry -ErrorAction SilentlyContinue) {
+                    $got = Invoke-BobDigestHttpGetWithRetry -Uri $u -TimeoutSec 12
+                }
+                else {
+                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 12
                 }
                 if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
                     $code = $(if ($got) { $got.StatusCode } else { 'null' })

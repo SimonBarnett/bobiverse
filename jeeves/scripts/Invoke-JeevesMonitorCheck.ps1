@@ -21,6 +21,30 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $here = if ($InstallRoot) { $InstallRoot } else { Split-Path -Parent $PSScriptRoot }
+# FR #9007: refresh tools\monitor before the check when Sync is resolvable
+# (repo tree C:\ai\bob keeps Sync under common\scripts, not jeeves\scripts).
+$syncName = 'Sync-BobiverseFromRepo.ps1'
+$bobRoot = Split-Path -Parent $here
+$syncCands = @(
+    (Join-Path $PSScriptRoot $syncName),
+    (Join-Path $here ('scripts\' + $syncName)),
+    (Join-Path $bobRoot ('common\scripts\' + $syncName)),
+    (Join-Path $bobRoot ('scripts\' + $syncName))
+)
+foreach ($syncMon in $syncCands) {
+    if ($syncMon -and (Test-Path -LiteralPath $syncMon)) {
+        try {
+            if ($DryRun) {
+                & $syncMon -Product jeeves -InstallRoot $here -DryRun
+            } else {
+                & $syncMon -Product jeeves -InstallRoot $here
+            }
+        } catch {
+            Write-Warning ("FR #9007 sync-monitor before check: {0}" -f $_.Exception.Message)
+        }
+        break
+    }
+}
 $py = Join-Path $here "tools\monitor\$Check.py"
 if (-not (Test-Path -LiteralPath $py)) { Write-Error "missing $py"; exit 2 }
 $python = $null

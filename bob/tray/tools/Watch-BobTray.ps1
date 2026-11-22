@@ -2963,6 +2963,7 @@ function Show-BobTrayAbout {
         $rows = @(Get-BobInstallInfo -RepoRoot $RepoRoot)
         $text = Format-BobInstallInfo -Rows $rows
         $mid = [string]$env:BOB_MACHINE_ID
+        $logPath = Join-Path $env:USERPROFILE '.grok\long-running-background-tasks\watch_bob_tray.log'
         $form = New-Object System.Windows.Forms.Form
         $form.Text = 'Bobiverse systray - about'
         $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -3007,11 +3008,19 @@ function Show-BobTrayAbout {
         $box.Text = $text
         $box.Location = New-Object System.Drawing.Point 16, 148
         $box.Size = New-Object System.Drawing.Size 548, 256
+        $logs = New-Object System.Windows.Forms.Button
+        $logs.Text = 'Show logs'
+        $logs.Location = New-Object System.Drawing.Point 350, 398
+        $logs.Size = New-Object System.Drawing.Size 100, 23
+        $logs.Add_Click({
+            # FR #8677 / BOB-09: same tray log as menu Open log
+            if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
+        })
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
         $ok.Add_Click({ $script:aboutForm.Close() })
-        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $ok)) { $form.Controls.Add($c) }
+        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $logs, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
         $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
@@ -4718,14 +4727,26 @@ $startWorkerTimer.Add_Tick({
                             }
                             $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
                             if ($fill -gt 0) {
+                                # FR #9000: pin opencode free when grok remaining is known 0.
+                                $choice = [pscustomobject]@{ agent = ''; slot = '' }
+                                if (Get-Command Get-BobTrayEmptyOnlineFillAgentChoice -ErrorAction SilentlyContinue) {
+                                    try { $choice = Get-BobTrayEmptyOnlineFillAgentChoice -Root $RepoRoot } catch { }
+                                }
                                 $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                 for ($i = 0; $i -lt $fill; $i++) {
                                     $rid = 'empty-{0}-{1}' -f $now, $i
-                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    $bodyHash = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) }
+                                    if ($choice.agent) {
+                                        $bodyHash.agent = [string]$choice.agent
+                                        if ($choice.slot) { $bodyHash.slot = [string]$choice.slot }
+                                    }
+                                    $body = $bodyHash | ConvertTo-Json -Compress
                                     Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
                                 }
                                 Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
-                                Write-TrayLog ('empty-online fill reqs={0}' -f $fill)
+                                $agentLog = if ($choice.agent) { [string]$choice.agent } else { 'auto' }
+                                $slotLog = if ($choice.slot) { [string]$choice.slot } else { '-' }
+                                Write-TrayLog ('empty-online fill reqs={0} agent={1} slot={2}' -f $fill, $agentLog, $slotLog)
                             }
                             # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
                             if ($fill -eq 0) {
