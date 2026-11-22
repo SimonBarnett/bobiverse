@@ -4967,6 +4967,23 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "no-ack-still-running"}
+    # FR #9025: fuel-exhausted / out-of-fuel recycle while the process is still running is
+    # expected (dialog+quit path / fuel gate). Do not open "seat stopped making progress".
+    _fuel_reason = str(reason or "").strip().lower()
+    if exit_code is None and (
+        _fuel_reason == "fuel-exhausted"
+        or _fuel_reason.startswith("fuel-exhausted:")
+        or _fuel_reason in ("out-of-fuel", "out_of_fuel")
+    ):
+        if log:
+            try:
+                log(
+                    "worker: fuel-exhausted recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9025)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "fuel-exhausted-recycle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
