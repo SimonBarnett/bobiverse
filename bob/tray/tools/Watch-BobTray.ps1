@@ -1572,6 +1572,61 @@ function Test-BobTrayAgentFuelExhausted {
     return ($remain -le 0)
 }
 
+# FR #8719 / BOB-23: MarchHare Cursor token gate uses fleet-cursor-private.json (si@ntsa.uk),
+# never Get-BobTrayCursorFuelRemaining (local box). Fail-when is "gates on local box only".
+function Test-BobTrayMarchHareCursorExhausted {
+    param(
+        [string]$InstallRoot = ''
+    )
+    $roots = New-Object System.Collections.Generic.List[string]
+    foreach ($c in @(
+            $InstallRoot,
+            $script:RepoRoot,
+            $env:BOB_DIGEST_HOME,
+            $env:BOB_HOME,
+            $(if ($script:RepoRoot) { Join-Path $script:RepoRoot 'home' } else { '' })
+        )) {
+        $t = ([string]$c).Trim()
+        if ($t -and -not $roots.Contains($t)) { [void]$roots.Add($t) }
+    }
+    foreach ($root in $roots) {
+        $path = Join-Path $root 'fleet-cursor-private.json'
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+            $doc = $raw | ConvertFrom-Json
+        }
+        catch { continue }
+        if (-not $doc) { continue }
+        $fresh = $false
+        try { $fresh = [bool]$doc.fresh } catch { $fresh = $false }
+        if (-not $fresh) { continue }
+        $rem = $null
+        try {
+            if ($null -ne $doc.remaining -and [string]$doc.remaining -ne '') {
+                $rem = [int]$doc.remaining
+            }
+        }
+        catch { $rem = $null }
+        if ($null -eq $rem) { continue }
+        return ($rem -le 0)
+    }
+    return $false
+}
+
+function Show-BobTrayMarchHareCursorGateDialog {
+    Write-TrayLog 'agents: MarchHare Cursor tokens exhausted - dialog + quit (FR #8719 / BOB-23)'
+    try {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "MarchHare has no Cursor tokens remaining.`r`nNot starting a Cursor seat (fleet si@ntsa.uk meter).",
+            'Bobiverse — MarchHare Cursor tokens',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+    catch { }
+}
+
 function Show-BobTraySessionApiKeyDialog {
     param(
         [string]$Title = 'Session API key',
@@ -1664,6 +1719,11 @@ function Start-BobTrayAgentWatch {
     }
     $kind = ([string]$Agent.kind).ToLowerInvariant()
     $sessionEnv = $null
+    # FR #8719 / BOB-23: MarchHare fleet meter before any local Cursor fuel / BYOK prompt.
+    if ($kind -eq 'cursor' -and (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot)) {
+        Show-BobTrayMarchHareCursorGateDialog
+        return
+    }
     if ($kind -eq 'grok') {
         # Local weekly first (CAST IRON); digest xai_weekly only fills nulls (FR #7498).
         $fuel = Resolve-BobTrayGrokFuelAtStart
@@ -2051,6 +2111,13 @@ function Start-BobTrayWorkerExe {
         [switch]$Quiet,
         [switch]$Restore
     )
+    # FR #8719 / BOB-23: Workers > Cursor — MarchHare token gate (dialog + quit; not local box fuel).
+    if ($Mode -eq 'agent' -and ([string]$Agent).ToLowerInvariant() -eq 'cursor') {
+        if (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot) {
+            Show-BobTrayMarchHareCursorGateDialog
+            return
+        }
+    }
     try {
         # FR #7669: seat target 0 refuses every start path. Running seats are not stopped here.
         if ($Mode -eq 'agent' -and (Test-BobTraySeatsOff)) {

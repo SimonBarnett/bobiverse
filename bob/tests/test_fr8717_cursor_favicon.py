@@ -21,16 +21,30 @@ WATCH = TRAY / "tools" / "Watch-BobTray.ps1"
 BUILD = REPO / "bob" / "scripts" / "Build-BobDialogs.ps1"
 
 
+def _method_body(source: str, signature: str, closer: str) -> str:
+    start = source.find(signature)
+    assert start >= 0, signature
+    end = source.find(closer, start)
+    assert end > start
+    return source[start:end]
+
+
 def test_fr8717_favicon_asset_and_menu_pins():
     raw = ICO.read_bytes()
     assert raw[:4] == b"\x00\x00\x01\x00"
     cs = CS.read_text(encoding="utf-8-sig")
-    assert "cursor.com.ico" in cs
-    assert "worker-favicon" in cs
-    assert "ApplyWorkerFavicon" in cs
+    path_body = _method_body(cs, "internal static string WorkerFaviconPath", "void ApplyWorkerFavicon")
+    assert 'id ?? "", "cursor"' in path_body
+    assert "cursor.com.ico" in path_body
+    apply_body = _method_body(cs, "void ApplyWorkerFavicon", "void AddAgentChoice")
+    assert "mi.Image = ico.ToBitmap()" in apply_body
+    assert "worker-favicon" in apply_body
+    assert "ApplyWorkerFavicon(mi, id)" in cs
     watch = WATCH.read_text(encoding="utf-8-sig")
-    assert "cursor.com.ico" in watch
-    assert "worker-favicon id=cursor" in watch
+    branch = _method_body(watch, "if ($id -eq 'cursor')", "Sender is the clicked item")
+    assert "cursor.com.ico" in branch
+    assert "$item.Image = $favIcon.ToBitmap()" in branch
+    assert "worker-favicon id=cursor" in branch
 
 
 @pytest.mark.skipif(not (WIN and CSC.is_file() and PS), reason="needs Windows csc and powershell")

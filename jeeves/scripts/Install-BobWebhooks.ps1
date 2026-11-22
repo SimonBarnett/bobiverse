@@ -385,13 +385,24 @@ function Get-BobOwnedRuleXml {
 }
 
 function Format-BobOwnedRuleBlock {
-    # Stable 8-space indent so upserts are idempotent (FR #8803).
+    # Stable nested indent matching the fresh $rewriteXml template (FR #8803 / #8934).
+    # Base rule line at 8 spaces; each open element nest +2. Flat 8-on-every-line
+    # rewrote template children on the second install and failed byte-stability.
     param([Parameter(Mandatory = $true)][string]$RuleXml)
     $lines = New-Object System.Collections.Generic.List[string]
+    $depth = 0
     foreach ($line in (($RuleXml.Trim()) -split "`r?`n")) {
         $t = $line.Trim()
         if (-not $t) { continue }
-        [void]$lines.Add('        ' + $t)
+        if ($t.StartsWith('</')) {
+            $depth = [Math]::Max(0, $depth - 1)
+        }
+        [void]$lines.Add((' ' * (8 + (2 * $depth))) + $t)
+        $isOpen = $t.StartsWith('<') -and -not $t.StartsWith('</') -and -not $t.StartsWith('<?')
+        $selfClose = $t.EndsWith('/>') -or ($t.Contains('</') -and -not $t.StartsWith('</'))
+        if ($isOpen -and -not $selfClose) {
+            $depth++
+        }
     }
     return [string]::Join("`n", $lines.ToArray())
 }
@@ -407,6 +418,11 @@ function Set-BobOwnedRewriteRule {
     $pattern = '(?ms)^[ \t]*<rule\s+name="' + [regex]::Escape($Name) + '"[^>]*>.*?</rule>'
     $formatted = Format-BobOwnedRuleBlock -RuleXml $RuleXml
     if ([regex]::IsMatch($Cfg, $pattern)) {
+        $existing = [regex]::Match($Cfg, $pattern).Value
+        # FR #8934: skip rewrite when the owned rule is already the canonical block.
+        if ($existing -eq $formatted) {
+            return $Cfg
+        }
         return [regex]::Replace($Cfg, $pattern, $formatted, 1)
     }
     # Replace the whole </rules> line (including indent) so inserts do not stack spaces.
@@ -587,7 +603,13 @@ if (Test-Path -LiteralPath $webConfig) {
     }
 } else {
     # FR #8887: template already includes backup requestFiltering; write then off-root backup.
-    [IO.File]::WriteAllText($webConfig, $rewriteXml, [Text.UTF8Encoding]::new($false))
+    # FR #8934: LF-canonicalize on create so the second install is a byte no-op.
+    $fresh = [string]$rewriteXml
+    $fresh = $fresh -replace "`r`n", "`n"
+    $fresh = $fresh -replace "`r", "`n"
+    $fresh = [regex]::Replace($fresh, '[ \t]+\n', "`n")
+    $fresh = $fresh.TrimEnd() + "`n"
+    [IO.File]::WriteAllText($webConfig, $fresh, [Text.UTF8Encoding]::new($false))
     $null = New-Item -ItemType Directory -Force -Path $backupDir
     Copy-Item -LiteralPath $webConfig -Destination $configBak -Force
     Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $configBak -RollbackPath $rollbackPs1
