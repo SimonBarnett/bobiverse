@@ -4,9 +4,10 @@
 
 `Test-JeevesMonitorIntakeAllowlist.ps1` / `tools/monitor/intake_allowlist.py` probes live `POST /bob/v1/intake` with do-not-file titles for known products (including `SimonBarnett/a-search` and `SimonBarnett/trutex`).
 
-- HTTP **403** `repo_not_allowed` → EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR).
+- HTTP **403** with JSON `error=repo_not_allowed` → EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR).
+- HTTP **403** without that JSON (Cloudflare `error code: 1010`, HTML WAF page) → probe error, **not** allowlist drift (FR #8861). Probes send `User-Agent: BobiverseIntakeAllowlist/1.0` so `bob.ntsa.uk` (Cloudflare) does not bot-block Python-urllib's default UA.
 - Also asserts on-disk `common/scripts/intake.py` exposes `repo_allowed` / SimonBarnett owner gate (FR #3135) when the file is present.
-- Remediation: confirm source allow rule, then on **ionos** run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
+- Remediation for JSON `repo_not_allowed`: confirm source allow rule, then on the chair run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
 - Overrides: `BOB_INTAKE_URL`, `BOB_INTAKE_REQUIRED_REPOS` (comma list), `BOB_INTAKE_PY`.
 
 ## open_pr_stale_base (FR #8333)
