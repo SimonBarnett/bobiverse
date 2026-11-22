@@ -970,16 +970,19 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            miPlan.Click += delegate { StartWorker("plan", ""); };
+            miPlan.Click += delegate { StartPlanExe(); };
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
             // BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-            miPriority.Click += delegate { TrayLifecycle.Write("priority", "via", "bob-tray-Priority"); };
+            miPriority.Click += delegate { StartPriorityExe(); };
             miAgents.DropDownItems.Add(miPriority);
             MenuItems.Add("Priority");
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            miJeeves.Click += delegate { TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves"); };
+            miJeeves.Click += delegate {
+                TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
+                StartWorker("agent", "grok");
+            };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
             menu.Items.Add(miAgents);
@@ -1599,11 +1602,19 @@ namespace BobDialogs
                 id = id.Substring(0, pipe);
             }
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
+            else if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
+                TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
+                StartWorker("agent", "grok", null, "");
+            }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
             {
                 string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 env["BOB_OPENCODE_MODEL"] = model;
+                // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
+                TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
             }
             else StartWorker("agent", id, null, "");
@@ -1711,6 +1722,46 @@ namespace BobDialogs
                 if (row != null) rows.Add(row);
             }
             return rows;
+        }
+
+        // FR #8699 / BOB-50: Agents > Priority starts vendor\priority\PriorityAgent.exe.
+        void StartPriorityExe()
+        {
+            string exe = Path.Combine(root, "vendor\\priority\\PriorityAgent.exe");
+            TrayLifecycle.Write("priority", "via", "bob-tray-Priority", "action", "start exe", "path", exe);
+            if (!File.Exists(exe)) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.WorkingDirectory = Path.GetDirectoryName(exe);
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("priority", "action", "start exe failed", "error", ex.Message);
+            }
+        }
+
+        // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
+        void StartPlanExe()
+        {
+            string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
+            if (!File.Exists(exe)) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.WorkingDirectory = Path.GetDirectoryName(exe);
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("plan", "action", "start exe failed", "error", ex.Message);
+            }
         }
 
         void StartWorker(string mode, string agent)

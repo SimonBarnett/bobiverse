@@ -2091,6 +2091,28 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     return $childPid
 }
 
+function Start-BobTrayPriorityExe {
+    # FR #8699 / BOB-50: vendored PriorityAgent.exe.
+    $exe = Join-Path $RepoRoot 'vendor\priority\PriorityAgent.exe'
+    Write-TrayLog ('Priority: start exe ' + $exe)
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-TrayLog ('Priority exe missing: ' + $exe)
+        return
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+}
+
+function Start-BobTrayPlanExe {
+    # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
+    $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    Write-TrayLog ('Plan: start exe ' + $exe)
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-TrayLog ('Plan exe missing: ' + $exe)
+        return
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+}
+
 function Start-BobTrayWorkerExe {
     <#
     .SYNOPSIS
@@ -3988,6 +4010,16 @@ function Update-BobTrayWorkerAgentsMenu {
                 if ($picked -eq 'auto') {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent '' -Trigger 'menu'
                 }
+                elseif ($picked -eq 'grok') {
+                    # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
+                    Write-TrayLog 'Workers Grok: grok CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok'
+                }
+                elseif ($picked -eq 'opencode') {
+                    # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
+                    Write-TrayLog 'Workers Open Code: opencode CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Trigger 'workers-opencode'
+                }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
                 }
@@ -4073,10 +4105,13 @@ $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
+$miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-$miPriority.Add_Click({ Write-TrayLog 'Priority: menu click (BOB-06 tree; start is later BOB)' })
-$miJeeves.Add_Click({ Write-TrayLog 'Jeeves: menu click (BOB-06 tree; start is later BOB)' })
+$miPriority.Add_Click({ Start-BobTrayPriorityExe })
+$miJeeves.Add_Click({
+        Write-TrayLog 'Jeeves: grok start'
+        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
+    })
 $miWeights.Add_Click({
         Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'
         [void][System.Windows.Forms.MessageBox]::Show(
@@ -4452,6 +4487,19 @@ $startWorkerTimer.Add_Tick({
                                 }
                                 Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
                                 Write-TrayLog ('empty-online fill reqs={0}' -f $fill)
+                            }
+                            # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
+                            if ($fill -eq 0) {
+                                $offerable = [int](Get-BobTrayCachedOfferableCount)
+                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable
+                                if ($under -gt 0) {
+                                    $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
+                                    $rid = 'undercap-{0}' -f $now
+                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
+                                    Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                    Write-TrayLog ('under-cap fill live={0} offerable={1}' -f $liveN, $offerable)
+                                }
                             }
                         }
                     } catch { Write-TrayLog ('empty-online fill: ' + $_.Exception.Message) }

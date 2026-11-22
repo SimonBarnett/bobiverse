@@ -418,7 +418,7 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     assert "Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir" in w
     # Queue launch is the same function as a menu click, and it forwards agent + optional model (FR #8610).
     assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet" in w
-    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in w
+    assert "$miPlan.Add_Click({ Start-BobTrayPlanExe })" in w
     assert "$startWorkerTimer.Start()" in w and "$startWorkerTimer.Stop()" in w
     assert "Write-BobTrayAlive" in w and "'tray.alive'" in w                   # heartbeat removed on exit => ear NACKs at once
     # FR #2697: heartbeat must not share the WinForms UI thread with the 30s poll refresh.
