@@ -4297,6 +4297,11 @@ $poll.Add_Tick({
                 if ($alerts.Count -gt 0) {
                     $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
                     Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
+                    # BOB-43: intervene so offerable work can move (nudge under-cap fill cooldown).
+                    if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
+                        $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
+                        if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
+                    }
                 }
                 if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
                 elseif ($alerts.Count -gt 0 -and $engine) {
@@ -4548,6 +4553,12 @@ $startWorkerTimer.Add_Tick({
                             if (Test-Path -LiteralPath $stamp) {
                                 $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $stamp).LastWriteTimeUtc).TotalSeconds
                                 if ($age -ge 0 -and $age -lt 60) { $cool = $true }
+                            }
+                            # BOB-43: fresh queue-intervene.nudge clears under-cap cooldown.
+                            $nudge = Join-Path $script:startWorkerDir 'queue-intervene.nudge'
+                            if (Test-Path -LiteralPath $nudge) {
+                                $nage = ([datetime]::UtcNow - (Get-Item -LiteralPath $nudge).LastWriteTimeUtc).TotalSeconds
+                                if ($nage -ge 0 -and $nage -lt 120) { $cool = $false }
                             }
                             $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
                             if ($fill -gt 0) {
