@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "clis": {
+    "grok": [
+      {
+        "model": "fixture-grok-a",
+        "contexts": ["128k", "256k"],
+        "efforts": ["low", "medium", "high"]
+      }
+    ],
+    "cursor": [
+      {
+        "model": "fixture-cursor-a",
+        "contexts": ["200k"],
+        "efforts": []
+      }
+    ],
+    "opencode": [
+      {
+        "model": "fixture-oc-a",
+        "contexts": ["default"],
+        "efforts": []
+      }
+    ]
+  }
+}

@@ -96,7 +96,13 @@ def test_fr6715_unknown_subcommand_or_argument_usage_no_run(tmp_path: Path):
         assert dec is not None and not dec.ok, body
         assert dec.reason == "usage", body
         assert dec.route == "", body
-        assert any("usage" in ln or "owner/repo form removed" in ln for ln in dec.pm_lines), body
+        # FR #8770: generic refusals return BUILD_USAGE_LINES (no longer contain "usage").
+        assert any(
+            "usage" in ln
+            or "owner/repo form removed" in ln
+            or ln in bb.BUILD_USAGE_LINES
+            for ln in dec.pm_lines
+        ), body
     assert lock.running() == []
 
     # Old owner/repo form is refused (FR #8490); bad version still refused on catalog form.

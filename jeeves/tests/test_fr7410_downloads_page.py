@@ -33,7 +33,9 @@ def test_fr7410_downloads_index_exists_and_has_three_tiles():
     assert 'href="/downloads"' in text or 'aria-current="page"' in text
     # FR #7530: names come from the latest-release API, not a stamped version.
     assert "releases/latest" in text
-    assert "/downloads/error.html" in text
+    # FR #8759: fail path stays on index (per-card); error.html still ships separately.
+    assert "window.location.href = '/downloads/error.html'" not in text
+    assert "markCardUnavailable" in text
     for product in ("bob", "jeeves", "airc"):
         assert f'data-product="{product}"' in text
 
