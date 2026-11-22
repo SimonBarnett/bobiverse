@@ -2642,9 +2642,10 @@ def explicit_cursor_si_decision(
         row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
+        # FR #8719 / BOB-23: MarchHare (si@ntsa.uk) fleet meter gate — not local box fuel.
         return Decision(
             "refuse",
-            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            "explicit cursor: MarchHare tokens exhausted (%s remaining=0)" % account,
             account=account,
         )
     rem = fill["remaining"] if fill["usable"] else "unknown"
@@ -2737,7 +2738,7 @@ def list_worker_agents(
             "reason": "Grok, then Cursor, then OpenCode",
         }
     ]
-    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "OpenCode"))
+    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "Open Code"))  # FR #8713 / BOB-06
     installed = {"grok": bool(grok_exe), "cursor": bool(cursor_cmd), "opencode": bool(opencode_cmd)}
     for agent_id, label in labels:
         present = installed[agent_id]
@@ -2779,7 +2780,7 @@ def unknown_agent_list_rows() -> list[dict]:
         },
         {"id": "grok", "label": "Grok", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
         {"id": "cursor", "label": "Cursor", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
-        {"id": "opencode", "label": "OpenCode", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+        {"id": "opencode", "label": "Open Code", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
     ]
 
 
@@ -3604,21 +3605,88 @@ def describe_agent_child_launch(
     return out
 
 
+def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
+    """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
+    install = str(Path(worker_dir).parent)
+    pairs = (
+        ("@@WORKER_DIR@@", worker_dir),
+        ("@@OUTBOX@@", str(outbox_path_for_run(home))),
+        ("@@INSTALL@@", install),
+        ("@@NICK@@", nick),
+        ("@@MACHINE@@", machine),
+    )
+    out = text
+    for token, value in pairs:
+        out = out.replace(token, value)
+    return out
+
+
+def _worker_prompt_from_install_tip(worker_dir: str, home: str, machine: str, nick: str) -> str | None:
+    """FR #8865: prefer the install-root tip template over text frozen into bob-worker.exe.
+
+    Flat ``<install>\\scripts`` and ``<install>\\bob\\scripts`` win over the exe-adjacent
+    copy so a tip-heal updates the seat prompt without a new hashed exe. A template that
+    still names ``bob/bob/scripts`` (pre-#8785 FR #7000 path) is ignored.
+    """
+    name = "worker_prompt_template.txt"
+    install = Path(worker_dir).parent
+    ordered = [
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+        Path(worker_dir) / "scripts" / name,
+    ]
+    seen: set[str] = set()
+    for cand in ordered:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not cand.is_file():
+                continue
+            raw = cand.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "@@WORKER_DIR@@" not in raw or "@@NICK@@" not in raw or "@@MACHINE@@" not in raw:
+            continue
+        if "bob/bob/scripts" in raw.replace("\\", "/"):
+            continue
+        rendered = _apply_worker_prompt_tokens(raw, worker_dir, home, machine, nick)
+        if "bob/bob/scripts" in rendered.replace("\\", "/"):
+            continue
+        if "@@" in rendered:
+            continue
+        return rendered
+    return None
+
+
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
+    tipped = _worker_prompt_from_install_tip(worker_dir, home, machine, nick)
+    if tipped:
+        return tipped
+    return _worker_prompt_builtin(worker_dir, home, machine, nick)
+
+
+def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) -> str:
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"FR #7000 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
+        f"FR #7000 / #8785 / #8846 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
         f"`{worker_dir}\\.cursor\\mcp.json` -> mcpServers.skill-dag only: run its `command` with **all** `args` unchanged "
         f"(script is args[0]; keep every `--root` and `--job-worktree-file`), then append "
         f"`--once resolve --seed <job-type token>` (e.g. FR or MRB) and `--once get_skill --path <matched[].path>` "
-        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path; if that "
-        f"mcp.json is missing, report the fallback unavailable. PowerShell: "
-        f"`$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
+        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path. "
+        f"PowerShell: `$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
         f"& $cfg.command @($cfg.args) --once resolve --seed MRB`. Do not invent skill bodies. "
+        f"CAST IRON (FR #8846): a missing or dead skill-dag MCP is never fixed by grepping job skills from disk. "
+        f"If mcp.json is missing, MCP unreachable, and the mcp.json --once CLI also fails, ACK then GIVEUP with reason "
+        f"`skill-dag-mcp-down` (optional diagnostic only on that GIVEUP line). Do not continue the FR/MRB/UAT job. "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -3636,7 +3704,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
-        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. FR #8852: before worktree add, Assert-BobiverseJobWorktreePath on $wt (dot common\\scripts\\Bobiverse-Common.ps1, never common\\Bobiverse-Common.ps1); refuse empty/relative paths that would create <install>\\origin\\main. "
         f"FR #8022: open-PR MRB/FIX worktrees must start at gh pr view headRefOid (verify git rev-parse HEAD); never base an open MRB review tree on origin/main. Quote that SHA on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         f"Windows PowerShell 5.1 only (FR #6341): use Get-ChildItem -Depth (not -MaxDepth); use Select-String. Do not run Unix grep or head. Job worktrees: use $env:BOB_JOB_WORKTREE_BASE (and $env:BOB_JOB_WORKTREE when set); never search drives for ai\\worktrees. "
         f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
@@ -3840,6 +3908,8 @@ def rules_text(folder: str, kind: str) -> str:
         skill_line = (
             f"Read {folder}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
             f"(do not read every skill in {folder}\\.grok\\skills). "
+            f"FR #8846: if skill-dag MCP and the mcp.json --once CLI both fail, GIVEUP skill-dag-mcp-down — "
+            f"never continue FR/MRB/UAT by reading job skills from disk. "
         )
     return (f"{head}{skill_line}"
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
@@ -17535,6 +17605,15 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #8721 / BOB-21 S1: stable cursor-agent token after successful Cursor spawn (wrapper PID).
+            if (self.kind or "").strip().lower() == "cursor":
+                try:
+                    _cc = resolve_cursor_cmd(env) or resolve_cursor_cmd() or "(unresolved)"
+                except Exception:
+                    _cc = "(unresolved)"
+                self.log(
+                    f"cursor-agent: cmd={_cc} pid={proc.pid} nick={self.nick} workspace={self.cwd}"
+                )
             # FR #4843: warn when the live install checkout is not on main.
             try:
                 log_install_root_guard(self._install_root_for_fuel(), self.log)
@@ -20090,6 +20169,25 @@ def _explicit_refusal_exit(
         log=log,
         filer_post=filer_post,
     )
+    # FR #8719 / BOB-23: MarchHare Cursor token gate — dialog then quit (EXIT_OUT_OF_FUEL).
+    reason_l = str(dec.reason or "").lower()
+    marchhare_gate = (
+        "marchhare tokens exhausted" in reason_l
+        or ("marchhare" in reason_l and "remaining=0" in reason_l)
+    )
+    if marchhare_gate:
+        try:
+            show_out_of_fuel_dialog(
+                pool="MarchHare Cursor",
+                remaining="0",
+                evidence=dec.reason or "",
+                nick="",
+                title="Bobiverse — MarchHare Cursor tokens",
+                log=log,
+            )
+        except Exception:
+            pass
+        return EXIT_OUT_OF_FUEL
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -21257,9 +21355,53 @@ def main(argv: Optional[list] = None) -> int:
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
-        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "agent": args.agent or "auto",
-                          "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
+        # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        launch_section = {}
+        try:
+            import worker_start_model as _wsm
+
+            settings = _wsm.resolved_start_settings(dec.kind, env=os.environ)
+            exe = ""
+            if dec.kind == "grok":
+                exe = str(ge or "")
+            elif dec.kind == "cursor":
+                exe = str(cc or "")
+            elif dec.kind == "opencode":
+                exe = str(oe or "")
+            cli_args = list(settings.get("cli_settings_args") or [])
+            if exe and cli_args:
+                final_args = [exe] + cli_args
+            elif exe:
+                final_args = [exe]
+            else:
+                final_args = list(cli_args)
+            launch_section = {
+                "kind": settings.get("kind") or dec.kind,
+                "mode": args.mode,
+                "settings_source": settings.get("settings_source") or "",
+                "model": settings.get("model") or "",
+                "context": settings.get("context") or "",
+                "effort": settings.get("effort") or "",
+                "setting_status": settings.get("setting_status") or {},
+                "cli_args": final_args,
+                "executable": exe,
+            }
+            _wsm.append_launch_dryrun(launch_section, env=os.environ)
+        except Exception as exc:
+            launch_section = {"error": str(exc)[:200]}
+        payload = {
+            "decision": dec.kind,
+            "reason": dec.reason,
+            "agent": args.agent or "auto",
+            "cursor_cmd": bool(cc),
+            "grok_exe": bool(ge),
+            "opencode_cmd": bool(oe),
+            "fuel": fuel.__dict__,
+            "cwd": cwd,
+            "mode": args.mode,
+            "launch": launch_section,
+        }
+        print(json.dumps(payload, sort_keys=True))
         return EXIT_OK
     if args.startup_grace_s is None:
         env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()

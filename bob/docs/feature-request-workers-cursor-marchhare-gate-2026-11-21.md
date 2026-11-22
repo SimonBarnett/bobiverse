@@ -75,6 +75,15 @@ Every other backlog ID. Implementation is after park when dispatched.
 - Park-only until human dispatch
 - Cross-link index + depends-on
 
+## Implemented (FR #8719)
+
+- Gate: `fleet-cursor-private.json` (MarchHare / si@ntsa.uk), never local `Get-BobTrayCursorFuelRemaining`
+- Tray: `MarchHareCursorGate` + `Test-BobTrayMarchHareCursorExhausted` → dialog + quit (no start)
+- Worker: refuse reason `MarchHare tokens exhausted` → `show_out_of_fuel_dialog` + `EXIT_OUT_OF_FUEL`
+- Headless: `bob-tray.exe --check-marchhare-cursor-gate <out.json>`
+- Test: `bob/tests/test_fr8719_marchhare_cursor_gate.py`
+- Depends: BOB-21 (#8721)
+
 ## UNKNOWN
 
 - Exact initial models matrix seed values (BOB-04) until CLI `--help` / Simon seed

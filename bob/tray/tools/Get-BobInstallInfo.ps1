@@ -164,6 +164,80 @@ function Get-BobInstallInfo {
     return $rows.ToArray()
 }
 
+
+function Get-BobComponentVersions {
+    <#
+      FR #8675 / BOB-10: bob / plan / priority version strings for About header.
+      Matches BobDialogsCommon PlanVersion / PriorityVersion fallbacks.
+    #>
+    param(
+        [string]$Root = '',
+        [string[]]$AiRoots = $null
+    )
+    if (-not $Root) { $Root = (Get-Location).Path }
+    # Dot Watch helpers when available; else inline minimal.
+    $plan = 'unknown'
+    $priority = 'not installed'
+    $bob = 'unknown'
+    $vf = Join-Path $Root 'VERSION'
+    if (Test-Path -LiteralPath $vf) {
+        try { $bob = ([string](Get-Content -LiteralPath $vf -TotalCount 1 -ErrorAction Stop)).Trim() } catch { }
+    }
+    if (-not $bob) { $bob = 'unknown' }
+    $pv = Join-Path $Root 'plan\VERSION'
+    if (Test-Path -LiteralPath $pv) {
+        try {
+            $plan = ([string](Get-Content -LiteralPath $pv -TotalCount 1 -ErrorAction Stop)).Trim()
+            $bj = Join-Path $Root 'plan\BUILD.json'
+            if (Test-Path -LiteralPath $bj) {
+                try {
+                    $b = Get-Content -LiteralPath $bj -Raw -ErrorAction Stop | ConvertFrom-Json
+                    $c = ([string]$b.commit).Trim()
+                    if ($c -match '^[0-9a-fA-F]{7,40}$') { $plan = ('{0} ({1})' -f $plan, $c.Substring(0, 7).ToLowerInvariant()) }
+                } catch { }
+            }
+        } catch { }
+    } elseif ($bob -and $bob -ne 'unknown') {
+        $plan = $bob + ' (via bob)'
+    }
+    if ($null -eq $AiRoots) {
+        # When BOB_AI_ROOT is set, search only that root (tests + operator pin).
+        if ($env:BOB_AI_ROOT) {
+            $AiRoots = @([string]$env:BOB_AI_ROOT)
+        } else {
+            $AiRoots = @()
+            try { $AiRoots += (Split-Path -Parent $Root) } catch { }
+            $AiRoots += @('C:\ai', 'D:\ai')
+        }
+    }
+    $found = $false
+    foreach ($ai in $AiRoots) {
+        if (-not $ai) { continue }
+        foreach ($n in @('priority-agent', 'priority-mcp')) {
+            $dir = Join-Path $ai $n
+            $vf2 = Join-Path $dir 'VERSION'
+            if (Test-Path -LiteralPath $vf2) {
+                try {
+                    $v = ([string](Get-Content -LiteralPath $vf2 -TotalCount 1 -ErrorAction Stop)).Trim()
+                    if ($v) { $priority = $v; $found = $true; break }
+                } catch { }
+            }
+            foreach ($exe in @('PriorityAgent.exe', 'priority-agent.exe')) {
+                $ep = Join-Path $dir $exe
+                if (Test-Path -LiteralPath $ep) {
+                    try {
+                        $pv2 = [string](Get-Item -LiteralPath $ep).VersionInfo.ProductVersion
+                        if ($pv2.Trim()) { $priority = $pv2.Trim(); $found = $true; break }
+                    } catch { }
+                }
+            }
+            if ($found) { break }
+        }
+        if ($found) { break }
+    }
+    return [pscustomobject]@{ Bob = $bob; Plan = $plan; Priority = $priority }
+}
+
 function Format-BobInstallInfo {
     param([object[]]$Rows)
     $Rows = @($Rows)

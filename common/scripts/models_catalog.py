@@ -532,3 +532,271 @@ def handle_models_put(body: bytes | str, home: Path | str) -> tuple[int, bytes]:
         return 204, b""
     return 200, catalog_to_json(rows)
 
+
+# --- BOB-04 / FR #8709: seed models-valid-combos.json from shipped seed ------------
+
+MODELS_VALID_COMBOS_SEED_NAME = "models-valid-combos.seed.json"
+
+
+def resolve_valid_combos_seed_path(
+    *,
+    env: dict | None = None,
+    file_path: str | Path | None = None,
+    meipass: str | Path | None = None,
+    install_root: str | Path | None = None,
+) -> Path | None:
+    """Locate shipped ``models-valid-combos.seed.json``.
+
+    Order: ``BOB_MODELS_VALID_COMBOS_SEED`` → ``<install>/defaults/`` →
+    source ``common/defaults/`` beside this module → PyInstaller ``_MEIPASS/defaults/``.
+    """
+    import sys
+
+    e = os.environ if env is None else env
+    explicit = (e.get("BOB_MODELS_VALID_COMBOS_SEED") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_file() else None
+
+    candidates: list[Path] = []
+    if install_root is not None and str(install_root).strip():
+        root = Path(str(install_root).strip())
+        candidates.append(root / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+        candidates.append(root / "jeeves" / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+    here = Path(__file__ if file_path is None else file_path).resolve().parent
+    # common/scripts -> common/defaults
+    candidates.append(here.parent / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+    # install root guess from source layout (repo root)
+    candidates.append(here.parent.parent / "common" / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+
+    mp = meipass
+    if mp is None:
+        mp = getattr(sys, "_MEIPASS", None)
+    if mp:
+        candidates.append(Path(mp) / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def load_seed_document(path: Path | str) -> dict[str, Any]:
+    """Load and strictly validate a seed file. Raises ValueError on bad rows."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(raw, dict):
+        raise ValueError("seed root must be an object")
+    clis_raw = raw.get("clis")
+    if not isinstance(clis_raw, dict) or not clis_raw:
+        raise ValueError("seed clis missing or empty")
+    cleaned: dict[str, list[dict[str, Any]]] = {}
+    for cli_key, rows_raw in clis_raw.items():
+        cli = str(cli_key or "").strip().lower()
+        if cli not in VALID_CLI_KEYS:
+            raise ValueError(f"seed unknown cli: {cli_key!r}")
+        if not isinstance(rows_raw, list) or not rows_raw:
+            raise ValueError(f"seed cli {cli} rows missing")
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in rows_raw:
+            row, why = validate_combo_row(item)
+            if row is None:
+                raise ValueError(f"seed cli {cli} invalid row: {why}")
+            if row.model in seen:
+                continue
+            seen.add(row.model)
+            rows.append(
+                {
+                    "model": row.model,
+                    "contexts": list(row.contexts),
+                    "efforts": list(row.efforts),
+                }
+            )
+        if not rows:
+            raise ValueError(f"seed cli {cli} produced no rows")
+        cleaned[cli] = rows
+    if set(cleaned) != VALID_CLI_KEYS:
+        missing = sorted(VALID_CLI_KEYS - set(cleaned))
+        raise ValueError(f"seed missing clis: {missing}")
+    version_raw = raw.get("version", 1)
+    try:
+        version = int(version_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("seed version must be int") from exc
+    out: dict[str, Any] = {"version": version, "clis": cleaned}
+    prov = raw.get("provenance")
+    if isinstance(prov, dict):
+        out["provenance"] = prov
+    return out
+
+
+def _combo_rows_to_payload(clis: dict[str, list[ModelComboRow]]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cli, rows in clis.items():
+        out[cli] = [
+            {"model": r.model, "contexts": list(r.contexts), "efforts": list(r.efforts)}
+            for r in rows
+        ]
+    return out
+
+
+def ensure_valid_combos_seeded(
+    home: Path | str,
+    *,
+    seed_path: Path | str | None = None,
+    env: dict | None = None,
+) -> dict[str, Any]:
+    """Create or merge digest-home ``models-valid-combos.json`` from the shipped seed.
+
+    - Missing store: write the full validated seed.
+    - Existing valid store: append missing seeded ``(cli, model)`` rows; never remove
+      or rewrite operator rows.
+    - Existing malformed/unreadable store: leave unchanged and return an error status.
+
+    Returns a small status dict for logs/tests (never raises on I/O merge paths).
+    """
+    home_p = Path(home)
+    dest = valid_combos_path(home_p)
+    status: dict[str, Any] = {
+        "ok": False,
+        "path": str(dest),
+        "action": "none",
+        "added": 0,
+        "error": "",
+    }
+    try:
+        seed_file = Path(seed_path) if seed_path is not None else resolve_valid_combos_seed_path(env=env)
+        if seed_file is None or not seed_file.is_file():
+            status["error"] = "seed_missing"
+            print("ERROR models-valid-combos seed file missing", flush=True)
+            return status
+        seed_doc = load_seed_document(seed_file)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        status["error"] = f"seed_invalid:{exc}"
+        print(f"ERROR models-valid-combos seed invalid err={exc}", flush=True)
+        return status
+
+    seed_clis: dict[str, list[ModelComboRow]] = {}
+    for cli, rows in seed_doc["clis"].items():
+        parsed: list[ModelComboRow] = []
+        for item in rows:
+            row, why = validate_combo_row(item)
+            if row is None:
+                status["error"] = f"seed_invalid:{cli}:{why}"
+                print(f"ERROR models-valid-combos seed row err={status['error']}", flush=True)
+                return status
+            parsed.append(row)
+        seed_clis[cli] = parsed
+
+    if not dest.is_file():
+        try:
+            home_p.mkdir(parents=True, exist_ok=True)
+            write_doc = {
+                "version": int(seed_doc.get("version") or 1),
+                "clis": _combo_rows_to_payload(seed_clis),
+            }
+            if isinstance(seed_doc.get("provenance"), dict):
+                write_doc["provenance"] = seed_doc["provenance"]
+            dest.write_text(
+                json.dumps(write_doc, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError as exc:
+            status["error"] = f"write_failed:{exc}"
+            print(f"ERROR models-valid-combos seed write err={exc}", flush=True)
+            return status
+        status["ok"] = True
+        status["action"] = "created"
+        status["added"] = sum(len(v) for v in seed_clis.values())
+        print(
+            f"INFO models-valid-combos seeded created path={dest} added={status['added']}",
+            flush=True,
+        )
+        return status
+
+    # Existing file: merge missing models only when current catalogue loads cleanly.
+    try:
+        raw_text = dest.read_text(encoding="utf-8-sig")
+        raw = json.loads(raw_text)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        status["error"] = f"store_malformed:{exc}"
+        print(
+            f"ERROR models-valid-combos store malformed; leaving unchanged path={dest} err={exc}",
+            flush=True,
+        )
+        return status
+
+    if not isinstance(raw, dict):
+        status["error"] = "store_malformed:root"
+        print(
+            f"ERROR models-valid-combos store malformed; leaving unchanged path={dest}",
+            flush=True,
+        )
+        return status
+
+    existing = load_valid_combos(home_p)
+    if not existing.available:
+        status["error"] = "store_unavailable"
+        print(
+            f"ERROR models-valid-combos store unavailable/empty; leaving unchanged path={dest}",
+            flush=True,
+        )
+        return status
+
+    merged_clis: dict[str, list[ModelComboRow]] = {
+        cli: list(rows) for cli, rows in existing.clis.items()
+    }
+    added = 0
+    for cli, seed_rows in seed_clis.items():
+        have = {r.model for r in merged_clis.get(cli, [])}
+        bucket = list(merged_clis.get(cli, []))
+        for row in seed_rows:
+            if row.model in have:
+                continue
+            bucket.append(row)
+            have.add(row.model)
+            added += 1
+        if bucket:
+            merged_clis[cli] = bucket
+
+    if added == 0:
+        status["ok"] = True
+        status["action"] = "unchanged"
+        return status
+
+    try:
+        version_raw = raw.get("version", existing.version or 1)
+        try:
+            version = int(version_raw)
+        except (TypeError, ValueError):
+            version = int(existing.version or 1)
+        write_doc: dict[str, Any] = {
+            "version": version,
+            "clis": _combo_rows_to_payload(merged_clis),
+        }
+        if isinstance(raw.get("provenance"), dict):
+            write_doc["provenance"] = raw["provenance"]
+        elif isinstance(seed_doc.get("provenance"), dict):
+            write_doc["provenance"] = seed_doc["provenance"]
+        dest.write_text(
+            json.dumps(write_doc, indent=2, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except OSError as exc:
+        status["error"] = f"write_failed:{exc}"
+        print(f"ERROR models-valid-combos merge write err={exc}", flush=True)
+        return status
+
+    status["ok"] = True
+    status["action"] = "merged"
+    status["added"] = added
+    print(
+        f"INFO models-valid-combos seeded merged path={dest} added={added}",
+        flush=True,
+    )
+    return status

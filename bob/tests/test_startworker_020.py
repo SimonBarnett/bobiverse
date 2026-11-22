@@ -452,14 +452,18 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     assert "CreateRunspace" in refresh and "BeginInvoke" in refresh
     # Engine mode must not call --list-agents while the script is still starting.
     assert "Do not call --list-agents here" in w
-    assert w.count("Update-BobTrayWorkerAgentsMenu $miAgents") == 1
-    opening = w[w.index("$miAgents.Add_DropDownOpening"): w.index("$miPlan = $menu.Items.Add('Plan')")]
+    # FR #8713 / BOB-06: worker seed lives under Workers (was Agents).
+    assert w.count("Update-BobTrayWorkerAgentsMenu $miWorkers") == 1
+    opening = w[w.index("$miWorkers.Add_DropDownOpening"): w.index("$miWeights = $menu.Items.Add('Weights')")]
     assert "Test-BobTrayEngineMode) { return }" in opening
-    assert "Start-BobTrayWorkerAgentsRefresh $miAgents" in opening
+    assert "Start-BobTrayWorkerAgentsRefresh $miWorkers" in opening
     assert "Get-BobTrayWorkerAgentChoices" not in opening
     cs = (ROOT / "bob" / "tray" / "dialogs" / "BobTray.cs").read_text(encoding="utf-8-sig")
     assert 'new ToolStripMenuItem("Agents")' in cs
-    assert 'Item("Plan"' in cs
+    assert 'new ToolStripMenuItem("Workers")' in cs
+    assert 'new ToolStripMenuItem("Plan")' in cs
+    stripped = cs.replace('ToolStripMenuItem("Plan")', '')
+    assert 'Item("Plan"' not in stripped
     assert 'Item("Agent"' not in cs
     assert "TryListAgents" in cs and "BeginRefreshAgentChoices" in cs
     assert "OnAgentChoiceClick" in cs and "mi.Tag = id" in cs

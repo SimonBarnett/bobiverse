@@ -52,8 +52,8 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Open PR stale base | `open_pr_stale_base` | open PRs whose base.ref is not main/master (FR #8333; fixture JEEVES_OPEN_PR_STALE_BASE_FIXTURE) |
 | Open PR missing MRB/FIX | `open_pr_mrb_missing` | open non-draft non-receipt PRs with no MRB/FIX queue row (FR #8377; fixture JEEVES_OPEN_PR_MRB_MISSING_FIXTURE) |
 | Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
-| Depends-on gate | `depends_on` | **when BOB-D live** — offered/accepted while Depends-on still OPEN (see `bobiverse-jeeves-agent-depends-on`) |
-| FR digest go-gate | `fr_digest` | **when BOB-G live** — child offered while `fr-digest` still has `hold` (see `bobiverse-jeeves-agent-fr-digest`) |
+| Depends-on open | `depends_on` | offered or accepted row whose `Depends-on:` ref is still OPEN (FR #8848 / BOB-D3). Soft-ok when the product skip is not on tip or no Depends-on rows. Distinct from hold and from `fr_digest` (see `bobiverse-jeeves-agent-depends-on`) |
+| FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
