@@ -50,7 +50,8 @@ $hidden = @(
     # FR #6487: !build recipe parse needs PyYAML inside the frozen exe.
     'yaml', '_yaml', 'bobiverse_build',
     # FR #8770: chair_commands imports builds_catalog for BUILD_USAGE_LINES.
-    'builds_catalog'
+    # BOB-01/03 / FR #8707 / #8710: models Weights GET + validate combo catalogue.
+    'models_catalog', 'builds_catalog'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 # FR #6487: pull PyYAML package data/extensions into the freeze when installed on the build host.

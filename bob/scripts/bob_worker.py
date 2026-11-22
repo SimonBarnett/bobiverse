@@ -2583,6 +2583,17 @@ def explicit_opencode_decision(
             % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
     if not opencode_pool_has_tokens(fuel, pool, start_model=mid):
+        # FR #8758: a free start model with free known 0 must not refuse when
+        # paid/Go can still be tried. resolve_opencode_model (FR #8454 / #8541)
+        # picks the paid tray slot after this Decision; refusing here stranded
+        # redqueen seats on flash-free with free=0 go=None.
+        if pool == "opencode_free" and _opencode_free_known_zero(fuel):
+            if _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel):
+                return Decision(
+                    "opencode",
+                    "explicit opencode: free exhausted, trying paid (model=%s free=%s go=%s)"
+                    % (mid or "-", fuel.opencode_free, fuel.opencode_go),
+                )
         return Decision(
             "refuse",
             "explicit opencode: no usable fuel (model=%s pool=%s free=%s go=%s)"
@@ -3599,10 +3610,14 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"FR #7000 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI instead — "
-        f"`python {Path(worker_dir).parent}\\bob\\scripts\\skill_dag_mcp.py` with the same `--root` / `--job-worktree` args as "
-        f"`{worker_dir}\\.cursor\\mcp.json`, plus `--once resolve --seed FR` then `--once get_skill --path <matched path>` "
-        f"(JSON on stdout). Do not invent skill bodies. "
+        f"FR #7000 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
+        f"`{worker_dir}\\.cursor\\mcp.json` -> mcpServers.skill-dag only: run its `command` with **all** `args` unchanged "
+        f"(script is args[0]; keep every `--root` and `--job-worktree-file`), then append "
+        f"`--once resolve --seed <job-type token>` (e.g. FR or MRB) and `--once get_skill --path <matched[].path>` "
+        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path; if that "
+        f"mcp.json is missing, report the fallback unavailable. PowerShell: "
+        f"`$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
+        f"& $cfg.command @($cfg.args) --once resolve --seed MRB`. Do not invent skill bodies. "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -10451,6 +10466,9 @@ class Relay:
         self.ack_refuse_reason: Optional[Callable[[str], Optional[str]]] = None
         # True when a live turn belongs to another job (NACK busy, no inject).
         self.turn_busy_other_job: Optional[Callable[[str], bool]] = None
+        # FR #8738: True while the prior job's closing turn is still open. Held assigns
+        # stay parked (no inject) until that turn has ended.
+        self.defer_flush_while: Optional[Callable[[], bool]] = None
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
         with self._lock:
@@ -11011,6 +11029,9 @@ class Relay:
         FR #4180: while out-of-fuel refuse is active, NACK parked assigns instead of injecting.
         Otherwise (FR #4115): inject only the first held assign; extra assigns are NACKed via
         the seat outbox (``busy, holding <first>``) without spending an agent turn.
+        FR #8738: while ``defer_flush_while`` says the prior job's closing turn is still
+        open, keep the assigns parked (return 0). Every flush caller (turn watcher,
+        harvest expiry, watchdog, post_bored) goes through this one gate.
         """
         with self._lock:
             keep: list = []
@@ -11060,6 +11081,21 @@ class Relay:
                         self.on_refuse_assign(line)
                     except Exception:
                         pass
+            return 0
+        defer = False
+        if flush:
+            try:
+                defer = bool(self.defer_flush_while and self.defer_flush_while())
+            except Exception:
+                defer = False
+        if defer:
+            with self._lock:
+                # Put them back in front, in order, ahead of anything parked meanwhile.
+                self._pending = list(flush) + [p for p in self._pending if p not in flush]
+            self.log(
+                f"relay: kept {len(flush)} held assign(s) parked - prior job's closing "
+                "turn still open (FR #8738)"
+            )
             return 0
         # FR #6134: NACK hostile MRB/UAT that were held before kind was known / seat restarted.
         kept = []
@@ -11134,6 +11170,16 @@ class Relay:
                 if assign_job_ref(line):
                     return True
         return False
+
+    def pending_assign_keys(self) -> set:
+        """FR #8738: lower-cased typed keys of assigns still parked (not injected)."""
+        keys: set = set()
+        with self._lock:
+            for line in list(self._pending) + list(self._overflow):
+                k = assign_job_key(line)
+                if k:
+                    keys.add(k.lower())
+        return keys
 
     def close(self) -> None:
         with self._lock:
@@ -13998,10 +14044,16 @@ class BoredEmitter:
       * FR #5505: ACK-on-receipt for a still-parked assign must not clear harvest_hold; when harvest
         expires (or held-assign watchdog fires), always release_held_assigns even if free/done !bored
         is still pending, so an ACKed hold cannot sit idle forever;
+      * FR #8738: DONE/NACK/GIVEUP written inside an open turn, or the done-miss reminder, opens
+        the prior job's *closing turn*. Until that turn ends (``finish_turn_hold_max_s`` safety cap,
+        default 1800 s) incoming assigns stay parked and Relay never flushes into it; the reminder
+        turn counts as open before the watcher reports turn_started; done-miss ``!bored`` waits
+        while the reminder turn shows agent I/O; a parked ACKed-on-receipt assign is not a done-miss;
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
         second per reason; only the seat's own shop; never after IRC loss/shutdown (stop()).
     Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END,
-    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S, BOB_WORKER_HELD_ASSIGN_WATCHDOG_S.
+    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S, BOB_WORKER_HELD_ASSIGN_WATCHDOG_S,
+    BOB_WORKER_FINISH_TURN_HOLD_MAX_S.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
@@ -14009,7 +14061,8 @@ class BoredEmitter:
                  nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
                  turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None,
                  done_miss_reply_s: float | None = None,
-                 ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None):
+                 ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None,
+                 finish_turn_hold_max_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.kind = ""  # FR #7265: seat kind on turn-end !bored logs
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
@@ -14058,6 +14111,20 @@ class BoredEmitter:
             else _env_float("BOB_WORKER_HELD_ASSIGN_WATCHDOG_S", 180.0, 30.0, 3600.0)
         )
         self._held_assign_since: Optional[float] = None
+        # FR #8738: the prior job's closing turn (DONE/NACK/GIVEUP written mid-turn, or the
+        # done-miss reminder turn) is still running. Parked assigns stay parked and
+        # done-miss !bored stays quiet until that turn ends (or this safety cap).
+        self.finish_turn_hold_max_s = (
+            float(finish_turn_hold_max_s) if finish_turn_hold_max_s is not None
+            else _env_float("BOB_WORKER_FINISH_TURN_HOLD_MAX_S", 1800.0, 90.0, 7200.0)
+        )
+        self._finish_turn_at: Optional[float] = None
+        self._finish_turn_key: Optional[str] = None
+        # True while the closing turn is the done-miss reminder and the turn watcher has
+        # not yet seen it start (Cursor/Grok transcript lag): treat it as an open turn.
+        self._finish_turn_unseen = False
+        # FR #8738: closing turn ended with assigns parked - flush on the next tick.
+        self._flush_after_closing = False
         self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
         self._ready = False
@@ -14163,11 +14230,78 @@ class BoredEmitter:
             or (self._free_key and self._free_key != self._last_free_key)
         )
 
+    def _relay_parks(self, key: str) -> bool:
+        """FR #8738: True when ``key`` is an assign still parked in the Relay."""
+        if self.relay is None or not key:
+            return False
+        try:
+            fn = getattr(self.relay, "pending_assign_keys", None)
+            return bool(fn) and key.lower() in fn()
+        except Exception:
+            return False
+
+    def _turn_live(self) -> bool:
+        """FR #8738: watcher-open turn, or a done-miss reminder turn not yet seen to start."""
+        return bool(
+            self._turn_open
+            or (self._finish_turn_at is not None and self._finish_turn_unseen)
+        )
+
+    def _clear_finish_turn(self, why: str = "") -> None:
+        """FR #8738: drop the prior job's closing-turn mark. Caller holds ``_cv``."""
+        if self._finish_turn_at is not None and why:
+            self.log(
+                f"bored: closing turn for {self._finish_turn_key or 'job'} over ({why})"
+            )
+        self._finish_turn_at = None
+        self._finish_turn_key = None
+        self._finish_turn_unseen = False
+
+    def _note_finish_turn(self, now: float, key: Optional[str], *, unseen: bool = False) -> None:
+        """FR #8738: the prior job is closing inside a turn that has not ended yet."""
+        if self._finish_turn_at is None:
+            self._finish_turn_at = now
+            self._finish_turn_key = key or self._finish_turn_key
+            self.log(
+                f"bored: closing turn open for {key or 'job'} - park new assigns until turn_ended"
+            )
+        elif key and not self._finish_turn_key:
+            self._finish_turn_key = key
+        if unseen:
+            self._finish_turn_unseen = True
+
+    def _closing_turn_live(self, now: float) -> bool:
+        """FR #8738: True while the prior job's closing turn is still running.
+
+        Set when DONE/NACK/GIVEUP lands while a turn is open, or when the done-miss
+        reminder is injected. Cleared on ``turn_ended`` (or stand-down / out-of-fuel /
+        reply-window give-up). ``finish_turn_hold_max_s`` is the safety cap for a lost
+        ``turn_ended``. Caller holds ``_cv``.
+        """
+        at = self._finish_turn_at
+        if at is None:
+            return False
+        if not self._turn_live():
+            self._clear_finish_turn()
+            return False
+        if now - float(at) >= float(self.finish_turn_hold_max_s):
+            self._clear_finish_turn(
+                f"no turn_ended after {self.finish_turn_hold_max_s:.0f}s; safety net"
+            )
+            return False
+        return True
+
+    @property
+    def closing_turn_open(self) -> bool:
+        """FR #8738: Relay must not flush held assigns into the prior job's closing turn."""
+        with self._cv:
+            return self._closing_turn_live(self.clock())
+
     def _extend_hold_for_open_turn(self, now: float) -> bool:
         """FR #2834: keep harvest busy while turn open, until turn_ended or turn_hold_max_s."""
         if not bored_on_turn_end_enabled():
             return False
-        if not self._turn_watcher_armed or not self._turn_open:
+        if not self._turn_watcher_armed or not self._turn_live():
             return False
         if self._hold_started_at is None or not self._pending_harvest_fire():
             return False
@@ -14189,7 +14323,11 @@ class BoredEmitter:
             now = self.clock()
             if self._harvest_until is not None and now < float(self._harvest_until):
                 return True
-            return self._extend_hold_for_open_turn(now)
+            if self._extend_hold_for_open_turn(now):
+                return True
+            # FR #8738: past the !bored safety cap (or after a done-miss reminder the
+            # watcher has not seen start) the prior job's turn may still be closing.
+            return self._closing_turn_live(now)
 
     def note_held_assign(self) -> None:
         """FR #2811: Relay parked an assign; stay offer-pending until flush."""
@@ -14368,6 +14506,9 @@ class BoredEmitter:
                 f"{self._opencode_finish_attempt}/{opencode_finish_run_max()} progress=pending"
             )
         self.log(f"done-miss: reminder injected for {key}")
+        # FR #8738: the reminder starts the job's closing turn even before the watcher
+        # reports turn_started; nothing new is delivered into it until it ends.
+        self._note_finish_turn(now, key, unseen=not self._turn_open)
         fn = self.done_miss_remind_fn
         if fn is not None:
             # FR #8268: caller holds _cv. The reminder takes supervisor RLock
@@ -14396,6 +14537,8 @@ class BoredEmitter:
         self._release_gen = self._turn_gen
         self._arm_skip = True
         self._hold_release_at = now
+        # FR #8738: the closing turn is over (turn_ended) or judged dead (reply window).
+        self._clear_finish_turn()
         self.log(f"done-miss: still no DONE for {key} after reminder - releasing seat")
 
     def _maybe_expire_done_miss_reply(self, now: float) -> None:
@@ -14411,8 +14554,23 @@ class BoredEmitter:
         until = self._done_miss_reply_until
         if until is None or now < float(until):
             return
+        # FR #8738: the reminder turn may be running without a turn_started seen yet.
+        # Agent I/O since the reminder (inside ack_quiet_s) is that turn: stay busy.
+        if self._reminder_turn_active(now):
+            return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._arm_done_miss_release(now, key)
+
+    def _reminder_turn_active(self, now: float) -> bool:
+        """FR #8738: agent I/O after the done-miss reminder, inside ``ack_quiet_s``."""
+        if self._finish_turn_at is None or not self._finish_turn_unseen:
+            return False
+        if not self._closing_turn_live(now):
+            return False
+        active = self._agent_active_at
+        if active is None or float(active) < float(self._finish_turn_at):
+            return False
+        return (now - float(active)) < float(self.ack_quiet_s)
 
     def _ack_held(self, now: float) -> bool:
         """ACK still owns the seat (FR #4827).
@@ -14475,6 +14633,7 @@ class BoredEmitter:
             self._out_of_fuel_hard_402 = is_hard_402_out_of_fuel_text(evidence or "")
             self._out_of_fuel_clear_reason = None
             self._clear_done_miss()
+            self._clear_finish_turn()
             self._inject_pending = False
             self._inject_at = None
             self._nak_due = None
@@ -14664,6 +14823,7 @@ class BoredEmitter:
             self._agent_active_at = None
             self._turn_open = False
             self._clear_done_miss()
+            self._clear_finish_turn()
             now = self.clock()
             self._idle_since = now
             self.log(f"bored: stand down {want}")
@@ -14696,7 +14856,7 @@ class BoredEmitter:
         skip_clock = (
             bored_on_turn_end_enabled()
             and self._turn_watcher_armed
-            and (not self._turn_open)
+            and (not self._turn_live())
             and self._turn_gen > 0
         )
         if skip_clock:
@@ -14729,6 +14889,8 @@ class BoredEmitter:
             if self._done_miss_armed_at is not None and not self._done_miss_reminded:
                 self._done_miss_armed_at = None
                 self._done_miss_key = None
+            # FR #8738: the reminder (closing) turn is now visible to the watcher.
+            self._finish_turn_unseen = False
             self._hb_notify_all()
 
 
@@ -14750,6 +14912,11 @@ class BoredEmitter:
             with self._cv:
                 now = float(self.clock() if at is None else at)
                 self._turn_open = False
+                # FR #8738: the prior job's closing turn is over (a stale turn_ended from
+                # before the mark was set does not count).
+                if self._finish_turn_at is not None and now >= float(self._finish_turn_at):
+                    self._clear_finish_turn("turn_ended")
+                    self._flush_after_closing = True
                 # FR #4858: successful turn clears hard 402 hold without min hold.
                 # Soft holds (FR #6119 fast-done-miss / mid-job on-demand) stay until a
                 # fuel reading clears them — a later turn_ended must not re-arm !bored.
@@ -14757,6 +14924,16 @@ class BoredEmitter:
                     clear_hard_fuel = True
                 # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
                 if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
+                    self._hb_notify_all()
+                    return
+                # FR #8738: the open ACK is an assign ACKed on receipt that is still parked
+                # (never injected). This turn was the prior job's - not a done-miss for it.
+                if self._ack_open and self._ack_job_key and self._relay_parks(self._ack_job_key):
+                    self._flush_after_closing = True
+                    self.log(
+                        f"bored: turn ended with {self._ack_job_key} ACKed but still parked "
+                        "- not a done-miss; flush it now (FR #8738)"
+                    )
                     self._hb_notify_all()
                     return
                 # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
@@ -15115,6 +15292,9 @@ class BoredEmitter:
                             f"bored: done-miss armed for open ACK {self._ack_job_key} after cross-job DONE"
                         )
                 else:
+                    # FR #8738: DONE inside a still-open turn - that turn is closing this job.
+                    if self._turn_live():
+                        self._note_finish_turn(now, job or self._ack_job_key)
                     self._ack_open = False
                     self._ack_job_key = None
                     self._clear_done_miss()
@@ -15151,6 +15331,9 @@ class BoredEmitter:
                     self._clear_done_miss()
                     self.log(f"bored: free-rx matched ({verb}) during out-of-fuel - no !bored")
                 else:
+                    # FR #8738: NACK/GIVEUP inside a still-open turn closes this job there.
+                    if self._turn_live():
+                        self._note_finish_turn(now, job or self._ack_job_key)
                     self._ack_open = False
                     self._ack_job_key = None
                     self._clear_done_miss()
@@ -15179,6 +15362,9 @@ class BoredEmitter:
         if self._out_of_fuel:
             return True
         if self._ack_held(now):
+            return True
+        # FR #8738: done-miss !bored never fires while the closing turn still runs.
+        if self._done_miss_release_pending and self._closing_turn_live(now):
             return True
         if self._harvest_until is not None and now < self._harvest_until:
             return True
@@ -15222,6 +15408,9 @@ class BoredEmitter:
         """
         if self._turn_open or self.held_assign_watchdog_s <= 0:
             return
+        # FR #8738: never flush into the prior job's closing turn.
+        if self._closing_turn_live(now):
+            return
         pending = False
         try:
             pending = bool(self.relay is not None and self.relay.has_pending_work())
@@ -15254,6 +15443,9 @@ class BoredEmitter:
         while the assign stays parked. Skip only while a turn is still open.
         """
         if self._turn_open:
+            return
+        # FR #8738: the prior job's closing turn (incl. an unseen reminder turn) is open.
+        if self._closing_turn_live(now):
             return
         had_held = bool(self._held_assign)
         released = 0
@@ -15294,6 +15486,16 @@ class BoredEmitter:
                 self._harvest_used_fallback = True
                 self.log("bored: fallback timer, no turn_ended seen")
             self._flush_held_on_harvest_expiry(now, why="harvest expired")
+        # FR #8738: the prior job's closing turn just ended - deliver what was parked.
+        if self._flush_after_closing and not self._turn_open:
+            self._flush_after_closing = False
+            pending = False
+            try:
+                pending = bool(self.relay is not None and self.relay.has_pending_work())
+            except Exception:
+                pending = False
+            if pending or self._held_assign:
+                self._flush_held_on_harvest_expiry(now, why="closing turn ended")
         # FR #5505: ACKed-on-receipt hold never injected — watchdog injects after deadline.
         self._flush_held_assign_watchdog(now)
         if self._busy(now):
@@ -15394,6 +15596,15 @@ class BoredEmitter:
         ):
             if self._harvest_until is None or now >= float(self._harvest_until):
                 wakes.append(float(self._held_assign_since) + float(self.held_assign_watchdog_s))
+        # FR #8738: wake at the closing-turn safety cap / reminder-turn quiet window.
+        if self._finish_turn_at is not None:
+            wakes.append(float(self._finish_turn_at) + float(self.finish_turn_hold_max_s))
+            if (
+                self._finish_turn_unseen
+                and self._agent_active_at is not None
+                and self._done_miss_reminded
+            ):
+                wakes.append(float(self._agent_active_at) + float(self.ack_quiet_s))
         # FR #2834: while open-turn extends past harvest_hold_s, wake at the safety cap.
         if self._extend_hold_for_open_turn(now) and self._hold_started_at is not None:
             wakes.append(float(self._hold_started_at) + float(self.turn_hold_max_s))
@@ -15802,6 +16013,8 @@ class Supervisor:
         )
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)
+        # FR #8738: flush only after the prior job's closing turn has ended.
+        relay.defer_flush_while = lambda: bool(self.bored and self.bored.closing_turn_open)
         relay.on_hold_assign = lambda _line: (
             self.bored.note_held_assign() if self.bored else None
         )
