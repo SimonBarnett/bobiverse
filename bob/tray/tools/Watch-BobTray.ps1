@@ -2091,6 +2091,13 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     return $childPid
 }
 
+function Test-BobTrayJeevesDrive {
+    # FR #8686 / BOB-36: J: must be mapped. Pass -DriveRoot in a fixture; the menu uses the default.
+    param([string]$DriveRoot = 'J:\')
+    if ([string]::IsNullOrWhiteSpace($DriveRoot)) { return $false }
+    return [bool](Test-Path -LiteralPath $DriveRoot)
+}
+
 function Start-BobTrayPriorityExe {
     # FR #8699 / BOB-50: vendored PriorityAgent.exe.
     $exe = Join-Path $RepoRoot 'vendor\priority\PriorityAgent.exe'
@@ -4133,6 +4140,15 @@ $miPlan.Add_Click({ Start-BobTrayPlanExe })
 # BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
 $miPriority.Add_Click({ Start-BobTrayPriorityExe })
 $miJeeves.Add_Click({
+        if (-not (Test-BobTrayJeevesDrive)) {
+            Write-TrayLog 'Jeeves: J: map missing; quit'
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'J: is not mapped. Jeeves will not start.',
+                'Bob - Jeeves',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
         $fuelPath = $env:BOB_JEEVES_FUEL_FILE
         if (-not $fuelPath) { $fuelPath = Join-Path $RepoRoot 'run\jeeves-fuel.json' }
         if (Test-Path -LiteralPath $fuelPath) {
