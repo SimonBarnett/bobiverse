@@ -541,6 +541,12 @@ function Read-BobReportDigestHttp {
     }
     $url = Get-BobDigestUrl
     try {
+        if (-not (Get-Command Invoke-BobDigestHttpGetWithRetry -ErrorAction SilentlyContinue)) {
+            $helper = Join-Path $PSScriptRoot 'Invoke-BobDigestHttpGet.ps1'
+            if (Test-Path -LiteralPath $helper) {
+                try { . $helper } catch { }
+            }
+        }
         if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
             throw 'Invoke-BobDigestHttpGet missing'
         }
@@ -553,7 +559,12 @@ function Read-BobReportDigestHttp {
                 $timeoutSec = [Math]::Max(1, [Math]::Min(15, [int]$rawTo.Trim()))
             }
         } catch { $timeoutSec = 15 }
-        $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec $timeoutSec
+        if (Get-Command Invoke-BobDigestHttpGetWithRetry -ErrorAction SilentlyContinue) {
+            $got = Invoke-BobDigestHttpGetWithRetry -Uri $url -TimeoutSec $timeoutSec
+        }
+        else {
+            $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec $timeoutSec
+        }
         if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) { return $null }
         # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
         $text = [string]$got.Text
@@ -601,6 +612,19 @@ function Read-BobReportDigest {
     $http = $null
     try { $http = Read-BobReportDigestHttp } catch { $http = $null }
     if ($http) { return $http }
+    # FR #8988: a fresh pools file beats "no digest" when the  paint GET timed out.
+    if (-not (Get-Command Read-BobTrayDigestPoolsFallback -ErrorAction SilentlyContinue)) {
+        $helper = Join-Path $PSScriptRoot 'Invoke-BobDigestHttpGet.ps1'
+        if (Test-Path -LiteralPath $helper) {
+            try { . $helper } catch { }
+        }
+    }
+    if (Get-Command Read-BobTrayDigestPoolsFallback -ErrorAction SilentlyContinue) {
+        try {
+            $fromPools = Read-BobTrayDigestPoolsFallback
+            if ($fromPools) { return $fromPools }
+        } catch { }
+    }
     $home = $null
     try { $home = Get-BobIrcHome } catch { }
     if (-not $home) { return $null }
