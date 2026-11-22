@@ -104,6 +104,7 @@ api.refresh(card, ctx.fetch).then(function () {
         [node, str(runner), str(SCRIPT), json.dumps(payload)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
@@ -132,7 +133,7 @@ def test_fr8703_release_sets_exact_msi_href(tmp_path: Path):
         },
     ]
     out = _run(node, tmp_path, payload, "run_plan.js")
-    assert out["version"] == "plan-v1.2.0 · 2026-11-21"
+    assert out["version"] == "plan-v1.2.0 - 2026-11-21"
     assert MSI in out["hrefs"]
     assert MSI + ".sha256" in out["hrefs"]
     assert out["notes"].endswith("/releases/latest")

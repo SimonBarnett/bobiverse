@@ -57,7 +57,7 @@
     var published = String(rel.published_at || '');
     var day = published.length >= 10 ? published.slice(0, 10) : '';
     var line = tag;
-    if (day) line = tag + ' · ' + day;
+    if (day) line = tag + ' - ' + day;
     if (versionEl) versionEl.textContent = line;
     var assetsEl = card.querySelector('[data-role="assets"]');
     clearAssets(assetsEl);
