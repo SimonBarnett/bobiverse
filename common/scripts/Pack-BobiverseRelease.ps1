@@ -218,6 +218,7 @@ function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
     }
 }
 
+
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
