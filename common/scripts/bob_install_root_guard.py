@@ -83,6 +83,63 @@ def suggest_job_worktree(install_root: str | Path, *, mode: str = "fr", issue_n:
     return str(root.parent / f"bob-wt-{mode_l}-{issue_n}")
 
 
+def refuse_empty_job_worktree_path(
+    path: str | Path | None,
+    *,
+    install_root: str | Path | None = None,
+) -> Optional[str]:
+    """FR #8852 / #9156: refuse empty, relative, ``origin/main``, or under-install job paths.
+
+    Call before ``git worktree add`` so an empty ``$wt`` cannot create
+    ``<install>/origin/main``. Returns a refusal message or None when ok.
+    """
+    raw = "" if path is None else str(path).strip()
+    if not raw:
+        return (
+            "FR #8852: refuse empty job worktree path "
+            "(dot common\\scripts\\Bobiverse-Common.ps1 then Get-BobiverseJobWorktreePath)"
+        )
+    # Mistaken argv when $wt was empty: git treated origin/main as the path.
+    norm_slash = raw.replace("\\", "/").lower().rstrip("/")
+    if norm_slash in ("origin/main", "./origin/main") or norm_slash.endswith("/origin/main"):
+        # Bare origin/main or relative under CWD; absolute under-install handled below.
+        if not os.path.isabs(raw) or norm_slash in ("origin/main", "./origin/main"):
+            return (
+                "FR #8852: refuse job worktree path looking like 'origin/main' "
+                "(empty $wt made git use the start-point as the path)"
+            )
+    if not os.path.isabs(raw):
+        return (
+            f"FR #8852: refuse relative job worktree path {raw!r} "
+            "(must be absolute under the job worktree base)"
+        )
+    if install_root is not None and str(install_root).strip():
+        try:
+            root = _norm(install_root)
+            cand = Path(raw).expanduser()
+            # Do not require the path to exist yet (pre-worktree-add).
+            try:
+                cand_res = cand.resolve(strict=False)
+            except OSError:
+                cand_res = Path(os.path.normpath(str(cand)))
+            if paths_equal(cand_res, root):
+                return (
+                    f"FR #8852: refuse job worktree path equal to install root {root}"
+                )
+            try:
+                cand_res.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                return (
+                    f"FR #8852: refuse job worktree path under install root "
+                    f"({cand_res} is under {root})"
+                )
+        except (OSError, ValueError):
+            pass
+    return None
+
+
 
 def refuse_empty_job_worktree_path(
     path: str | Path | None,

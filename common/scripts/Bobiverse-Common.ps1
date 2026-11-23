@@ -1730,6 +1730,50 @@ function Get-BobiverseJobWorktreePath {
     return $full.TrimEnd('\')
 }
 
+function Assert-BobiverseJobWorktreePath {
+    <#
+      FR #8852 / #9156: call before `git worktree add`.
+      Refuse empty / whitespace, relative paths, literal origin/main (empty-$wt
+      class that created <install>\origin\main), paths equal to or under InstallRoot,
+      and drive-root paths. Returns the normalized absolute path on success.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [Parameter(Mandatory)][string]$InstallRoot
+    )
+    $raw = if ($null -eq $Path) { '' } else { "$Path".Trim() }
+    if (-not $raw) {
+        throw "FR #8852: refuse empty job worktree path (dot common\scripts\Bobiverse-Common.ps1 then Get-BobiverseJobWorktreePath)"
+    }
+    $slash = ($raw -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    if ($slash -eq 'origin/main' -or $slash -eq './origin/main') {
+        throw "FR #8852: refuse job worktree path looking like 'origin/main' (empty `$wt made git use the start-point as the path)"
+    }
+    if (-not [IO.Path]::IsPathRooted($raw)) {
+        throw ("FR #8852: refuse relative job worktree path '{0}' (must be absolute under the job worktree base)" -f $raw)
+    }
+    if (-not $InstallRoot -or -not "$InstallRoot".Trim()) {
+        throw 'FR #8852: -InstallRoot is required'
+    }
+    $full = [IO.Path]::GetFullPath($raw)
+    $inst = [IO.Path]::GetFullPath($InstallRoot.Trim())
+    if ($inst.Length -gt 3) { $inst = $inst.TrimEnd('\', '/') }
+    if ($full.Length -gt 3) { $fullTrim = $full.TrimEnd('\', '/') } else { $fullTrim = $full }
+    if ($fullTrim.Equals($inst, [StringComparison]::OrdinalIgnoreCase)) {
+        throw ("FR #8852: refuse job worktree path equal to install root ({0})" -f $inst)
+    }
+    $prefix = $inst.TrimEnd('\') + '\'
+    if ($fullTrim.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw ("FR #8852: refuse job worktree path under install root ({0} is under {1})" -f $fullTrim, $inst)
+    }
+    if (Get-Command Test-BobiverseIsDriveRoot -ErrorAction SilentlyContinue) {
+        if (Test-BobiverseIsDriveRoot $fullTrim) {
+            throw ("FR #8852 / #4988: refuse job worktree path that is a drive root ({0})" -f $fullTrim)
+        }
+    }
+    return $fullTrim
+}
+
 function Get-BobiverseJobScratchPath {
     # FR #4988: scratch / temp job folders share the same base: <base>\scratch\<name>
     param(
