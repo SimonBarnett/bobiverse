@@ -35,14 +35,15 @@ def test_fr9025_fuel_exhausted_opencode_free_prefix_skips():
 
 
 def test_fr9025_hang_recycle_still_files():
+    # Generic hang reasons still file; OpenCode freeze reasons are skipped by FR #9279.
     posts = []
     bw.report_agent_cli_nonzero_exit(
         exit_code=None,
         machine="marchhare",
         kind="grok",
-        reason="opencode-frozen-progress",
+        reason="not-responding",
         filer_post=lambda p: posts.append(p) or {"ok": True},
     )
     assert len(posts) == 1
     assert "stopped making progress" in posts[0]["title"]
-    assert "fuel-exhausted" not in posts[0]["body"] or "Reason: opencode-frozen-progress" in posts[0]["body"]
+    assert "Reason: not-responding" in posts[0]["body"]
