@@ -388,3 +388,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When FR #7618 self-probe exits under low RAM, log free_mb, defer exit with BOB_CALLBACK_LOW_MEM_* instead of crash-looping, and retry prior-clean scans (BOB_PRIOR_SCAN_ATTEMPTS) so the first NSSM restart survives transient CIM failure.
 - OpenCode opencode-lost-ack-stale / opencode-frozen-progress recycles with exit_code None skip seat-stopped intake (class of #7978/#9025); MRB may repair PR body control-char nits without a fix PR.
 - monkeypatch.setenv(BOB_DIGEST_HOME/BOB_HOME) before jeeves_main.main so undo clears the chair tmp home; bare delenv raising=False when absent registers no undo and leaks into later suite tests (FR #9291).
+- fr-digest / umbrella epics: ACK then GIVEUP; never Closes a living digest; children implement (job-irc umbrella rule).
