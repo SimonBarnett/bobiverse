@@ -11775,6 +11775,7 @@ def offer_focus_top(
     pr_exists=None,
     is_pull=None,
     issue_open=None,
+    fetch_issue=None,
     offered_via: str | None = None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
@@ -11786,6 +11787,8 @@ def offer_focus_top(
     another seat can take a dead pin after ``OFFER_STICKY_MAX`` no-ACK attempts.
     ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
     ``issue_open`` (optional) purges/skips FR rows whose issue is CLOSED (FR #2340).
+    ``fetch_issue`` (optional) BOB-D6 / FR #8810: hydrate empty FR ``body`` before Depends-on
+    (test seam; default ``fetch_github_issue_dict`` via ``ensure_fr_queue_body``).
 
     FR #3188: bulk purge uses stamped/structural checks only (no per-row GitHub fan-out
     on the IRC ``!bored`` path). Live checkers are budgeted to at most one call while
@@ -11968,6 +11971,13 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
                         purged = True
                     return None
+                # BOB-D6 / FR #8810: empty queue body → fetch issue body before Depends-on parse
+                # (fail-when: silent offer with empty body). Persist stamp when filled.
+                if _canon_task(cand) == "FR":
+                    _body_before = str(cand.get("body") or "")
+                    ensure_fr_queue_body(cand, fetch_issue=fetch_issue)
+                    if str(cand.get("body") or "") != _body_before:
+                        purged = True
                 # FR #8754: Depends-on backlog still open in queue — skip offer; keep row.
                 if row_fr_depends_blocked_reason(cand, doc):
                     return None
@@ -15056,6 +15066,61 @@ def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
             return released
     except (TimeoutError, OSError):
         return []
+
+
+# BOB-D6 / FR #8810: short TTL for empty-body hydrate (vision UNKNOWN picked 60s).
+FR_BODY_FETCH_CACHE_TTL_S = 60.0
+FR_BODY_FETCH_SHARED_CACHE = TTLCache(FR_BODY_FETCH_CACHE_TTL_S)
+
+
+def ensure_fr_queue_body(
+    row: dict,
+    *,
+    fetch_issue=None,
+    cache: dict | None = None,
+) -> str:
+    """BOB-D6 / FR #8810: fetch GitHub issue body when the queue row body is empty.
+
+    Stamps ``row["body"]`` via ``_body_for_queue`` so Depends-on parse sees the stamp.
+    Non-FR rows and rows that already have a non-blank body are unchanged (no fetch).
+    ``fetch_issue(repo, num)`` is the test seam; default uses ``fetch_github_issue_dict``.
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return str((row or {}).get("body") or "") if isinstance(row, dict) else ""
+    existing = str(row.get("body") or "")
+    if existing.strip():
+        return existing
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return existing
+    store: dict = cache if cache is not None else FR_BODY_FETCH_SHARED_CACHE
+    key = f"fr_body:{repo}#{num}"
+    hit = store.get(key, _CACHE_MISS) if hasattr(store, "get") else _CACHE_MISS
+    if hit is not _CACHE_MISS:
+        body_hit = str(hit or "")
+        if body_hit.strip():
+            row["body"] = _body_for_queue(body_hit)
+            return str(row.get("body") or "")
+        return existing
+    getter = fetch_issue or (lambda r, n: fetch_github_issue_dict(r, n))
+    issue = None
+    try:
+        issue = getter(repo, num)
+    except Exception:
+        issue = None
+    fetched = ""
+    if isinstance(issue, dict):
+        fetched = str(issue.get("body") or "")
+    try:
+        store[key] = fetched
+    except Exception:
+        if isinstance(store, dict):
+            store[key] = fetched
+    if fetched.strip():
+        row["body"] = _body_for_queue(fetched)
+        return str(row.get("body") or "")
+    return existing
 
 
 def fetch_github_issue_dict(repo: str, num: str, *, token: str = "") -> dict | None:
