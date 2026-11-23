@@ -145,13 +145,20 @@ def test_fr8835_models_and_git_cards_present():
 
 def test_fr8835_coming_models_ops_marked():
     coming = {e.slug for e in docs.all_entries() if getattr(e, "status", "live") == "coming"}
-    # FR #8820 refresh live; FR #9273 PUT live via IIS; PATCH remains coming.
-    assert "models-patch" in coming
+    # FR #9122 / #9273: models-put live via IIS; FR #8820 refresh live; PATCH remains coming.
     assert "models-put" not in coming
     assert "models-refresh" not in coming
+    assert "models-patch" in coming
     page = (WWW / "docs" / "webhooks" / "models.html").read_text(encoding="utf-8")
-    assert "Coming" in page  # PATCH card still coming
-    assert "FR #9273" in page or "GET, HEAD, POST, and PUT" in page or "POST|PUT" in page
+    assert "Coming" in page and "not served" in page
+    assert "clis" in page.lower()
+    put_live = [e for e in docs.all_entries() if e.slug == "models-put"][0]
+    assert getattr(put_live, "status", "live") == "live"
+    # FR #9273: public BobModelsWebhook forwards GET|HEAD|POST|PUT.
+    assert "GET|HEAD|POST|PUT" in (put_live.status_codes or "") or "GET, HEAD, POST, and PUT" in (put_live.reachability or "")
+    assert "PUT" in (put_live.reachability or "")
+    assert "FR #9273" in (put_live.fr or "") or "FR #9273" in page
+
 
 
 def test_fr8835_fake_route_zzz_named_as_gap():

@@ -15879,7 +15879,12 @@ def parse_worker_ack(body: str) -> bool:
 
 
 def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | None]:
-    """Move offered unaccepted row for this nick to accepted (ACK in #machine)."""
+    """Move offered unaccepted row for this nick to accepted (ACK in #machine).
+
+    FR #9254: refuse twin accept when this nick already has an accepted row.
+    Clear ``offered_to`` on the twin offered row so another seat can take it.
+    Returns ``(\"twin\", holding_row)`` when refused for an existing accept.
+    """
     try:
         with _lock(home):
             try:
@@ -15887,6 +15892,19 @@ def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | Non
             except (OSError, json.JSONDecodeError, ValueError):
                 return "error", None
             canon = (nick or "").strip()
+            me = (canonical_worker_nick(canon) or canon).strip().lower()
+            # FR #9254: one accepted row per nick — refuse a second ACK.
+            holding: dict | None = None
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                raw = str(
+                    row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+                ).strip()
+                them = (canonical_worker_nick(raw) or raw).strip().lower()
+                if them and me and them == me:
+                    holding = row
+                    break
             idx = None
             for i, row in enumerate(doc["unaccepted"]):
                 if str(row.get("offered_to") or "").strip() == canon:
@@ -15898,6 +15916,18 @@ def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | Non
                     break
             if idx is None:
                 return "empty", None
+            if holding is not None:
+                # Clear offer stamps so the twin is free for another seat.
+                twin = doc["unaccepted"][idx]
+                twin["offered_to"] = ""
+                twin["offered_channel"] = ""
+                twin["offered_ts"] = ""
+                twin.pop("offered_at", None)
+                try:
+                    _write_queue(queue_path(home), doc)
+                except OSError:
+                    return "error", None
+                return "twin", holding
             job = dict(doc["unaccepted"].pop(idx))
             job["nick"] = canon
             job["channel"] = bobreport.normalize_channel(channel) if channel else ""

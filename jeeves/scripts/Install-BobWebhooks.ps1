@@ -84,10 +84,10 @@ $rewriteXml = @"
           <match url="^bob/v1/hours(.*)" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
         </rule>
+        <!-- FR #9273: grouped ^(GET|HEAD|POST|PUT)$ so Weights Save PUT reaches bobcallback (was ungrouped ^GET|HEAD|POST$ and omitted PUT -> IIS HTML 404). PATCH stays blocked here; backend 405 if ever admitted. -->
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <!-- FR #9273: grouped ^(GET|HEAD|POST|PUT)$ so Weights Save PUT reaches bobcallback (was ungrouped ^GET|HEAD|POST$ and omitted PUT -> IIS HTML 404). PATCH stays blocked here; backend 405 if ever admitted. -->
             <add input="{REQUEST_METHOD}" pattern="^(GET|HEAD|POST|PUT)$" />
           </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />

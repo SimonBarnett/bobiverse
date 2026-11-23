@@ -33,34 +33,38 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
 <section id="models-get">
 <h2>Models catalog (GET) <span class="badge">GET /bob/v1/models</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Fleet Weights agent rows plus CLI options catalog for the tray/forms.</p>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Fleet Weights agent rows plus CLI options catalog for the tray/forms. FR #9258: context (256|500) and effort (high|medium|low) are Grok-only; Cursor/OpenCode catalog rows may have empty contexts/efforts.</p>
 <p><strong>Who calls it:</strong> Tray Weights form, Agents/Workers settings, operators.</p>
 <p><strong>Auth (named only):</strong> None.</p>
 <p><strong>Request schema:</strong> No body. HEAD returns empty body.</p>
-<p><strong>Response schema:</strong> JSON {&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]} (BOB-01 / FR #8820). Includes clis catalog; stale:true when selection model absent.</p>
+<p><strong>Response schema:</strong> JSON {&quot;clis&quot;:{CLI:{models:{model:{contexts:{context:{efforts:[...]}}}}}},&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]}(BOB-01 / FR #8819 / FR #8820 / FR #9258). clis from digest-home models-valid-combos.json; Grok contexts 256|500 and efforts high|medium|low; Cursor/OpenCode may have empty contexts; stale:true when selection model absent.</p>
 <p><strong>Status codes:</strong> 200 JSON; never invents secret fields.</p>
 <p><strong>Retry / idempotency:</strong> Safe GET.</p>
 <p><strong>Rate limits:</strong> Proxy only.</p>
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook (GET|HEAD|POST|PUT; FR #9273).</p>
-<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8835 / BOB-05 · FR #9273</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122 · FR #9258 · FR #9273</p>
 <p><strong>Redacted example</strong></p>
-<pre>GET https://bob.ntsa.uk/bob/v1/models</pre>
+<pre>GET https://bob.ntsa.uk/bob/v1/models
+Accept: application/json
+
+200 OK
+{&quot;clis&quot;:{&quot;Grok&quot;:{&quot;models&quot;:{&quot;grok-4.7&quot;:{&quot;contexts&quot;:{&quot;256&quot;:{&quot;efforts&quot;:[&quot;high&quot;,&quot;medium&quot;,&quot;low&quot;]},&quot;500&quot;:{&quot;efforts&quot;:[&quot;high&quot;,&quot;medium&quot;,&quot;low&quot;]}}}},&quot;Cursor&quot;:{&quot;models&quot;:{&quot;gpt-5&quot;:{&quot;contexts&quot;:{&quot;default&quot;:{&quot;efforts&quot;:[]}}}},&quot;Opencode&quot;:{&quot;models&quot;:{&quot;opencode-go/deepseek-v4-pro&quot;:{&quot;contexts&quot;:{&quot;default&quot;:{&quot;efforts&quot;:[]}}}}},&quot;agents&quot;:[{&quot;agent&quot;:&quot;Plan&quot;,&quot;cli&quot;:&quot;Grok&quot;,&quot;model&quot;:&quot;grok-4.7&quot;,&quot;context&quot;:&quot;256&quot;,&quot;effort&quot;:&quot;high&quot;}]}</pre>
 </section>
 
 <section id="models-put">
 <h2>Models catalog (PUT) <span class="badge">PUT /bob/v1/models</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Persist Weights selections (BOB-02 / FR #8708). IIS BobModelsWebhook forwards PUT with GET|HEAD|POST (FR #9273).</p>
-<p><strong>Who calls it:</strong> Tray Weights form Save.</p>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Persist Weights full replace (BOB-02 / FR #8708 / FR #8819). IIS BobModelsWebhook forwards PUT with GET|HEAD|POST (FR #9273). Agent cli is read-only.</p>
+<p><strong>Who calls it:</strong> Tray Weights form Save (public Cloudflare / allowlisted peer).</p>
 <p><strong>Auth (named only):</strong> Peer allow-list (BOB_REPORT_ALLOW); empty/invalid body → 400; foreign peer → 403.</p>
-<p><strong>Request schema:</strong> JSON agents rows (cli read-only per #8819).</p>
-<p><strong>Response schema:</strong> 204 when changed, 200 when unchanged, or 4xx JSON.</p>
-<p><strong>Status codes:</strong> 200/204; 400 bad body; 403 peer; never IIS HTML 404 when rule deployed.</p>
+<p><strong>Request schema:</strong> JSON agents rows; changing cli for a known agent returns 400 (FR #8819).</p>
+<p><strong>Response schema:</strong> 204 when changed; 200 when unchanged; 4xx on schema/cli mutation.</p>
+<p><strong>Status codes:</strong> 204 / 200 / 400 / 403; public IIS rewrites GET|HEAD|POST|PUT (FR #9273); never IIS HTML 404 when rule deployed.</p>
 <p><strong>Retry / idempotency:</strong> Idempotent full replace.</p>
-<p><strong>Rate limits:</strong> Same peer gate as other writes.</p>
+<p><strong>Rate limits:</strong> Peer allowlist; public proxy GET|HEAD|POST|PUT (FR #9273).</p>
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook — forwards GET, HEAD, POST, and PUT (FR #9273). PATCH stays blocked at IIS.</p>
-<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8708 / BOB-02 · FR #9273</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8708 / BOB-02 · FR #8819 · FR #9122 · FR #9273</p>
 <p><strong>Redacted example</strong></p>
-<pre>PUT https://bob.ntsa.uk/bob/v1/models
+<pre>PUT http://127.0.0.1:7700/bob/v1/models
 Content-Type: application/json
 
 {&quot;agents&quot;:[{&quot;agent&quot;:&quot;Plan&quot;,&quot;cli&quot;:&quot;Grok&quot;,&quot;model&quot;:&quot;&quot;,&quot;context&quot;:&quot;&quot;,&quot;effort&quot;:&quot;&quot;}]}</pre>
@@ -98,7 +102,13 @@ Content-Type: application/json
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).</p>
 <p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8820</p>
 <p><strong>Redacted example</strong></p>
-<pre>POST https://bob.ntsa.uk/bob/v1/models/refresh</pre>
+<pre>POST https://bob.ntsa.uk/bob/v1/models/refresh
+Content-Type: application/json
+
+{&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]}
+
+200 OK
+{&quot;clis&quot;:{&quot;grok&quot;:{&quot;models&quot;:[{&quot;model&quot;:&quot;grok-4.7&quot;,&quot;contexts&quot;:[],&quot;efforts&quot;:[]}],&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;}},&quot;refresh&quot;:{&quot;grok&quot;:{&quot;status&quot;:&quot;refreshed&quot;,&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;,&quot;added&quot;:[&quot;grok-4.7&quot;],&quot;removed&quot;:[]}}}</pre>
 </section>
 
 <footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
