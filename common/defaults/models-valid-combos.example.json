@@ -4,23 +4,33 @@
     "grok": [
       {
         "model": "fixture-grok-a",
-        "contexts": ["128k", "256k"],
-        "efforts": ["low", "medium", "high"]
+        "contexts": [
+          "256",
+          "500"
+        ],
+        "efforts": [
+          "high",
+          "medium",
+          "low"
+        ]
       }
     ],
     "cursor": [
       {
         "model": "fixture-cursor-a",
-        "contexts": ["200k"],
+        "contexts": [],
         "efforts": []
       }
     ],
     "opencode": [
       {
         "model": "fixture-oc-a",
-        "contexts": ["default"],
+        "contexts": [],
         "efforts": []
       }
     ]
+  },
+  "provenance": {
+    "note": "FR #9258: Grok contexts are 256|500 and efforts high|medium|low only. Cursor/OpenCode contexts/efforts empty (Grok-only). "
   }
 }

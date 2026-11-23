@@ -37,6 +37,7 @@ def _run_install(site: Path, www: Path) -> subprocess.CompletedProcess[str]:
             str(site),
             "-Backend",
             "http://127.0.0.1:7700",
+            "-SkipBackendProbe",
             "-WwwSource",
             str(www),
             "-PublishWww",

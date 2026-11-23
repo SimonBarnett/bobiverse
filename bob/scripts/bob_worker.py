@@ -5064,6 +5064,24 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "fuel-exhausted-recycle"}
+    # FR #9279: OpenCode frozen-progress / lost-ack-stale recycles (FR #8596 / #8646 / #9009)
+    # are intentional hang recovery while the process is still running. Filing "seat stopped
+    # making progress" every time is noise (class of #9279 after external-dir-loop GIVEUP
+    # cleared ACK and left digest doing aged). Recycle still happens; skip intake only.
+    if exit_code is None and _fuel_reason in (
+        "opencode-lost-ack-stale",
+        "opencode-frozen-progress",
+    ):
+        if log:
+            try:
+                log(
+                    "worker: opencode freeze recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9279 reason=%s)"
+                    % _fuel_reason
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "opencode-freeze-recycle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -11262,6 +11280,9 @@ class Relay:
         self.opencode_job_classify: Optional[Callable[[str], str]] = None
         self.opencode_ensure_worktree: Optional[Callable[[str], str]] = None
         self._worktree_creating_keys: set = set()
+        # FR #9228: first-seen time for parked worktree creates (stale-offer log).
+        self._worktree_parked_at: dict = {}
+        self._stale_offer_logged: set = set()
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
@@ -11271,6 +11292,8 @@ class Relay:
         self.ack_refuse_reason: Optional[Callable[[str], Optional[str]]] = None
         # True when a live turn belongs to another job (NACK busy, no inject).
         self.turn_busy_other_job: Optional[Callable[[str], bool]] = None
+        # FR #9254: open ACK job key for busy, holding <first> NACK text.
+        self.ack_open_job_key: Optional[Callable[[], Optional[str]]] = None
         # FR #8738: True while the prior job's closing turn is still open. Held assigns
         # stay parked (no inject) until that turn has ended.
         self.defer_flush_while: Optional[Callable[[], bool]] = None
@@ -11316,16 +11339,107 @@ class Relay:
             nack = f"NACK {key} job-context-malformed (FR #6240)" if key else ""
         return (nack or "").strip()
 
+    def _holding_job_display(self, prefer: str = "") -> str:
+        """FR #9254: best-effort display key for busy, holding <first> NACKs."""
+        hold = (prefer or "").strip()
+        if hold:
+            return hold
+        try:
+            if self.ack_open_job_key:
+                open_k = (self.ack_open_job_key() or "").strip()
+                if open_k:
+                    return open_k
+        except Exception:
+            pass
+        with self._lock:
+            if self._worktree_creating_keys:
+                return next(iter(self._worktree_creating_keys))
+            if self._acked_held_keys:
+                return next(iter(self._acked_held_keys))
+        return "job"
+
+    def _nack_busy_holding(self, line: str, holding: str = "") -> str:
+        """FR #9254: NACK … busy, holding <first> when the open job is known.
+
+        Falls back to plain ``NACK … busy`` when no holding key is available
+        (FR #8246 turn-busy path without an open ACK key).
+        """
+        hold = self._holding_job_display(holding)
+        key = assign_job_key(line) or "job"
+        if hold and hold.lower() != "job":
+            nack = busy_holding_nack_line(line, hold)
+            if nack:
+                return nack
+        return f"NACK {key} busy"
+
     def _park_worktree_create(self, nick: str, target: str, text: str, line: str) -> str:
-        """FR #6328: run ensure off the IRC read thread; ACK only after create."""
+        """FR #6328: run ensure off the IRC read thread; ACK only after create.
+
+        FR #9254: one park at a time per seat. A second different job while create
+        is in flight (or another job already ACK'd) is NACK busy, holding <first>.
+        """
         key = (assign_job_key(line) or "").strip().lower()
+        holding = ""
         with self._lock:
             if key and key in self._worktree_creating_keys:
                 self.log("relay: worktree create already in flight " + (key or "?"))
                 self._persist_last_from(line)
                 return "opencode_worktree_pending"
-            if key:
-                self._worktree_creating_keys.add(key)
+            # FR #9254: seat-level serialize — never twin-park two jobs.
+            others_creating = {
+                k for k in self._worktree_creating_keys if k and k != key
+            }
+            others_acked = {
+                k for k in self._acked_held_keys if k and k != key
+            }
+            if others_creating or others_acked:
+                holding = next(iter(others_creating or others_acked))
+            else:
+                if key:
+                    self._worktree_creating_keys.add(key)
+                    if key not in self._worktree_parked_at:
+                        self._worktree_parked_at[key] = float(self.clock())
+        if holding:
+            # Also refuse when Bored already has another ACK open (no park mark yet).
+            nack = self._nack_busy_holding(line, holding)
+            self.log(
+                "relay: refuse twin park while holding "
+                + holding
+                + " ("
+                + (key or "?")
+                + ")"
+            )
+            self._persist_last_from(line)
+            try:
+                return self._refuse_job_context(line, nack)
+            except Exception:
+                if self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                return "busy_holding"
+        # FR #9254: turn already busy on another job — do not start a second park.
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                nack = self._nack_busy_holding(line)
+                self.log("relay: refuse park (turn busy) " + (key or line[:80]))
+                self._persist_last_from(line)
+                with self._lock:
+                    if key:
+                        self._worktree_creating_keys.discard(key)
+                        self._worktree_parked_at.pop(key, None)
+                try:
+                    return self._refuse_job_context(line, nack)
+                except Exception:
+                    if self.write_outbox:
+                        try:
+                            self.write_outbox(nack)
+                        except Exception:
+                            pass
+                    return "busy_holding"
+        except Exception:
+            pass
         self.log("relay: park worktree create off read thread " + (key or line[:80]))
         self._persist_last_from(line)
         th = threading.Thread(
@@ -11340,7 +11454,12 @@ class Relay:
     def _worktree_create_then_deliver(
         self, nick: str, target: str, text: str, line: str, key: str
     ) -> None:
-        """Background: ensure worktree, then NACK or re-enter deliver for ACK."""
+        """Background: ensure worktree, then NACK or resume deliver for ACK+inject.
+
+        FR #9228: always log ensure result and resume status. Resume uses
+        ``resume_after_worktree`` so a second park / silent duplicate cannot
+        swallow the assign after create succeeded.
+        """
         nack = ""
         try:
             fn = self.opencode_ensure_worktree
@@ -11349,24 +11468,128 @@ class Relay:
             else:
                 job = assign_job_key(line) or "job"
                 nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
-        except Exception:
+        except Exception as e:
             job = assign_job_key(line) or "job"
             nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
+            self.log(
+                f"relay: worktree ensure exception key={key or '?'} err={type(e).__name__}"
+            )
         finally:
             if key:
                 with self._lock:
                     self._worktree_creating_keys.discard(key)
         if nack:
+            head = nack.splitlines()[0][:160]
+            self.log(f"relay: worktree ensure nack key={key or '?'} {head}")
             try:
                 self._refuse_job_context(line, nack)
             except Exception as e:
                 self.log(f"relay: worktree create NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
             return
+        # FR #9254: another job ACK'd while this create ran — never twin-ACK.
+        other_hold = ""
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != key}
+            if others:
+                other_hold = next(iter(others))
+        if not other_hold:
+            try:
+                if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                    other_hold = self._holding_job_display()
+            except Exception:
+                pass
+        if other_hold:
+            twin_nack = self._nack_busy_holding(line, other_hold)
+            self.log(
+                f"relay: worktree ensure ok but twin-busy key={key or '?'} "
+                f"holding={other_hold}"
+            )
+            try:
+                self._refuse_job_context(line, twin_nack)
+            except Exception as e:
+                self.log(f"relay: twin-busy NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
+            return
+        self.log(f"relay: worktree ensure ok key={key or '?'} -> resume deliver")
         try:
-            # Worktree exists now; classify will accept. Do not park again.
-            self.deliver(nick, target, text)
+            # Worktree exists now. Force resume so we never park again (FR #9228).
+            status = self.deliver(nick, target, text, resume_after_worktree=True)
+            self.log(
+                f"relay: worktree create resume status={status} key={key or '?'}"
+            )
+            if status in (
+                "opencode_worktree_pending",
+                "duplicate",
+                "ack_not_sent",
+                "held_until_turn_end",
+                "held",
+                "coalescing",
+            ):
+                # Last-chance force inject when soft statuses still blocked ACK.
+                forced = self._force_ack_inject_after_worktree(line)
+                self.log(
+                    f"relay: worktree create force-resume status={forced} key={key or '?'}"
+                )
+                if forced in ("injected", "held", "duplicate"):
+                    self.clear_worktree_park_mark(key)
+            elif status in ("injected", "held", "held_until_turn_end"):
+                self.clear_worktree_park_mark(key)
+            else:
+                # Unknown soft status — still clear park mark if we got a real inject/ACK path.
+                if status == "injected":
+                    self.clear_worktree_park_mark(key)
         except Exception as e:
             self.log(f"relay: worktree create resume error {type(e).__name__}")
+
+    def _force_ack_inject_after_worktree(self, line: str) -> str:
+        """FR #9228: after ensure ok, ACK+inject even if deliver soft-failed."""
+        if not line or not assign_job_ref(line):
+            return "no-assign"
+        with self._lock:
+            if line == self._last_line:
+                self._last_line = ""
+        # Hostile / fuel / busy still apply.
+        try:
+            if self.skips_hostile_assign and self.skips_hostile_assign(line):
+                nack = opencode_hostile_nack_line(line)
+                if nack and self.write_outbox:
+                    self.write_outbox(nack)
+                return "opencode_skips_hostile"
+        except Exception:
+            pass
+        try:
+            if self.refuse_assign_while and self.refuse_assign_while():
+                if self.on_refuse_assign:
+                    self.on_refuse_assign(line)
+                return "out_of_fuel"
+        except Exception:
+            pass
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                nack = self._nack_busy_holding(line)
+                if self.write_outbox:
+                    self.write_outbox(nack)
+                return "busy_turn"
+        except Exception:
+            pass
+        with self._lock:
+            self._last_line = line
+        ack_st = self._ack_offer_or_refuse(line)
+        if ack_st == "refused":
+            return "ack_not_sent"
+        if ack_st == "busy_holding":
+            return "busy_holding"
+        if ack_st == "duplicate":
+            # Same job already ACKed — still inject if target ready.
+            pass
+        self._persist_last_from(line)
+        if self._inject is None:
+            with self._lock:
+                if line not in self._pending:
+                    self._pending.append(line)
+            return "held"
+        return self._do_inject(line)
 
     def _write_nacks(self, nack: str) -> None:
         if not nack or not self.write_outbox:
@@ -11434,7 +11657,14 @@ class Relay:
         self._write_nacks(nack)
         return "opencode_job_blocked"
 
-    def deliver(self, nick: str, target: str, text: str) -> str:
+    def deliver(
+        self,
+        nick: str,
+        target: str,
+        text: str,
+        *,
+        resume_after_worktree: bool = False,
+    ) -> str:
         nq = is_nothing_queued(text)
         if drop_text(text):
             if nq:
@@ -11449,6 +11679,11 @@ class Relay:
             self._persist_last_from(line)
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
+        # FR #9228: resume after ensure must not soft-duplicate before ACK/inject.
+        if resume_after_worktree:
+            with self._lock:
+                if line == self._last_line:
+                    self._last_line = ""
         # FR #6134: OpenCode seats NACK hostile MRB/UAT before ACK-on-receipt / inject.
         if assign_job_ref(line):
             skip_hostile = False
@@ -11482,6 +11717,17 @@ class Relay:
                 if self.opencode_job_classify:
                     nack = self._job_context_classify(line)
                     if nack and is_worktree_absent_nack(nack) and self.opencode_ensure_worktree:
+                        if resume_after_worktree:
+                            # Ensure claimed ok but classify still absent — do not park again.
+                            job = keys[0]
+                            verify = (
+                                f"NACK {job} worktree-create-failed:verify (FR #9228)"
+                            )
+                            self.log(
+                                "relay: worktree still absent after ensure; "
+                                + verify
+                            )
+                            return self._refuse_job_context(line, verify)
                         return self._park_worktree_create(nick, target, text, line)
                     if nack:
                         return self._refuse_job_context(line, nack)
@@ -11510,7 +11756,8 @@ class Relay:
                     except Exception:
                         pass
                 return "out_of_fuel"
-        # FR #8246: a live turn for another job is not a hold. NACK busy and do not inject.
+        # FR #8246 / #9254: a live turn for another job is not a hold.
+        # NACK busy, holding <first> and do not inject.
         if assign_job_ref(line):
             busy_turn = False
             try:
@@ -11522,8 +11769,7 @@ class Relay:
                     if line == self._last_line:
                         return "duplicate"
                     self._last_line = line
-                key = assign_job_key(line) or "job"
-                nack = f"NACK {key} busy"
+                nack = self._nack_busy_holding(line)
                 self.log("relay: refused assign (turn busy) " + line[:120])
                 self._persist_last_from(line)
                 if self.write_outbox:
@@ -11564,6 +11810,9 @@ class Relay:
                 if ack_st == "refused":
                     self._drop_pending_line(line)
                     return "ack_not_sent"
+                if ack_st == "busy_holding":
+                    self._drop_pending_line(line)
+                    return "busy_holding"
                 if ack_st == "duplicate":
                     self._drop_pending_line(line)
                     return "duplicate"
@@ -11615,6 +11864,10 @@ class Relay:
                 if not do_inject:
                     self._drop_pending_line(line)
                 return "ack_not_sent"
+            if ack_st == "busy_holding":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "busy_holding"
             if ack_st == "duplicate":
                 if not do_inject:
                     self._drop_pending_line(line)
@@ -11638,11 +11891,12 @@ class Relay:
             return False
 
     def _ack_offer_or_refuse(self, line: str) -> str:
-        """FR #8246 / #9056: fresh offer clears the finished mark, then ACK.
+        """FR #8246 / #9056 / #9254: fresh offer clears the finished mark, then ACK.
 
         Returns:
           ``"acked"`` — ACK written; caller may inject/hold.
           ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"busy_holding"`` — other job ACK open; ``NACK … busy, holding <first>``.
           ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
         if self.prepare_offer:
@@ -11662,6 +11916,17 @@ class Relay:
             # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
             self.log(f"relay: ACK already open for same job; no-op ({reason})")
             return "duplicate"
+        # FR #9254: cross-job ACK while another ACK is open.
+        if reason and str(reason).startswith("busy holding"):
+            holding = str(reason)[len("busy holding") :].strip() or "job"
+            nack = self._nack_busy_holding(line, holding)
+            self.log(f"relay: ACK suppressed ({reason}); not injecting")
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "busy_holding"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -11672,6 +11937,22 @@ class Relay:
                 except Exception:
                     pass
             return "refused"
+        # FR #9254 belt: seat already ACK'd a different job (Bored not yet painted).
+        incoming = (assign_job_key(line) or "").strip().lower()
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != incoming}
+            other = next(iter(others)) if others else ""
+        if other:
+            nack = self._nack_busy_holding(line, other)
+            self.log(
+                f"relay: ACK suppressed (seat already holding {other}); not injecting"
+            )
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "busy_holding"
         self._ack_on_receipt(line)
         return "acked"
 
@@ -12014,6 +12295,38 @@ class Relay:
                 if assign_job_ref(line):
                     return True
         return False
+
+    def maybe_log_stale_worktree_offer(self, *, min_age_s: float = 180.0) -> None:
+        """FR #9228: when idle with a parked create older than *min_age_s*, log once."""
+        now = float(self.clock())
+        stale: list[tuple[str, float]] = []
+        with self._lock:
+            for key, started in list(self._worktree_parked_at.items()):
+                age = now - float(started)
+                if age < float(min_age_s):
+                    continue
+                if key in self._stale_offer_logged:
+                    continue
+                # Still creating, or create finished but never ACKed (key left in parked_at).
+                stale.append((key, age))
+                self._stale_offer_logged.add(key)
+        for key, age in stale:
+            inflight = False
+            with self._lock:
+                inflight = key in self._worktree_creating_keys
+            self.log(
+                f"relay: stale worktree offer key={key} age_s={age:.0f} "
+                f"inflight={inflight} (no ACK yet; FR #9228)"
+            )
+
+    def clear_worktree_park_mark(self, key: str) -> None:
+        """FR #9228: drop stale-offer tracking after ACK/inject/NACK."""
+        k = (key or "").strip().lower()
+        if not k:
+            return
+        with self._lock:
+            self._worktree_parked_at.pop(k, None)
+            self._stale_offer_logged.discard(k)
 
     def pending_assign_keys(self) -> set:
         """FR #8738: lower-cased typed keys of assigns still parked (not injected)."""
@@ -15259,9 +15572,10 @@ class BoredEmitter:
         return True
 
     def outbox_ack_refuse_reason(self, payload: str) -> Optional[str]:
-        """FR #4730 / #6333 / #6472: ACK-only refuse tag, else None (allow).
+        """FR #4730 / #6333 / #6472 / #9254: ACK-only refuse tag, else None (allow).
 
-        Tags: ``finished-job ACK replay``, ``duplicate ACK``.
+        Tags: ``finished-job ACK replay``, ``duplicate ACK``,
+        ``busy holding <open-job>`` (cross-job twin ACK).
         """
         p = (payload or "").strip()
         if not _OUT_ACK_RX.match(p):
@@ -15273,6 +15587,9 @@ class BoredEmitter:
             # Dedupe model ACK after program ACK-on-receipt for the same open job.
             if job and self._ack_open and self._ack_job_key and job == self._ack_job_key:
                 return "duplicate ACK"
+            # FR #9254: never forward a second job's ACK while one ACK is open.
+            if job and self._ack_open and self._ack_job_key and job != self._ack_job_key:
+                return f"busy holding {self._ack_job_key}"
             return None
 
     def should_forward_outbox(self, payload: str) -> bool:
@@ -16377,7 +16694,19 @@ class BoredEmitter:
             self._idle_since = None
             if self._nak_due is not None and now >= self._nak_due:
                 self._nak_due = None  # busy at due time: never send; post-harvest !bored covers it
+            # FR #9228: also surface while "busy" only because ensure is hung/in-flight.
+            try:
+                if self.relay is not None:
+                    self.relay.maybe_log_stale_worktree_offer(min_age_s=180.0)
+            except Exception:
+                pass
             return None
+        # FR #9228: idle seat with a parked worktree create and no ACK — surface once.
+        try:
+            if self.relay is not None:
+                self.relay.maybe_log_stale_worktree_offer(min_age_s=180.0)
+        except Exception:
+            pass
         # FR #4753: ACK past ack_stale_s must clear and !bored (reason ack-stale), even when
         # turn_started bumped release_gen and the cursor turn never ended (error stall).
         if (
@@ -16897,6 +17226,12 @@ class Supervisor:
         )
         relay.turn_busy_other_job = lambda line: (
             self.bored.live_turn_blocks_assign(line) if self.bored else False
+        )
+        # FR #9254: surface open ACK key for busy, holding <first> NACK text.
+        relay.ack_open_job_key = lambda: (
+            self.bored._ack_job_key
+            if self.bored and getattr(self.bored, "_ack_open", False)
+            else None
         )
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)

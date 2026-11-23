@@ -2,10 +2,16 @@
 """Digest callback: report/git/intake/jira/hours/models; public GET digest (#174, #149).
 
 Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /jeeves**
-login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
-with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
-rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows + clis catalog (BOB-01 / FR #8707 / #8820). POST **/bob/v1/models/refresh** rebuilds clis from CLI listings (FR #8820). POST **/bob/v1/models/validate** is not served (form-only validation).
+login HTML (FR #6815). Local bobcallback answers `/bob/v1/digest` and `/digest` with
+**301** `Location: /bob/v1/report` (same webhook; no duplicate JSON handler). Those
+aliases are not published through the bob.ntsa.uk IIS rewrite today
+(GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
+returns fleet agent Weights rows (BOB-01 / FR #8707 / #8820) plus a ``clis`` catalogue
+whose model/context/effort options come from digest-home ``models-valid-combos.json``
+(missing/malformed combo file yields empty model maps, not an error). POST ``/bob/v1/models/refresh`` rebuilds clis from CLI listings (FR #8820). FR #9053 retired ``POST /bob/v1/models/validate``: the route returns JSON 404
+``no_models_validate`` and does not check or persist the tuple. The Weights form
+limits dropdowns to that GET catalogue; ``PUT /bob/v1/models`` persists agent rows
+and does not apply the combo allow-list.
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -62,6 +68,18 @@ DEFAULT_LISTENER_PROBE_S = 10.0
 LISTENER_PROBE_FAILS_ENV = "BOB_CALLBACK_LISTENER_PROBE_FAILS"
 DEFAULT_LISTENER_PROBE_FAILS = 2
 LISTENER_EXIT_CODE = 1
+# FR #9236: when free RAM is below this MB at self-probe threshold, back off instead of
+# exiting into an NSSM crash loop. After MAX_DEFER deferrals, exit with intake.
+LOW_MEM_MB_ENV = "BOB_CALLBACK_LOW_MEM_MB"
+DEFAULT_LOW_MEM_MB = 512.0
+LOW_MEM_BACKOFF_ENV = "BOB_CALLBACK_LOW_MEM_BACKOFF_S"
+DEFAULT_LOW_MEM_BACKOFF_S = 15.0
+LOW_MEM_MAX_DEFER_ENV = "BOB_CALLBACK_LOW_MEM_MAX_DEFER"
+DEFAULT_LOW_MEM_MAX_DEFER = 4
+# FR #9297: reserved ports used only by unit tests (never a live listener). Filing
+# intake for these was the #9297/#9298 storm after FR #7618 / #9236 self-probe tests.
+UNIT_TEST_LISTENER_PORTS = frozenset({9})
+ALLOW_TEST_INTAKE_ENV = "BOB_CALLBACK_ALLOW_TEST_INTAKE"
 # Public readers (IIS / browsers / UAT): use reportUrl. /bob/v1/digest is the same webhook and 301s here.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
@@ -747,6 +765,18 @@ def handle_report_post(
         if eid:
             webhook_queue.mark_done(home, eid, result={"ok": False, "err": "digest_lock_busy"})
         return 503, b'{"ok":false,"err":"digest_lock_busy"}'
+    except RuntimeError as exc:
+        # FR #9238: thread exhaustion under digest.lock / apply — soft 503, no intake storm.
+        msg = str(exc).lower()
+        if "can't start new thread" in msg or "start new thread" in msg:
+            print(f"INFO report reject 503 thread_exhausted err={exc}", flush=True)
+            if eid:
+                webhook_queue.mark_done(
+                    home, eid, result={"ok": False, "err": "thread_exhausted"}
+                )
+            return 503, b'{"ok":false,"err":"thread_exhausted"}'
+        _try_report_handler_failure(home, filer, route="report", err=str(exc))
+        return 500, b""
     except Exception as exc:  # noqa: BLE001 — surface as 500 + failure intake
         _try_report_handler_failure(home, filer, route="report", err=str(exc))
         return 500, b""
@@ -1334,6 +1364,73 @@ def _listener_probe_max_fails() -> int:
         return DEFAULT_LISTENER_PROBE_FAILS
 
 
+def _low_mem_mb_threshold() -> float:
+    try:
+        return max(0.0, float(os.environ.get(LOW_MEM_MB_ENV) or DEFAULT_LOW_MEM_MB))
+    except ValueError:
+        return DEFAULT_LOW_MEM_MB
+
+
+def _low_mem_backoff_s() -> float:
+    try:
+        return max(0.0, float(os.environ.get(LOW_MEM_BACKOFF_ENV) or DEFAULT_LOW_MEM_BACKOFF_S))
+    except ValueError:
+        return DEFAULT_LOW_MEM_BACKOFF_S
+
+
+def _low_mem_max_defer() -> int:
+    try:
+        return max(0, int(os.environ.get(LOW_MEM_MAX_DEFER_ENV) or DEFAULT_LOW_MEM_MAX_DEFER))
+    except ValueError:
+        return DEFAULT_LOW_MEM_MAX_DEFER
+
+
+def free_memory_mb() -> float | None:
+    """FR #9236: best-effort free physical memory in MiB. None when unavailable."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", wintypes.DWORD),
+                    ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            stat = _MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return None
+            return float(stat.ullAvailPhys) / (1024.0 * 1024.0)
+        except Exception:
+            return None
+    try:
+        # Linux: MemAvailable preferred; fall back to MemFree.
+        avail = None
+        free = None
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1])
+                    break
+                if line.startswith("MemFree:") and free is None:
+                    free = int(line.split()[1])
+        kib = avail if avail is not None else free
+        if kib is None:
+            return None
+        return float(kib) / 1024.0
+    except Exception:
+        return None
+
+
 def probe_listener_local_get(url: str, timeout_s: float) -> dict[str, Any]:
     """FR #7618: one loopback GET; raises on timeout / transport failure."""
     import urllib.request
@@ -1354,9 +1451,17 @@ def report_http_listener_fault(
     host: str = "",
     port: int = 0,
     exc: BaseException | None = None,
+    free_mb: float | None = None,
     report_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """FR #7618: one intake/crash report for accept/serve or self-probe failure. No secrets."""
+    """FR #7618 / #9236 / #9297: one intake/crash report for accept/serve or self-probe failure. No secrets.
+
+    Never files under PYTEST_CURRENT_TEST, and never files for UNIT_TEST_LISTENER_PORTS
+    (port 9) unless BOB_CALLBACK_ALLOW_TEST_INTAKE=1. Includes free_mb for FR #9236.
+    """
+    if free_mb is None:
+        with contextlib.suppress(Exception):
+            free_mb = free_memory_mb()
     if report_fn is not None:
         return report_fn(
             why=why,
@@ -1364,35 +1469,50 @@ def report_http_listener_fault(
             host=host,
             port=port,
             exc_type=type(exc).__name__ if exc else "",
+            free_mb=free_mb,
         )
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    allow_test = (os.environ.get(ALLOW_TEST_INTAKE_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if int(port or 0) in UNIT_TEST_LISTENER_PORTS and not allow_test:
+        print(
+            f"INFO listener-fault skip unit-test-port={int(port)} (FR #9297)",
+            flush=True,
+        )
+        return {"ok": True, "skipped": True, "reason": "unit-test-port"}
     title = "bug: Jeeves HTTP listener fault (FR #7618)"
+    if why in {"low-memory", "self-probe-low-memory"} or (
+        isinstance(exc, MemoryError)
+    ):
+        title = "bug: Jeeves HTTP listener low-memory self-exit (FR #9236)"
     exc_name = type(exc).__name__ if exc else ""
+    free_s = f"{free_mb:.1f}" if isinstance(free_mb, (int, float)) else "-"
     body = (
         "What: the HTTP accept/serve loop or local self-probe failed; the process "
-        "exits non-zero so the service manager can restart (FR #7618).\n"
+        "exits non-zero so the service manager can restart (FR #7618 / #9236).\n"
         f"Where: bobcallback/jeeves-http host={host or '-'} port={port or 0}\n"
-        f"Evidence: why={why} exc={exc_name} detail={str(detail or '')[:400]}\n"
+        f"Evidence: why={why} exc={exc_name} free_mb={free_s} "
+        f"detail={str(detail or '')[:400]}\n"
         "Fix: inspect memory pressure / accept path; do not leave the port bound but dead.\n"
         "No secrets."
     )
-    if os.environ.get("PYTEST_CURRENT_TEST") and report_fn is None:
-        return {"ok": True, "skipped": True, "reason": "pytest"}
     try:
         import crash_report
+        from datetime import datetime, timezone
 
-        if exc is not None:
-            return crash_report.report_exception(
-                "jeeves",
-                type(exc),
-                exc,
-                exc.__traceback__,
-                repo="SimonBarnett/bobiverse",
-            )
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        sig = f"http-listener-fault|{why}|{host}|{port}|{day}"[:128]
+        # Prefer listener-signed intake so free_mb stays in the body (FR #9236).
+        # Still pass exc details in the body; avoid report_exception's traceback-only sig.
         return crash_report._post_intake(
             title,
             body,
             repo="SimonBarnett/bobiverse",
-            sig=f"http-listener-fault|{why}|{host}|{port}"[:128],
+            sig=sig,
             exe="jeeves",
         )
     except Exception:
@@ -1409,37 +1529,79 @@ def listener_self_probe_tick(
     report_fn: Callable[..., dict[str, Any]] | None = None,
     exit_fn: Callable[[int], None] | None = None,
     path: str = HEALTH_PATH,
+    sleeper: Callable[[float], None] | None = None,
+    defer_box: list[int] | None = None,
 ) -> int:
-    """FR #7618: one self-probe tick. Returns updated fail streak; may call exit_fn(nonzero)."""
+    """FR #7618 / #9236: one self-probe tick. Returns updated fail streak; may exit.
+
+    When free memory is below BOB_CALLBACK_LOW_MEM_MB at the fail threshold, back off
+    (up to BOB_CALLBACK_LOW_MEM_MAX_DEFER times) instead of exiting into a restart loop.
+    ``defer_box`` is an optional mutable ``[defer_count]`` updated in place.
+    """
     url = f"http://{host}:{int(port)}{path}"
+    pause = sleeper or time.sleep
     try:
         doc = probe_listener_local_get(url, float(timeout_s))
         if not doc.get("ok", True):
             raise RuntimeError(f"listener probe not-ok body_keys={list(doc)[:8]}")
+        if defer_box is not None:
+            defer_box[0] = 0
         return 0
     except Exception as exc:  # noqa: BLE001 — probe failure is the signal
         streak = int(fail_streak) + 1
+        free_mb = None
+        with contextlib.suppress(Exception):
+            free_mb = free_memory_mb()
+        free_s = f"{free_mb:.1f}" if isinstance(free_mb, (int, float)) else "-"
         print(
             f"WARN listener-self-probe fail streak={streak}/{max_fails} "
-            f"err={type(exc).__name__}: {exc}",
+            f"err={type(exc).__name__}: {exc} free_mb={free_s}",
             flush=True,
         )
         if streak < max(1, int(max_fails)):
             return streak
+
+        threshold = _low_mem_mb_threshold()
+        defers = int(defer_box[0]) if defer_box else 0
+        max_defer = _low_mem_max_defer()
+        low_mem = (
+            isinstance(free_mb, (int, float))
+            and threshold > 0
+            and float(free_mb) < threshold
+        )
+        if low_mem and defers < max_defer:
+            backoff = _low_mem_backoff_s()
+            print(
+                f"WARN listener-self-probe low-mem defer={defers + 1}/{max_defer} "
+                f"free_mb={free_s} threshold_mb={threshold:g} "
+                f"backoff_s={backoff:g} (FR #9236)",
+                flush=True,
+            )
+            if backoff > 0:
+                with contextlib.suppress(Exception):
+                    pause(backoff)
+            if defer_box is not None:
+                defer_box[0] = defers + 1
+            # Soften streak so the next tick can re-evaluate without immediate exit.
+            return max(0, int(max_fails) - 1)
+
+        why = "self-probe-low-memory" if low_mem else "self-probe"
         try:
             report_http_listener_fault(
-                why="self-probe",
+                why=why,
                 detail=str(exc)[:400],
                 host=host,
                 port=int(port),
                 exc=exc,
+                free_mb=free_mb,
                 report_fn=report_fn,
             )
         except Exception:
             pass
         print(
-            f"ERROR listener-self-probe giving up after {streak} fails; "
-            f"exit={LISTENER_EXIT_CODE} (FR #7618)",
+            f"ERROR listener-self-probe giving up after {streak} fails "
+            f"free_mb={free_s} last_exc={type(exc).__name__}; "
+            f"exit={LISTENER_EXIT_CODE} (FR #7618 / #9236)",
             flush=True,
         )
         if exit_fn is not None:
@@ -1455,23 +1617,25 @@ def serve_forever_guarded(
     report_fn: Callable[[BaseException], None] | None = None,
     exit_fn: Callable[[int], None] | None = None,
 ) -> None:
-    """FR #7618: wrap serve_forever so accept/serve fatals never leave a silent dead listener.
+    """FR #7618 / #9236: wrap serve_forever so accept/serve fatals never leave a silent dead listener.
 
-    On MemoryError or any unexpected exception leaving serve_forever: report, close the
-    socket, and exit non-zero so NSSM / Task Scheduler restarts the process. Clean
+    On MemoryError or any unexpected exception leaving serve_forever: log free_mb, report,
+    close the socket, and exit non-zero so NSSM / Task Scheduler restarts the process. Clean
     shutdown (shutdown_request / KeyboardInterrupt) returns normally.
     """
 
-    def _report(exc: BaseException) -> None:
+    def _report(exc: BaseException, *, free_mb: float | None) -> None:
         if report_fn is not None:
             report_fn(exc)
             return
+        why = "accept-serve-low-memory" if isinstance(exc, MemoryError) else "accept-serve"
         report_http_listener_fault(
-            why="accept-serve",
+            why=why,
             detail=str(exc)[:400],
             host=str(getattr(httpd, "server_address", ("", 0))[0] or ""),
             port=int(getattr(httpd, "server_address", ("", 0))[1] or 0),
             exc=exc,
+            free_mb=free_mb,
         )
 
     def _exit(code: int) -> None:
@@ -1489,12 +1653,17 @@ def serve_forever_guarded(
         except SystemExit:
             raise
         except BaseException as exc:  # noqa: BLE001 — MemoryError must not kill only the thread
+            free_mb = None
+            with contextlib.suppress(Exception):
+                free_mb = free_memory_mb()
+            free_s = f"{free_mb:.1f}" if isinstance(free_mb, (int, float)) else "-"
             print(
-                f"ERROR http accept/serve fatal {type(exc).__name__}: {exc} (FR #7618)",
+                f"ERROR http accept/serve fatal {type(exc).__name__}: {exc} "
+                f"free_mb={free_s} (FR #7618 / #9236)",
                 flush=True,
             )
             try:
-                _report(exc)
+                _report(exc, free_mb=free_mb)
             except Exception:
                 pass
             with contextlib.suppress(Exception):
@@ -1563,6 +1732,8 @@ def _start_health_watchdog(home: Path, host: str, port: int, httpd) -> None:
 
     def _loop() -> None:
         fail_streak = 0
+        # FR #9236: count low-mem deferrals so we back off before crash-looping.
+        defer_box = [0]
         while True:
             try:
                 time.sleep(interval)
@@ -1572,7 +1743,7 @@ def _start_health_watchdog(home: Path, host: str, port: int, httpd) -> None:
                 return
             with contextlib.suppress(Exception):
                 bobreport.break_stale_digest_lock(home)
-            # FR #7618: self-probe with explicit budget; consecutive fails → report + exit.
+            # FR #7618 / #9236: self-probe; consecutive fails → report + exit (or low-mem defer).
             fail_streak = listener_self_probe_tick(
                 host=host,
                 port=int(port),
@@ -1580,6 +1751,7 @@ def _start_health_watchdog(home: Path, host: str, port: int, httpd) -> None:
                 fail_streak=fail_streak,
                 max_fails=max_fails,
                 exit_fn=_exit_unless_stopped,
+                defer_box=defer_box,
             )
             if _httpd_shut_down(httpd):
                 return
@@ -1602,6 +1774,23 @@ def serve(
 ):
     """Blocking listener: public GET digest + validated, secret-free POST report/git/intake/jira."""
     from http.server import ThreadingHTTPServer
+
+    class _BobCallbackHTTPServer(ThreadingHTTPServer):
+        # FR #9238 / #9236: Thread.start failure must not kill serve_forever (FR #7618 exit).
+        def process_request(self, request, client_address):  # noqa: N802 — stdlib API
+            try:
+                return super().process_request(request, client_address)
+            except RuntimeError as exc:
+                msg = str(exc).lower()
+                if "can't start new thread" in msg or "start new thread" in msg:
+                    print(
+                        f"WARN http process_request thread_exhausted peer={client_address}: {exc}",
+                        flush=True,
+                    )
+                    with contextlib.suppress(Exception):
+                        request.close()
+                    return
+                raise
 
     listen_port = resolve_listen_port(int(port))
     # Loud, once: the roster is what Jeeves published (the receiver never asks ChanServ).
@@ -1631,7 +1820,7 @@ def serve(
     # FR #1388: bind :7700 BEFORE drain_pending. drain (webhook replay / intake outbox /
     # GitHub) can block for seconds while chair holds digest.lock — historically left
     # bobcallback.py alive with no LISTEN (SYN_SENT clients).
-    httpd = ThreadingHTTPServer((host, listen_port), handler)
+    httpd = _BobCallbackHTTPServer((host, listen_port), handler)
     _start_health_watchdog(home, host, listen_port, httpd)
 
     def _bg_drain() -> None:
