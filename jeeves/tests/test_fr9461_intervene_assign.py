@@ -151,3 +151,33 @@ def test_fr9461_assign_line_format():
         ia.assign_line("flamingo-1", "SimonBarnett/bobiverse", "MRB", "9446")
         == "PRIVMSG #bobiverse :!assign flamingo-1 SimonBarnett/bobiverse MRB 9446"
     )
+
+def test_fr9461_cli_intervene_dry_run_with_fixture(tmp_path):
+    """Wrapper DryRun must use --intervene-dry-run; --dry-run alone early-exits empty."""
+    import json
+    import subprocess
+
+    fixture = tmp_path / 'report.json'
+    fixture.write_text(json.dumps(_fixture_idle_offerable()), encoding='utf-8')
+    outbox = tmp_path / 'outbox.txt'
+    py = MON / 'intervene_assign.py'
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(py),
+            '--fixture', str(fixture),
+            '--ear-outbox', str(outbox),
+            '--intervene-dry-run',
+            '--allow-fast-pace',
+            '--pace-s', '0',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload.get('dry_run') is True
+    assert payload.get('written_count', 0) == 2
+    assert not outbox.exists()
+

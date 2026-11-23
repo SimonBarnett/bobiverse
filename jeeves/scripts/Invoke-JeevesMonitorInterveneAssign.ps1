@@ -36,7 +36,7 @@ if (-not (Test-Path -LiteralPath $py)) {
     exit 2
 }
 $argv = @()
-if ($DryRun) { $argv += '--intervene-dry-run'; $argv += '--dry-run' }
+if ($DryRun) { $argv += '--intervene-dry-run' }  # plan-only; never pass --dry-run (that early-exits empty without --fixture)
 if ($ForceNeedsHuman) { $argv += '--force-needs-human' }
 if ($TruncateOutbox) { $argv += '--truncate-outbox' }
 if ($EarOutbox) { $argv += @('--ear-outbox', $EarOutbox) }
