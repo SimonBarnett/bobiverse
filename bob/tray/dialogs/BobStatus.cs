@@ -393,6 +393,7 @@ namespace BobDialogs
             card.AssetsRoot = root ?? "";
             Text = "Bobiverse status";
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+            // FR #9154: do not activate — TipForm ContextMenuStrip closes on AppFocusChange.
             BackColor = Color.FromArgb(22, 27, 34);
             Icon ico = Common.AppIcon(); if (ico != null) Icon = ico;
             card.Dock = DockStyle.Fill; Controls.Add(card);
@@ -544,9 +545,21 @@ namespace BobDialogs
             }
         }
 
+        // FR #9154: show without activation so TipForm ContextMenuStrip is not closed via AppFocusChange.
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
         protected override CreateParams CreateParams
         {
-            get { CreateParams cp = base.CreateParams; cp.ClassStyle |= 0x20000; /* CS_DROPSHADOW */ return cp; }
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ClassStyle |= 0x20000; /* CS_DROPSHADOW */
+                cp.ExStyle |= 0x08000000; /* WS_EX_NOACTIVATE FR #9154 */
+                return cp;
+            }
         }
     }
 

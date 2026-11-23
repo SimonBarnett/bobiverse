@@ -2838,8 +2838,50 @@ function Hide-BobTrayCard {
     Clear-BobNativeTip
 }
 
+function Test-BobTrayMenuShouldCancelClose {
+    <#
+    FR #9154: ContextMenuStrip closes with AppFocusChange when bob-status / tip
+    TOPMOST steals focus. Cancel that reason only; ItemClicked / AppClickedOutside /
+    Keyboard still close the menu.
+    #>
+    param($CloseReason)
+    $name = if ($CloseReason -is [Enum]) { [string]$CloseReason } else { [string]$CloseReason }
+    return ($name -eq 'AppFocusChange')
+}
+
+function Get-BobTrayForegroundProcessLog {
+    # FR #9154: optional diag on MenuClosing (hwnd / pid / name). Best-effort.
+    try {
+        Add-Type -Namespace BobTrayFg -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+'@ -ErrorAction SilentlyContinue | Out-Null
+        $h = [BobTrayFg.Native]::GetForegroundWindow()
+        if ($h -eq [IntPtr]::Zero) { return 'fg=none' }
+        $fgPid = [uint32]0
+        [void][BobTrayFg.Native]::GetWindowThreadProcessId($h, [ref]$fgPid)
+        $n = '?'
+        try { $n = (Get-Process -Id ([int]$fgPid) -ErrorAction Stop).ProcessName } catch { }
+        return ('fg hwnd={0} pid={1} name={2}' -f $h, $fgPid, $n)
+    } catch {
+        return ('fg error={0}' -f $_.Exception.Message)
+    }
+}
+
+function Close-BobTrayStatusWindows {
+    # FR #9154: drop a focus-stealing bob-status before the context menu opens.
+    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+        try { [void]$pr.CloseMainWindow() } catch { }
+    }
+}
+
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
+    # FR #9154: do not launch status/tip while the NotifyIcon menu is open (focus steal).
+    if ($script:bobTrayMenuOpen) {
+        Write-TrayLog 'status skipped: menu open (FR #9154)'
+        return
+    }
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
     # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
     if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
@@ -3870,6 +3912,11 @@ function Show-BobTrayCard {
     try {
         # Click / Status only. No hover events. Stay parked until X.
         if ($Reason -ne 'click') { return }
+        # FR #9154: tip ShowParkedAt TOPMOST must not run while the menu is open.
+        if ($script:bobTrayMenuOpen) {
+            Write-TrayLog 'tip skipped: menu open (FR #9154)'
+            return
+        }
         $script:cardClosed = $false
         if (-not (Test-BobTrayTipAlive)) {
             Initialize-BobTrayTipForm
@@ -4293,6 +4340,39 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
+# FR #9154: keep ContextMenuStrip open when bob-status/tip steals focus (AppFocusChange).
+$script:bobTrayMenuOpen = $false
+$menu.Add_Opening({
+        $script:bobTrayMenuOpen = $true
+        Write-TrayLog 'click-diag MenuOpening'
+        try { Hide-BobTrayCard } catch { }
+        try { Close-BobTrayStatusWindows } catch { }
+    })
+$menu.Add_Opened({ Write-TrayLog 'click-diag MenuOpened' })
+$menu.Add_Closing({
+        param($s, $e)
+        $reason = $e.CloseReason
+        Write-TrayLog ('click-diag MenuClosing reason={0}' -f $reason)
+        if (Test-BobTrayMenuShouldCancelClose -CloseReason $reason) {
+            $e.Cancel = $true
+            $fg = ''
+            try { $fg = Get-BobTrayForegroundProcessLog } catch { $fg = '' }
+            Write-TrayLog ('click-diag MenuClosingCancelled {0}' -f $fg)
+        }
+    })
+$menu.Add_Closed({
+        $script:bobTrayMenuOpen = $false
+        Write-TrayLog 'click-diag MenuClosed'
+    })
+$notify.Add_MouseDown({
+        param($s, $e)
+        Write-TrayLog ('click-diag MouseDown {0}' -f $e.Button)
+    })
+$notify.Add_MouseUp({
+        param($s, $e)
+        Write-TrayLog ('click-diag MouseUp {0}' -f $e.Button)
+    })
+
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
@@ -4372,6 +4452,7 @@ $miRestart.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({ Invoke-BobTrayExit })
 $notify.Add_MouseClick({
         param($s, $e)
+        Write-TrayLog ('click-diag MouseClick {0}' -f $e.Button)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
             Invoke-BobTrayStatus
