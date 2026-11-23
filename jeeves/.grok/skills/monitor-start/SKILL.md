@@ -69,7 +69,7 @@ Title: short delay symptom. Body: what / where / evidence (script JSON / exit) /
 
 Monitor may run on a worker box (e.g. redqueen) that has no local `~/.jeeves/queue.json`
 and no ircJeeves/BobCallback services. Those local probes **soft-pass** when live
-`GET https://irc.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
+`GET https://bob.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
 `non_chair_overlay` in the JSON. Prefer the ionos chair host for local service truth.
 Start-JeevesMonitor warns when the local queue file is absent; it does not refuse.
 

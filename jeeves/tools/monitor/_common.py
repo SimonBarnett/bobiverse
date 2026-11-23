@@ -310,7 +310,7 @@ def row_has_pull_url(row: dict) -> bool:
     return bool(str(row.get("pr_id") or row.get("pr") or "").strip())
 # --- FR #8579: non-chair monitor overlay (live /bob/v1/report) -----------------
 
-DEFAULT_LIVE_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_LIVE_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 LIVE_REPORT_USER_AGENT = "Bobiverse-jeeves-monitor/1.0"
 LIVE_REPORT_MAX_AGE_SEC = 900  # align with stale_digest default
 
