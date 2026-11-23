@@ -434,6 +434,12 @@ namespace BobDialogs
         // FR #6429: childEnv is applied only to the new seat process (never the tray / tray-env.json).
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error)
         {
+            return Launch(root, mode, machine, agent, childEnv, out error, "");
+        }
+
+        // FR #8679 / BOB-37: cwdOverride (e.g. J:\ for Agents > Jeeves) wins over describe-launch cwd.
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride)
+        {
             error = "";
             if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
             {
@@ -482,7 +488,11 @@ namespace BobDialogs
                 try { File.Delete(old); } catch { }
             }
 
-            if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
+            if (!string.IsNullOrEmpty(cwdOverride))
+            {
+                wd = cwdOverride;
+            }
+            else if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
             {
                 wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
                 if (!Directory.Exists(wd)) wd = root;
@@ -1078,8 +1088,12 @@ namespace BobDialogs
                 }
                 catch { }
 
+                // FR #8683 / BOB-39: lazy skill DAG on J: skills (resolve/get_skill; not eager full load).
+                TrayLifecycle.Write("jeeves-dag", "lazy", JeevesLazyDag.DryRunLine());
+                // FR #8679 / BOB-37: cwd is J: (mapped to Ergo ai\jeeves). Dry-run prints cwd J:.
+                TrayLifecycle.Write("jeeves", "cwd", "cwd J:");
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok");
+                StartWorker("agent", "grok", null, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
@@ -2090,10 +2104,15 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
-            StartWorker(mode, agent, null, "");
+            StartWorker(mode, agent, null, "", "");
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
+        {
+            StartWorker(mode, agent, childEnv, opencodeSlot, "");
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
@@ -2114,8 +2133,25 @@ namespace BobDialogs
                 TrayLifecycle.Write("marchhare-cursor-gate", "remaining", "0", "action", "dialog-quit");
                 return;
             }
+            // FR #8733 / BOB-28: Workers > Open Code — dialog + quit when free and paid are both exhausted.
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase)
+                && string.Equals((agent ?? "").Trim(), "opencode", StringComparison.OrdinalIgnoreCase)
+                && OpenCodePaidExhaustedGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE")))
+            {
+                try
+                {
+                    MessageBox.Show(
+                        OpenCodePaidExhaustedGate.Body,
+                        OpenCodePaidExhaustedGate.Title,
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                catch { }
+                TrayLifecycle.Write("workers-opencode", "action", "dialog-quit", "reason", "paid-exhausted");
+                return;
+            }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err);
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;
@@ -2738,6 +2774,15 @@ namespace BobDialogs
             {
                 bool exhausted = MarchHareCursorGate.IsExhausted(root);
                 File.WriteAllText(marchhareGateOut, MarchHareCursorGate.DumpStatusJson(root), new UTF8Encoding(false));
+                return exhausted ? 2 : 0;
+            }
+            // FR #8733 / BOB-28: headless free+paid exhausted check (fixture free=0 paid=0).
+            string ocPaidGateOut = Common.Arg(args, "--check-opencode-paid-exhausted");
+            if (ocPaidGateOut.Length > 0)
+            {
+                string fuelEnv = Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE");
+                bool exhausted = OpenCodePaidExhaustedGate.ShouldQuit(root, fuelEnv);
+                File.WriteAllText(ocPaidGateOut, OpenCodePaidExhaustedGate.DumpStatusJson(root, fuelEnv), new UTF8Encoding(false));
                 return exhausted ? 2 : 0;
             }
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.

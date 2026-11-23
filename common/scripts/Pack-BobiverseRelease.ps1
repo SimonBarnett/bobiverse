@@ -274,7 +274,10 @@ function Stage-Product([string]$Name) {
     }
     Write-Host ("INFO $Name staged docs: {0}" -f (($docsToCopy | Sort-Object) -join ', '))
 
-    # Skills: product skill + harvest only (do not ship sibling product skills)
+    # Skills: product skill + harvest only (do not ship sibling product skills).
+    # FR #9180: staged skills come from the pack RepoRoot checkout (merged main /
+    # release tip). Harvest lessons reach MSI only after their lesson(<book>) PR
+    # merges --- agent harvest must owe that skill PR, not receipt-only.
     $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     function Find-RepoSkill([string]$n) { foreach ($sd in $skillsDirs) { $c = Join-Path $sd $n; if (Test-Path -LiteralPath $c) { return $c } } return (Join-Path $skillsDirs[0] $n) }
     $skillsDest = Join-Path $stage '.grok\skills'
@@ -310,6 +313,13 @@ function Stage-Product([string]$Name) {
     if (Test-Path -LiteralPath $harvestAliasSrc) {
         New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest-agent-skills') | Out-Null
         Copy-Item -Path (Join-Path $harvestAliasSrc '*') -Destination (Join-Path $skillsDest 'harvest-agent-skills') -Recurse -Force
+    }
+    # FR #9180: optional pin --- staged harvest book must include SKILL.md from merged tip.
+    $stagedHarvestSkill = Join-Path $skillsDest 'harvest\SKILL.md'
+    if (-not (Test-Path -LiteralPath $stagedHarvestSkill -PathType Leaf)) {
+        Write-Host ("WARN FR #9180 $Name stage missing harvest/SKILL.md under {0} (live skills come from merged bobiverse .grok/skills)" -f $skillsDest)
+    } else {
+        Write-Host "INFO FR #9180 $Name staged harvest/SKILL.md (merged skill book present)"
     }
 
     # Bobiverse systray icon: every product's Start Menu shortcuts use it (bob also gets it via the tray payload).
