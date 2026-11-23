@@ -39,6 +39,7 @@ CHECKS = (
     "ticket_closure",
     "depends_on",
     "fr_digest",
+    "github_rate_limit",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -59,6 +60,7 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorTicketClosure.ps1",
     "Test-JeevesMonitorDependsOn.ps1",
     "Test-JeevesMonitorFrDigest.ps1",
+    "Test-JeevesMonitorGithubRateLimit.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )

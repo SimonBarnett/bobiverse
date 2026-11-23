@@ -106,6 +106,9 @@ GIT_EVENTS = frozenset(
 )
 # Subscribed but not applied (CI state comes from check_run + resync).
 GIT_IGNORED_EVENTS = frozenset({"workflow_run"})
+# FR #9104: under local intake rate limit, ack noisy CI storms with 204 (no GitHub retry)
+# instead of 429. push / issues / PR keep 429 so GitHub backs off those.
+GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite"})
 GIT_ERROR_REASONS = frozenset(
     {
         "missing signature",
@@ -530,6 +533,13 @@ def handle_git_webhook(
         return 204, b""
 
     if rate is not None and not rate.allow("git:" + full.lower()):
+        # FR #9104: check_run/check_suite storms → 204 ignore (GitHub does not retry);
+        # keep 429 for push/PR/issues so delivery backs off.
+        if ev in GIT_RATE_DEFER_EVENTS:
+            _log_git_ignore(
+                "rate deferred", event=event, repo=full[:80], delivery=delivery
+            )
+            return 204, b""
         _log_git_reject("rate limited", event=event, repo=full[:80], delivery=delivery)
         return _git_error("rate limited", 429)
 

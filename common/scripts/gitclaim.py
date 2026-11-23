@@ -223,15 +223,17 @@ SKIP_FR_LABELS_IN_TEXT = frozenset(
     not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
 )
 
-# FR #3928: PR hold labels — never offer MRB while present (intake/operator stamp).
+# FR #3928 / #9082: PR merge/offer holds. ``hold`` / ``on-hold`` are issues-only
+# (never stamp them on pull requests). PR gate uses do-not-merge / wip labels,
+# owner HOLD body stamps, and linked-issue hold (fr_hold_reason) instead.
 HOLD_MRB_LABELS = frozenset(
     {
-        "on-hold",
-        "hold",
         "do-not-merge",
         "wip",
     }
 )
+# FR #9082: forbidden on pull_request targets (intake must strip; monitor alarms).
+ISSUES_ONLY_HOLD_LABELS = frozenset({"hold", "on-hold"})
 # Title-only free hold cues (short titles). Not applied to PR bodies — lesson
 # prose such as "do not merge the thinner duplicate" must not count as a hold
 # (FR #4545; class of a-search#3627). Body uses line-anchored stamps below.
@@ -257,16 +259,41 @@ FR_HOLD_BODY_RE = re.compile(
 )
 
 
+def strip_issues_only_hold_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """FR #9082: drop ``hold`` / ``on-hold`` from a label list destined for a PR."""
+    out: list[str] = []
+    for x in labels or []:
+        s = str(x).strip()
+        if not s:
+            continue
+        if s.lower() in ISSUES_ONLY_HOLD_LABELS:
+            continue
+        out.append(s)
+    return out
+
+
+def pr_forbidden_hold_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """FR #9082: which issues-only hold labels are present on a PR (sorted)."""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    return sorted(labs & ISSUES_ONLY_HOLD_LABELS)
+
+
 def pr_hold_reason(
     *,
     title: str = "",
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> str | None:
-    """FR #3928 / #4545: why an open PR must not be offered/merged as MRB, else None.
+    """FR #3928 / #4545 / #9082: why an open PR must not be offered/merged as MRB.
 
-    Hold labels always count. Body hold text only matches an owner stamp line
-    (``On hold:`` / ``HOLD:``), not free prose. Title still scans short hold cues.
+    ``do-not-merge`` / ``wip`` labels still count. ``hold`` / ``on-hold`` on a PR
+    do **not** (issues-only; see ``pr_forbidden_hold_labels`` / monitor). Body
+    hold text only matches an owner stamp line (``On hold:`` / ``HOLD:``).
+    Title still scans short hold cues.
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = sorted(labs & HOLD_MRB_LABELS)
