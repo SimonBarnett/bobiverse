@@ -582,9 +582,11 @@ def row_fr_depends_blocked_reason(
 
 
 # BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
+# BOB-D5 / FR #8809: fail closed on malformed tokens / lookup Unknown.
 # BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
 # private extractor so D3 ships with Depends-on: (none) before those land.
 DEPENDS_OPEN_REASON = "depends-open"
+DEPENDS_UNRESOLVED_REASON = "depends-unresolved"
 # _QUALIFIED_DEPENDS_ISSUE_RE defined with FR #8754 Depends-on regexes above.
 _RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
 _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
@@ -636,6 +638,46 @@ def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
     return out
 
 
+def _row_depends_on_has_bad_ref(row: dict) -> bool:
+    """BOB-D5: True when a Depends-on line has a token that is not ``#N`` / ``owner/repo#N``.
+
+    ``(none)`` (whole value) and empty lines are fine. Relative ``#N`` without a
+    home ``row["repo"]`` counts as unresolved. Self-references are ignored (not bad).
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return False
+    home_repo = _repo_key(str(row.get("repo") or ""))
+    self_num_raw = str(row.get("id") or "").strip().lstrip("#")
+    try:
+        self_num = int(self_num_raw) if self_num_raw else None
+    except ValueError:
+        self_num = None
+    blob = f"{str(row.get('title') or '')}\n{str(row.get('body') or '')}"
+    for m in _DEPENDS_ON_LINE_RE.finditer(blob):
+        value = (m.group(1) or "").strip()
+        if not value or _NONE_DEPENDS_VALUE_RE.match(value):
+            continue
+        for raw in re.split(r"[,;\s]+", value):
+            tok = raw.strip().strip("`*")
+            if not tok:
+                continue
+            qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
+            if qm:
+                pair = (_repo_key(qm.group(1)), int(qm.group(2)))
+                if self_num is not None and pair[0] == home_repo and pair[1] == self_num:
+                    continue
+                continue
+            rm = _RELATIVE_DEPENDS_ISSUE_RE.match(tok)
+            if rm:
+                if not home_repo:
+                    return True
+                if self_num is not None and int(rm.group(1)) == self_num:
+                    continue
+                continue
+            return True
+    return False
+
+
 def open_fr_issue_keys(doc: dict) -> set[tuple[str, int]]:
     """Open FR ``(lower repo, number)`` keys from unaccepted + accepted (not done)."""
     keys: set[tuple[str, int]] = set()
@@ -667,13 +709,17 @@ def row_depends_open_reason(
     *,
     issue_open=None,
 ) -> str | None:
-    """BOB-D3 / FR #8807: ``depends-open`` when any Depends-on issue is OPEN, else None.
+    """BOB-D3 / BOB-D5: ``depends-open`` / ``depends-unresolved`` / None.
 
-    Blocks only on positive OPEN evidence (queue key set and/or ``issue_open`` True).
-    Unknown / ``GitHubLookupUnknown`` / missing stamp / ``(none)`` do not block (D5).
+    - ``depends-open`` (FR #8807): any Depends-on issue is positively OPEN.
+    - ``depends-unresolved`` (FR #8809): malformed Depends-on token, or
+      ``issue_open`` raises (``GitHubLookupUnknown`` / budget / network).
+    - Empty stamp / ``(none)`` / absent ref with no checker: do not block.
     """
     if _canon_task(row) != "FR":
         return None
+    if _row_depends_on_has_bad_ref(row):
+        return DEPENDS_UNRESOLVED_REASON
     refs = _row_depends_on_issue_refs(row)
     if not refs:
         return None
@@ -687,8 +733,8 @@ def row_depends_open_reason(
             if bool(issue_open(repo, str(num))):
                 return DEPENDS_OPEN_REASON
         except Exception:
-            # Unknown / budget / network: fail open (D5 owns unresolved).
-            continue
+            # Unknown / budget / network: fail closed (BOB-D5 / FR #8809).
+            return DEPENDS_UNRESOLVED_REASON
     return None
 
 
@@ -8427,12 +8473,13 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if me and to_c and to_c != me_l:
                     _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
-            # BOB-D3 / FR #8807: local depends-open (no checker on empty-offer path).
-            if _canon_task(cand) == "FR" and row_depends_open_reason(
-                cand, open_dep_keys_summary
-            ):
-                _record_empty_skip(r, DEPENDS_OPEN_REASON)
-                continue
+            # BOB-D3 / BOB-D5: local depends-open / depends-unresolved
+            # (no checker on empty-offer path; bad refs still fail closed).
+            if _canon_task(cand) == "FR":
+                dep_reason = row_depends_open_reason(cand, open_dep_keys_summary)
+                if dep_reason:
+                    _record_empty_skip(r, dep_reason)
+                    continue
             offerable += 1
         out["skips"] = skip_log
         out["out_of_focus"] = out_of_focus
