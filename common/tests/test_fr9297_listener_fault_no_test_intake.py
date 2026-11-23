@@ -1,8 +1,9 @@
 """FR #9297: listener-fault intake must not file from pytest or unit-test port=9.
 
 #9297 / #9298 were filed with host=127.0.0.1 port=9 free_mb fingerprints from the
-FR #9236 / #7618 self-probe unit suite. Guard crash_report._post_intake under
-PYTEST_CURRENT_TEST and skip report_http_listener_fault for the reserved test port.
+FR #9236 / #7618 self-probe unit suite. Guard report_http_listener_fault under PYTEST_CURRENT_TEST and skip the reserved
+unit-test port (port 9). crash_report._post_intake stays callable under pytest for
+opt-out/dedupe unit tests (FR #3291 / #5050).
 """
 from __future__ import annotations
 
@@ -13,25 +14,25 @@ import bobcallback
 import crash_report
 
 
-def test_fr9297_post_intake_skips_under_pytest(monkeypatch):
+def test_fr9297_listener_fault_skips_under_pytest(monkeypatch):
     assert os.environ.get("PYTEST_CURRENT_TEST"), "must run under pytest"
-    calls: list[object] = []
+    posts: list[object] = []
 
-    def boom(*_a, **_k):
-        calls.append(1)
-        raise AssertionError("urlopen must not run under pytest")
+    def capture_post(title, body, *, repo, sig, exe):
+        posts.append(1)
+        return {"ok": True}
 
-    monkeypatch.setattr(crash_report.urllib.request, "urlopen", boom)
-    out = crash_report._post_intake(
-        "bug: should not file",
-        "body",
-        repo="SimonBarnett/bobiverse",
-        sig="fr9297-pytest-skip",
-        exe="jeeves",
+    monkeypatch.setattr(crash_report, "_post_intake", capture_post)
+    out = bobcallback.report_http_listener_fault(
+        why="self-probe",
+        detail="refused",
+        host="127.0.0.1",
+        port=7700,
+        exc=None,
     )
     assert out.get("skipped") is True
     assert out.get("reason") == "pytest"
-    assert calls == []
+    assert posts == []
 
 
 def test_fr9297_listener_fault_skips_test_port_without_report_fn(monkeypatch):

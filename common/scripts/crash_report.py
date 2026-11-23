@@ -558,10 +558,9 @@ def _write_spool(payload: dict[str, Any]) -> Path:
 
 
 def _post_intake(title: str, body: str, *, repo: str, sig: str, exe: str) -> dict[str, Any]:
-    # FR #9297: never hit live intake from a pytest process (listener self-probe
-    # unit suite filed #9297/#9298 with port=9 fingerprints).
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return {"ok": True, "skipped": True, "reason": "pytest"}
+    # FR #9297 storm is stopped in bobcallback.report_http_listener_fault (pytest +
+    # UNIT_TEST_LISTENER_PORTS). Do not blanket-skip here: crash_report unit tests
+    # (FR #3291 / #5050) call _post_intake under PYTEST_CURRENT_TEST with mocked urlopen.
     policy = load_crash_report_policy()
     if not policy.send:
         raise RuntimeError("crash-report disabled")
