@@ -222,14 +222,16 @@ function Stop-BobTrayProcessesProtectingSeats {
     try { $procs = @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue) } catch { $procs = @() }
     foreach ($pr in $procs) {
         $out.Examined++
-        $pid = 0
-        try { $pid = [int]$pr.Id } catch { continue }
-        if (Test-BobTrayProcessHasSeatChildren -ParentProcessId $pid) {
+        # Never assign $pid / $PID --- automatic read-only in WinPS 5.1 (MRB #9206 FAIL).
+        $trayPid = 0
+        try { $trayPid = [int]$pr.Id } catch { continue }
+        if ($trayPid -le 0) { continue }
+        if (Test-BobTrayProcessHasSeatChildren -ParentProcessId $trayPid) {
             $out.SkippedForSeats++
             continue
         }
         try {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $trayPid -Force -ErrorAction SilentlyContinue
             $out.Killed++
         } catch { }
     }

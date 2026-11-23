@@ -34,6 +34,16 @@ def test_fr9205_source_pins():
     assert "function Stop-BobTrayProcessesProtectingSeats" in life
     assert "FR #9205" in life
     assert "bob-worker" in life
+    # MRB #9206: Stop-BobTrayProcessesProtectingSeats must not assign automatic $pid/$PID.
+    fn = life[
+        life.index("function Stop-BobTrayProcessesProtectingSeats") : life.index(
+            "function Stop-BobTrayProcessesProtectingSeats"
+        )
+        + 1800
+    ]
+    assert "$trayPid" in fn or "$procId" in fn or "$killPid" in fn
+    assert "$pid = 0" not in fn
+    assert "$pid = [int]" not in fn
     ensure = _txt(ENSURE)
     assert "FR #9205" in ensure
     assert "Stop-BobTrayProcessesProtectingSeats" in ensure
