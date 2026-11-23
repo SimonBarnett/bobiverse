@@ -68,7 +68,7 @@ Import-Module '{psd1}' -Force -DisableNameChecking
 & (Get-Module BobBridge) {{
   $work = [pscustomobject]@{{ X = 0; Y = 0; Width = 1920; Height = 1080 }}
   $cursor = [pscustomobject]@{{ X = 400; Y = 400 }}
-  # Left empty / missing X — Width and Height present (UiDiag: iconRect=,-, w=32 h=48).
+  # Left empty / missing X - Width and Height present (UiDiag: iconRect=,-, w=32 h=48).
   $bad = [pscustomobject]@{{ Left = ''; Top = ''; Width = 32; Height = 48 }}
   $conv = ConvertTo-BobTrayRect $bad
   Write-Output ('convNull=' + ($null -eq $conv))
