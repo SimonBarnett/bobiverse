@@ -587,6 +587,25 @@ if ($Product -eq 'jeeves') {
             Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
         }
     }
+    # FR #9435: force-copy Invoke-JeevesMonitorCheck.ps1 so Sync timeout/skip lands on
+    # drive-root J:\scripts (class of #9350 reopen: monitor force ran, wrapper stayed in-process).
+    $invFrom = Get-BobiverseRepoPath -Root $clone -Rel 'scripts\Invoke-JeevesMonitorCheck.ps1'
+    if (-not (Test-Path -LiteralPath $invFrom)) {
+        $invFrom = Get-BobiverseRepoPath -Root $clone -Rel 'jeeves\scripts\Invoke-JeevesMonitorCheck.ps1'
+    }
+    $invDst = Join-Path $InstallRoot 'scripts\Invoke-JeevesMonitorCheck.ps1'
+    if (Test-Path -LiteralPath $invFrom) {
+        $invFromFull = [string](Resolve-Path -LiteralPath $invFrom).Path
+        $invDstFull = $invDst
+        if (Test-Path -LiteralPath $invDst) {
+            $invDstFull = [string](Resolve-Path -LiteralPath $invDst).Path
+        }
+        if (-not [string]::Equals($invFromFull, $invDstFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $invDst) | Out-Null
+            Copy-Item -LiteralPath $invFrom -Destination $invDst -Force
+            Write-Host 'INFO sync-invoke-monitor-check-force FR #9435'
+        }
+    }
 }
 
 # t828u: compile the Acknowledge/Status dialog exes into <install>\tools when missing or older than their sources (csc.exe is in-box on Windows;

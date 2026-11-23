@@ -1050,21 +1050,8 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
-            // FR #8689 / BOB-48: Plan menu uses the skills-visionary GANTT asset, not a generic icon.
-            // Install sync lays tray assets at <install>\assets\ (same as bob-systray / menu-favicons).
-            // Repo checkout keeps bob\tray\assets\; try install path first.
-            string planGantt = Path.Combine(root, "assets", "plan-gantt.ico");
-            if (!File.Exists(planGantt))
-                planGantt = Path.Combine(root, "bob", "tray", "assets", "plan-gantt.ico");
-            TrayLifecycle.Write("plan", "action", "gantt icon", "path", planGantt);
-            try
-            {
-                if (File.Exists(planGantt)) miPlan.Image = new Icon(planGantt, 16, 16).ToBitmap();
-            }
-            catch (Exception ex)
-            {
-                TrayLifecycle.Write("plan", "action", "gantt icon failed", "error", ex.Message);
-            }
+            // FR #8689 / BOB-48 + FR #9267: Plan GANTT from install assets\ (repo bob\tray\assets\ fallback).
+            TryApplyTrayMenuIcon(miPlan, root, "plan-gantt.ico", "plan");
             miPlan.Click += delegate {
                 // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
                 string fuel = PlanFuelPath();
@@ -1079,19 +1066,25 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
-            // FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
-            string priorityIco = Path.Combine(root, "vendor\\priority\\priority.ico");
+            // FR #8694 / BOB-54 + FR #9267: vendor\priority\priority.ico, else assets\priority.ico.
+            string priorityIco = Path.Combine(root, "vendor", "priority", "priority.ico");
+            if (!File.Exists(priorityIco))
+                priorityIco = ResolveTrayMenuIconPath(root, "priority.ico");
             if (File.Exists(priorityIco))
             {
                 try
                 {
                     using (Icon ico = new Icon(priorityIco)) { miPriority.Image = ico.ToBitmap(); }
-                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", "vendor/priority/priority.ico");
+                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", priorityIco);
                 }
                 catch (Exception ex)
                 {
                     TrayLifecycle.Write("priority", "action", "priority-icon failed", "error", ex.Message);
                 }
+            }
+            else
+            {
+                TrayLifecycle.Write("priority", "action", "menu-icon MISSING", "path", priorityIco, "file", "priority.ico");
             }
             // FR #8699 / BOB-50 start stays the first child. FR #8695 / BOB-53 adds Configure MCP.
             MenuItems.Add("Priority");
@@ -1183,16 +1176,7 @@ namespace BobDialogs
             menu.Items.Add(miWorkers);
             Item("Weights", delegate { ShowWeights(); });
             Item("About", delegate { Acknowledge(); ShowAbout(); });
-            // FR #7669: show the live seat target. The value is bridge config.json; no tray restart.
-            ToolStripMenuItem miSeats = new ToolStripMenuItem("Seats: on");
-            miSeats.Enabled = false;
-            menu.Items.Add(miSeats);
-            MenuItems.Add("Seats: on");
-            menu.Opening += delegate
-            {
-                miSeats.Text = WorkerLauncher.SeatsOff() ? "Seats: off (seat target 0)" : "Seats: on";
-            };
-            Item("Open log", delegate { OpenLog(); });
+            // FR #9261 / BOB-TRAY-UI-01: no top-level Seats: or Open log (About Show logs opens the tray log).
             // FR #6309: TipForm masked OpenCode key set/select/remove.
             ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");
             MenuItems.Add("OpenCode keys");
@@ -1812,7 +1796,7 @@ namespace BobDialogs
             parent.DropDownItems.Clear();
             // FR #6301: start entries carry no fuel/quota state text.
             // FR #6429: OpenCode is a free/paid model submenu (replaces the FR #6301 flat OpenCode row).
-            AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
+            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/Open Code only.
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
             AddOpencodeModelSubmenu(parent, true, record);
@@ -1914,6 +1898,46 @@ namespace BobDialogs
             return Path.Combine(installRoot ?? "", "assets", "menu-favicons", "cursor.com.ico");
         }
 
+        // FR #9267 / BOB-TRAY-UI-07: install sync lays tray glyphs at <install>\assets\;
+        // repo checkout keeps bob\tray\assets\. Prefer install path (same as Plan / Watch-BobTray).
+        internal static string ResolveTrayMenuIconPath(string installRoot, string fileName)
+        {
+            string name = (fileName ?? "").Trim();
+            if (name.Length == 0) return "";
+            string rootPath = installRoot ?? "";
+            string install = Path.Combine(rootPath, "assets", name);
+            if (File.Exists(install)) return install;
+            string repo = Path.Combine(rootPath, "bob", "tray", "assets", name);
+            if (File.Exists(repo)) return repo;
+            return install;
+        }
+
+        internal static bool TryApplyTrayMenuIcon(ToolStripMenuItem mi, string installRoot, string fileName, string logKey)
+        {
+            if (mi == null) return false;
+            string p = ResolveTrayMenuIconPath(installRoot, fileName);
+            bool ok = false;
+            try
+            {
+                if (p.Length > 0 && File.Exists(p))
+                {
+                    using (Icon ico = new Icon(p, 16, 16))
+                        mi.Image = ico.ToBitmap();
+                    ok = mi.Image != null;
+                }
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write(logKey, "action", "menu-icon failed", "path", p, "error", ex.Message);
+                ok = false;
+            }
+            if (ok)
+                TrayLifecycle.Write(logKey, "action", "menu-icon", "path", p, "ok", "1");
+            else
+                TrayLifecycle.Write(logKey, "action", "menu-icon MISSING", "path", p, "file", fileName ?? "", "ok", "0");
+            return ok;
+        }
+
         void ApplyWorkerFavicon(ToolStripMenuItem mi, string id)
         {
             string p = WorkerFaviconPath(root, id);
@@ -1939,17 +1963,9 @@ namespace BobDialogs
             mi.Enabled = enabled;
             if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
             {
-                // FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon, not a generic icon.
-                string grokIcon = Path.Combine(root, "bob", "tray", "assets", "grok-favicon.ico");
-                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "path", grokIcon, "source", "https://grok.com/images/favicon.ico");
-                try
-                {
-                    if (File.Exists(grokIcon)) mi.Image = new Icon(grokIcon, 16, 16).ToBitmap();
-                }
-                catch (Exception ex)
-                {
-                    TrayLifecycle.Write("workers-grok", "action", "grok favicon failed", "error", ex.Message);
-                }
+                // FR #8723 / BOB-19 + FR #9267: grok.com favicon from install assets\.
+                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "source", "https://grok.com/images/favicon.ico");
+                TryApplyTrayMenuIcon(mi, root, "grok-favicon.ico", "workers-grok");
             }
             mi.Click += OnAgentChoiceClick;
             ApplyWorkerFavicon(mi, id);
@@ -1963,17 +1979,9 @@ namespace BobDialogs
             // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
             ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
-            // FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
-            string ocIcon = Path.Combine(root, "bob", "tray", "assets", "opencode-favicon.ico");
-            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "path", ocIcon, "source", "https://opencode.ai/favicon-v3.ico");
-            try
-            {
-                if (File.Exists(ocIcon)) oc.Image = new Icon(ocIcon, 16, 16).ToBitmap();
-            }
-            catch (Exception ex)
-            {
-                TrayLifecycle.Write("workers-opencode", "action", "opencode favicon failed", "error", ex.Message);
-            }
+            // FR #8728 / BOB-31 + FR #9267: opencode.ai favicon from install assets\.
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "source", "https://opencode.ai/favicon-v3.ico");
+            TryApplyTrayMenuIcon(oc, root, "opencode-favicon.ico", "workers-opencode");
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
@@ -2172,7 +2180,7 @@ namespace BobDialogs
             {
                 parent.DropDownItems.Clear();
                 // FR #7189: timeout/error keeps rows enabled. Only Unsupported / missing exe greys.
-                AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
+                // FR #9262 / BOB-TRAY-UI-02: no Automatic/auto fallback row.
                 bool grey = (err ?? "").IndexOf("no --list-agents", StringComparison.OrdinalIgnoreCase) >= 0
                     || (err ?? "").IndexOf("bob-worker.exe not found", StringComparison.OrdinalIgnoreCase) >= 0
                     || (err ?? "") == WorkerLauncher.RebuildListReason
@@ -2193,6 +2201,8 @@ namespace BobDialogs
                 string reason = Common.Str(row, "reason");
                 if (!available && reason.Length > 0 && id != "auto") label = label + " - " + reason;
                 if (id.Length == 0) continue;
+                // FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu skips it.
+                if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
                 {
                     AddOpencodeModelSubmenu(parent, available, false);
@@ -3007,6 +3017,13 @@ namespace BobDialogs
             if (dumpWeightsCols.Length > 0)
             {
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
+                return 0;
+            }
+            // FR #9266 / BOB-TRAY-UI-06: exit-before-UI Refresh models control evidence.
+            string dumpWeightsRefresh = Common.Arg(args, "--dump-weights-refresh");
+            if (dumpWeightsRefresh.Length > 0)
+            {
+                File.WriteAllText(dumpWeightsRefresh, WeightsForm.DumpRefreshButton(), new UTF8Encoding(false));
                 return 0;
             }
             // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).

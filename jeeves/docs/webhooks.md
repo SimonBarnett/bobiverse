@@ -105,10 +105,19 @@ curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: applicat
 
 ### POST models refresh (FR #8820)
 
-`POST /bob/v1/models/refresh` rebuilds the per-CLI `clis` catalog inside digest-home `models-catalog.json` from each CLI's official listing command (no scraping, no cloud API keys):
+`POST /bob/v1/models/refresh` rebuilds the per-CLI `clis` catalog inside digest-home `models-catalog.json`. Two body shapes:
 
-| CLI | Command | Resolver order |
-|-----|---------|----------------|
+1. **Chair listing** (empty body or `{"clis":["grok","cursor","opencode"]}`): runs each CLI's official listing command on the chair (no scraping, no cloud API keys). Prefer this only on hosts that have the CLIs installed.
+2. **Client catalog (FR #9266 / BOB-TRAY-UI-06):** Weights **Refresh models** discovers models on the seat, then POSTs:
+
+```json
+{"source":"weights-client","clis":{"grok":["id",...],"cursor":[...],"opencode":["provider/model",...]}}
+```
+
+`clis` values may also be `[{"model":"id"}, ...]`. The chair merges the supplied ids and never spawns Grok/Cursor/OpenCode for this path (walrus has no seat CLIs / tokens). Response includes `"source":"weights-client"` when that path ran.
+
+| CLI | Command | Resolver order (chair listing only) |
+|-----|---------|--------------------------------------|
 | Grok | `grok models` | `BOB_GROK_EXE`, PATH `grok`, `%USERPROFILE%\.grok\bin\grok.exe` |
 | Cursor | `agent models` | `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`) |
 | OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, PATH `opencode` |
@@ -122,10 +131,13 @@ Rules:
 - Rate limit: one attempt per CLI per 60 s (in-memory; process restart resets). A second call inside the window returns **429** `rate_limited` with `retry_after_s` and changes nothing.
 - BOB-04 seeds (`models-valid-combos.json`) remain the starting allow-list until the first successful refresh writes `refreshed_at` on a CLI entry in `models-catalog.json`.
 - Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) forwards GET|HEAD|POST|PUT (FR #9224 / FR #9273); PATCH stays blocked at IIS.
-- Operator check: the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`.
+- Operator check (chair listing): the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`. Fleet seats use the Weights client catalog path instead.
 
 ```bash
 curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh"
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"weights-client","clis":{"grok":["grok-4"]}}'
 ```
 
 ### Models validation (form-only — Si 2026-11-22 / FR #9258)
