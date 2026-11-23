@@ -23,6 +23,7 @@ from typing import Any
 from _common import (
     EXIT_FINDING,
     EXIT_OK,
+    is_digest_row,
     queue_bucket_rows,
     resolve_homes,
     resolve_queue_path,
@@ -125,12 +126,43 @@ def _is_offered_or_accepted(row: dict, bucket: str) -> bool:
     return bool(str(row.get("offered_to") or "").strip())
 
 
+def _row_labels(row: dict) -> set[str]:
+    raw = row.get("labels") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    names: set[str] = set()
+    if not isinstance(raw, list):
+        return names
+    for item in raw:
+        if isinstance(item, str):
+            names.add(item.strip().lower())
+        elif isinstance(item, dict):
+            names.add(str(item.get("name") or "").strip().lower())
+    return names
+
+
 def _open_keys(queue: dict) -> set[str]:
     keys: set[str] = set()
     for bucket in ("unaccepted", "accepted", "offered"):
         for row in queue_bucket_rows(queue, bucket):
             state = str(row.get("state") or row.get("issue_state") or "").lower()
             if state in ("closed", "done"):
+                continue
+            key = _row_key(_row_repo(row), _row_number(row))
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _unheld_digest_keys(queue: dict) -> set[str]:
+    """BOB-G3: unheld digests stay OPEN without tripping depends_on (G1 exception)."""
+    keys: set[str] = set()
+    for bucket in ("unaccepted", "accepted", "offered", "done"):
+        for row in queue_bucket_rows(queue, bucket):
+            if not is_digest_row(row):
+                continue
+            labs = _row_labels(row)
+            if "hold" in labs or "on-hold" in labs:
                 continue
             key = _row_key(_row_repo(row), _row_number(row))
             if key:
@@ -175,6 +207,7 @@ def check(args):
             EXIT_OK,
         )
     open_keys = _open_keys(queue)
+    digest_ok = _unheld_digest_keys(queue)
     findings: list[str] = []
     violations: list[dict[str, Any]] = []
     saw_depends = False
@@ -200,7 +233,11 @@ def check(args):
                 continue
             if not _is_offered_or_accepted(row, bucket):
                 continue
-            open_refs = [f"{r}#{n}" for r, n in refs if f"{r}#{n}" in open_keys]
+            open_refs = [
+                f"{r}#{n}"
+                for r, n in refs
+                if f"{r}#{n}" in open_keys and f"{r}#{n}" not in digest_ok
+            ]
             if not open_refs:
                 continue
             seen.add(ident)

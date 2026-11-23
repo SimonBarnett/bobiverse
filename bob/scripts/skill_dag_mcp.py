@@ -7,6 +7,8 @@ seeds (not job types) are not empty.
 FR #8225: an FR/MRB/UAT/FIX seed that maps via JOB_SEEDS but is missing from the
 index returns ``unresolved`` / ``not_in_index`` (never a silent empty matched+skipped).
 Empty resolve is not expected for job seats; check MCP ``--root`` / status.
+FR #9330: resolve charges metadata (skips any single body over max_bytes); it
+does not sum SKILL.md sizes across the depends_on closure.
 """
 from __future__ import annotations
 
@@ -493,6 +495,9 @@ class SkillDagServer:
             }
         used = 64
         order = self._closure(sid)
+        # FR #6890: keep the seed first so a fat depends_on chain cannot crowd it out.
+        # FR #9330: after the seed, keep closure topo order (depends_on before the seed
+        # was walked) so direct/transitive deps pack before any later siblings.
         if sid in order:
             order = [sid] + [nid for nid in order if nid != sid]
         for nid in order:
@@ -505,11 +510,19 @@ class SkillDagServer:
                 "bytes": node["bytes"],
             }
             piece = json.dumps(item, ensure_ascii=False)
-            cost = len(piece.encode("utf-8")) + node["bytes"]
-            if used + cost > self.max_bytes:
+            meta_cost = len(piece.encode("utf-8"))
+            # Resolve returns metadata only (bodies come from get_skill). Charge the
+            # response/metadata budget, not the sum of SKILL.md sizes across the
+            # closure --- summing bodies dropped depends_on (job-irc) after a large
+            # MRB seed under DEFAULT_MAX_BYTES (FR #9330). Still refuse any single
+            # body that exceeds max_bytes (S4 / get_skill would refuse it too).
+            if int(node["bytes"] or 0) > self.max_bytes:
                 skipped.append({"id": nid, "reason": "over_budget"})
                 continue
-            used += cost
+            if used + meta_cost > self.max_bytes:
+                skipped.append({"id": nid, "reason": "over_budget"})
+                continue
+            used += meta_cost
             matched.append(item)
         return {"matched": matched, "skipped": skipped}
 

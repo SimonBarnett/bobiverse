@@ -618,12 +618,26 @@ class GhCliFiler:
         if not number or not url:
             raise GitHubDown(f"{tag}: pull create returned no number/url")
 
-        if labels:
+        # BOB-G3 / FR #9108: never stamp digest / fr-digest on PRs (issues-only).
+        # Also strip issues-only hold labels when gitclaim helpers are available.
+        labs = [str(x) for x in (labels or []) if str(x).strip()]
+        try:
+            import gitclaim as _gc
+
+            labs = _gc.strip_issues_only_digest_labels(labs)
+            labs = _gc.strip_issues_only_hold_labels(labs)
+        except Exception:
+            labs = [
+                x
+                for x in labs
+                if x.strip().lower() not in ("digest", "fr-digest", "hold", "on-hold")
+            ]
+        if labs:
             try:
                 self._api(
                     "POST",
                     f"repos/{repo}/issues/{number}/labels",
-                    {"labels": [str(x) for x in labels if str(x).strip()]},
+                    {"labels": labs},
                 )
             except GitHubDown:
                 pass
