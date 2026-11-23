@@ -15,8 +15,14 @@ inside ``models-catalog.json`` (models list + ``refreshed_at``); it does not
 rewrite agent selections or ``models-valid-combos.json``.
 
 Rows match ``bob/docs/mocks/systray-agents-workers/weights.html``. Optional
-digest-home ``models-catalog.json`` holds agents + refresh ``clis`` (PUT is
-BOB-02). There is no POST /models/validate (form-only).
+digest-home ``models-catalog.json`` overrides agent selections and holds refresh ``clis`` (PUT is BOB-02; FR #8820).
+
+BOB-03 / FR #8710: fail-closed valid ``(cli, model, context, effort)`` combinations
+live in a **separate** digest-home file ``models-valid-combos.json`` so BOB-02 PUT
+cannot wipe the allow-list. FR #9053 retired ``POST /bob/v1/models/validate`` on the
+callback (JSON 404 ``no_models_validate``; no check or persist). The Weights form
+limits dropdowns to the GET ``clis`` catalogue from that file; ``PUT /bob/v1/models``
+persists agent rows and does not apply the combo allow-list.
 """
 from __future__ import annotations
 
@@ -637,7 +643,12 @@ def handle_models_validate(
     *,
     log: Any = print,
 ) -> tuple[int, bytes]:
-    """BobCallback POST /bob/v1/models/validate — non-persisting combo check."""
+    """Retained non-persisting combo check (200/400/503 when called directly).
+
+    FR #9053: bobcallback does not dispatch this helper for
+    ``POST /bob/v1/models/validate``; the callback returns JSON 404
+    ``no_models_validate`` for that retired route.
+    """
     raw_body = body if isinstance(body, (bytes, bytearray)) else str(body or "").encode("utf-8")
     try:
         payload = json.loads(raw_body.decode("utf-8") if raw_body else b"null")

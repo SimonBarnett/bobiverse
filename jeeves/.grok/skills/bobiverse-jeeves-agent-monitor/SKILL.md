@@ -103,6 +103,7 @@ finally { Remove-PSSession $s }
 | Mid-turn assign / done-miss (#8738) | Chair offers the next job to a seat whose last ACKed job has no DONE yet; seat GIVEUPs or the earlier job is lost | Report seat, both issue numbers and cmd-trace times; comment on #8738, do not twin |
 | Stale START tiles | Digest/TipForm shows a START job on an idle seat (`running=0`, no process) | Report; the worker must clear its own activity. Never edit the digest |
 | Self-review deadlock | `mrb-reviewer-deadlock.json` fresh, MRB offered only to the author seat | Report (FR #5164 / #6256 class) |
+| Disk offer starvation | Repeated `worktree-create-failed:disk` on one machine; seats look idle while MRBs pile up (FR #6240 class) | See `bobiverse-jeeves-agent-disk-starvation` (read-only FreeGB first; Si's go before any delete; Slab cleans) |
 | Empty `!build` list | Bare `!build` shows nothing | Step 6: route or `builds-catalog.json` missing |
 | Red main blocks installs | `build-jeeves` failing on main HEAD | See `bobiverse-jeeves-agent-build` (last green commit only) |
 
