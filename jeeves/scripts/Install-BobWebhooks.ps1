@@ -82,7 +82,7 @@ $rewriteXml = @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD|POST$" />
           </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
@@ -357,12 +357,13 @@ function Get-BobOwnedRuleXml {
 "@
         }
         'BobModelsWebhook' {
-            # FR #8708: public IIS rewrite is GET|HEAD only (PUT stays direct/LAN).
+            # FR #8708: PUT/PATCH stay direct/LAN. FR #9224 / #8820: POST refresh must
+            # reach the chair via public Cloudflare (GET|HEAD|POST).
             return @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD|POST$" />
           </conditions>
           <action type="Rewrite" url="$BackendUrl/bob/v1/models{R:1}" />
         </rule>
