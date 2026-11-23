@@ -189,13 +189,26 @@ def _normalize_cli_models_entry(raw: Any) -> dict[str, Any] | None:
     refreshed_at = raw.get("refreshed_at")
     if refreshed_at is not None:
         refreshed_at = str(refreshed_at).strip() or None
-    return {"models": models, "refreshed_at": refreshed_at}
+    machines_raw = raw.get("machines")
+    machines: list[str] = []
+    if isinstance(machines_raw, list):
+        seen_m: set[str] = set()
+        for m in machines_raw:
+            mid = str(m or "").strip().lower()
+            if mid and mid not in seen_m:
+                seen_m.add(mid)
+                machines.append(mid)
+    return {"models": models, "refreshed_at": refreshed_at, "machines": machines}
 
 
 def clis_public_from_document(doc: dict[str, Any] | None) -> dict[str, Any]:
-    """Public ``clis`` map (lowercase keys). Unknown/bad rows skipped."""
+    """Public ``clis`` map (lowercase keys). Unknown/bad rows skipped.
+
+    FR #9250: each CLI may include ``machines`` (reporters that contributed).
+    """
     out: dict[str, Any] = {
-        k: {"models": [], "refreshed_at": None} for k in sorted(VALID_CLI_KEYS)
+        k: {"models": [], "refreshed_at": None, "machines": []}
+        for k in sorted(VALID_CLI_KEYS)
     }
     if not isinstance(doc, dict):
         return out

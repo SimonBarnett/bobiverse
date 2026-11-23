@@ -212,9 +212,12 @@ function Assert-BobiverseStageHasSkillDagMcp([string]$Stage) {
 function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
     # FR #9224: BobCallback imports flat scripts\models_refresh.py for POST
     # /bob/v1/models/refresh. A stage without it installs a chair that 404s refresh.
-    $mr = Join-Path $Stage 'scripts\models_refresh.py'
-    if (-not (Test-Path -LiteralPath $mr -PathType Leaf)) {
-        throw 'bobiverse pack missing scripts\models_refresh.py (common\scripts union)'
+    # FR #9250: models_ear_report.py is required for ear POST /bob/v1/models/report.
+    foreach ($name in @('models_refresh.py', 'models_ear_report.py')) {
+        $mr = Join-Path $Stage ("scripts\$name")
+        if (-not (Test-Path -LiteralPath $mr -PathType Leaf)) {
+            throw ("bobiverse pack missing scripts\{0} (common\scripts union)" -f $name)
+        }
     }
 }
 
