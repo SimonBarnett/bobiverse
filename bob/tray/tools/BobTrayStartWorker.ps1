@@ -49,23 +49,34 @@ function Test-BobTrayEmptyOnlineDisabled {
     return (Test-Path -LiteralPath (Join-Path $dir 'empty-online.disabled') -PathType Leaf)
 }
 
-function Test-BobTraySeatStartTriggerIsAuto {
+function Test-BobTraySeatStartTriggerIsManual {
     <#
-    FR #9240: triggers that are tray/chair auto paths (not Si TipForm clicks,
-    not explicit !startworker). Blocked when empty-online.disabled is present.
+    FR #9346 / #9240: TipForm click and explicit !startworker triggers only.
+    Fail-closed: anything else (other, empty, unknown, auto-start, restore-*,
+    empty-online, under-cap, engine-restart, ...) is treated as automatic.
     #>
     param([string]$Trigger = '')
     $t = ([string]$Trigger).Trim().ToLowerInvariant()
     if (-not $t) { return $false }
-    if ($t -eq 'auto-start') { return $true }
-    if ($t -eq 'restore-after-recycle') { return $true }
-    if ($t -eq 'empty-online' -or $t -eq 'under-cap') { return $true }
+    if ($t -eq 'menu' -or $t -eq 'jeeves-menu' -or $t -eq 'startworker') { return $true }
+    if ($t.StartsWith('workers-')) { return $true }
     return $false
+}
+
+function Test-BobTraySeatStartTriggerIsAuto {
+    <#
+    FR #9240 / #9346: tray/chair auto paths (auto-start, restore-after-recycle,
+    empty-online, under-cap, other, unknown). Fail-closed — not an explicit
+    TipForm / !startworker trigger means auto (blocked when empty-online.disabled).
+    #>
+    param([string]$Trigger = '')
+    return -not [bool](Test-BobTraySeatStartTriggerIsManual -Trigger $Trigger)
 }
 
 function Test-BobTrayEmptyOnlineBlocksAutoStart {
     <#
-    FR #9240: true when empty-online.disabled is present AND Trigger is auto.
+    FR #9240 / #9346: true when empty-online.disabled is present AND Trigger is
+    not an explicit manual TipForm / !startworker trigger (fail-closed).
     Manual TipForm triggers (menu, workers-*, jeeves-menu) and explicit
     startworker stay false (allowed).
     #>

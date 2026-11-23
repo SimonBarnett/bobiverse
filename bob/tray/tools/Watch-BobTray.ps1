@@ -2244,6 +2244,7 @@ function Start-BobTrayWorkerExe {
         [ValidateSet('agent', 'plan')][string]$Mode,
         [ValidateSet('', 'auto', 'grok', 'cursor', 'opencode')][string]$Agent = '',
         [string]$SeatId = '',
+        # FR #9346: default 'other' is fail-closed (blocked when empty-online.disabled).
         [string]$Trigger = 'other',
         [string]$Model = '',
         [switch]$Quiet,
@@ -2264,8 +2265,9 @@ function Start-BobTrayWorkerExe {
             if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($offMsg, 'Bobiverse', 'OK', 'Information') } catch { } }
             return 0
         }
-        # FR #9240: empty-online.disabled blocks auto triggers (auto-start, restore-after-recycle).
-        # TipForm menu / workers-* / jeeves-menu and explicit !startworker stay allowed.
+        # FR #9240 / #9346: empty-online.disabled blocks every non-manual trigger (fail-closed:
+        # auto-start, restore-after-recycle, other, empty, unknown). TipForm menu / workers-* /
+        # jeeves-menu and explicit !startworker stay allowed.
         if ($Mode -eq 'agent' -and (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue)) {
             $blockAuto = $false
             try { $blockAuto = [bool](Test-BobTrayEmptyOnlineBlocksAutoStart -Root $RepoRoot -Trigger $Trigger) } catch { $blockAuto = $false }
