@@ -5190,9 +5190,21 @@ function Get-BobPointCoord {
     return $Default
 }
 
+function Test-BobTrayIconRectUsable {
+    <#
+      FR #9186: true when IconRect has complete numeric Left/X and Top/Y plus positive size.
+      Empty Left with Width set (UiDiag iconRect=,-, w=32 h=48) is irBad and must not park tip.
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    $r = ConvertTo-BobTrayRect $Value
+    return [bool]$r
+}
+
 function ConvertTo-BobTrayRect {
     param($Value)
     if ($null -eq $Value) { return $null }
+    # FR #9186: treat blank Left/X (or Top/Y) as missing even when Width/Height are set.
     $x = Get-BobPointCoord $Value @('X', 'x', 'Left', 'left') -Default $null
     $y = Get-BobPointCoord $Value @('Y', 'y', 'Top', 'top') -Default $null
     $w = Get-BobPointCoord $Value @('Width', 'width') -Default $null
@@ -5205,6 +5217,7 @@ function ConvertTo-BobTrayRect {
         $bottom = Get-BobPointCoord $Value @('Bottom', 'bottom') -Default $null
         if ($null -ne $bottom -and $null -ne $y) { $h = $bottom - $y }
     }
+    # irBad: any missing axis or non-positive size (empty Left + Width was still src=icon).
     if ($null -eq $x -or $null -eq $y -or $null -eq $w -or $null -eq $h) { return $null }
     if ($w -le 0 -or $h -le 0) { return $null }
     return [pscustomobject]@{
@@ -5283,7 +5296,16 @@ function Get-BobTrayTipPlacement {
         }
     }
 
-    $icon = ConvertTo-BobTrayRect $IconRect
+    # FR #9186: incomplete Left/X (irBad) must not become src=icon.
+    $icon = $null
+    if ($null -ne $IconRect) {
+        if (Test-BobTrayIconRectUsable $IconRect) {
+            $icon = ConvertTo-BobTrayRect $IconRect
+        }
+        else {
+            Write-Verbose 'FR #9186 TipPlace: irBad=True incomplete iconRect; using cursor'
+        }
+    }
     $work = ConvertTo-BobTrayRect $WorkArea
     $cx = Get-BobPointCoord $Cursor @('X', 'x')
     $cy = Get-BobPointCoord $Cursor @('Y', 'y')
