@@ -1,5 +1,13 @@
 # Jeeves monitoring checks
 
+## Ops / MONITORING rebuild-install trackers (FR #9402 / #9400)
+
+Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for Jeeves MONITORING agent" / "Ops install NOT done" / do-not-`Closes`-while-gates-OPEN) are **ops gate records**, not shop FR work.
+
+- Do **not** stamp `feature-request` on them (intake `kind: issue` or bare ops filing). Chair `issue_skip_fr_reason` returns `ops_monitor_tracker` so they are never offered or `!assign`ed.
+- Use label `hold` while gates are open; tool-only PRs use `Refs` / `Toward`, never `Closes`, until install acceptance (FR #9400).
+- If a tracker was already offered, labeling `hold` (or the ops body cues) clears `offered_to` / seat-holds. `!stuck` / `!sweep` also release ghost offers (`released_offers`) for held rows and idle seats past offer timeout with no ACK.
+
 ## MONITORING command access (FR #8827)
 
 The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / …) **to keep the queue moving**. Chair auth: principal kind `monitor` — nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.

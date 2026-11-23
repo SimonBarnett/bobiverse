@@ -29,8 +29,8 @@ Three different gates. Do not collapse them.
 | | |
 |---|---|
 | What | Label `hold` / `on-hold` on an **issue/FR** (never on a PR — FR #9082). Also `HOLD:` body stamps. |
-| Effect | Blocks **that** FR from offer (FR #4009 `row_fr_hold_reason`). Does not by itself mean "digest go-gate". |
-| Distinct | A lone `hold` without Digest flag is not the digest check. Ops watchers that only look for `hold` are not VIS-G3 / BOB-G1. |
+| Effect | Blocks **that** FR from offer (FR #4009 `row_fr_hold_reason`). Does not by itself mean "digest go-gate". **FR #9402:** labeling `hold` (webhook) also drops the unaccepted row and clears `offered_to` / seat-holds so an idle seat is not stuck `busy (offered FR …)`. Digests stay queued (BOB-G3). |
+| Distinct | A lone `hold` without Digest flag is not the digest check. Ops watchers that only look for `hold` are not VIS-G3 / BOB-G1. Ops/MONITORING rebuild-install trackers are skip_fr `ops_monitor_tracker` (not feature-request shop work) — see `monitoring.md` FR #9402. |
 
 ## 3. Depends-on CLOSED (ordinary backlog)
 
