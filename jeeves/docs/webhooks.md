@@ -11,7 +11,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/bob/v1/report` | Public fleet digest JSON. `/bob/v1/digest` is the **same** webhook and **301**s here. |
-| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge|delete-worker|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. |
+| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
@@ -119,7 +119,7 @@ Rules:
 - Agent selections are never rewritten. GET `/bob/v1/models` adds response-only `stale: true` when a row's model is non-empty and absent from `clis[lower(cli)].models`.
 - Rate limit: one attempt per CLI per 60 s (in-memory; process restart resets). A second call inside the window returns **429** `rate_limited` with `retry_after_s` and changes nothing.
 - BOB-04 seeds (`models-valid-combos.json`) remain the starting allow-list until the first successful refresh writes `refreshed_at` on a CLI entry in `models-catalog.json`.
-- Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) already forwards `/refresh`.
+- Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) forwards GET|HEAD|POST (FR #9224; PUT/PATCH stay direct/LAN).
 - Operator check: the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`.
 
 ```bash

@@ -9,6 +9,7 @@ PASSed SHA. Held PRs are never auto-merged (FR #3928).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -2591,9 +2592,48 @@ def requeue_mrb(home: Path, *, repo: str, pr: str, url: str = "", reason: str = 
 
     FR #4929: also pop stale MRB PASS/FAIL from ``done[]`` so purge cannot drop
     the fresh row when ``pr_exists`` is absent.
+
+    FR #9243: prefetch PR snapshot + Closes-linked issues **outside** the queue
+    lock, then pass a cache-backed ``issue_lookup`` so head-move requeue honours
+    linked holds without network I/O under the lock.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     pull = url or f"https://github.com/{repo_c}/pull/{str(pr).lstrip('#')}"
+    num = str(pr or "").lstrip("#")
+    snap: dict[str, Any] | None = None
+    with contextlib.suppress(Exception):
+        got = fetch_pr_state(repo_c, num)
+        if isinstance(got, dict):
+            snap = got
+    cached: dict[str, Any] = {}
+    if isinstance(snap, dict):
+        body_s = str(snap.get("body") or "")
+        refs_t = tuple(str(x) for x in (snap.get("refs") or []) if str(x).strip())
+        if not refs_t:
+            refs_t = tuple(gitclaim.extract_closes_issue_ids(body_s, repo=repo_c))
+        for ident in refs_t:
+            key = str(ident or "").strip()
+            if not key:
+                continue
+            if key.isdigit():
+                key = f"#{key}"
+            with contextlib.suppress(Exception):
+                issue = _default_issue_lookup(repo_c, key)
+                if isinstance(issue, dict):
+                    cached[key] = issue
+                    bare = key.lstrip("#")
+                    if bare.isdigit():
+                        cached[bare] = issue
+
+    def _cached_lookup(r: str, ident: str):
+        s = str(ident or "").strip()
+        if s.isdigit():
+            s = f"#{s}"
+        if s in cached:
+            return cached[s]
+        bare = s.lstrip("#")
+        return cached.get(bare)
+
     with gitclaim._lock(home):
         try:
             doc = gitclaim._load_queue_unlocked(home)
@@ -2606,6 +2646,9 @@ def requeue_mrb(home: Path, *, repo: str, pr: str, url: str = "", reason: str = 
             pr=pr,
             url=pull,
             reason=reason or "merge-on-green",
+            pr_snapshot=snap,
+            fetch_pr=False,
+            issue_lookup=_cached_lookup if cached else None,
         )
         try:
             gitclaim._write_queue(gitclaim.queue_path(home), doc)

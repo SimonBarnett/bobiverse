@@ -9566,6 +9566,34 @@ def pid_is_alive(pid: int) -> bool:
         return False
 
 
+def classify_disappeared_seat_reason(run_dir: Path | str) -> tuple[str, int | None]:
+    """FR #9226: console-closed when worker.log shows CTRL_CLOSE / 0xC000013A, else external-kill."""
+    rd = Path(run_dir)
+    wl = rd / "worker.log"
+    if not wl.is_file():
+        return "external-kill", None
+    try:
+        data = wl.read_bytes()
+    except OSError:
+        return "external-kill", None
+    if len(data) > 65536:
+        data = data[-65536:]
+    try:
+        tail = data.decode("utf-8", errors="replace")
+    except Exception:
+        return "external-kill", None
+    low = tail.lower()
+    if (
+        "console-closed" in low
+        or "console-close exit" in low
+        or "0xc000013a" in low
+        or "3221225786" in tail
+        or "status_control_c_exit" in low
+    ):
+        return "console-closed", CONSOLE_CLOSE_EXIT
+    return "external-kill", None
+
+
 def write_disappeared_last_exit(
     run_dir: Path | str,
     *,
@@ -9575,22 +9603,25 @@ def write_disappeared_last_exit(
     machine: str = "",
     nick: str = "",
     kind: str = "",
+    exit_code: int | None = None,
+    via: str = "fr-8568-disappeared-seat",
 ) -> Path:
-    """FR #8568: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
+    """FR #8568 / #9226: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
     rd = Path(run_dir)
     rd.mkdir(parents=True, exist_ok=True)
     path = rd / "last-exit.json"
+    reason_s = (reason or "external-kill").strip() or "external-kill"
     payload = {
-        "reason": (reason or "external-kill").strip() or "external-kill",
-        "exit_code": None,
-        "raw_code": None,
+        "reason": reason_s,
+        "exit_code": exit_code,
+        "raw_code": exit_code,
         "job_key": (job_key or "").strip(),
         "machine": (machine or "").strip(),
         "nick": (nick or "").strip(),
         "kind": (kind or "").strip(),
         "agent_pid": int(pid) if pid else None,
         "synthetic": True,
-        "via": "fr-8568-disappeared-seat",
+        "via": (via or "fr-8568-disappeared-seat").strip() or "fr-8568-disappeared-seat",
     }
     text = json.dumps(payload, sort_keys=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
@@ -9612,7 +9643,7 @@ def handle_disappeared_worker_run(
     """If ``run_dir`` is a dead worker seat with no last-exit and an open job, write exit + GIVEUP.
 
     Does **not** restart the seat (FR #3180 manual-only). Returns a summary dict, or None when
-    no action was taken.
+    no action was taken. FR #9226: classify console-closed from worker.log when present.
     """
     rd = Path(run_dir)
     if not rd.is_dir():
@@ -9632,10 +9663,21 @@ def handle_disappeared_worker_run(
     except OSError:
         last_from = ""
     job_key = assign_job_key(last_from) or ""
+    reason, exit_code = classify_disappeared_seat_reason(rd)
+    nick = f"{mid}-{pid}"
+    via = "fr-9226-disappeared-seat"
     if not job_key:
         # No accepted-job breadcrumb — still leave last-exit so the gap is visible.
-        write_disappeared_last_exit(rd, reason="external-kill", pid=pid, machine=mid)
-        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False}
+        write_disappeared_last_exit(
+            rd,
+            reason=reason,
+            pid=pid,
+            machine=mid,
+            nick=nick,
+            exit_code=exit_code,
+            via=via,
+        )
+        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False, "reason": reason}
     outbox = outbox_path_for_run(rd)
     try:
         existing = outbox.read_text(encoding="utf-8", errors="replace") if outbox.is_file() else ""
@@ -9643,14 +9685,39 @@ def handle_disappeared_worker_run(
         existing = ""
     if outbox_text_has_terminal(existing, job_key):
         write_disappeared_last_exit(
-            rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+            rd,
+            reason=reason,
+            job_key=job_key,
+            pid=pid,
+            machine=mid,
+            nick=nick,
+            exit_code=exit_code,
+            via=via,
         )
-        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "already_terminal": True}
+        return {
+            "run_dir": str(rd),
+            "pid": pid,
+            "job_key": job_key,
+            "giveup": False,
+            "already_terminal": True,
+            "reason": reason,
+        }
     write_disappeared_last_exit(
-        rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+        rd,
+        reason=reason,
+        job_key=job_key,
+        pid=pid,
+        machine=mid,
+        nick=nick,
+        exit_code=exit_code,
+        via=via,
     )
     channel = (shop or mid or "shop").strip().lstrip("#") or "shop"
-    line = f"PRIVMSG #{channel} :{external_kill_giveup_line(job_key)}"
+    if reason == "console-closed":
+        giveup = console_closed_giveup_line(job_key)
+    else:
+        giveup = external_kill_giveup_line(job_key)
+    line = f"PRIVMSG #{channel} :{giveup}"
     try:
         with outbox.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(line + "\n")
@@ -9660,8 +9727,22 @@ def handle_disappeared_worker_run(
             except OSError:
                 pass
     except OSError:
-        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "outbox_error": True}
-    return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": True, "line": line}
+        return {
+            "run_dir": str(rd),
+            "pid": pid,
+            "job_key": job_key,
+            "giveup": False,
+            "outbox_error": True,
+            "reason": reason,
+        }
+    return {
+        "run_dir": str(rd),
+        "pid": pid,
+        "job_key": job_key,
+        "giveup": True,
+        "line": line,
+        "reason": reason,
+    }
 
 
 def scan_disappeared_worker_runs(
@@ -11181,6 +11262,9 @@ class Relay:
         self.opencode_job_classify: Optional[Callable[[str], str]] = None
         self.opencode_ensure_worktree: Optional[Callable[[str], str]] = None
         self._worktree_creating_keys: set = set()
+        # FR #9228: first-seen time for parked worktree creates (stale-offer log).
+        self._worktree_parked_at: dict = {}
+        self._stale_offer_logged: set = set()
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
@@ -11245,6 +11329,8 @@ class Relay:
                 return "opencode_worktree_pending"
             if key:
                 self._worktree_creating_keys.add(key)
+                if key not in self._worktree_parked_at:
+                    self._worktree_parked_at[key] = float(self.clock())
         self.log("relay: park worktree create off read thread " + (key or line[:80]))
         self._persist_last_from(line)
         th = threading.Thread(
@@ -11259,7 +11345,12 @@ class Relay:
     def _worktree_create_then_deliver(
         self, nick: str, target: str, text: str, line: str, key: str
     ) -> None:
-        """Background: ensure worktree, then NACK or re-enter deliver for ACK."""
+        """Background: ensure worktree, then NACK or resume deliver for ACK+inject.
+
+        FR #9228: always log ensure result and resume status. Resume uses
+        ``resume_after_worktree`` so a second park / silent duplicate cannot
+        swallow the assign after create succeeded.
+        """
         nack = ""
         try:
             fn = self.opencode_ensure_worktree
@@ -11268,24 +11359,102 @@ class Relay:
             else:
                 job = assign_job_key(line) or "job"
                 nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
-        except Exception:
+        except Exception as e:
             job = assign_job_key(line) or "job"
             nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
+            self.log(
+                f"relay: worktree ensure exception key={key or '?'} err={type(e).__name__}"
+            )
         finally:
             if key:
                 with self._lock:
                     self._worktree_creating_keys.discard(key)
         if nack:
+            head = nack.splitlines()[0][:160]
+            self.log(f"relay: worktree ensure nack key={key or '?'} {head}")
             try:
                 self._refuse_job_context(line, nack)
             except Exception as e:
                 self.log(f"relay: worktree create NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
             return
+        self.log(f"relay: worktree ensure ok key={key or '?'} -> resume deliver")
         try:
-            # Worktree exists now; classify will accept. Do not park again.
-            self.deliver(nick, target, text)
+            # Worktree exists now. Force resume so we never park again (FR #9228).
+            status = self.deliver(nick, target, text, resume_after_worktree=True)
+            self.log(
+                f"relay: worktree create resume status={status} key={key or '?'}"
+            )
+            if status in (
+                "opencode_worktree_pending",
+                "duplicate",
+                "ack_not_sent",
+                "held_until_turn_end",
+                "held",
+                "coalescing",
+            ):
+                # Last-chance force inject when soft statuses still blocked ACK.
+                forced = self._force_ack_inject_after_worktree(line)
+                self.log(
+                    f"relay: worktree create force-resume status={forced} key={key or '?'}"
+                )
+                if forced in ("injected", "held", "duplicate"):
+                    self.clear_worktree_park_mark(key)
+            elif status in ("injected", "held", "held_until_turn_end"):
+                self.clear_worktree_park_mark(key)
+            else:
+                # Unknown soft status — still clear park mark if we got a real inject/ACK path.
+                if status == "injected":
+                    self.clear_worktree_park_mark(key)
         except Exception as e:
             self.log(f"relay: worktree create resume error {type(e).__name__}")
+
+    def _force_ack_inject_after_worktree(self, line: str) -> str:
+        """FR #9228: after ensure ok, ACK+inject even if deliver soft-failed."""
+        if not line or not assign_job_ref(line):
+            return "no-assign"
+        with self._lock:
+            if line == self._last_line:
+                self._last_line = ""
+        # Hostile / fuel / busy still apply.
+        try:
+            if self.skips_hostile_assign and self.skips_hostile_assign(line):
+                nack = opencode_hostile_nack_line(line)
+                if nack and self.write_outbox:
+                    self.write_outbox(nack)
+                return "opencode_skips_hostile"
+        except Exception:
+            pass
+        try:
+            if self.refuse_assign_while and self.refuse_assign_while():
+                if self.on_refuse_assign:
+                    self.on_refuse_assign(line)
+                return "out_of_fuel"
+        except Exception:
+            pass
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                key = assign_job_key(line) or "job"
+                if self.write_outbox:
+                    self.write_outbox(f"NACK {key} busy")
+                return "busy_turn"
+        except Exception:
+            pass
+        with self._lock:
+            self._last_line = line
+        ack_st = self._ack_offer_or_refuse(line)
+        if ack_st == "refused":
+            return "ack_not_sent"
+        if ack_st == "duplicate":
+            # Same job already ACKed — still inject if target ready.
+            pass
+        self._persist_last_from(line)
+        if self._inject is None:
+            with self._lock:
+                if line not in self._pending:
+                    self._pending.append(line)
+            return "held"
+        return self._do_inject(line)
 
     def _write_nacks(self, nack: str) -> None:
         if not nack or not self.write_outbox:
@@ -11353,7 +11522,14 @@ class Relay:
         self._write_nacks(nack)
         return "opencode_job_blocked"
 
-    def deliver(self, nick: str, target: str, text: str) -> str:
+    def deliver(
+        self,
+        nick: str,
+        target: str,
+        text: str,
+        *,
+        resume_after_worktree: bool = False,
+    ) -> str:
         nq = is_nothing_queued(text)
         if drop_text(text):
             if nq:
@@ -11368,6 +11544,11 @@ class Relay:
             self._persist_last_from(line)
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
+        # FR #9228: resume after ensure must not soft-duplicate before ACK/inject.
+        if resume_after_worktree:
+            with self._lock:
+                if line == self._last_line:
+                    self._last_line = ""
         # FR #6134: OpenCode seats NACK hostile MRB/UAT before ACK-on-receipt / inject.
         if assign_job_ref(line):
             skip_hostile = False
@@ -11401,6 +11582,17 @@ class Relay:
                 if self.opencode_job_classify:
                     nack = self._job_context_classify(line)
                     if nack and is_worktree_absent_nack(nack) and self.opencode_ensure_worktree:
+                        if resume_after_worktree:
+                            # Ensure claimed ok but classify still absent — do not park again.
+                            job = keys[0]
+                            verify = (
+                                f"NACK {job} worktree-create-failed:verify (FR #9228)"
+                            )
+                            self.log(
+                                "relay: worktree still absent after ensure; "
+                                + verify
+                            )
+                            return self._refuse_job_context(line, verify)
                         return self._park_worktree_create(nick, target, text, line)
                     if nack:
                         return self._refuse_job_context(line, nack)
@@ -11933,6 +12125,38 @@ class Relay:
                 if assign_job_ref(line):
                     return True
         return False
+
+    def maybe_log_stale_worktree_offer(self, *, min_age_s: float = 180.0) -> None:
+        """FR #9228: when idle with a parked create older than *min_age_s*, log once."""
+        now = float(self.clock())
+        stale: list[tuple[str, float]] = []
+        with self._lock:
+            for key, started in list(self._worktree_parked_at.items()):
+                age = now - float(started)
+                if age < float(min_age_s):
+                    continue
+                if key in self._stale_offer_logged:
+                    continue
+                # Still creating, or create finished but never ACKed (key left in parked_at).
+                stale.append((key, age))
+                self._stale_offer_logged.add(key)
+        for key, age in stale:
+            inflight = False
+            with self._lock:
+                inflight = key in self._worktree_creating_keys
+            self.log(
+                f"relay: stale worktree offer key={key} age_s={age:.0f} "
+                f"inflight={inflight} (no ACK yet; FR #9228)"
+            )
+
+    def clear_worktree_park_mark(self, key: str) -> None:
+        """FR #9228: drop stale-offer tracking after ACK/inject/NACK."""
+        k = (key or "").strip().lower()
+        if not k:
+            return
+        with self._lock:
+            self._worktree_parked_at.pop(k, None)
+            self._stale_offer_logged.discard(k)
 
     def pending_assign_keys(self) -> set:
         """FR #8738: lower-cased typed keys of assigns still parked (not injected)."""
@@ -16296,7 +16520,19 @@ class BoredEmitter:
             self._idle_since = None
             if self._nak_due is not None and now >= self._nak_due:
                 self._nak_due = None  # busy at due time: never send; post-harvest !bored covers it
+            # FR #9228: also surface while "busy" only because ensure is hung/in-flight.
+            try:
+                if self.relay is not None:
+                    self.relay.maybe_log_stale_worktree_offer(min_age_s=180.0)
+            except Exception:
+                pass
             return None
+        # FR #9228: idle seat with a parked worktree create and no ACK — surface once.
+        try:
+            if self.relay is not None:
+                self.relay.maybe_log_stale_worktree_offer(min_age_s=180.0)
+        except Exception:
+            pass
         # FR #4753: ACK past ack_stale_s must clear and !bored (reason ack-stale), even when
         # turn_started bumped release_gen and the cursor turn never ended (error stall).
         if (

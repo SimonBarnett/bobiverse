@@ -2264,6 +2264,21 @@ function Start-BobTrayWorkerExe {
             if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($offMsg, 'Bobiverse', 'OK', 'Information') } catch { } }
             return 0
         }
+        # FR #9240: empty-online.disabled blocks auto triggers (auto-start, restore-after-recycle).
+        # TipForm menu / workers-* / jeeves-menu and explicit !startworker stay allowed.
+        if ($Mode -eq 'agent' -and (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue)) {
+            $blockAuto = $false
+            try { $blockAuto = [bool](Test-BobTrayEmptyOnlineBlocksAutoStart -Root $RepoRoot -Trigger $Trigger) } catch { $blockAuto = $false }
+            if ($blockAuto) {
+                Write-TrayLog ('{0}: refused: empty-online.disabled blocks auto trigger={1}' -f $Mode, $Trigger)
+                try {
+                    if (Get-Command Write-BobTrayUnrequestedSeatStartIntake -ErrorAction SilentlyContinue) {
+                        [void](Write-BobTrayUnrequestedSeatStartIntake -Root $RepoRoot -Trigger $Trigger -Site 'Start-BobTrayWorkerExe')
+                    }
+                } catch { }
+                return 0
+            }
+        }
         # t815u / FR #2667: hard cap of 2 AGENT seats only (plan is uncapped; same as startworker / bob_worker)
         # FR #8403: -Restore replaces a seat the recycle just stopped (net-zero), so it must not
         # be refused by the cap; otherwise a batch recycle of >2 seats leaves the later seats stopped.
@@ -4969,8 +4984,9 @@ $poll.Add_Tick({
                         if (-not $midObs) { $midObs = $env:BOB_MACHINE_ID }
                         if ($midObs) {
                             $obs = Invoke-BobTrayObserveWorkerSeats -MachineId ([string]$midObs)
-                            if ($obs.Dropped) {
-                                Write-TrayLog ('FR #9208 seat-exit was={0} now={1} handled={2} giveups={3}' -f $obs.Was, $obs.Now, $obs.Handled, $obs.Giveups)
+                            # FR #9226: log drop OR healed orphans (always-scan after tray restart).
+                            if ($obs.Dropped -or [int]$obs.Handled -gt 0) {
+                                Write-TrayLog ('FR #9226 seat-observe was={0} now={1} dropped={2} handled={3} giveups={4}' -f $obs.Was, $obs.Now, $obs.Dropped, $obs.Handled, $obs.Giveups)
                             }
                         }
                     }
@@ -5263,12 +5279,18 @@ $startWorkerTimer.Add_Tick({
                     # false kill storms — see EngineAliveStamp.IsStale FR #4317).
                     # FR #7579: shared helper (also used at poll start + ThreadPool heartbeat).
                     [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
+                    # FR #9240: Launch gets trigger from the queue (auto-start vs startworker).
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
-                            -Launch { param($mode, $agent, $model) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet -Trigger 'auto-start' } `
+                            -Root $RepoRoot `
+                            -Launch {
+                                param($mode, $agent, $model, $trigger)
+                                $t = if ($trigger) { [string]$trigger } else { 'startworker' }
+                                Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet -Trigger $t
+                            } `
                             -Log { param($m) Write-TrayLog $m })
                     # FR #8429: zero agent seats on an online tray, seats not off.
                     # One fill up to the hard cap, then a stamp so the next tick does not stack reqs.
-                    # FR #9142: honour empty-online.disabled; skip when grok=0 and no viable opencode free (#9023).
+                    # FR #9142 / #9240: honour empty-online.disabled; skip when grok=0 and no viable opencode free (#9023).
                     try {
                         if (-not (Test-BobTraySeatsOff)) {
                             $pending = @(Get-ChildItem -LiteralPath $script:startWorkerDir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue).Count

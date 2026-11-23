@@ -223,15 +223,17 @@ SKIP_FR_LABELS_IN_TEXT = frozenset(
     not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
 )
 
-# FR #3928: PR hold labels — never offer MRB while present (intake/operator stamp).
+# FR #3928 / #9082: PR merge/offer holds. ``hold`` / ``on-hold`` are issues-only
+# (never stamp them on pull requests). PR gate uses do-not-merge / wip labels,
+# owner HOLD body stamps, and linked-issue hold (fr_hold_reason) instead.
 HOLD_MRB_LABELS = frozenset(
     {
-        "on-hold",
-        "hold",
         "do-not-merge",
         "wip",
     }
 )
+# FR #9082: forbidden on pull_request targets (intake must strip; monitor alarms).
+ISSUES_ONLY_HOLD_LABELS = frozenset({"hold", "on-hold"})
 # Title-only free hold cues (short titles). Not applied to PR bodies — lesson
 # prose such as "do not merge the thinner duplicate" must not count as a hold
 # (FR #4545; class of a-search#3627). Body uses line-anchored stamps below.
@@ -257,16 +259,41 @@ FR_HOLD_BODY_RE = re.compile(
 )
 
 
+def strip_issues_only_hold_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """FR #9082: drop ``hold`` / ``on-hold`` from a label list destined for a PR."""
+    out: list[str] = []
+    for x in labels or []:
+        s = str(x).strip()
+        if not s:
+            continue
+        if s.lower() in ISSUES_ONLY_HOLD_LABELS:
+            continue
+        out.append(s)
+    return out
+
+
+def pr_forbidden_hold_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """FR #9082: which issues-only hold labels are present on a PR (sorted)."""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    return sorted(labs & ISSUES_ONLY_HOLD_LABELS)
+
+
 def pr_hold_reason(
     *,
     title: str = "",
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> str | None:
-    """FR #3928 / #4545: why an open PR must not be offered/merged as MRB, else None.
+    """FR #3928 / #4545 / #9082: why an open PR must not be offered/merged as MRB.
 
-    Hold labels always count. Body hold text only matches an owner stamp line
-    (``On hold:`` / ``HOLD:``), not free prose. Title still scans short hold cues.
+    ``do-not-merge`` / ``wip`` labels still count. ``hold`` / ``on-hold`` on a PR
+    do **not** (issues-only; see ``pr_forbidden_hold_labels`` / monitor). Body
+    hold text only matches an owner stamp line (``On hold:`` / ``HOLD:``).
+    Title still scans short hold cues.
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = sorted(labs & HOLD_MRB_LABELS)
@@ -338,11 +365,12 @@ def linked_issue_hold_reason(
     refs: tuple[str, ...] | list[str] = (),
     issue_lookup=None,
 ) -> str | None:
-    """FR #9080: hold on a Closes-linked issue blocks dirty-FIX / MRB requeue.
+    """FR #9080 / #9243: hold on a Closes-linked issue blocks dirty-FIX / MRB requeue.
 
     Operator policy (2026-11-22): ``hold`` is issues-only. Dirty-FIX and head-move
-    requeue must still respect the linked FR/issue hold even when the PR has no
-    ``hold`` label.
+    requeue (``ensure_mrb_requeued_after_head_move`` when ``issue_lookup`` is
+    passed) must still respect the linked FR/issue hold even when the PR has no
+    ``hold`` label. ``issue_lookup=None`` returns None (no network).
     """
     if issue_lookup is None:
         return None
@@ -3036,8 +3064,9 @@ def ensure_mrb_requeued_after_head_move(
     refs: tuple[str, ...] | list[str] = (),
     pr_snapshot: dict | None = None,
     fetch_pr=None,
+    issue_lookup=None,
 ) -> str:
-    """FR #4929 / #9080: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
+    """FR #4929 / #9080 / #9243: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
 
     Used when a FIX push (synchronize) or DONE FIX lands after a prior MRB PASS
     so the new head is offerable without waiting for ``!resync``.
@@ -3047,6 +3076,13 @@ def ensure_mrb_requeued_after_head_move(
     ``fetch_pr``, or a prior queue row before append. Never stamp empty labels that
     hide a GitHub ``hold``. When ``pr_hold_reason`` hits, purge the unaccepted twin
     and return ``skipped``.
+
+    FR #9243: also honour ``linked_issue_hold_reason`` when ``issue_lookup`` is
+    provided (same injectable shape as ``enqueue_conflict_fix``). Do **not**
+    invent a default network fetch here — callers under the queue lock must pass
+    a prefetched lookup or omit it (omit = no linked check, lock-safe). Lookup
+    failures inside ``linked_issue_hold_reason`` continue per-issue (fail-open).
+    An accepted MRB row is left alone; only the unaccepted twin is purged.
     """
     repo_c = canonical_queue_repo(repo)
     num = str(pr or "").strip().lstrip("#")
@@ -3110,6 +3146,15 @@ def ensure_mrb_requeued_after_head_move(
         title_s = f"requeue after {why} (FR #4929)"
 
     hold = pr_hold_reason(title=title_s, body=body_s, labels=labels_t)
+    # FR #9243: linked FR/issue hold (issues-only labels / HOLD: body) blocks
+    # head-move requeue the same way dirty-FIX does — only when lookup is passed.
+    if not hold and issue_lookup is not None:
+        hold = linked_issue_hold_reason(
+            repo_c,
+            body=body_s,
+            refs=refs_t,
+            issue_lookup=issue_lookup,
+        )
     if hold:
         doc["unaccepted"] = [
             r
