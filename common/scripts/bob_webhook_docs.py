@@ -355,10 +355,10 @@ def _inbound() -> list[DocEntry]:
                 "Content-Type: application/json\n\n"
                 '{"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}'
             ),
-            status_codes="204 / 200 / 400 / 403; public IIS rewrites GET|HEAD only.",
+            status_codes="204 / 200 / 400 / 403; public IIS rewrites GET|HEAD|POST (PUT stays direct/LAN).",
             retry_idempotency="Idempotent full replace.",
-            rate_limits="Peer allowlist; proxy only on public GET.",
-            reachability="Direct bobcallback / allowlisted LAN. Public Cloudflare is GET|HEAD only.",
+            rate_limits="Peer allowlist; public proxy GET|HEAD|POST (FR #9224); PUT direct/LAN.",
+            reachability="Direct bobcallback / allowlisted LAN for PUT. Public Cloudflare BobModelsWebhook is GET|HEAD|POST (FR #9224).",
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
             fr="FR #8708 / BOB-02 · FR #8819 · FR #9122",
             html_rel="docs/webhooks/models.html",

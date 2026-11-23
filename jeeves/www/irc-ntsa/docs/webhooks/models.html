@@ -58,10 +58,10 @@ Accept: application/json
 <p><strong>Auth (named only):</strong> None (schema + peer allowlist).</p>
 <p><strong>Request schema:</strong> JSON agents rows; changing cli for a known agent returns 400.</p>
 <p><strong>Response schema:</strong> 204 when changed; 200 when unchanged; 4xx on schema/cli mutation.</p>
-<p><strong>Status codes:</strong> 204 / 200 / 400 / 403; public IIS rewrites GET|HEAD only.</p>
+<p><strong>Status codes:</strong> 204 / 200 / 400 / 403; public IIS rewrites GET|HEAD|POST (PUT stays direct/LAN).</p>
 <p><strong>Retry / idempotency:</strong> Idempotent full replace.</p>
-<p><strong>Rate limits:</strong> Peer allowlist; proxy only on public GET.</p>
-<p><strong>Reachability:</strong> Direct bobcallback / allowlisted LAN. Public Cloudflare is GET|HEAD only.</p>
+<p><strong>Rate limits:</strong> Peer allowlist; public proxy GET|HEAD|POST (FR #9224); PUT direct/LAN.</p>
+<p><strong>Reachability:</strong> Direct bobcallback / allowlisted LAN for PUT. Public Cloudflare BobModelsWebhook is GET|HEAD|POST (FR #9224).</p>
 <p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8708 / BOB-02 · FR #8819 · FR #9122</p>
 <p><strong>Redacted example</strong></p>
 <pre>PUT http://127.0.0.1:7700/bob/v1/models
