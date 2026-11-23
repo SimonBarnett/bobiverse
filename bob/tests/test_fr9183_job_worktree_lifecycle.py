@@ -69,7 +69,7 @@ def test_remove_finished_after_done(tmp_path: Path):
 
 
 def test_remove_on_giveup_and_nack_same_helper(tmp_path: Path):
-    # DONE/GIVEUP/NACK all call the same remove helper — one behaviour.
+    # DONE/GIVEUP/NACK all call the same remove helper - one behaviour.
     install = tmp_path / "install"
     install.mkdir()
     (install / ".git").mkdir()

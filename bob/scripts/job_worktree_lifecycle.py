@@ -80,7 +80,7 @@ def is_protected_worktree_path(
     low = raw.lower().replace("/", "\\")
     name = Path(raw).name.lower()
     if name in ("main", "master", "bob", "jeeves", "airc", "common"):
-        # Leaf name alone is not enough for bob/jeeves — also require install match.
+        # Leaf name alone is not enough for bob/jeeves - also require install match.
         pass
     if "_hotpatch_" in low or "\\_hotpatch" in low:
         return True

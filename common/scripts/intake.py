@@ -1457,7 +1457,7 @@ _SKILL_TREE_PATH_RE = re.compile(
 def _norm_repo_rel_path(path: str) -> str:
     """Normalize repo-relative path; keep leading ``.`` on ``.grok/...`` (FR #9180).
 
-    Do not use ``str.lstrip('./')`` — that strips every leading ``.`` / ``/`` char
+    Do not use ``str.lstrip('./')`` - that strips every leading ``.`` / ``/`` char
     and turns ``.grok/skills/...`` into ``grok/skills/...``.
     """
     p = str(path or "").replace("\\", "/")
