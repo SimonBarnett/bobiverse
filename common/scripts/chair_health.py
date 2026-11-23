@@ -5,6 +5,9 @@
   ``webhook-health.json``; announce on #bobiverse (via chair-outbox) ONLY when a target flips up<->down.
 * FR #5510 stuck-job sweep every 10 min (+ startup): classify queue/open catalog,
   release silent/dead-holder accepts, enqueue untracked offerable items, digest/!stuck report.
+* FR #9460 idle-offer push every ``IDLE_OFFER_PUSH_S`` (default 30s):
+  ``gitclaim.push_idle_offers_via_chair_outbox`` for digest idle/ready seats when
+  ungated offerable work exists — no ``!bored`` wait and no BobAutoFeed config.
 * authenticated ``gitclaim.resync_from_github`` on a **low cadence** (``RESYNC_S`` = 1h, FR #3212) plus gap-triggered
   reconcile when git webhooks go quiet (``WEBHOOK_GAP_S``). Uses ETag/304 conditional GETs and the shared
   ``github_api_budget`` hourly counter. Token SOURCE (never the value) is written once per process to
@@ -53,6 +56,9 @@ FIRST_STALL_DELAY_S = 90.0
 # FR #5510: stuck-job sweep (classify / release silent accepts / enqueue untracked).
 STUCK_SWEEP_S = 600.0
 FIRST_STUCK_SWEEP_DELAY_S = 20.0
+# FR #9460: push offers to digest-idle seats without !bored / BobAutoFeed (N <= 30s).
+IDLE_OFFER_PUSH_S = 30.0
+FIRST_IDLE_OFFER_PUSH_DELAY_S = 8.0
 # FR #5359: retry intake/outbox while the chair runs (not only at BobCallback start).
 INTAKE_OUTBOX_S = 60.0
 FIRST_INTAKE_OUTBOX_DELAY_S = 30.0
@@ -619,6 +625,7 @@ class ChairJobs:
         self._startup_webhook_ensure_done = False
         self.next_stall = t0 + FIRST_STALL_DELAY_S
         self.next_stuck_sweep = t0 + FIRST_STUCK_SWEEP_DELAY_S
+        self.next_idle_offer = t0 + FIRST_IDLE_OFFER_PUSH_DELAY_S
         self.next_intake_outbox = t0 + FIRST_INTAKE_OUTBOX_DELAY_S
         self._intake_backoff_s = INTAKE_OUTBOX_S
         self._intake_announced_at = 0.0
@@ -752,6 +759,7 @@ class ChairJobs:
             self.next_merge_on_green,
             self.next_stall,
             self.next_stuck_sweep,
+            self.next_idle_offer,
             self.next_copilot,
             self.next_webhook_ensure,
             self.next_intake_outbox,
@@ -864,6 +872,13 @@ class ChairJobs:
                 self._stuck_job_sweep()
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN stuck-sweep: {type(exc).__name__}: {exc}")
+        now = self.clock()
+        if now >= self.next_idle_offer:
+            self.next_idle_offer = now + IDLE_OFFER_PUSH_S
+            try:
+                self._idle_offer_push()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN idle-offer-push: {type(exc).__name__}: {exc}")
         now = self.clock()
         if now >= self.next_copilot:
             self.next_copilot = now + COPILOT_TICK_S
@@ -1267,6 +1282,18 @@ class ChairJobs:
             announce=self.announce,
         )
         self._copilot_draft_ready()
+
+    def _idle_offer_push(self) -> None:
+        """FR #9460: push focus-top offers to digest idle/ready seats (no !bored / AutoFeed)."""
+        import gitclaim
+
+        n = gitclaim.push_idle_offers_via_chair_outbox(
+            self.digest_home,
+            now=self.clock(),
+            log=self.log,
+        )
+        if n:
+            self.log(f"INFO idle-offer-push sent={n} (FR #9460)")
 
     def _copilot_draft_ready(self) -> None:
         """FR #7941: un-draft a finished Copilot PR once, then queue its MRB."""

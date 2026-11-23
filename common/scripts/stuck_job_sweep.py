@@ -25,6 +25,9 @@ never merge or close):
   (120s) while ungated offerable work exists → digest rule
   ``idle_quiet_offerable`` + shop nudge (distinct from ``unaccepted_starved``;
   recycleseat heal stays on bored-latency at 240s)
+* FR #9460: each act sweep also calls ``push_idle_offers_via_chair_outbox``
+  (chair_health also ticks that every 30s) so idle+offerable does not wait for
+  ``!bored`` or BobAutoFeed
 
 Report: ``stuck-report.json`` + digest ``stuck`` section + ``!stuck`` + one
 #bobiverse line when the stuck set fingerprint changes.
@@ -1531,6 +1534,7 @@ def run_stuck_sweep(
         "cleared_doing": 0,
         "copilot_settled": 0,
         "nudged": 0,
+        "idle_offers": 0,
     }
     cleared_doing: list[dict] = []
     if act:
@@ -1567,7 +1571,15 @@ def run_stuck_sweep(
         actions["cleared_doing"] = len(cleared_doing)
         for info in cleared_doing:
             classified.append(info)
-        # FR #5920: shop-nudge quiet idle seats (rate-limited).
+        # FR #9460: push real offers to digest-idle seats (no !bored / BobAutoFeed).
+        # Runs even when quiet_findings is empty so a 10-min sweep still feeds idle.
+        with contextlib_suppress():
+            pushed = int(gitclaim.push_idle_offers_via_chair_outbox(home, now=now_f) or 0)
+            actions["idle_offers"] = pushed
+            if pushed and log:
+                log(f"stuck-sweep idle-offer-push sent={pushed} (FR #9460)")
+        # FR #5920: shop-nudge quiet idle seats (rate-limited) when push alone
+        # did not clear the starve (still ask !bored as a last resort).
         nudged = nudge_quiet_idle_offerable(
             home, quiet_findings, now=now_f, log=log
         )
