@@ -4208,13 +4208,11 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
                 elseif ($picked -eq 'opencode') {
-<<<<<<< HEAD
-                    # FR #8733 / BOB-28: free+paid exhausted → dialog + quit (no start).
+                    # FR #8733 / BOB-28: free+paid exhausted -> dialog + quit (no start).
                     if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
                         Show-BobTrayOpenCodePaidExhaustedDialog
                         return
                     }
-=======
                     # FR #8730 / BOB-27: free first; paid when free fuel is 0 and paid is above 0.
                     $ocSlot = 'free'
                     $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
@@ -4233,7 +4231,7 @@ function Update-BobTrayWorkerAgentsMenu {
                     if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
                     # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
                     Write-TrayLog ('workers-opencode model=' + $ocModel)
->>>>>>> origin/main
+
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
                     # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
