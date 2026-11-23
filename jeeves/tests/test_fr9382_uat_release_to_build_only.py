@@ -127,3 +127,13 @@ def test_uat_no_release_reason_helper():
         gitclaim.uat_no_release_to_build_reason(_uat_row("SimonBarnett/bobiverse"))
         is None
     )
+
+
+def test_fr9382_synthetic_repos_stay_allowlisted_via_conftest(tmp_path, monkeypatch):
+    """mrb-9384 fix: jeeves conftest extends BOB_UAT_RELEASE_REPOS for o/a-style UAT tests."""
+    home = _home(tmp_path, monkeypatch)
+    assert uat_release.repo_has_release_to_build("o/a", home=home)
+    assert uat_release.repo_has_release_to_build("o/r", home=home)
+    # Denial coverage remains on real customer/plan-only names:
+    assert not uat_release.repo_has_release_to_build("SimonBarnett/wetherby", home=home)
+
