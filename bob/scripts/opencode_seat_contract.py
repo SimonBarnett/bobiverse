@@ -1572,21 +1572,30 @@ def create_job_worktree(
         folder.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, "disk", ""
-    # FR #8023: low-disk admission on the destination volume before worktree add.
+    # FR #8023 / FR #9183: low-disk admission on the destination volume before worktree add.
+    # Default floor is 5 GB (FR #9183); override with BOB_JOB_WORKTREE_MIN_FREE_GB.
+    # When low: sweep once (Clear soft-cap + locked retries), then NACK disk-low + one intake.
     try:
-        import shutil as _shutil
+        from job_worktree_lifecycle import (
+            admit_job_worktree_disk,
+            drain_locked_worktree_retries,
+            sweep_job_worktrees_via_clear,
+        )
 
-        min_free_gb = 2.0
-        raw_min = (os.environ.get("BOB_JOB_WORKTREE_MIN_FREE_GB") or "").strip()
-        if raw_min:
-            try:
-                min_free_gb = float(raw_min)
-            except ValueError:
-                min_free_gb = 2.0
-        usage = _shutil.disk_usage(str(folder.parent))
-        free_gb = float(usage.free) / (1024.0 ** 3)
-        if free_gb < min_free_gb:
-            return False, "disk", ""
+        def _sweep() -> None:
+            drain_locked_worktree_retries(install_root=clone or None, log_fn=None)
+            if clone:
+                sweep_job_worktrees_via_clear(clone, keep_path="", log_fn=None)
+
+        nack = admit_job_worktree_disk(
+            folder.parent,
+            job_key=key,
+            machine=str(os.environ.get("COMPUTERNAME") or os.environ.get("BOB_MACHINE") or ""),
+            env=os.environ,
+            sweep_fn=_sweep,
+        )
+        if nack:
+            return False, "disk-low", ""
     except OSError:
         return False, "disk", ""
     except Exception:

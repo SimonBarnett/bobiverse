@@ -5190,9 +5190,21 @@ function Get-BobPointCoord {
     return $Default
 }
 
+function Test-BobTrayIconRectUsable {
+    <#
+      FR #9186: true when IconRect has complete numeric Left/X and Top/Y plus positive size.
+      Empty Left with Width set (UiDiag iconRect=,-, w=32 h=48) is irBad and must not park tip.
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    $r = ConvertTo-BobTrayRect $Value
+    return [bool]$r
+}
+
 function ConvertTo-BobTrayRect {
     param($Value)
     if ($null -eq $Value) { return $null }
+    # FR #9186: treat blank Left/X (or Top/Y) as missing even when Width/Height are set.
     $x = Get-BobPointCoord $Value @('X', 'x', 'Left', 'left') -Default $null
     $y = Get-BobPointCoord $Value @('Y', 'y', 'Top', 'top') -Default $null
     $w = Get-BobPointCoord $Value @('Width', 'width') -Default $null
@@ -5205,6 +5217,7 @@ function ConvertTo-BobTrayRect {
         $bottom = Get-BobPointCoord $Value @('Bottom', 'bottom') -Default $null
         if ($null -ne $bottom -and $null -ne $y) { $h = $bottom - $y }
     }
+    # irBad: any missing axis or non-positive size (empty Left + Width was still src=icon).
     if ($null -eq $x -or $null -eq $y -or $null -eq $w -or $null -eq $h) { return $null }
     if ($w -le 0 -or $h -le 0) { return $null }
     return [pscustomobject]@{
@@ -5215,6 +5228,47 @@ function ConvertTo-BobTrayRect {
         Right  = [int]($x + $w)
         Bottom = [int]($y + $h)
     }
+}
+
+function Test-BobTrayRectIntersectsAny {
+    <#
+      FR #9178: true when $Rect overlaps any area in $Areas (WorkingArea rects).
+      Pure geometry for tip/menu on-screen checks (stale iconRect after explorer recycle).
+    #>
+    param(
+        $Rect,
+        $Areas
+    )
+    $r = ConvertTo-BobTrayRect $Rect
+    if (-not $r) { return $false }
+    foreach ($a in @($Areas)) {
+        $area = ConvertTo-BobTrayRect $a
+        if (-not $area) { continue }
+        if ($r.Right -le $area.X) { continue }
+        if ($r.X -ge $area.Right) { continue }
+        if ($r.Bottom -le $area.Y) { continue }
+        if ($r.Y -ge $area.Bottom) { continue }
+        return $true
+    }
+    return $false
+}
+
+function Get-BobTrayCursorTipPlacement {
+    <#
+      FR #9178: place tip near cursor then clamp to WorkArea (TipRelocateCursor).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$TipWidth,
+        [Parameter(Mandatory = $true)][int]$TipHeight,
+        $Cursor,
+        $WorkArea,
+        [int]$Gap = 12,
+        [int]$Margin = 8
+    )
+    return Get-BobTrayTipPlacement -TipWidth $TipWidth -TipHeight $TipHeight `
+        -IconRect $null -Cursor $Cursor -WorkArea $WorkArea -AlreadyVisible $false `
+        -Gap $Gap -Margin $Margin
 }
 
 function Get-BobTrayTipPlacement {
@@ -5229,7 +5283,9 @@ function Get-BobTrayTipPlacement {
         [int]$CurrentX = 0,
         [int]$CurrentY = 0,
         [int]$Gap = 12,
-        [int]$Margin = 8
+        [int]$Margin = 8,
+        # Optional extra WorkingArea rects (all screens). Stale iconRect outside these is ignored.
+        $ScreenAreas = $null
     )
     if ($AlreadyVisible) {
         return [pscustomobject]@{
@@ -5240,13 +5296,38 @@ function Get-BobTrayTipPlacement {
         }
     }
 
-    $icon = ConvertTo-BobTrayRect $IconRect
+    # FR #9186: incomplete Left/X (irBad) must not become src=icon.
+    $icon = $null
+    if ($null -ne $IconRect) {
+        if (Test-BobTrayIconRectUsable $IconRect) {
+            $icon = ConvertTo-BobTrayRect $IconRect
+        }
+        else {
+            Write-Verbose 'FR #9186 TipPlace: irBad=True incomplete iconRect; using cursor'
+        }
+    }
     $work = ConvertTo-BobTrayRect $WorkArea
     $cx = Get-BobPointCoord $Cursor @('X', 'x')
     $cy = Get-BobPointCoord $Cursor @('Y', 'y')
     $source = 'cursor'
     $x = $cx - $TipWidth
     $y = $cy - $TipHeight - $Gap
+
+    # FR #9178: after explorer recycle, Shell may return a stale iconRect off every
+    # WorkingArea. Prefer cursor placement so tip/menu are not parked off-screen.
+    if ($icon) {
+        $areas = @()
+        if ($work) { $areas += $work }
+        foreach ($a in @($ScreenAreas)) {
+            $ar = ConvertTo-BobTrayRect $a
+            if ($ar) { $areas += $ar }
+        }
+        if ($areas.Count -gt 0 -and -not (Test-BobTrayRectIntersectsAny -Rect $icon -Areas $areas)) {
+            Write-Verbose 'FR #9178 TipPlace: stale iconRect outside WorkingArea; using cursor'
+            $icon = $null
+            $source = 'cursor-stale-icon'
+        }
+    }
 
     if ($icon) {
         $source = 'icon'

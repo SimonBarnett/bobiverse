@@ -1,0 +1,10 @@
+# synthetic:true
+# cli: cursor
+# command: agent models
+# captured: 2026-11-22
+# note: agent.cmd not present on this seat; synthetic listing for parser tests
+Available models
+  - gpt-5.1-codex
+  - gpt-5.1-codex-fast (current)
+  - sonnet-4.5
+  - composer-1
