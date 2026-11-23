@@ -308,13 +308,18 @@ def _inbound() -> list[DocEntry]:
             method="GET",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Fleet Weights agent rows plus CLI options catalog for the tray/forms.",
+            purpose=(
+                "Fleet Weights agent rows plus CLI options catalog for the tray/forms. "
+                "FR #9258: context (256|500) and effort (high|medium|low) are Grok-only; "
+                "Cursor/OpenCode catalog rows may have empty contexts/efforts."
+            ),
             callers="Tray Weights form, Agents/Workers settings, operators.",
             auth="None.",
             request_schema="No body. HEAD returns empty body.",
             response_schema=(
                 'JSON {"agents":[{"agent","cli","model","context","effort"}, ...]} '
-                "(BOB-01 / FR #8820). Includes clis catalog; stale:true when selection model absent."
+                "(BOB-01 / FR #8820 / FR #9258). Includes clis catalog; Grok contexts "
+                "256|500 and efforts high|medium|low; stale:true when selection model absent."
             ),
             example_request="GET https://bob.ntsa.uk/bob/v1/models",
             status_codes="200 JSON; never invents secret fields.",
@@ -322,7 +327,7 @@ def _inbound() -> list[DocEntry]:
             rate_limits="Proxy only.",
             reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05",
+            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05 · FR #9258",
             html_rel="docs/webhooks/models.html",
         ),
         DocEntry(

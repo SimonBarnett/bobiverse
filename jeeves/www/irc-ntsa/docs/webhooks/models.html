@@ -33,16 +33,16 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
 <section id="models-get">
 <h2>Models catalog (GET) <span class="badge">GET /bob/v1/models</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Fleet Weights agent rows plus CLI options catalog for the tray/forms.</p>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Fleet Weights agent rows plus CLI options catalog for the tray/forms. FR #9258: context (256|500) and effort (high|medium|low) are Grok-only; Cursor/OpenCode catalog rows may have empty contexts/efforts.</p>
 <p><strong>Who calls it:</strong> Tray Weights form, Agents/Workers settings, operators.</p>
 <p><strong>Auth (named only):</strong> None.</p>
 <p><strong>Request schema:</strong> No body. HEAD returns empty body.</p>
-<p><strong>Response schema:</strong> JSON {&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]} (BOB-01 / FR #8820). Includes clis catalog; stale:true when selection model absent.</p>
+<p><strong>Response schema:</strong> JSON {&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]} (BOB-01 / FR #8820 / FR #9258). Includes clis catalog; Grok contexts 256|500 and efforts high|medium|low; stale:true when selection model absent.</p>
 <p><strong>Status codes:</strong> 200 JSON; never invents secret fields.</p>
 <p><strong>Retry / idempotency:</strong> Safe GET.</p>
 <p><strong>Rate limits:</strong> Proxy only.</p>
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook rewrite when deployed.</p>
-<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8835 / BOB-05</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8835 / BOB-05 · FR #9258</p>
 <p><strong>Redacted example</strong></p>
 <pre>GET https://bob.ntsa.uk/bob/v1/models</pre>
 </section>
