@@ -12,7 +12,15 @@ from typing import Any
 
 WORKER_CLIS = ("grok", "cursor", "aider", "opencode")
 DEFAULT_EFFORT = "low"
-VALID_EFFORTS = ("low", "medium", "high", "xhigh")
+# FR #9258: Si — effort is high|medium|low only (xhigh is invalid → fallback low).
+VALID_EFFORTS = ("low", "medium", "high")
+DEFAULT_CONTEXT = ""  # Grok CLI default when no flag is available
+# FR #9258: context is 256|500 only, and only for Grok.
+VALID_CONTEXTS = ("256", "500")
+# Verified on flamingo 2026-11-23: grok 1.0.92 --help has --reasoning-effort / --effort
+# and no context/window flag. Seat still starts; status not-passed: unsupported-by-cli.
+GROK_CONTEXT_CLI_FLAG: str | None = None
+GROK_CONTEXT_CLI_VERIFIED = "1.0.92"
 DEFAULT_OPENCODE_FREE = "opencode/deepseek-v4.1-flash-free"
 DEFAULT_OPENCODE_PAID = "opencode-go/deepseek-v4-pro"
 ENV_ACTUAL_EFFORT = "BOB_WORKER_ACTUAL_EFFORT"
@@ -192,10 +200,13 @@ def load_worker_start_config(
     return {
         "workerStartModels": {k: str(models.get(k) or "").strip() for k in WORKER_CLIS},
         "workerStartEffort": {
-            k: normalize_effort(efforts.get(k) or efforts.get("default") or "")
-            for k in WORKER_CLIS
+            "grok": normalize_effort(efforts.get("grok") or efforts.get("default") or ""),
+            **{k: "" for k in WORKER_CLIS if k != "grok"},
         },
-        "workerStartContext": {k: str(contexts.get(k) or "").strip() for k in WORKER_CLIS},
+        "workerStartContext": {
+            "grok": normalize_context(contexts.get("grok") or ""),
+            **{k: "" for k in WORKER_CLIS if k != "grok"},
+        },
         "models": {
             "opencodeFree": str(extra_models.get("opencodeFree") or "").strip(),
             "opencodePaid": str(extra_models.get("opencodePaid") or "").strip(),
@@ -218,11 +229,29 @@ def normalize_effort(raw: object) -> str:
     return ""
 
 
+def normalize_context(raw: object) -> str:
+    """FR #9258: only ``256`` or ``500`` (as strings)."""
+    s = str(raw or "").strip()
+    if s in VALID_CONTEXTS:
+        return s
+    return ""
+
+
 def configured_start_effort(cli: str, cfg: dict[str, Any] | None) -> str:
-    """Saved effort for a CLI, else lowest (never high)."""
+    """Saved effort for Grok, else lowest. Non-Grok: empty (not applicable)."""
+    if _cli(cli) != "grok":
+        return ""
     efforts = (cfg or {}).get("workerStartEffort") or {}
-    got = normalize_effort(efforts.get(_cli(cli)))
+    got = normalize_effort(efforts.get("grok"))
     return got or DEFAULT_EFFORT
+
+
+def configured_start_context(cli: str, cfg: dict[str, Any] | None) -> str:
+    """Saved context for Grok only (256|500); else empty."""
+    if _cli(cli) != "grok":
+        return ""
+    contexts = (cfg or {}).get("workerStartContext") or {}
+    return normalize_context(contexts.get("grok"))
 
 
 def default_opencode_free_model(cfg: dict[str, Any] | None = None) -> str:
@@ -286,8 +315,12 @@ def save_worker_start_settings(
     path: Path | None = None,
     models: dict[str, str] | None = None,
     effort: dict[str, str] | None = None,
+    context: dict[str, str] | None = None,
 ) -> Path:
-    """Merge into tray-models.json (FR #7187). Never wipe unrelated keys."""
+    """Merge into tray-models.json (FR #7187 / #9258). Never wipe unrelated keys.
+
+    FR #9258: context and effort are Grok-only — non-Grok values are dropped on write.
+    """
     p = Path(path) if path else tray_models_path(env=env)
     data: dict[str, Any] = {}
     if p.is_file():
@@ -306,15 +339,47 @@ def save_worker_start_settings(
             if cli in WORKER_CLIS:
                 cur[cli] = str(v or "").strip()
         data["workerStartModels"] = cur
-    if effort:
+    if effort is not None:
         cur_e = data.get("workerStartEffort")
         if not isinstance(cur_e, dict):
             cur_e = {}
         for k, v in effort.items():
             cli = _cli(k)
-            if cli in WORKER_CLIS:
-                cur_e[cli] = normalize_effort(v) or DEFAULT_EFFORT
+            if cli == "grok":
+                cur_e["grok"] = normalize_effort(v) or DEFAULT_EFFORT
+            elif cli in WORKER_CLIS:
+                cur_e[cli] = ""
+        # Drop any leftover non-Grok efforts on write.
+        for cli in WORKER_CLIS:
+            if cli != "grok":
+                cur_e[cli] = ""
         data["workerStartEffort"] = cur_e
+    if context is not None:
+        cur_c = data.get("workerStartContext")
+        if not isinstance(cur_c, dict):
+            cur_c = {}
+        for k, v in context.items():
+            cli = _cli(k)
+            if cli == "grok":
+                cur_c["grok"] = normalize_context(v)
+            elif cli in WORKER_CLIS:
+                cur_c[cli] = ""
+        for cli in WORKER_CLIS:
+            if cli != "grok":
+                cur_c[cli] = ""
+        data["workerStartContext"] = cur_c
+    elif "workerStartContext" in data and isinstance(data.get("workerStartContext"), dict):
+        # Even when context= not passed, scrub non-Grok on any settings write that
+        # also touches effort/models (callers that only save models still scrub below).
+        pass
+    # Always scrub non-Grok context/effort maps when present.
+    for key in ("workerStartEffort", "workerStartContext"):
+        block = data.get(key)
+        if isinstance(block, dict):
+            for cli in WORKER_CLIS:
+                if cli != "grok":
+                    block[cli] = ""
+            data[key] = block
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return p
@@ -481,6 +546,46 @@ def launch_argv_with_effort(kind: str, argv: list[str], effort: str | None = Non
 
 
 
+_context_intake_last = 0.0
+
+
+def _warn_settings(msg: str) -> None:
+    import sys
+
+    try:
+        sys.stderr.write(f"WARN FR #9258 {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _file_grok_context_unsupported_intake() -> bool:
+    """Deduped intake when Grok context is requested but CLI has no flag (1.0.92)."""
+    global _context_intake_last
+    import time
+
+    now = time.time()
+    if now - _context_intake_last < 3600.0:
+        return False
+    _context_intake_last = now
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            (
+                "Grok context requested but grok CLI has no context flag "
+                f"(verified {GROK_CONTEXT_CLI_VERIFIED}; GROK_CONTEXT_CLI_FLAG=None). "
+                "Seat starts without context argv (FR #9258)."
+            ),
+            site="grok-context-unsupported-by-cli",
+        )
+        return True
+    except Exception:
+        _warn_settings("context unsupported-by-cli (intake helper unavailable)")
+        return False
+
+
 def cli_settings_args(
     kind: str,
     *,
@@ -489,10 +594,13 @@ def cli_settings_args(
     context: str = "",
     mode: str = "agent",
 ) -> tuple[list[str], dict[str, str]]:
-    """BOB-15: capability-aware setting argv + per-setting status.
+    """BOB-15 / FR #9258: capability-aware setting argv + per-setting status.
 
-    Status values: ``passed``, ``not-passed: unsupported``, ``not-passed: invalid``,
-    ``not-passed: empty``.
+    Status values: ``passed``, ``not-passed: invalid``, ``not-passed: empty``,
+    ``not-passed: unsupported-by-cli``, ``not-applicable``.
+
+    Context and effort apply **only** to Grok. Cursor / OpenCode / Aider get
+    ``not-applicable`` and never receive context/effort argv.
     """
     cli = _cli(kind)
     mid = concrete_model_id(model) or str(model or "").strip()
@@ -504,45 +612,59 @@ def cli_settings_args(
         model_status = "passed"
     else:
         model_status = "not-passed: empty"
+
+    args: list[str] = []
+    status = {"model": model_status, "effort": "not-applicable", "context": "not-applicable"}
+
+    if cli != "grok":
+        if cli == "cursor" and model_status == "passed":
+            args.extend(["--model", mid])
+        elif cli == "opencode" and model_status == "passed":
+            args.extend(["-m", mid])
+        elif cli == "aider" and model_status == "passed":
+            args.extend(["--model", mid])
+        elif cli not in WORKER_CLIS:
+            status["model"] = "not-passed: unsupported"
+        # Non-Grok: never pass context/effort (FR #9258).
+        _ = mode
+        return args, status
+
+    # --- Grok ---
     eff = normalize_effort(effort)
-    if str(effort or "").strip() and not eff:
+    raw_effort = str(effort or "").strip()
+    if raw_effort and not eff:
         effort_status = "not-passed: invalid"
+        _warn_settings(f"invalid effort={raw_effort!r}; falling back to {DEFAULT_EFFORT}")
+        eff = DEFAULT_EFFORT
     elif eff:
         effort_status = "passed"
     else:
         effort_status = "not-passed: empty"
-    ctx = str(context or "").strip()
-    # No verified context flag on grok/cursor/opencode yet.
-    context_status = "not-passed: unsupported" if ctx else "not-passed: empty"
+        eff = DEFAULT_EFFORT
 
-    args: list[str] = []
+    raw_ctx = str(context or "").strip()
+    ctx = normalize_context(raw_ctx)
+    if raw_ctx and not ctx:
+        context_status = "not-passed: invalid"
+        _warn_settings(f"invalid context={raw_ctx!r}; using Grok CLI default (no argv)")
+    elif ctx:
+        if GROK_CONTEXT_CLI_FLAG:
+            context_status = "passed"
+        else:
+            context_status = "not-passed: unsupported-by-cli"
+            _file_grok_context_unsupported_intake()
+    else:
+        context_status = "not-passed: empty"
+
     status = {"model": model_status, "effort": effort_status, "context": context_status}
 
-    if cli == "grok":
-        if model_status == "passed":
-            args.extend(["--model", mid])
-        else:
-            status["model"] = model_status if model_status != "not-passed: empty" else "not-passed: empty"
-        if effort_status == "passed":
-            args.extend(["--reasoning-effort", eff])
-        elif str(effort or "").strip():
-            status["effort"] = effort_status
-    elif cli == "cursor":
-        if model_status == "passed":
-            args.extend(["--model", mid])
-        status["effort"] = "not-passed: unsupported" if str(effort or "").strip() else "not-passed: empty"
-    elif cli == "opencode":
-        if model_status == "passed":
-            # Outer helper uses -m; callers may re-map.
-            args.extend(["-m", mid])
-        status["effort"] = "not-passed: unsupported" if str(effort or "").strip() else "not-passed: empty"
-    elif cli == "aider":
-        if model_status == "passed":
-            args.extend(["--model", mid])
-        status["effort"] = "not-passed: unsupported" if str(effort or "").strip() else "not-passed: empty"
-    else:
-        status["model"] = "not-passed: unsupported"
-        status["effort"] = "not-passed: unsupported"
+    if model_status == "passed":
+        args.extend(["--model", mid])
+    # Always pass a normalised effort for Grok (chosen or default low).
+    args.extend(["--reasoning-effort", eff])
+    if context_status == "passed" and GROK_CONTEXT_CLI_FLAG and ctx:
+        args.extend([GROK_CONTEXT_CLI_FLAG, ctx])
+
     _ = mode  # reserved for Plan vs agent wrappers
     return args, status
 
@@ -560,8 +682,12 @@ def resolved_start_settings(
     efforts = (c or {}).get("workerStartEffort") or {}
     contexts = (c or {}).get("workerStartContext") or {}
     sources = (c or {}).get("settings_source") or {}
-    effort = normalize_effort(efforts.get(cli)) or configured_start_effort(cli, c)
-    context = str(contexts.get(cli) or "").strip()
+    if cli == "grok":
+        effort = normalize_effort(efforts.get("grok")) or configured_start_effort("grok", c)
+        context = normalize_context(contexts.get("grok"))
+    else:
+        effort = ""
+        context = ""
     source = str(sources.get(cli) or "local")
     if env_model_pin(cli, env):
         source = "env-pin"

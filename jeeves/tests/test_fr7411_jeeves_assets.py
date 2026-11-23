@@ -108,6 +108,7 @@ def test_fr7411_install_copies_assets_and_excludes_rewrite(tmp_path: Path):
         str(site),
         "-Backend",
         "http://127.0.0.1:7700",
+        "-SkipBackendProbe",
         "-PublishWww",
     ]
     r = __import__("subprocess").run(

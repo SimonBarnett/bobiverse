@@ -30,7 +30,7 @@ Harvest keeps writing `SKILL.md` files. The worker must be able to use that libr
 - Input is one job line (the IRC text the worker already has).
 - Score nodes by description and by skill-id token overlap (FR #7079). Take the matches, then add every `depends_on` ancestor (S2).
 - Always include the core ids named by the launch stub when they exist in the index.
-- Stop at the byte budget. Return skipped ids instead of their bodies (S4).
+- Stop at the byte budget for the resolve *response* (metadata). Skip any single body over the cap (S4). Do not sum SKILL.md sizes across the depends_on closure when packing matched ids (FR #9330: a large MRB seed must not drop job-irc).
 - A second call with a different job line returns that job's closure. It does not keep the previous job's extra skills.
 
 ## get_skill

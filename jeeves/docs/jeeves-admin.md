@@ -37,6 +37,21 @@ Home migration (`bob_home.migrate_legacy`) copies legacy `~\.agentic-irc-*` into
 
 Admin-sealed `identity.json` under LocalSystem → `CryptUnprotectData failed`. Prefer fixing ObjectName. Interim: park as `identity.json.admin-dpapi.bak` so LocalSystem mints a fresh identity (SEAL key changes).
 
+## Skill-dag MCP on the chair install (FR #9136)
+
+Every Jeeves pack/install ships `scripts\skill_dag_mcp.py` (+ `skill_dag_index.py`, `skill_dag_bound.py`) under the install root and writes `<InstallRoot>\.cursor\mcp.json` with a skill-dag stdio server:
+
+- `command` = install python
+- `args` = `<InstallRoot>\scripts\skill_dag_mcp.py --root <InstallRoot>\.grok\skills`
+
+Do not borrow `C:\ai\bob\scripts\skill_dag_mcp.py`. After Install/Sync, smoke:
+
+```powershell
+python <InstallRoot>\scripts\skill_dag_mcp.py --root <InstallRoot>\.grok\skills --once status
+```
+
+Expect `node_count` greater than 0 when skills are present. Monitor refreshes the tracking board, then re-runs `--once status`.
+
 ## Related
 
 - Skill: `.grok/skills/bobiverse-jeeves/SKILL.md`

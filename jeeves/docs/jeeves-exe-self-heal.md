@@ -39,6 +39,12 @@ IIS ARR -> still proxies to 127.0.0.1:7700
 - Digest lock: chair updates and HTTP `/report` share an in-process digest mutex; break foreign locks only for other PIDs.
 - Refuse second instance: bind `:7700` exclusive + named Windows mutex `Global\BobiverseJeeves-<digestHomeHash>`; second start exits **2** with JSON `{ok:false,err:"already_running"}`.
 
+### Listener self-exit and first restart (FR #7618 / #9236)
+
+- The HTTP watchdog self-probes loopback `/health`. Consecutive failures exit non-zero so NSSM restarts.
+- Before exit the process logs `free_mb=` and the last exception type. When free RAM is below `BOB_CALLBACK_LOW_MEM_MB` (default 512), it backs off (`BOB_CALLBACK_LOW_MEM_BACKOFF_S` / `BOB_CALLBACK_LOW_MEM_MAX_DEFER`) instead of crash-looping, then raises a deduplicated intake issue.
+- Prior-clean at IRC connect retries each process scan (`BOB_PRIOR_SCAN_ATTEMPTS` default 3, `BOB_PRIOR_SCAN_BACKOFF_S` default 2s). A transient CIM failure no longer aborts the first restart with `prior-clean scan-failed` / `aborted connect`. Persistent scan failure stays fail-closed.
+
 ## CLI
 
 ```text

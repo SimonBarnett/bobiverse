@@ -37,6 +37,8 @@ def _run_sitekit(site: Path) -> subprocess.CompletedProcess[str]:
         "-SiteKit",
         "-Backend",
         "http://127.0.0.1:7700",
+        # FR #9246: unit runs must not wait on a live BobCallback.
+        "-SkipBackendProbe",
     ]
     return subprocess.run(args, capture_output=True, text=True, timeout=180, check=False)
 
