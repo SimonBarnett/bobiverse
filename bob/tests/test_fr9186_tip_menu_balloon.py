@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""FR #9186: TipForm TopMost must not block menu; empty Left is irBad; BalloonTip proof."""
+"""FR #9186: TipForm TopMost must not block menu; empty Left is irBad; cursor-forced tip.
+
+FR #9195: left-click BalloonTip proof removed — pool dialog only.
+"""
 from __future__ import annotations
 
 import os
@@ -34,7 +37,7 @@ def test_fr9186_hover_rejects_empty_left():
     assert "return $null" in fn
 
 
-def test_fr9186_watch_cursor_forced_balloon_hide():
+def test_fr9186_watch_cursor_forced_hide_no_status_balloon():
     w = _txt(WATCH)
     assert "FR #9186" in w
     # Park tip with cursor-forced placement (no iconRect).
@@ -43,9 +46,13 @@ def test_fr9186_watch_cursor_forced_balloon_hide():
     card = w[card_start:card_end]
     assert "cursor-forced" in card or "Get-BobTrayCursorTipPlacement" in card
     assert "IconRect $null" in card or "-IconRect $null" in card
-    # BalloonTip proof on left-click.
-    assert "ShowBalloonTip" in w
-    assert "BalloonTip" in w or "balloon" in w.lower()
+    # FR #9195: no BalloonTip proof on normal left-click status path.
+    assert "Left-click ok (FR #9186)" not in w
+    assert "BalloonTip left-click proof" not in w
+    # Pool dialog path remains.
+    assert "Invoke-BobTrayStatus" in w
+    assert "Show-BobTrayCard" in w
+    assert "ContextMenuStrip = $menu" in w or "ContextMenuStrip=$menu" in w.replace(" ", "")
     # Hide tip before menu; Opening must clear TopMost tip.
     open_idx = w.index("Add_Opening")
     open_snip = w[open_idx : open_idx + 900]

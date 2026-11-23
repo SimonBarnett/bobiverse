@@ -36,19 +36,35 @@ function Test-BobTraySeatsOff {
     return ($null -ne $t -and [int]$t -eq 0)
 }
 
+function Test-BobTrayEmptyOnlineDisabled {
+    <#
+    FR #9142 / #9195: operator ALWAYS starts seats via TipForm Agents.
+    Presence of run/startworker/empty-online.disabled zeros empty-online and under-cap fill.
+    TipForm Agents menu clicks are unchanged (seat_target can stay at 2).
+    #>
+    param([string]$Root = '')
+    if (-not $Root) { return $false }
+    try {
+        return [bool](Test-Path -LiteralPath (Join-Path $Root 'run\startworker\empty-online.disabled'))
+    } catch { return $false }
+}
+
 function Get-BobTrayEmptyOnlineFillCount {
     <#
     FR #8429: an online shop with zero agent seats should be filled to the hard cap.
     FR #3180 still owns a partial heal (1 of 2). Seats-off, a pending req, or a
     recent fill stamp means do not write another request.
+    FR #9142 / #9195: empty-online.disabled zeros fill count.
     #>
     param(
         [int]$LiveAgents = 0,
         [int]$PendingReqs = 0,
         [bool]$SeatsOff = $false,
         [bool]$Cooldown = $false,
-        [int]$Cap = 2
+        [int]$Cap = 2,
+        [string]$Root = ''
     )
+    if ($Root -and (Test-BobTrayEmptyOnlineDisabled -Root $Root)) { return 0 }
     if ($SeatsOff -or $Cooldown) { return 0 }
     if ($LiveAgents -gt 0 -or $PendingReqs -gt 0) { return 0 }
     if ($Cap -lt 1) { return 0 }
@@ -73,7 +89,9 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
     <#
     FR #9000: when grok weekly remaining is known 0, empty-online fill pins
     agent=opencode slot=free so auto does not burn the 2-seat cap on hard-402.
-    Unknown grok remaining keeps auto. Known free remaining 0 keeps auto.
+    FR #9142 / #9195: when grok remaining is known 0 and OpenCode free is not
+    viable (free=0 or no free leaf), return skip=true reason=no-fuel instead of
+    falling through to kind=auto -> Grok. Unknown grok remaining keeps auto.
     Does not invent fuel numbers. Menu/auto elsewhere is unchanged.
     #>
     param(
@@ -81,6 +99,7 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
         $OpencodeFreeRemaining,
         [string]$Root = ''
     )
+    $ok = [pscustomobject]@{ agent = ''; slot = ''; skip = $false; reason = '' }
     if (-not $PSBoundParameters.ContainsKey('GrokRemaining')) {
         $GrokRemaining = $null
         if (Get-Command Get-BobTrayGrokFuelRemaining -ErrorAction SilentlyContinue) {
@@ -88,13 +107,13 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
         }
     }
     if ($null -eq $GrokRemaining -or [string]$GrokRemaining -eq '') {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $ok
     }
     try { $g = [int]$GrokRemaining } catch {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $ok
     }
     if ($g -ne 0) {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $ok
     }
 
     if (-not $PSBoundParameters.ContainsKey('OpencodeFreeRemaining')) {
@@ -103,7 +122,7 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
     if ($null -ne $OpencodeFreeRemaining -and [string]$OpencodeFreeRemaining -ne '') {
         try {
             if ([int]$OpencodeFreeRemaining -lt 1) {
-                return [pscustomobject]@{ agent = ''; slot = '' }
+                return [pscustomobject]@{ agent = ''; slot = ''; skip = $true; reason = 'no-fuel' }
             }
         } catch { }
     }
@@ -113,9 +132,9 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
         try { $leaf = [string](Resolve-BobTrayOpencodeSlotModel -Root $Root -Slot 'free') } catch { $leaf = '' }
     }
     if (-not $leaf) {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return [pscustomobject]@{ agent = ''; slot = ''; skip = $true; reason = 'no-fuel' }
     }
-    return [pscustomobject]@{ agent = 'opencode'; slot = 'free' }
+    return [pscustomobject]@{ agent = 'opencode'; slot = 'free'; skip = $false; reason = '' }
 }
 
 function Get-BobTrayUnderCapFillCount {

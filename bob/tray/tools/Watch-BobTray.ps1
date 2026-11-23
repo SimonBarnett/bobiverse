@@ -4810,13 +4810,7 @@ $notify.Add_MouseClick({
         try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
-            # FR #9186: BalloonTip proof that left-click reached NotifyIcon (hotpatch evidence).
-            try {
-                $notify.ShowBalloonTip(2500, 'Bob Systray', 'Left-click ok (FR #9186)', [System.Windows.Forms.ToolTipIcon]::Info)
-                Write-TrayLog 'BalloonTip left-click proof'
-            } catch {
-                Write-TrayLog ('BalloonTip left-click error: ' + $_.Exception.Message)
-            }
+            # FR #9195: pool dialog only — do not ShowBalloonTip on normal status click (operator: no bubbles).
             # FR #9170: dismiss stuck ContextMenuStrip then show TipForm (was StatusSkipped while Visible).
             if (($menu -and $menu.Visible) -or $script:menuOpenSticky) {
                 Write-TrayLog 'StatusMenuDismiss'
@@ -5237,13 +5231,26 @@ $startWorkerTimer.Add_Tick({
                                 $nage = ([datetime]::UtcNow - (Get-Item -LiteralPath $nudge).LastWriteTimeUtc).TotalSeconds
                                 if ($nage -ge 0 -and $nage -lt 120) { $cool = $false }
                             }
-                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
+                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Root $RepoRoot
+                            # FR #9195 / #9142: operator ALWAYS starts seats — honour empty-online.disabled.
+                            if ((Get-Command Test-BobTrayEmptyOnlineDisabled -ErrorAction SilentlyContinue) -and (Test-BobTrayEmptyOnlineDisabled -Root $RepoRoot)) {
+                                if ($fill -gt 0) { Write-TrayLog ('empty-online disabled: skip fill was={0}' -f $fill) }
+                                $fill = 0
+                            }
                             if ($fill -gt 0) {
                                 # FR #9000: pin opencode free when grok remaining is known 0.
-                                $choice = [pscustomobject]@{ agent = ''; slot = '' }
+                                # FR #9142: skip=true when no fuel (do not fall through to kind=auto Grok).
+                                $choice = [pscustomobject]@{ agent = ''; slot = ''; skip = $false; reason = '' }
                                 if (Get-Command Get-BobTrayEmptyOnlineFillAgentChoice -ErrorAction SilentlyContinue) {
                                     try { $choice = Get-BobTrayEmptyOnlineFillAgentChoice -Root $RepoRoot } catch { }
                                 }
+                                if ($choice.skip) {
+                                    Write-TrayLog ('empty-online skip: {0}' -f $(if ($choice.reason) { $choice.reason } else { 'no-fuel' }))
+                                    Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                    $fill = 0
+                                }
+                            }
+                            if ($fill -gt 0) {
                                 $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                 for ($i = 0; $i -lt $fill; $i++) {
                                     $rid = 'empty-{0}-{1}' -f $now, $i
@@ -5264,6 +5271,10 @@ $startWorkerTimer.Add_Tick({
                             if ($fill -eq 0) {
                                 $offerable = [int](Get-BobTrayCachedOfferableCount)
                                 $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable
+                                if ((Get-Command Test-BobTrayEmptyOnlineDisabled -ErrorAction SilentlyContinue) -and (Test-BobTrayEmptyOnlineDisabled -Root $RepoRoot)) {
+                                    if ($under -gt 0) { Write-TrayLog ('empty-online disabled: skip under-cap was={0}' -f $under) }
+                                    $under = 0
+                                }
                                 if ($under -gt 0) {
                                     $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                     $rid = 'undercap-{0}' -f $now
