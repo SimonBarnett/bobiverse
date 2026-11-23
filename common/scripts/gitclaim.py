@@ -237,11 +237,20 @@ OPS_MONITOR_TRACKER_BODY_RE = re.compile(
 # would false-positive. ``owner-missing`` is also labels-only (FR #3661 / class of
 # #987): remediation PRs that *mention* the hold-label name must stay offerable as
 # MRB; real holds are gated by HARVEST_OWNER_MISSING_HOLD_TITLE_RE + the label itself.
+# FR #9424: never match ``fr-digest`` via title text — only real labels +
+# line-anchored ``Kind: fr-digest`` (product FR/MRB titles often name the feature).
 SKIP_FR_LABELS_IN_TEXT = frozenset(
     lab
     for lab in SKIP_FR_LABELS
     if lab
-    not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
+    not in {
+        "mrb",
+        "needs-human",
+        "blocked",
+        "release-gate",
+        "owner-missing",
+        "fr-digest",  # FR #9424: title feature names must not label_text-skip
+    }
 )
 
 # FR #3928 / #9082: PR merge/offer holds. ``hold`` / ``on-hold`` are issues-only
@@ -720,8 +729,37 @@ def find_open_fr_row(doc: dict | None, repo: str, num: int) -> dict | None:
     return None
 
 
+def _github_issue_dict_as_fr_row(repo: str, num: int, issue: dict) -> dict:
+    """Synthetic FR row from a GitHub issue dict for BOB-G1 digest recognition (FR #9418)."""
+    labels = issue.get("labels") or ()
+    return {
+        "repo": str(repo or "").strip(),
+        "task": "FR",
+        "id": f"#{int(num)}",
+        "state": str(issue.get("state") or "open").strip().lower() or "open",
+        "title": str(issue.get("title") or ""),
+        "body": str(issue.get("body") or ""),
+        "labels": labels,
+        "event": "issues",
+        "line": f"FR {repo}#{int(num)}",
+        "url": str(issue.get("html_url") or f"https://github.com/{repo}/issues/{int(num)}"),
+    }
+
+
+def depends_issue_fetch_checker(fetch_issue=None):
+    """Unbudgeted GitHub issue dict fetch for BOB-G1 when digests are not queued (FR #9418).
+
+    Mirrors ``depends_issue_open_checker``: test fakes (no ``.budget``) pass through;
+    otherwise default to ``fetch_github_issue_dict`` so !bored budget 0 still resolves
+    fr-digest / hold labels for Depends-on refs absent from the local FR queue.
+    """
+    if fetch_issue is not None and getattr(fetch_issue, "budget", None) is None:
+        return fetch_issue
+    return lambda repo, num: fetch_github_issue_dict(repo, num)
+
+
 def _bob_g1_digest_gate_for_pair(
-    doc: dict, repo: str, oid: str
+    doc: dict, repo: str, oid: str, *, issue_fetch=None
 ) -> str | None:
     """BOB-G1 / FR #8837 bob_g1_skip_held_digest (+ BOB-G3 Digest flag).
 
@@ -729,6 +767,10 @@ def _bob_g1_digest_gate_for_pair(
     it is an unheld digest (``digest`` / ``fr-digest`` label or ``Kind:`` stamp;
     caller must not treat OPEN as blocking); None when the row is absent or has
     no digest recognition.
+
+    FR #9418 ``bob_g1_live_digest_absent_queue``: when the digest is not in
+    unaccepted/accepted, ``issue_fetch`` (GitHub issue dict) still resolves labels /
+    Kind so children are not wrongly blocked as ``depends-open``.
     """
     raw = str(oid or "").strip().lstrip("#")
     try:
@@ -736,6 +778,13 @@ def _bob_g1_digest_gate_for_pair(
     except ValueError:
         return None
     dep = find_open_fr_row(doc, repo, num)
+    if dep is None and issue_fetch is not None:
+        try:
+            issue = issue_fetch(repo, str(num))
+        except Exception:
+            issue = None
+        if isinstance(issue, dict):
+            dep = _github_issue_dict_as_fr_row(repo, num, issue)
     if dep is None:
         return None
     labs = _depend_row_label_names(dep)
@@ -969,6 +1018,7 @@ def row_depends_open_reason(
     *,
     issue_open=None,
     doc: dict | None = None,
+    issue_fetch=None,
 ) -> str | None:
     """BOB-D3 / BOB-D5 + BOB-G1 digest go-gate.
 
@@ -982,6 +1032,9 @@ def row_depends_open_reason(
       `issue_open` False / unset), returns None so the FR is offerable again.
     - FR #8754: callers should pass ``depends_issue_open_checker(...)`` so OPEN
       GitHub issues block even when they are not local queue keys.
+    - FR #9418: when the digest is OPEN on GitHub but absent from the local queue,
+      pass ``issue_fetch`` / ``depends_issue_fetch_checker`` so G1 still sees
+      fr-digest / hold (else live OPEN wrongly becomes ``depends-open``).
     """
     if _canon_task(row) != "FR":
         return None
@@ -991,14 +1044,22 @@ def row_depends_open_reason(
     if not refs:
         return None
     keys = open_keys if open_keys is not None else set()
+    fetch = issue_fetch
     for repo, num in refs:
+        g1 = _bob_g1_digest_gate_for_pair(
+            doc if isinstance(doc, dict) else {}, repo, str(num), issue_fetch=fetch
+        )
+        if g1 == DEPENDS_HELD_REASON:
+            return DEPENDS_HELD_REASON
+        if g1 == "ok-fr-digest":
+            # Unheld digest (local queue or live GitHub) satisfies while OPEN.
+            continue
         dep = find_open_fr_row(doc, repo, num) if doc is not None else None
         if dep is not None:
             labs = _depend_row_label_names(dep)
             if "hold" in labs or "on-hold" in labs:
                 return DEPENDS_HELD_REASON
             if row_is_digest_issue(dep):
-                # Unheld digest (label or Kind:) satisfies while OPEN (BOB-G1/G3).
                 continue
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
@@ -1006,6 +1067,10 @@ def row_depends_open_reason(
             continue
         try:
             if bool(issue_open(repo, str(num))):
+                # Live OPEN and not a G1 digest => ordinary depends-open (BOB-D3).
+                # Callers (offer/assign) must pass issue_fetch via
+                # depends_issue_fetch_checker so unqueued digests resolve without
+                # a surprise live GET inside unit tests.
                 return DEPENDS_OPEN_REASON
         except Exception:
             # Unknown / budget / network: fail closed (BOB-D5 / FR #8809).
@@ -2130,8 +2195,14 @@ def issue_skip_fr_reason(
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
     state: str = "",
+    scan_label_text: bool = True,
 ) -> str | None:
-    """FR #180 / #258: why an issue must not become (or stay) an assignable FR row; None = ok."""
+    """FR #180 / #258: why an issue must not become (or stay) an assignable FR row; None = ok.
+
+    ``scan_label_text`` (default True): when labels are empty, scan the title for
+    legacy board-label tokens. FR #9424: callers pass False for MRB/FIX PR rows so
+    titles that mention ``fr-digest`` (feature names) are not ``label_text`` skips.
+    """
     if (state or "").strip().lower() == "closed":
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
@@ -2181,7 +2252,7 @@ def issue_skip_fr_reason(
     # title/line text (empty labels). Never run this scan when GitHub/labels are present
     # (false-positive on titles like "skip for stale mrb-home rows" / bodies saying
     # "evergreen"). Title/line only ΓÇö never the body.
-    if not labs:
+    if not labs and scan_label_text:
         title_l = title_s.lower()
         text_hits = []
         for lab in sorted(SKIP_FR_LABELS_IN_TEXT, key=len, reverse=True):
@@ -2219,11 +2290,16 @@ def row_skip_fr_reason(row: dict) -> str | None:
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
     # mrb-home / harvest title skips still fire when ``title`` was never stamped.
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    task = _canon_task(row)
+    # FR #9424: MRB/FIX (and PR-shaped) rows often have labels=[]; never treat a
+    # title that mentions fr-digest / board tokens as skip_fr.
+    scan_label_text = task == "FR" and not _row_is_pr_shaped_issue(row)
     return issue_skip_fr_reason(
         title=title,
         body=str(row.get("body") or ""),
         labels=tuple(str(x) for x in labels),
         state=str(row.get("state") or ""),
+        scan_label_text=scan_label_text,
     )
 
 
@@ -12351,6 +12427,8 @@ def offer_focus_top(
     # FR #8754: Depends-on live OPEN check is unbudgeted — prereqs are often OPEN on
     # GitHub while absent from the local FR queue; zero !bored budget must not skip them.
     depends_issue_open = depends_issue_open_checker(issue_open)
+    # FR #9418: unbudgeted issue dict fetch for G1 when digests are not queued.
+    depends_issue_fetch = depends_issue_fetch_checker(fetch_issue)
     # FR #9411: CLOSED FR live check is also unbudgeted — BORED_GITHUB_CALL_BUDGET=0
     # otherwise never fires and CLOSED ops trackers stay offerable (class of #9376).
     fr_closed_issue_open = depends_issue_open_checker(issue_open)
@@ -12595,7 +12673,11 @@ def offer_focus_top(
                     return None
                 # BOB-D3 / FR #8807 + BOB-G1 / FR #8837 + FR #8754 live GitHub OPEN.
                 if row_depends_open_reason(
-                    cand, open_dep_keys, issue_open=depends_issue_open, doc=doc
+                    cand,
+                    open_dep_keys,
+                    issue_open=depends_issue_open,
+                    doc=doc,
+                    issue_fetch=depends_issue_fetch,
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -12911,6 +12993,7 @@ def offer_top(
     pr_exists=None,
     is_pull=None,
     issue_open=None,
+    fetch_issue=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
     import time as _time
@@ -12918,6 +13001,8 @@ def offer_top(
     now_f = _time.time() if now is None else float(now)
     budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
     depends_issue_open = depends_issue_open_checker(issue_open)
+    # FR #9418: unbudgeted issue dict fetch for G1 when digests are not queued.
+    depends_issue_fetch = depends_issue_fetch_checker(fetch_issue)
     # FR #9411: unbudgeted CLOSED FR check (budget 0 would otherwise never fire).
     fr_closed_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
@@ -12996,7 +13081,11 @@ def offer_top(
                     i += 1
                     continue
                 if row_depends_open_reason(
-                    row, open_dep_keys_top, issue_open=depends_issue_open, doc=doc
+                    row,
+                    open_dep_keys_top,
+                    issue_open=depends_issue_open,
+                    doc=doc,
+                    issue_fetch=depends_issue_fetch,
                 ):
                     i += 1
                     continue
@@ -16479,11 +16568,13 @@ def assign_row(
             if dep_why:
                 return "refused", f"row blocked: {dep_why}"
             # FR #8754: live GitHub OPEN for Depends-on refs not in the local FR queue.
+            # FR #9418: also fetch issue dict so unheld fr-digest absent from queue is G1-ok.
             live_dep = row_depends_open_reason(
                 cand,
                 open_fr_issue_keys(doc),
                 issue_open=depends_issue_open_checker(issue_open),
                 doc=doc,
+                issue_fetch=depends_issue_fetch_checker(fetch_issue),
             )
             if live_dep:
                 return "refused", f"row blocked: {live_dep}"
