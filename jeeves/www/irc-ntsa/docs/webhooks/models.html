@@ -87,16 +87,16 @@ Content-Type: application/json
 
 <section id="models-refresh">
 <h2>Models refresh (POST) <span class="badge">POST /bob/v1/models/refresh</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).</p>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Ask online Bob ears to re-report CLI model lists and return per-CLI status from reporters (FR #9250). Chair does not shell out to grok/agent/opencode.</p>
 <p><strong>Who calls it:</strong> Operators / tray refresh.</p>
 <p><strong>Auth (named only):</strong> Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.</p>
 <p><strong>Request schema:</strong> Empty body or {&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]}.</p>
-<p><strong>Response schema:</strong> 200 JSON {&quot;clis&quot;:{cli:{&quot;models&quot;:[...],&quot;refreshed_at&quot;}},&quot;refresh&quot;:{cli:{&quot;status&quot;:&quot;refreshed|failed&quot;,&quot;added&quot;,&quot;removed&quot;,&quot;reason&quot;}}}; failed CLI keeps prior catalog; selections unchanged.</p>
-<p><strong>Status codes:</strong> 200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.</p>
-<p><strong>Retry / idempotency:</strong> Safe to retry; per-CLI fail-closed; second call inside 60s returns 429 with no change.</p>
+<p><strong>Response schema:</strong> 200 JSON {&quot;clis&quot;:{cli:{&quot;models&quot;:[...],&quot;refreshed_at&quot;,&quot;machines&quot;}},&quot;refresh&quot;:{cli:{&quot;status&quot;:&quot;ok|stale|no_reporter&quot;,&quot;machines&quot;,&quot;refreshed_at&quot;}},&quot;wanted_at&quot;,&quot;mode&quot;:&quot;ear_reporters&quot;}; selections unchanged. Hand-loaded models-valid-combos.json remains a valid override/fallback.</p>
+<p><strong>Status codes:</strong> 200; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.</p>
+<p><strong>Retry / idempotency:</strong> Safe to retry; second call inside 60s returns 429 with no change.</p>
 <p><strong>Rate limits:</strong> One attempt per CLI per 60s (in-memory; restart resets).</p>
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).</p>
-<p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8820</p>
+<p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_ear_report.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #9250 / FR #8820</p>
 <p><strong>Redacted example</strong></p>
 <pre>POST https://bob.ntsa.uk/bob/v1/models/refresh</pre>
 </section>

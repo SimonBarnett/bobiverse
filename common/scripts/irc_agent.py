@@ -1238,6 +1238,9 @@ class Client:
         self._bobiverse_last_tray: dict[str, float] = {}
         self._bobiverse_pull_last = 0.0
         self._digest_fuel_last = 0.0  # FR #6141 ear fuel publish tick
+        self._models_cli_last = 0.0  # FR #9250 ear models CLI report tick
+        self._models_cli_worker = None
+        self._models_cli_force = True  # startup always reports once
         self._fuel_worker = None  # FR #7839 in-flight publish; a hang must not stop the loop
         self._fuel_worker_started = 0.0
         self._fuel_stall_reported = False
@@ -3702,6 +3705,69 @@ class Client:
         self._fuel_worker = threading.Thread(target=_run, name="digest-fuel", daemon=True)
         self._fuel_worker.start()
 
+    def _maybe_publish_models_cli(self) -> None:
+        """FR #9250: fleet bob-ear POSTs local grok/cursor/opencode model lists.
+
+        At most once per hour, plus startup and when chair stamps refresh-wanted.
+        Never runs on the chair nick. Never puts tokens in the payload.
+        """
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        mid = self._local_machine_id()
+        if not mid:
+            return
+        try:
+            import models_ear_report
+        except Exception:
+            return
+        interval = models_ear_report.ear_interval_s()
+        now = time.time()
+        force = bool(getattr(self, "_models_cli_force", False))
+        wanted = models_ear_report.load_refresh_wanted_at(self.home)
+        wanted_ts = None
+        if wanted:
+            try:
+                from datetime import datetime
+
+                w = wanted[:-1] + "+00:00" if wanted.endswith("Z") else wanted
+                wanted_ts = datetime.fromisoformat(w).timestamp()
+            except Exception:
+                wanted_ts = None
+        last = float(getattr(self, "_models_cli_last", 0.0) or 0.0)
+        if (
+            not force
+            and last > 0.0
+            and (now - last) < interval
+            and (wanted_ts is None or wanted_ts <= last)
+        ):
+            return
+        worker = getattr(self, "_models_cli_worker", None)
+        if worker is not None and worker.is_alive():
+            return
+        self._models_cli_last = now
+        self._models_cli_force = False
+
+        def _run() -> None:
+            try:
+                code = models_ear_report.publish_local_models_cli_report(self.home, mid)
+            except Exception as exc:  # noqa: BLE001
+                info(f"INFO models-cli publish skip: {type(exc).__name__}")
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report("bob-ear", exc, site="models-cli-publish")
+                except Exception:
+                    pass
+                return
+            info(f"INFO models-cli publish code={code}")
+
+        self._models_cli_worker = threading.Thread(
+            target=_run, name="models-cli", daemon=True
+        )
+        self._models_cli_worker.start()
+
     def _maybe_publish_grok_account(self) -> None:
         """FR #6143: fleet bob-ear POSTs grok_account label-only merge (no secrets)."""
         if getattr(self.args, "chair", False):
@@ -6100,6 +6166,7 @@ class Client:
             try:
                 self._maybe_bobiverse_pull()
                 self._maybe_publish_digest_fuel()  # FR #6141 ear owns fuel POST
+                self._maybe_publish_models_cli()  # FR #9250 ear owns CLI model lists
                 self._maybe_publish_grok_account()  # FR #6143 grok_account label
                 self._maybe_publish_cursor_account()  # FR #7907 cursor CLI email
                 # FR #68: establish chair/ChanServ privileges before draining backlog.

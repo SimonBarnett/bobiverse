@@ -6,7 +6,7 @@ login HTML (FR #6815). Local bobcallback answers `/bob/v1/digest` and `/digest` 
 **301** `Location: /bob/v1/report` (same webhook; no duplicate JSON handler). Those
 aliases are not published through the bob.ntsa.uk IIS rewrite today
 (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows + clis catalog (BOB-01 / FR #8707 / #8820). POST **/bob/v1/models/refresh** rebuilds clis from CLI listings (FR #8820). POST **/bob/v1/models/validate** is not served (form-only validation).
+returns fleet agent Weights rows + clis catalog (BOB-01 / FR #8707 / #8820). POST **/bob/v1/models/refresh** asks Bob ears for CLI lists (FR #9250; no chair CLI spawn). POST **/bob/v1/models/report** accepts ear CLI listings. POST **/bob/v1/models/validate** is not served (form-only validation).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -38,6 +38,7 @@ import builds_catalog
 import intake
 import jira_webhook
 import models_catalog
+import models_ear_report
 import models_refresh
 import webhook_queue
 
@@ -51,6 +52,7 @@ BUILDS_PATH = builds_catalog.BUILDS_PATH
 MODELS_PATH = models_catalog.MODELS_PATH
 MODELS_VALIDATE_PATH = models_catalog.MODELS_VALIDATE_PATH
 MODELS_REFRESH_PATH = models_refresh.MODELS_REFRESH_PATH
+MODELS_REPORT_PATH = models_ear_report.MODELS_REPORT_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -68,7 +70,8 @@ PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
     "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
     "front-door GET is /bob/v1/report|/jeeves (/bob/v1/digest 301s to /bob/v1/report); "
-    "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; POST /bob/v1/models/refresh; GET|POST /bob/v1/hours"
+    "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; "
+    "POST /bob/v1/models/refresh|/bob/v1/models/report; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
@@ -77,7 +80,15 @@ DIGEST_REDIRECT_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS})
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({REPORT_PATH})
 POST_ROUTES = frozenset(
-    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_REFRESH_PATH}
+    {
+        REPORT_PATH,
+        GIT_WEBHOOK_PATH,
+        INTAKE_PATH,
+        JIRA_PATH,
+        HOURS_PATH,
+        MODELS_REFRESH_PATH,
+        MODELS_REPORT_PATH,
+    }
 )
 PUT_ROUTES = frozenset({MODELS_PATH})  # BOB-02 / FR #8708
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
@@ -1096,7 +1107,12 @@ def handle_request(
     gate = _check_post_route(verb, route, peer_ip, allow_ips)
     if gate[0] != 0:
         return gate[0], gate[1]
-    # FR #8820: rebuild per-CLI models catalog from CLI listings.
+    # FR #9250: Bob ear posts local CLI model lists (no secrets).
+    if route == MODELS_REPORT_PATH:
+        code, payload = models_ear_report.handle_models_report_post(body, home)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
+    # FR #8820 / #9250: ask ears / return reporter status (no chair CLI spawn).
     if route == MODELS_REFRESH_PATH:
         ctl = models_refresh_ctl
         if ctl is None:

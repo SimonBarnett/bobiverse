@@ -1,12 +1,21 @@
-"""FR #8820: POST /bob/v1/models/refresh — rebuild per-CLI models catalog.
+"""FR #8820 / #9250: POST /bob/v1/models/refresh — rebuild per-CLI models catalog.
 
-Listing sources (no scraping, no cloud API keys):
-  - Grok: ``grok models`` (https://docs.x.ai/docs/cli)
-  - Cursor: ``agent models`` (Cursor agent CLI)
-  - OpenCode: ``opencode models`` (https://opencode.ai)
+FR #9250: the chair does **not** shell out to grok/agent/opencode. Refresh
+stamps a wanted marker and returns per-CLI status from Bob-ear reporters
+(``ok`` / ``stale`` / ``no_reporter``). Ears collect listings on each fleet
+machine (see ``models_ear_report``).
 
-A failed or empty listing leaves that CLI's store entry untouched. Agent
-selections are never rewritten; GET marks absent models ``stale: true``.
+Legacy local listers remain for unit tests that inject ``listers=``
+(``use_local_listers=True``). Production ``ModelsRefreshController(home)``
+uses the ear-report path.
+
+Listing parsers (no scraping, no cloud API keys) still live here for ears:
+  - Grok: ``grok models``
+  - Cursor: ``agent models``
+  - OpenCode: ``opencode models``
+
+A failed or empty ear listing leaves that machine's last-good list untouched.
+Agent selections are never rewritten; GET marks absent models ``stale: true``.
 Per-CLI in-memory rate limit: one attempt per 60 s (restart resets).
 """
 from __future__ import annotations
@@ -314,7 +323,11 @@ def merge_cli_models(
 
 
 class ModelsRefreshController:
-    """Rate-limit + list + merge. Tests inject ``listers`` and ``clock``."""
+    """Rate-limit + refresh. Production uses ear reporters (FR #9250).
+
+    Tests may inject ``listers`` (implies ``use_local_listers=True``) to exercise
+    the legacy FR #8820 local-spawn path without a fleet of ears.
+    """
 
     def __init__(
         self,
@@ -323,9 +336,16 @@ class ModelsRefreshController:
         listers: dict[str, ListerFn] | None = None,
         clock: ClockFn | None = None,
         rate_window_s: float = RATE_WINDOW_S,
+        use_local_listers: bool | None = None,
     ) -> None:
         self.home = Path(home)
-        self.listers = listers if listers is not None else default_listers(self.home)
+        if use_local_listers is None:
+            use_local_listers = listers is not None
+        self.use_local_listers = bool(use_local_listers)
+        if self.use_local_listers:
+            self.listers = listers if listers is not None else default_listers(self.home)
+        else:
+            self.listers = listers or {}
         self.clock: ClockFn = clock or time.monotonic
         self.rate_window_s = float(rate_window_s)
         self._rate_lock = threading.Lock()
@@ -350,6 +370,62 @@ class ModelsRefreshController:
             return True, 0
 
     def handle(
+        self,
+        body: bytes | str | None = None,
+    ) -> tuple[int, bytes]:
+        if not self.use_local_listers:
+            return self._handle_ear_refresh(body)
+        return self._handle_local_listers(body)
+
+    def _handle_ear_refresh(
+        self,
+        body: bytes | str | None = None,
+    ) -> tuple[int, bytes]:
+        """FR #9250: stamp wanted + return reporter status; never spawn CLIs."""
+        import models_ear_report as ear
+
+        requested, err = _parse_request_clis(body)
+        if err is not None:
+            return err
+        ok, retry_after = self._reserve(requested)
+        if not ok:
+            return 429, _json_bytes(
+                {"error": "rate_limited", "retry_after_s": retry_after}
+            )
+        wanted_at = ear.stamp_refresh_wanted(self.home)
+        try:
+
+            def _mutate(d: dict[str, Any]) -> None:
+                ear.rebuild_clis_from_reporters(d)
+                d["models_refresh_wanted_at"] = wanted_at
+
+            doc = mc.mutate_catalog_document(self.home, _mutate)
+        except mc.CatalogUnavailable:
+            return 503, _json_bytes({"error": "catalog_unavailable"})
+        except mc.ModelsCatalogBusy:
+            return 503, _json_bytes({"error": "busy"})
+        except OSError:
+            return 503, _json_bytes({"error": "catalog_unavailable"})
+
+        results: dict[str, Any] = {}
+        for cli in requested:
+            results[cli] = ear.reporter_status_for_cli(doc, cli)
+            log.info(
+                "models_refresh cli=%s status=%s (ear reporters)",
+                cli,
+                results[cli].get("status"),
+            )
+        clis_public = mc.clis_public_from_document(doc)
+        return 200, _json_bytes(
+            {
+                "clis": clis_public,
+                "refresh": results,
+                "wanted_at": wanted_at,
+                "mode": "ear_reporters",
+            }
+        )
+
+    def _handle_local_listers(
         self,
         body: bytes | str | None = None,
     ) -> tuple[int, bytes]:
