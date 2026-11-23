@@ -87,6 +87,8 @@ Export-ModuleMember -Function @(
     'Get-BobTrayTipPlacement',
     'Get-BobTrayCursorTipPlacement',
     'Test-BobTrayRectIntersectsAny',
+    'Test-BobTrayIconRectUsable',
+    'ConvertTo-BobTrayRect',
     'Get-BobFleetRegistry',
     'ConvertTo-BobIrcPoint',
     'ConvertFrom-BobIrcPoint',

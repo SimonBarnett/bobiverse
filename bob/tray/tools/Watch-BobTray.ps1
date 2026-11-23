@@ -2924,14 +2924,22 @@ function Clear-BobNativeTip {
 }
 
 function Hide-BobTrayCard {
+    # FR #9186: clear TopMost tip so ContextMenuStrip is not painted underneath (visible=False).
     $script:cardClosed = $true
     try {
         if (Test-BobTrayTipAlive) {
+            try { $script:tip.TopMost = $false } catch { }
             $hidden = $false
             try { $hidden = [bool]$script:tip.TryHide() } catch { }
             if (-not $hidden) {
                 try { if ($script:tip.Visible) { $script:tip.Hide() } } catch { }
             }
+            try {
+                if ($script:tip.Visible) {
+                    $script:tip.Visible = $false
+                    Write-TrayLog 'TipHiddenForMenu force Visible=false'
+                }
+            } catch { }
         }
     }
     catch {
@@ -4178,15 +4186,35 @@ function Show-BobTrayCard {
         $script:tip.Height = [Math]::Max(110, $bottom + 16)
         # Park once on click. Stay in that place until X. No hideTip.
         if (-not (Test-BobTrayTipVisible)) {
-            $iconRect = $script:iconRectCache
             $pt = [System.Windows.Forms.Cursor]::Position
             $work = [System.Windows.Forms.Screen]::FromPoint($pt).WorkingArea
+            # FR #9178: still gather ScreenAreas for TipOnScreenCheck / UiDiag.
             $screenAreas = @(Get-BobTrayScreenWorkingAreas)
-            # FR #9178 TipPlace: pass all screens so stale iconRect is dropped.
-            $place = Get-BobTrayTipPlacement -TipWidth $script:tip.Width -TipHeight $script:tip.Height `
-                -IconRect $iconRect -Cursor $pt -WorkArea $work -AlreadyVisible $false `
-                -ScreenAreas $screenAreas
-            Write-TrayLog ("TipPlace src=$($place.source) xy=$($place.x),$($place.y) tip=$($script:tip.Width)x$($script:tip.Height)")
+            # FR #9186: always cursor-forced tip (iconRect empty-Left was still src=icon / irBad false).
+            $iconForDiag = $script:iconRectCache
+            $irBad = $true
+            if ($null -ne $iconForDiag -and (Get-Command Test-BobTrayIconRectUsable -ErrorAction SilentlyContinue)) {
+                $irBad = -not [bool](Test-BobTrayIconRectUsable $iconForDiag)
+            }
+            elseif ($null -ne $iconForDiag -and (Get-Command ConvertTo-BobTrayRect -ErrorAction SilentlyContinue)) {
+                $irBad = ($null -eq (ConvertTo-BobTrayRect $iconForDiag))
+            }
+            $place = $null
+            if (Get-Command Get-BobTrayCursorTipPlacement -ErrorAction SilentlyContinue) {
+                $place = Get-BobTrayCursorTipPlacement -TipWidth $script:tip.Width -TipHeight $script:tip.Height `
+                    -Cursor $pt -WorkArea $work
+            }
+            else {
+                # IconRect $null + ScreenAreas kept for FR #9178 wiring pin when cursor helper missing.
+                $place = Get-BobTrayTipPlacement -TipWidth $script:tip.Width -TipHeight $script:tip.Height `
+                    -IconRect $null -Cursor $pt -WorkArea $work -AlreadyVisible $false `
+                    -ScreenAreas $screenAreas
+            }
+            if ($place.source -eq 'cursor') { $place = [pscustomobject]@{ x = $place.x; y = $place.y; source = 'cursor-forced'; moved = $place.moved } }
+            $iconS = if ($iconForDiag) {
+                ('{0},{1} w={2} h={3}' -f $iconForDiag.X, $iconForDiag.Y, $iconForDiag.Width, $iconForDiag.Height)
+            } else { 'null' }
+            Write-TrayLog ("TipPlace src=$($place.source) xy=$($place.x),$($place.y) tip=$($script:tip.Width)x$($script:tip.Height) irBad=$irBad iconRect=$iconS ScreenAreas=$($screenAreas.Count)")
             $script:tip.Location = New-Object System.Drawing.Point ([int]$place.x), ([int]$place.y)
             $shown = $false
             try {
@@ -4606,7 +4634,19 @@ $script:bobTrayContextMenu = $menu
 $menu.Add_Opening({
         $script:bobTrayMenuOpen = $true
         Write-TrayLog 'click-diag MenuOpening'
+        # FR #9186: hide TopMost tip before menu.Show so strip is not visible=False under tip.
         try { Hide-BobTrayCard } catch { }
+        try {
+            if ((Test-BobTrayTipAlive) -and (Test-BobTrayTipVisible)) {
+                try { $script:tip.TopMost = $false } catch { }
+                try { [void]$script:tip.TryHide() } catch { }
+                try { $script:tip.Visible = $false } catch { }
+                Write-TrayLog 'TipHiddenForMenu Opening retry'
+            }
+            else {
+                Write-TrayLog 'TipHiddenForMenu Opening ok'
+            }
+        } catch { }
         try { Close-BobTrayStatusWindows } catch { }
         try { Write-BobTrayUiDiag -Site 'MenuOpening' } catch { }
     })
@@ -4770,6 +4810,13 @@ $notify.Add_MouseClick({
         try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
+            # FR #9186: BalloonTip proof that left-click reached NotifyIcon (hotpatch evidence).
+            try {
+                $notify.ShowBalloonTip(2500, 'Bob Systray', 'Left-click ok (FR #9186)', [System.Windows.Forms.ToolTipIcon]::Info)
+                Write-TrayLog 'BalloonTip left-click proof'
+            } catch {
+                Write-TrayLog ('BalloonTip left-click error: ' + $_.Exception.Message)
+            }
             # FR #9170: dismiss stuck ContextMenuStrip then show TipForm (was StatusSkipped while Visible).
             if (($menu -and $menu.Visible) -or $script:menuOpenSticky) {
                 Write-TrayLog 'StatusMenuDismiss'
