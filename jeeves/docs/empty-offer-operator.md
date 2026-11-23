@@ -100,6 +100,11 @@ ungated unaccepted work is greater than 0 is reported as
 `rule=online_zero_workers` (machine identity in `machine` / `holder`). That
 machine finding stays visible during the no-seats pause; ordinary job-starvation
 rows stay suppressed while paused.
+**FR #9462:** TipForm paints a durable `online_zero_workers` alert when this
+machine or a fleet peer on the digest is online with `workers=[]` and
+`offerable_count > 0`. Monitor check `online_zero_workers` EXIT 1 with
+fingerprint `stall:online-zero-workers:<machine>` (rate-capped). Operator
+starts seats via **TipForm → Agents** — never silent auto-start (FR #3180).
 The FR #5163 author-only recycle and stall scan also consult cloud eligibility.
 An active tracked cloud review stays accepted: the PR being reviewed is its
 input, not evidence of completed work.

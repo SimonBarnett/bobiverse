@@ -99,11 +99,27 @@ After token-free checks, if BOB-D offer skip is deployed (chair stamps `depends-
 
 Every monitor cycle once BOB-D is live: `monitor-start` and `bobiverse-jeeves-monitor` list `depends_on`. Report exit 1 via intake. Do not edit the queue and do not act as chair.
 
+## Shared chair gate (FR #9455)
+
+Offer, `!assign`, and stuck/report must agree for the same `(repo, id)` in the
+same tick. Product helper: `gitclaim.depends_gate_reason` (marker
+`bob_g1_shared_gate`). Digests with label `fr-digest` that are **not** in the
+local queue still resolve via `depends_issue_fetch_checker` (FR #9418 / #9434) —
+never surprise `depends-open` after unhold.
+
+| Situation | Reason |
+|---|---|
+| Depends-on unheld `fr-digest` (queued or live) | allow (None) |
+| Depends-on held digest | `depends-held` |
+| Depends-on ordinary OPEN issue | `depends-open` |
+| Bad token / lookup Unknown | `depends-unresolved` |
+
 ## Refs
 
 - Index: #8805 body / `fr-index-depends-on-jeeves-2026-11-21.md`
 - D3 skip-open: #8807
 - D8 docs vs hold: #8812
 - Monitor check: #8848
+- Shared G1 gate: #9455 (`depends_gate_reason`)
 - Sibling digest gate: `bobiverse-jeeves-agent-fr-digest`
 - Live MONITORING loop: `bobiverse-jeeves-monitor`, `monitor-start`

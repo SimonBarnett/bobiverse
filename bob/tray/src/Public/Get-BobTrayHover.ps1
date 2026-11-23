@@ -1376,6 +1376,7 @@ function Get-BobTrayAlertKind {
     )
     foreach ($a in @($Alerts)) {
         if (-not $a) { continue }
+        if ($a -match 'online_zero_workers') { return 'online_zero_workers' }
         if ($a -match 'watcher_down') { return 'watcher' }
         if ($a -match 'agent_stall') { return 'stall' }
         if ($a -match 'ACTION_REQUIRED') { return 'stall' }
@@ -5232,8 +5233,33 @@ function Get-BobTrayHover {
         if ($jobsText) { $jobsText = $jobsText + "`n  " + $queueIdleCaption }
         else { $jobsText = '  ' + $queueIdleCaption }
     }
+    # FR #9462: durable caption when online machine(s) have zero workers + offerable work.
+    $onlineZeroCaption = $null
+    $onlineZeroAlerts = @()
+    $fleetOfferable = 0
+    try {
+        if ($reportDigest -and $reportDigest.queue -and $null -ne $reportDigest.queue.offerable_count) {
+            $fleetOfferable = [int]$reportDigest.queue.offerable_count
+        }
+    } catch { $fleetOfferable = 0 }
+    try {
+        $ozMachines = $null
+        if ($reportDigest -and $reportDigest.machines) { $ozMachines = $reportDigest.machines }
+        elseif ($tiles) { $ozMachines = $tiles }
+        $onlineZeroAlerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $ozMachines -OfferableCount $fleetOfferable)
+        $onlineZeroCaption = Format-BobTrayOnlineZeroCaption -Machines $ozMachines -OfferableCount $fleetOfferable
+    } catch {
+        $onlineZeroAlerts = @()
+        $onlineZeroCaption = $null
+    }
+    if ($onlineZeroCaption) {
+        $lines.Add(('  {0}' -f $onlineZeroCaption))
+        if ($jobsText) { $jobsText = $jobsText + "`n  " + $onlineZeroCaption }
+        else { $jobsText = '  ' + $onlineZeroCaption }
+    }
     # FR #8987: short uses xAI label helper + same remainPct as Status xAI weekly.
-    $short = Format-BobTrayHoverXaiShort -TierLabel $tier -RemainingPct $remainPct -RunningCount @($running).Count -IdleCaption $(if ($queueIdleCaption) { [string]$queueIdleCaption } else { '' })
+    $idleForShort = $(if ($onlineZeroCaption) { [string]$onlineZeroCaption } elseif ($queueIdleCaption) { [string]$queueIdleCaption } else { '' })
+    $short = Format-BobTrayHoverXaiShort -TierLabel $tier -RemainingPct $remainPct -RunningCount @($running).Count -IdleCaption $idleForShort
 
     return [pscustomobject]@{
         title          = $title
@@ -5248,6 +5274,8 @@ function Get-BobTrayHover {
         job_count      = @($running).Count
         queued         = $queued
         queue_idle_caption = $queueIdleCaption
+        online_zero_caption = $onlineZeroCaption
+        online_zero_alerts = @($onlineZeroAlerts)
         jobs           = @($jobs)
         machines       = $tiles
         peer_peek      = $peerPeek

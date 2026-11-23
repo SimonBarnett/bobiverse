@@ -639,6 +639,7 @@ def classify_queue_row(
         doc: dict = {}
         open_keys: set = set()
         issue_open = None
+        issue_fetch = None
         if home is not None:
             try:
                 doc = gitclaim.load_queue(home) or {}
@@ -652,8 +653,17 @@ def classify_queue_row(
                 open_keys = set()
             with contextlib.suppress(Exception):
                 issue_open = gitclaim.depends_issue_open_checker()
-        dep_why = gitclaim.row_depends_open_reason(
-            row, open_keys, issue_open=issue_open, doc=doc or None
+            # FR #9434 / #9418: G1 needs issue dict when digests are absent from
+            # the local queue; issue_open alone still yields depends_on_open.
+            with contextlib.suppress(Exception):
+                issue_fetch = gitclaim.depends_issue_fetch_checker()
+        # FR #9455: same depends_gate_reason as offer/!assign (no path fork).
+        dep_why = gitclaim.depends_gate_reason(
+            row,
+            doc or None,
+            open_keys=open_keys,
+            issue_open=issue_open,
+            issue_fetch=issue_fetch,
         )
         if dep_why:
             base["state"] = "held"
