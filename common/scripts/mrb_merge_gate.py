@@ -1,4 +1,8 @@
-"""FR #3928: MRB merge gate — owner hold blocks merge; require posted MRB PASS board.
+"""FR #3928 / #9114: MRB merge gate — linked FR hold blocks merge; require PASS board.
+
+FR #9114: live linked-issue ``hold`` / ``on-hold`` labels gate merge. Stale PR HOLD
+comments are ignored once linked FRs are checked and none are held. Unit callers that
+do not resolve linked FRs still use owner HOLD comments (FR #3928).
 
 Workers call ``evaluate_merge_gate`` (pure) or ``assert_mrb_merge_allowed`` (live GitHub)
 before ``gh pr merge``. Prefer ``gated_auto_merge`` / CLI ``--merge`` so gate refuse
@@ -28,6 +32,12 @@ HOLD_CLEAR_RE = re.compile(
     r"\bhold\s+(?:is\s+)?(?:lifted|cleared|released|off)\b|"
     r"\bok\s+to\s+merge\b|\bclear(?:ed)?\s+to\s+merge\b)"
 )
+# FR #9114: Closes lines and FR/issue mentions used to resolve the live hold gate.
+CLOSES_ISSUE_RE = re.compile(
+    r"(?i)\bcloses\s+(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#(\d+)\b"
+)
+FR_ISSUE_MENTION_RE = re.compile(r"(?i)\b(?:FR|issue)\s*#(\d+)\b")
+HOLD_LABEL_NAMES = frozenset({"hold", "on-hold"})
 # FR #8107 / #8893: Verdict may sit anywhere after the board heading in the
 # same comment. A fixed window (400, then 4000) still missed long boards.
 MRB_PASS_BOARD_RE = re.compile(
@@ -177,6 +187,42 @@ def find_active_owner_hold(comments: list[dict] | None) -> str | None:
     return hold_body
 
 
+def linked_fr_issue_numbers(pr_body: str | None, comments: list[dict] | None = None) -> list[int]:
+    """FR #9114: issue numbers from Closes lines and FR/issue mentions in body/comments."""
+    found: list[int] = []
+    seen: set[int] = set()
+
+    def _add(raw: str) -> None:
+        for rx in (CLOSES_ISSUE_RE, FR_ISSUE_MENTION_RE):
+            for m in rx.finditer(raw or ""):
+                try:
+                    n = int(m.group(1))
+                except (TypeError, ValueError):
+                    continue
+                if n <= 0 or n in seen:
+                    continue
+                seen.add(n)
+                found.append(n)
+
+    _add(str(pr_body or ""))
+    for c in comments or []:
+        _add(_body(c))
+    return found
+
+
+def issue_has_hold_label(labels: list[dict] | None) -> bool:
+    """True when labels include hold or on-hold (issues-only; FR #9082 / #9114)."""
+    for lab in labels or []:
+        name = ""
+        if isinstance(lab, dict):
+            name = str(lab.get("name") or "").strip().lower()
+        else:
+            name = str(lab or "").strip().lower()
+        if name in HOLD_LABEL_NAMES:
+            return True
+    return False
+
+
 def find_mrb_pass_board(comments: list[dict] | None) -> str | None:
     """Return first comment body that looks like an MRB PASS board.
 
@@ -284,11 +330,21 @@ def evaluate_merge_gate(
     comments: list[dict] | None,
     *,
     coderabbit_row: dict | None = None,
+    linked_fr_hold: str | None = None,
+    linked_frs_checked: bool = False,
 ) -> tuple[bool, str]:
-    """Pure gate: (ok, reason). reason empty when ok."""
-    hold = find_active_owner_hold(comments)
-    if hold:
-        return False, f"owner hold active: {hold}"
+    """Pure gate: (ok, reason). reason empty when ok.
+
+    FR #9114: when ``linked_frs_checked`` is True, a live linked-FR hold label
+    refuses merge and stale PR HOLD comments do not. When linked FRs were not
+    checked, owner HOLD comments still refuse (FR #3928 unit / offline path).
+    """
+    if linked_fr_hold:
+        return False, f"linked FR hold active: {linked_fr_hold}"
+    if not linked_frs_checked:
+        hold = find_active_owner_hold(comments)
+        if hold:
+            return False, f"owner hold active: {hold}"
     board = find_mrb_pass_board(comments)
     if not board:
         return False, "no MRB PASS board comment posted yet"
@@ -482,15 +538,91 @@ def fetch_issue_comments(
     )
 
 
+def fetch_pull_body(repo: str, num: str, *, token: str | None = None) -> str:
+    """Return the PR body text (empty when unavailable)."""
+    tok = (token if token is not None else _gh_token()).strip()
+    if not tok:
+        return ""
+    num_s = str(num).lstrip("#")
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/pulls/{num_s}",
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-mrb-merge-gate",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return ""
+    if isinstance(data, dict):
+        return str(data.get("body") or "")
+    return ""
+
+
+def fetch_issue_labels(repo: str, issue_num: int, *, token: str | None = None) -> list[dict]:
+    """Return label objects for an issue/FR. Empty list when unavailable."""
+    tok = (token if token is not None else _gh_token()).strip()
+    if not tok:
+        return []
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/issues/{int(issue_num)}/labels?per_page=100",
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-mrb-merge-gate",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    return []
+
+
+def resolve_linked_fr_hold(
+    repo: str,
+    pr_body: str | None,
+    comments: list[dict] | None,
+    *,
+    token: str | None = None,
+    fetch_labels: Callable[..., list[dict]] | None = None,
+) -> tuple[bool, str | None]:
+    """FR #9114: (checked, hold_reason). hold_reason set when a linked FR is held."""
+    nums = linked_fr_issue_numbers(pr_body, comments)
+    if not nums:
+        return False, None
+    getter = fetch_labels or fetch_issue_labels
+    for n in nums:
+        labels = getter(repo, n, token=token)
+        if issue_has_hold_label(labels):
+            return True, f"{repo}#{n} label=hold"
+    return True, None
+
+
 def assert_mrb_merge_allowed(repo: str, num: str, *, token: str | None = None) -> None:
     """Raise RuntimeError when merge must be refused.
 
     FR #5865: when CodeRabbit stage is on, resolve a live stamp so the CLI is
     not permanently refused by an empty ``coderabbit_row`` (never load-bearing).
+    FR #9114: resolve linked FR hold labels; ignore stale PR HOLD comments when
+    linked FRs are present and unheld.
     """
     comments = fetch_issue_comments(repo, num, token=token)
+    pr_body = fetch_pull_body(repo, num, token=token)
+    checked, linked_hold = resolve_linked_fr_hold(repo, pr_body, comments, token=token)
     cr_row = resolve_coderabbit_row_for_pr(repo, num, token=token)
-    ok, reason = evaluate_merge_gate(comments, coderabbit_row=cr_row)
+    ok, reason = evaluate_merge_gate(
+        comments,
+        coderabbit_row=cr_row,
+        linked_fr_hold=linked_hold,
+        linked_frs_checked=checked,
+    )
     if not ok:
         raise RuntimeError(f"FR #3928 merge refused for {repo}#{num}: {reason}")
 

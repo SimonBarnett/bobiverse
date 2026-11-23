@@ -339,6 +339,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unsigned exit 0xffffffff with only pager info/debug or TUI chrome is an external kill. Keep cli-failure when stderr contains failed, fatal, exception, or an error level.
 - When stall alerts are non-empty, call Get-BobStallFrIntake and log stall-fr with repo SimonBarnett/bobiverse.
 - Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
+- FR #9114: MRB on-hold uses the live linked FR hold label. Stale PR HOLD comments after the FR is unlabeled are not on-hold (#8748).
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
 - Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
 - When an MRB PR carries label hold, GIVEUP reason=on-hold and do not merge.
