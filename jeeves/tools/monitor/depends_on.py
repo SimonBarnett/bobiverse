@@ -29,7 +29,17 @@ from _common import (
     run_check,
 )
 
-_DEPENDS_LINE = re.compile(r"(?im)^\s*Depends-on:\s*(.+)$")
+# FR #9193 / #8805: allow optional ** or backtick decoration around the label
+# (e.g. **Depends-on:**) so the standalone monitor matches common/scripts/depends_on.py.
+_DEPENDS_LINE = re.compile(
+    r"(?im)^[^\S\n]*"
+    r"(?:\*{0,2}|`{0,2})"
+    r"Depends-on"
+    r"(?:\*{0,2}|`{0,2})"
+    r"[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?"
+    r"[^\S\n]*(.+)$"
+)
 _REF = re.compile(
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)|#(\d+)"
 )
