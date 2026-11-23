@@ -46,6 +46,8 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 
 `Test-JeevesMonitorDependsOn.ps1` / `tools/monitor/depends_on.py` exits 1 when an offered or accepted queue row has a `Depends-on:` ref that is still OPEN in the local queue (chair missed BOB-D3). A skipped row (`status=skipped`, `depends_skipped`, or `skip_reason`) exits 0. No Depends-on rows is a soft-ok. Live runs without `--chair-home` stay soft-ok until `common/scripts/depends_on_parse.py` exists or `gitclaim.py` contains `bob_d3_skip_open`. No GitHub token. Distinct from the hold label and from `fr_digest`.
 
+Chair note for the three gates (digest go-gate vs hold vs Depends-on CLOSED): [fr-digest-vs-hold-vs-depends-on.md](fr-digest-vs-hold-vs-depends-on.md) (BOB-G2 / FR #8838; cites VIS-G3 + BOB-G1 `bob_g1_skip_held_digest`).
+
 ## fr_digest (FR #8849)
 
 `Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that still has both labels `fr-digest` and `hold` (chair missed BOB-G1). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
