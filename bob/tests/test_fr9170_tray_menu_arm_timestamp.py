@@ -52,7 +52,8 @@ def test_watch_left_click_status_menu_dismiss_then_card():
     text = _txt(WATCH)
     assert "StatusMenuDismiss" in text
     idx = text.index("$notify.Add_MouseClick")
-    chunk = text[idx : idx + 900]
+    # FR #9186 BalloonTip proof sits above StatusMenuDismiss; keep a wider window.
+    chunk = text[idx : idx + 1600]
     assert "StatusMenuDismiss" in chunk
     assert "Close()" in chunk or "$menu.Close()" in chunk
     assert "Invoke-BobTrayStatus" in chunk
