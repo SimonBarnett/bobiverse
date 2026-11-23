@@ -1,4 +1,4 @@
-# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
+﻿# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
 # Title is Bob Fleet. Primary bar is weekly remaining (CLI billing log).
 # Job list: every registered fleet machine (bundled registry + local store +
 # read-only filesystem peer peek). Fail closed: unreachable / lastSeen stale.
@@ -4650,14 +4650,17 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
-# FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
-$priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
+# FR #9269 / BOB-TRAY-UI-08 + BOB-54: priority-mcp launcher/priority.ico in tray assets (install assets/ first).
+$priorityIco = Join-Path $RepoRoot 'assets\priority.ico'
+if (-not (Test-Path -LiteralPath $priorityIco)) {
+    $priorityIco = Join-Path $RepoRoot 'bob\tray\assets\priority.ico'
+}
+Write-TrayLog ('priority-icon path=' + $priorityIco)
 if (Test-Path -LiteralPath $priorityIco) {
     try {
-        $priorityIcon = New-Object System.Drawing.Icon $priorityIco
+        $priorityIcon = New-Object System.Drawing.Icon $priorityIco, 16, 16
         $miPriority.Image = $priorityIcon.ToBitmap()
         $priorityIcon.Dispose()
-        Write-TrayLog 'priority-icon path=vendor/priority/priority.ico'
     }
     catch {
         Write-TrayLog ('priority-icon failed: ' + $_.Exception.Message)
