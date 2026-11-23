@@ -154,6 +154,9 @@ def test_fr8835_coming_models_ops_marked():
     assert "clis" in page.lower()
     put_live = [e for e in docs.all_entries() if e.slug == "models-put"][0]
     assert getattr(put_live, "status", "live") == "live"
+    # FR #9224 / MRB #9126: public BobModelsWebhook is GET|HEAD|POST; PUT stays direct/LAN.
+    assert "GET|HEAD|POST" in (put_live.status_codes or "")
+    assert "GET|HEAD|POST" in (put_live.reachability or "")
 
 
 

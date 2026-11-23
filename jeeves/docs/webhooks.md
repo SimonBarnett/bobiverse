@@ -95,7 +95,7 @@ curl -sS "https://bob.ntsa.uk/bob/v1/models"
 
 ### PUT models / Weights rows (BOB-02 / FR #8708 / FR #8819)
 
-Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged. Agent row **`cli` is read-only** (FR #8819): a body that changes `cli` for a known agent returns **400** and leaves the store unchanged. Primary validation of model/context/effort is the Weights form dropdowns from `clis[row.cli]` (no POST validate required for this FR).
+Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS BobModelsWebhook forwards **GET|HEAD|POST** (FR #9224); PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged. Agent row **`cli` is read-only** (FR #8819): a body that changes `cli` for a known agent returns **400** and leaves the store unchanged. Primary validation of model/context/effort is the Weights form dropdowns from `clis[row.cli]` (no POST validate required for this FR).
 
 ```bash
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
