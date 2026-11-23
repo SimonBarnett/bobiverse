@@ -3608,10 +3608,12 @@ def describe_agent_child_launch(
 def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
     """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
     install = str(Path(worker_dir).parent)
+    intake = str(resolve_bobiverse_intake_script(worker_dir))
     pairs = (
         ("@@WORKER_DIR@@", worker_dir),
         ("@@OUTBOX@@", str(outbox_path_for_run(home))),
         ("@@INSTALL@@", install),
+        ("@@INTAKE_SCRIPT@@", intake),
         ("@@NICK@@", nick),
         ("@@MACHINE@@", machine),
     )
@@ -3694,7 +3696,7 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append DONE: "
         f"FR = 'DONE FR owner/repo#N <pr-url>' (no PASS/FAIL — FR #2419); "
         f"MRB/UAT = 'DONE <MRB|UAT> owner/repo#N PASS|FAIL <url>' "
-        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {resolve_bobiverse_intake_script(worker_dir)} "
         f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). "
         f"HARVEST REPO (FR #3189): ALWAYS pass the job's repo explicitly: "
         f"`..\\scripts\\Invoke-BobiverseHarvest.ps1 -Repo <owner/repo from the job id> -Summary ... -Lesson ...` "
@@ -3731,7 +3733,7 @@ def plan_prompt(plan_dir: str) -> str:
         f"You are a NEW Bobiverse plan agent (fresh session - never resume or continue an older plan). Your working folder is {plan_dir}. "
         f"FIRST read the skills in {plan_dir}\\.grok\\skills and {plan_dir}\\AGENTS.md (start with visionary). "
         f"Plan-mode only: no IRC, no builds. Create this plan's output in a NEW subfolder {plan_dir}\\work\\plan-<yyyyMMdd-HHmmss> and never touch earlier plans. "
-        f"CAST IRON: harvest skills and file every issue/FR/bug with {Path(plan_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"CAST IRON: harvest skills and file every issue/FR/bug with {resolve_bobiverse_intake_script(install_root=Path(plan_dir).parent)} in the same turn. "
         f"HARVEST HOW-TO-PLAN ONLY: a harvest lesson is a reusable lesson about HOW to plan (process, pitfalls, repo-setup steps) and goes to -Repo SimonBarnett/skills-visionary. "
         f"NEVER harvest the plan itself (requirements, designs, architecture or product decisions, FR/issue lists): that content stays in the plan subfolder and the product repo docs/FRs, never in a skill book. "
         f"Never print or store secrets."
@@ -3876,7 +3878,10 @@ def record_maintenance_session(session_id: str, cwd: str, kind: str, state_path:
 
 
 def maintenance_icon_path(folder: Path) -> Optional[Path]:
-    """FR #2522: the tray's Jeeves butler icon for the maintenance window (work root first, then bundled)."""
+    """FR #2522 / #9211: Jeeves butler icon (work root, install assets, jeeves\\assets, MEIPASS)."""
+    found = find_window_icon(folder, kind="maintenance")
+    if found:
+        return found
     cands = [Path(folder) / "assets" / "jeeves-butler.ico"]
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
@@ -4012,16 +4017,25 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     """Vision skill packs for worker MCP (FR #6899). Seat, bob, harvest, user.
 
     Does not include a job worktree (that is ``--job-worktree`` only).
+    FR #8682 / BOB-38: ``BOB_JEEVES_MCP_ROOT`` (Agents > Jeeves) is prepended so the
+    skill-dag MCP ``--root`` list starts on the J: skills path.
     """
     cwd = Path(worker_cwd).resolve()
     install = cwd.parent
     user = Path(home) if home is not None else Path.home()
-    return [
+    roots: list[Path] = []
+    jeeves = (os.environ.get("BOB_JEEVES_MCP_ROOT") or "").strip()
+    if jeeves:
+        roots.append(Path(jeeves))
+    for cand in (
         cwd / ".grok" / "skills",
         install / "bob" / ".grok" / "skills",
         install / "common" / ".grok" / "skills",
         user / ".grok" / "skills",
-    ]
+    ):
+        if cand not in roots:
+            roots.append(cand)
+    return roots
 
 
 SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
@@ -4876,6 +4890,69 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+
+def _stderr_is_seat_prompt_echo(text: str) -> bool:
+    """True when stderr is the worker assignment prompt, not a CLI error.
+
+    FR #8990: OpenCode killed with exit 0xffffffff often leaves only the
+    seat prompt (worktree / .bob tmp / outbox rules) on stderr. That is an
+    external kill. A real crash still names a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind", '"lvl": "error"', '"lvl":"error"')):
+        return False
+    markers = (
+        "job worktree",
+        "do not check the outbox",
+        ".bob\\tmp",
+        ".bob/tmp",
+        "the turn is not over until done",
+    )
+    return any(m in low for m in markers)
+
+
+def _stderr_is_grok_structured_info_noise(text: str) -> bool:
+    """True when every nonempty line is a Grok JSON info/debug log, not an error.
+
+    FR #8992: a killed seat (exit 0xffffffff) often leaves only
+    ``billing: fetched credits config`` (or similar) with ``\"lvl\": \"info\"``.
+    Those are not a CLI crash. Reject warn/error levels and failure tokens.
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        low = ln.lower()
+        if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind")):
+            return False
+        if any(
+            tok in low
+            for tok in (
+                '"lvl": "error"',
+                '"lvl":"error"',
+                '"lvl": "warn"',
+                '"lvl":"warn"',
+                '"lvl": "warning"',
+                '"lvl":"warning"',
+            )
+        ):
+            return False
+        if not any(
+            tok in low
+            for tok in (
+                '"lvl": "info"',
+                '"lvl":"info"',
+                '"lvl": "debug"',
+                '"lvl":"debug"',
+            )
+        ):
+            return False
+    return True
+
+
+
 def grok_worker_spawn_connect_failure(text: str) -> bool:
     """FR #8972: grok exited because its own worker_spawn could not connect.
 
@@ -4884,6 +4961,7 @@ def grok_worker_spawn_connect_failure(text: str) -> bool:
     """
     raw = str(text or "")
     return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
 
 
 def unsigned_exit_stderr_is_noise(text: str) -> bool:
@@ -4905,6 +4983,8 @@ def unsigned_exit_stderr_is_noise(text: str) -> bool:
         r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
         raw,
     ))
+
+
 
 
 def _intake_disabled_by_env() -> bool:
@@ -5012,13 +5092,16 @@ def report_agent_cli_nonzero_exit(
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    # FR #9013: OpenCode stdout TextIOWrapper OSError 22 is external-kill teardown noise.
-    # FR #9012: OpenCode idle missing-query console dump is external-kill noise.
-    # FR #8969 / #8970: pager info/debug or the live TUI prompt is the same class.
+    # FR #8990: the same exit with only the assignment prompt echoed is the same class.
+    # FR #8992 / #9013 / #9012 / #8969 / #8970: unsigned-exit stderr noise classifiers (OR).
+    prompt_echo = u == 0xFFFFFFFF and _stderr_is_seat_prompt_echo(evidence)
+    info_noise = u == 0xFFFFFFFF and _stderr_is_grok_structured_info_noise(evidence)
     oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
     missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
     silent = u == 0xFFFFFFFF and (
         not str(evidence or "").strip()
+        or prompt_echo
+        or info_noise
         or oserror22_noise
         or missing_query_noise
         or unsigned_exit_stderr_is_noise(evidence)
@@ -5073,6 +5156,14 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if prompt_echo:
+            what += (
+                "Stderr was the seat assignment prompt only (not a CLI error). FR #8990.\n"
+            )
+        if info_noise:
+            what += (
+                "Stderr was Grok JSON info/debug only (not a CLI error). FR #8992.\n"
+            )
         if oserror22_noise:
             what += (
                 "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
@@ -5522,21 +5613,58 @@ def skill_dag_down_giveup_line(
 
 
 def opencode_fleet_script_roots(worker_cwd: str) -> list[Path]:
-    """Install script dirs the seat skills tell OpenCode to read (FR #8064).
+    """Install script dirs the seat skills tell OpenCode to read (FR #8064 / #9214).
 
     ``worker_cwd`` is ``<ai root>\\bob\\worker``. The fleet copies live beside
-    that, not inside the job worktree: ``bob\\scripts`` and ``common\\scripts``.
+    that, not inside the job worktree: ``bob\\scripts``, ``common\\scripts``, and
+    flat ``scripts`` (composed installs often only have the intake helper there).
     """
     install = Path(worker_cwd).resolve().parent
-    return [install / "bob" / "scripts", install / "common" / "scripts"]
+    return [
+        install / "bob" / "scripts",
+        install / "common" / "scripts",
+        install / "scripts",
+    ]
+
+
+def resolve_bobiverse_intake_script(
+    worker_cwd: str | Path | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> Path:
+    """Prefer an install intake script path OpenCode is allowed to read (FR #9214).
+
+    Order: ``common\\scripts`` (allowed since FR #8064), flat ``scripts`` (FR #9214),
+    then ``bob\\scripts``. Falls back to the ``common\\scripts`` path even when the
+    file is missing so CAST IRON prompts stay on an allowlisted root.
+    """
+    if install_root is not None:
+        install = Path(install_root).resolve()
+    elif worker_cwd is not None:
+        install = Path(worker_cwd).resolve().parent
+    else:
+        install = Path.cwd().resolve()
+    name = "Report-BobiverseIntakeIssue.ps1"
+    candidates = [
+        install / "common" / "scripts" / name,
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand.resolve()
+        except OSError:
+            continue
+    return candidates[0].resolve()
 
 
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill roots and fleet scripts.
 
-    FR #7196 / #7909: skill-dag roots. FR #8064: ``bob\\scripts`` and
-    ``common\\scripts`` so harvest/intake reads are not auto-rejected. Edit
-    stays deny. ``C:\\passwords`` stays deny and is never an allow.
+    FR #7196 / #7909: skill-dag roots. FR #8064 / #9214: ``bob\\scripts``,
+    ``common\\scripts``, and flat ``scripts`` so harvest/intake reads are not
+    auto-rejected. Edit stays deny. ``C:\\passwords`` stays deny and is never an allow.
     """
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
@@ -5954,6 +6082,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         oc_fallback = (
             f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
         )
+        # FR #9211: pin OpenCode favicon on the launch-opencode PowerShell console (Win11 AUMID + WM_SETICON).
+        oc_ico_path = find_window_icon(Path(install_root) if install_root else None, kind="opencode")
+        oc_ico_lit = esc(str(oc_ico_path)) if oc_ico_path else ""
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             oc_fallback,
@@ -5961,6 +6092,49 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             f"$turnsLog = '{esc(turns_log)}'",
+            f"$bobOcIco = '{oc_ico_lit}'",
+            r"function Set-BobConsoleIcon([string]$IcoPath, [string]$Aumid) {",
+            r"    # FR #9211: title-bar + taskbar icon for the OpenCode seat console on Win11.",
+            r"    if (-not $IcoPath) {",
+            r"        $root = $env:BOB_INSTALL_ROOT",
+            r"        if (-not $root) { $root = 'C:\ai\bob' }",
+            r"        foreach ($rel in @('assets\opencode-favicon.ico','tray\assets\opencode-favicon.ico','bob\tray\assets\opencode-favicon.ico','assets\bob-systray.ico')) {",
+            r"            $try = Join-Path $root $rel",
+            r"            if (Test-Path -LiteralPath $try) { $IcoPath = $try; break }",
+            r"        }",
+            r"    }",
+            r"    if (-not $IcoPath -or -not (Test-Path -LiteralPath $IcoPath)) {",
+            r"        Write-Output 'console-icon: miss ico=none kind=opencode'",
+            r"        return $false",
+            r"    }",
+            r"    if (-not $Aumid) { $Aumid = 'Bobiverse.OpenCode' }",
+            r"    try {",
+            "        Add-Type -Namespace BobFr9211 -Name ConsoleIcon -MemberDefinition @'",
+            '            [System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();',
+            '            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr LoadImage(System.IntPtr h, string f, uint t, int cx, int cy, uint fu);',
+            '            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);',
+            '            [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);',
+            r"'@ -ErrorAction SilentlyContinue",
+            r"        [void][BobFr9211.ConsoleIcon]::SetCurrentProcessExplicitAppUserModelID($Aumid)",
+            r"        $hwnd = [BobFr9211.ConsoleIcon]::GetConsoleWindow()",
+            r"        if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 50; $hwnd = [BobFr9211.ConsoleIcon]::GetConsoleWindow() }",
+            r"        if ($hwnd -eq [IntPtr]::Zero) { Write-Output ('console-icon: miss hwnd=0 ico=' + $IcoPath); return $false }",
+            r"        $ok = $false",
+            r"        foreach ($pair in @(@(0,16),@(1,32))) {",
+            r"            $h = [BobFr9211.ConsoleIcon]::LoadImage([IntPtr]::Zero, $IcoPath, 1, $pair[1], $pair[1], 0x10)",
+            r"            if ($h -ne [IntPtr]::Zero) {",
+            r"                [void][BobFr9211.ConsoleIcon]::SendMessage($hwnd, 0x80, [IntPtr]$pair[0], $h)",
+            r"                $ok = $true",
+            r"            }",
+            r"        }",
+            r"        Write-Output ('console-icon: ' + $(if ($ok) { 'ok' } else { 'load-fail' }) + ' path=' + $IcoPath + ' hwnd=' + $hwnd + ' kind=opencode aumid=' + $Aumid + ' win11=aumid+wm_seticon')",
+            r"        return $ok",
+            r"    } catch {",
+            r"        Write-Output ('console-icon: error ' + $_.Exception.Message)",
+            r"        return $false",
+            r"    }",
+            r"}",
+            r"[void](Set-BobConsoleIcon -IcoPath $bobOcIco -Aumid 'Bobiverse.OpenCode')",
             r"$script:ocTurnN = 0",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
@@ -6269,15 +6443,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $lastLen = $len",
             r"                $lastBeat = [datetime]::UtcNow",
             r"                $lastProgress = [datetime]::UtcNow",
+            # FR #9209: mirror each new capture slice live on the success stream.
+            # bob_worker tees wrapper stdout to the seat console with flush; keep redirects
+            # + seat-log tee (FR #8553 / #8069). Do not wait for process exit.
+            r"                $pyLog = $null",
             r"                if ($script:ocStdoutLog) {",
             r"                    $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                    if (-not $pyLog) { $pyLog = 'python.exe' }",
-            r"                    foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
-            r"                        $cap = Read-OpencodeCapture $pair[0]",
-            r"                        $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
-            r"                        if ($cap.Length -gt $pos) {",
-            r"                            $slice = $cap.Substring($pos)",
-            r"                            Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                }",
+            r"                foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"                    $cap = Read-OpencodeCapture $pair[0]",
+            r"                    $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"                    if ($cap.Length -gt $pos) {",
+            r"                        $slice = $cap.Substring($pos)",
+            r"                        Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                        try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                        if ($script:ocStdoutLog -and $pyLog -and $stdoutLogPy) {",
             r"                            $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"                            try {",
             r"                                [IO.File]::WriteAllText($sliceFile, $slice)",
@@ -6422,17 +6603,23 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"          }",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
+            r"        $pyLogEnd = $null",
             r"        if ($script:ocStdoutLog -and $stdoutLogPy) {",
-            r"            $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
-            r"            if (-not $pyLog) { $pyLog = 'python.exe' }",
-            r"            foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
-            r"                $cap = Read-OpencodeCapture $pair[0]",
-            r"                $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
-            r"                if ($cap.Length -gt $pos) {",
+            r"            $pyLogEnd = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"            if (-not $pyLogEnd) { $pyLogEnd = 'python.exe' }",
+            r"        }",
+            r"        foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"            $cap = Read-OpencodeCapture $pair[0]",
+            r"            $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"            if ($cap.Length -gt $pos) {",
+            r"                $slice = $cap.Substring($pos)",
+            r"                Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            # FR #9209: remainder once (live loop already mirrored prior slices).
+            r"                try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                if ($pyLogEnd) {",
             r"                    $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
-            r"                    try { [IO.File]::WriteAllText($sliceFile, $cap.Substring($pos)); & $pyLog $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
+            r"                    try { [IO.File]::WriteAllText($sliceFile, $slice); & $pyLogEnd $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
             r"                    finally { Remove-Item -LiteralPath $sliceFile -ErrorAction SilentlyContinue }",
-            r"                    Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
             r"                }",
             r"            }",
             r"        }",
@@ -6450,7 +6637,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
-            r"    Write-Output $outStr",
+            # FR #9209: fuel/scan uses $outStr from capture files. Live text already flushed to
+            # the success stream; do not dump the full blob again (operator hate).
+            r"    Write-Output ('opencode-capture-done exit=' + [string]$exitCode + ' bytes=' + [string]$outStr.Length)",
             r"    # Drop the prompt echo and markdown quotations before the fuel match.",
             r"    # The seat prompt documents `402 Payment Required`; that is not a provider 402.",
             r"    $scan = $outStr",
@@ -6858,20 +7047,67 @@ def disable_console_quick_edit(k32=None) -> bool:
         return False
 
 
-def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
-    """Window icon: jeeves-butler.ico (monitor) or bob-systray.ico; install then PyInstaller embed."""
+def _window_icon_names(kind: Optional[str] = None) -> list:
+    """FR #9211: preferred .ico basenames by seat kind (OpenCode favicon, butler, Bob tray)."""
+    k = (kind or "").strip().lower()
+    if k in ("opencode", "oc"):
+        return ["opencode-favicon.ico", "bob-systray.ico", "jeeves-butler.ico"]
+    if k in ("monitor", "maintenance", "jeeves", "butler"):
+        return ["jeeves-butler.ico", "bob-systray.ico"]
+    return ["bob-systray.ico", "jeeves-butler.ico", "opencode-favicon.ico"]
+
+
+def _window_icon_aumid(kind: Optional[str] = None) -> str:
+    """FR #9211: Win11 taskbar groups by AppUserModelID; pin a stable id per seat family."""
+    k = (kind or "").strip().lower()
+    if k in ("opencode", "oc"):
+        return "Bobiverse.OpenCode"
+    if k in ("monitor", "maintenance", "jeeves", "butler"):
+        return "Bobiverse.Jeeves"
+    return "Bobiverse.BobWorker"
+
+
+def find_window_icon(
+    install_root: Optional[Path] = None, kind: Optional[str] = None
+) -> Optional[Path]:
+    """FR #9211: resolve a console .ico (install assets, tray, jeeves, MEIPASS, source tree)."""
+    names = _window_icon_names(kind)
     cands: list = []
+    roots: list = []
     if install_root:
-        cands.append(Path(install_root) / "assets" / "jeeves-butler.ico")
-        cands.append(Path(install_root) / "assets" / "bob-systray.ico")
+        ir = Path(install_root)
+        roots.extend(
+            [
+                ir / "assets",
+                ir / "tray" / "assets",
+                ir / "bob" / "tray" / "assets",
+                ir / "jeeves" / "assets",
+                ir.parent / "jeeves" / "assets",
+            ]
+        )
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
-        cands.append(Path(mei) / "assets" / "bob-systray.ico")
-    cands.append(Path(__file__).resolve().parent.parent / "assets" / "bob-systray.ico")
-    cands.append(Path(__file__).resolve().parent.parent / "tray" / "assets" / "bob-systray.ico")  # t829u: bob/tray is a first-class source
-    cands.append(Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "assets" / "bob-systray.ico")
+        roots.append(Path(mei) / "assets")
+    here = Path(__file__).resolve().parent.parent  # bob/ when scripts live under bob/scripts
+    roots.extend(
+        [
+            here / "assets",
+            here / "tray" / "assets",  # t829u: bob/tray is a first-class source
+            here / "third_party" / "bob-tray" / "assets",
+            here.parent / "jeeves" / "assets",
+            here.parent / "bob" / "tray" / "assets",
+        ]
+    )
+    for root in roots:
+        for name in names:
+            cands.append(root / name)
+    seen: set = set()
     for c in cands:
         try:
+            key = str(c).lower()
+            if key in seen:
+                continue
+            seen.add(key)
             if c.is_file():
                 return c
         except OSError:
@@ -6879,9 +7115,17 @@ def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] = None) -> bool:
-    """t794u: put the systray icon on the worker's console window (title bar + taskbar). The exe itself carries the same icon
-    (PyInstaller --icon). Typed ctypes (HWND/HICON are pointers); never raises, never prints."""
+def set_console_icon(
+    install_root: Optional[Path] = None,
+    icon: Optional[Path] = None,
+    kind: Optional[str] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """t794u / FR #9211: set console title-bar + taskbar icon (WM_SETICON) and Win11 AppUserModelID.
+
+    The hashed bob-worker.exe also carries bob-systray via PyInstaller --icon. Typed ctypes
+    (HWND/HICON are pointers); never raises. Logs path/hwnd/aumid when ``log`` is given.
+    """
     if os.name != "nt":
         return False
     try:
@@ -6891,21 +7135,59 @@ def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] =
         u32 = ctypes.WinDLL("user32", use_last_error=True)
         k32.GetConsoleWindow.restype = ctypes.c_void_p
         u32.LoadImageW.restype = ctypes.c_void_p
-        u32.LoadImageW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u32.LoadImageW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
         u32.SendMessageW.restype = ctypes.c_ssize_t
-        u32.SendMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        u32.SendMessageW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.c_size_t,
+            ctypes.c_ssize_t,
+        ]
+        aumid = _window_icon_aumid(kind)
+        try:
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
+            shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.HRESULT
+            shell32.SetCurrentProcessExplicitAppUserModelID(aumid)
+        except Exception:
+            aumid = aumid + "(aumid-fail)"
+        ico = Path(icon) if icon else find_window_icon(install_root, kind=kind)
         hwnd = k32.GetConsoleWindow()
-        ico = Path(icon) if icon else find_window_icon(install_root)
+        if not hwnd:
+            # Console HWND can lag AllocConsole; one short retry helps Win11.
+            time.sleep(0.05)
+            hwnd = k32.GetConsoleWindow()
         if not hwnd or not ico:
+            if log:
+                log(
+                    f"console-icon: miss hwnd={hwnd!r} ico={ico} kind={kind or '-'} aumid={aumid}"
+                )
             return False
         done = False
-        for which, px in ((0, 16), (1, 32)):   # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
+        for which, px in ((0, 16), (1, 32)):  # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
             h = u32.LoadImageW(None, str(ico), 1, px, px, 0x10)
             if h:
-                u32.SendMessageW(hwnd, 0x80, which, h)   # WM_SETICON
+                u32.SendMessageW(hwnd, 0x80, which, h)  # WM_SETICON
                 done = True
+        if log:
+            log(
+                f"console-icon: {'ok' if done else 'load-fail'} path={ico} hwnd={hwnd} "
+                f"kind={kind or '-'} aumid={aumid} win11=aumid+wm_seticon"
+            )
         return done
-    except Exception:
+    except Exception as e:
+        if log:
+            try:
+                log(f"console-icon: error {type(e).__name__}")
+            except Exception:
+                pass
         return False
 
 
@@ -7863,6 +8145,47 @@ def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) ->
             continue
         ts = _parse_iso_ts(str(obj.get("ts") or ""))
         if ts is not None and ts > float(since_wall):
+            return True
+    return False
+
+
+
+def probe_opencode_turns_recent(
+    turns_path: Path | str,
+    *,
+    within_s: float,
+    now_wall: float | None = None,
+) -> bool:
+    """True when opencode-turns.jsonl has turn_started/ended within within_s (FR #9009).
+
+    Digest worker.updated can lag while OpenCode is still turning. A fresh turn
+    marker means the seat is not frozen; do not recycle for opencode-frozen-progress.
+    """
+    path = Path(turns_path)
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    now = float(now_wall) if now_wall is not None else time.time()
+    cutoff = now - max(1.0, float(within_s))
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        typ = str(obj.get("type") or "")
+        if typ not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts >= cutoff:
             return True
     return False
 
@@ -9713,18 +10036,41 @@ def opencode_external_dir_corrective_steps(
     worktree: str | Path,
     outbox: str | Path,
     scratch: str | Path,
+    reject_path: str | Path | None = None,
+    intake_script: str | Path | None = None,
 ) -> str:
-    """FR #8247: short corrective after an ``external_directory`` rejection (names allowed scratch)."""
+    """FR #8247 / #9214: short corrective after an ``external_directory`` rejection.
+
+    Names allowed scratch. When the reject is under install ``scripts`` (or an
+    intake_script is provided), point harvest at the allowlisted intake helper.
+    """
     key = (job_key or "job").strip() or "job"
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
     sc = str(scratch or "").strip()
+    intake = str(intake_script or "").strip()
+    rejected = str(reject_path or "").strip()
+    harvest_hint = ""
+    if intake:
+        harvest_hint = (
+            " For harvest/intake use the allowed script "
+            + intake
+            + " (common\\scripts or flat scripts under the install). "
+        )
+    else:
+        norm = rejected.replace("/", "\\").lower()
+        if "\\scripts\\" in norm or norm.endswith("\\scripts"):
+            harvest_hint = (
+                " For harvest/intake prefer common\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+                "(allowed) over a denied install path. "
+            )
     return (
         f"CORRECTIVE {key}: OpenCode rejected external_directory (path outside the job tree). "
         f"Use only the allowed scratch directory {sc} (worktree .bob\\tmp). "
         f"TEMP/TMP/TMPDIR already point there for this seat. "
         f"Do not request external_directory and never use %TEMP% or the user Temp folder. "
         f"Keep all scratch and tool paths inside {wt}. "
+        f"{harvest_hint}"
         f"Finish remaining work. {opencode_typed_delivery(key, outbox=ob)} "
         "The turn is not over until DONE is written."
     )
@@ -11112,6 +11458,13 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            # FR #9056: re-delivery of an already-open same job while holding — no-op.
+            # Do not append another pending copy or emit NACK ack-not-sent.
+            if self._ack_refuse_is_duplicate(line):
+                self.log(
+                    "relay: ignore re-offer of already-ACKed open job " + (line or "")[:120]
+                )
+                return "duplicate"
             first_held = False
             with self._lock:
                 if line == self._last_line and not self._consume_context_refusal(line):
@@ -11124,9 +11477,15 @@ class Relay:
                     del self._pending[0]
             # FR #4115: ACK the first held assign on receipt (before inject / turn end).
             # FR #8246: if that ACK is suppressed, drop the hold and do not inject later.
-            if first_held and not self._ack_offer_or_refuse(line):
-                self._drop_pending_line(line)
-                return "ack_not_sent"
+            # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK).
+            if first_held:
+                ack_st = self._ack_offer_or_refuse(line)
+                if ack_st == "refused":
+                    self._drop_pending_line(line)
+                    return "ack_not_sent"
+                if ack_st == "duplicate":
+                    self._drop_pending_line(line)
+                    return "duplicate"
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -11168,10 +11527,17 @@ class Relay:
                 ack_first = bool(assign_job_ref(line))
         # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
         # FR #8246: a suppressed ACK is one decision with inject — do not deliver the job.
-        if ack_first and not self._ack_offer_or_refuse(line):
-            if not do_inject:
-                self._drop_pending_line(line)
-            return "ack_not_sent"
+        # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK / no re-inject).
+        if ack_first:
+            ack_st = self._ack_offer_or_refuse(line)
+            if ack_st == "refused":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "ack_not_sent"
+            if ack_st == "duplicate":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "duplicate"
         if do_inject:
             return self._do_inject(line)
         return "held"
@@ -11180,10 +11546,23 @@ class Relay:
         with self._lock:
             self._pending = [p for p in self._pending if p != line]
 
-    def _ack_offer_or_refuse(self, line: str) -> bool:
-        """FR #8246: fresh offer clears the finished mark, then ACK.
+    def _ack_refuse_is_duplicate(self, line: str) -> bool:
+        """FR #9056: True when program ACK for this job is already open."""
+        ack = ack_on_receipt_line(line)
+        if not ack or not self.ack_refuse_reason:
+            return False
+        try:
+            return self.ack_refuse_reason(ack) == "duplicate ACK"
+        except Exception:
+            return False
 
-        Returns False when the ACK would be dropped. Caller must not inject.
+    def _ack_offer_or_refuse(self, line: str) -> str:
+        """FR #8246 / #9056: fresh offer clears the finished mark, then ACK.
+
+        Returns:
+          ``"acked"`` — ACK written; caller may inject/hold.
+          ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
         if self.prepare_offer:
             try:
@@ -11197,6 +11576,11 @@ class Relay:
                 reason = self.ack_refuse_reason(ack)
             except Exception:
                 reason = None
+        if reason == "duplicate ACK":
+            # FR #9056: program already ACK'd this in-flight job (held flush / receipt).
+            # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
+            self.log(f"relay: ACK already open for same job; no-op ({reason})")
+            return "duplicate"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -11206,9 +11590,9 @@ class Relay:
                     self.write_outbox(nack)
                 except Exception:
                     pass
-            return False
+            return "refused"
         self._ack_on_receipt(line)
-        return True
+        return "acked"
 
     def _ack_on_receipt(self, line: str) -> None:
         """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
@@ -11356,7 +11740,8 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
-            if self._ack_offer_or_refuse(line):
+            # FR #9056: only inject on a fresh ACK; duplicate/refused skip re-inject.
+            if self._ack_offer_or_refuse(line) == "acked":
                 self._do_inject(line)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
@@ -12685,6 +13070,7 @@ def opencode_frozen_recycle_reason(
     digest_doing_age_s: float | None,
     progress_moved_age_s: float | None,
     threshold_s: float = 900.0,
+    turns_recent: bool = False,
 ) -> str:
     """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
 
@@ -12693,6 +13079,11 @@ def opencode_frozen_recycle_reason(
     `limited=true` with rolling remaining must not set `out_of_fuel` (that
     hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
     hard 402 / exhausted holds.
+
+    FR #9009: recent opencode-turns.jsonl activity (turn_started/ended) means the
+    agent is still working even when digest worker.updated is stale. That
+    suppresses frozen-progress / lost-ack-stale recycles (FR #8646 still applies
+    when turns are not recent).
     """
     if (kind or "").strip().lower() != "opencode":
         return ""
@@ -12708,8 +13099,13 @@ def opencode_frozen_recycle_reason(
     if digest_age is not None and digest_age >= thr:
         if not ack_open:
             return "opencode-lost-ack-stale"
+        # FR #9009: fresh turns mean the agent is working despite a stale digest stamp.
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     return ""
 
@@ -14568,6 +14964,8 @@ class BoredEmitter:
         # FR #6366: OpenCode finish-run decide hook ("retry"|"giveup"); attempt counter.
         self.opencode_finish_decide_fn: Optional[Callable[[str], str]] = None
         self.job_end_cleanup_fn: Optional[Callable[[Optional[str]], None]] = None
+        # FR #9183: idle sweep + locked worktree retry (set by Seat for all kinds).
+        self.idle_worktree_sweep_fn: Optional[Callable[[str], None]] = None
         self._opencode_finish_attempt: int = 0
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
@@ -16062,6 +16460,14 @@ class BoredEmitter:
                 self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
         except Exception:
             pass
+        # FR #9183: while idle / after terminal job lines, retry locked removes + sweep extras.
+        if reason in ("idle", "start", "done", "free", "turn"):
+            sweep = getattr(self, "idle_worktree_sweep_fn", None)
+            if sweep is not None:
+                try:
+                    sweep(reason)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: failed:{type(e).__name__}")
         ok = False
         try:
             ok = bool(self.send())
@@ -16379,7 +16785,10 @@ class Supervisor:
                 self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
             elif (self.kind or "").strip().lower() in ("grok", "cursor"):
                 # FR #6918: drop --job-worktree from live MCP configs when the job ends.
+                # FR #9183: also prune the finished job worktree (same helper as OpenCode).
                 self.bored.job_end_cleanup_fn = self._live_skill_dag_job_end_cleanup
+            # FR #9183: idle sweep + locked-remove retry for every seat kind.
+            self.bored.idle_worktree_sweep_fn = self._idle_job_worktree_sweep
             # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
             self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
@@ -17386,19 +17795,24 @@ class Supervisor:
             if ref:
                 self.bored.note_stand_down(ref)
 
-    def may_send_outbox(self, payload: str) -> bool:
-        """FR #4730: drop replayed ACK for a finished job before it hits IRC.
+    def may_send_outbox(self, payload: str):
+        """FR #4730 / #9056: drop replayed ACK for a finished or already-open job.
 
-        Used for the run-dir outbox. Do not apply the OpenCode job-key filter here
+        Used for the run-dir outbox. Returns True, or ``(False, reason)`` so drain
+        logs ``duplicate ACK`` / ``finished-job ACK replay`` instead of bare
+        ``stale replay``. Do not apply the OpenCode job-key filter here
         (FR #6333 MRB): program NACKs for a new key can arrive while `_opencode_job_key`
         is still the previous job. Job-key filtering is `may_send_job_outbox` only.
         """
         if self.bored is None:
             return True
         try:
-            return bool(self.bored.should_forward_outbox(payload))
+            reason = self.bored.outbox_ack_refuse_reason(payload)
         except Exception:
             return True
+        if reason:
+            return (False, reason)
+        return True
 
     def may_send_job_outbox(self, payload: str):
         """FR #6333 / #6472: worktree ``.bob/outbox.txt`` job-key filter then ACK rules.
@@ -18501,7 +18915,63 @@ class Supervisor:
             pass
 
     def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
+        # FR #9183: prune this job's worktree after DONE/GIVEUP/NACK (grok/cursor).
+        self._prune_finished_job_worktree(job)
         self._clear_per_job_seat_state(job)
+
+    def _prune_finished_job_worktree(self, job: Optional[str] = None) -> None:
+        """FR #9183: git worktree remove --force the finished job tree; queue if locked."""
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        if not wt:
+            return
+        try:
+            import job_worktree_lifecycle as _jwl
+
+            install = (
+                str(getattr(self, "install_root", "") or "")
+                or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+                or str(Path(getattr(self, "cwd", "") or "").parent)
+            )
+            _jwl.remove_finished_job_worktree(
+                wt,
+                install_root=install or None,
+                keep_paths=[],
+                log_fn=self.log,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-wt-prune: failed:{type(e).__name__} job={job or ''}")
+
+    def _idle_job_worktree_sweep(self, reason: str = "") -> None:
+        """FR #9183: retry locked removals; Clear soft-cap extras while idle."""
+        try:
+            import job_worktree_lifecycle as _jwl
+
+            install = (
+                str(getattr(self, "install_root", "") or "")
+                or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+                or ""
+            )
+            keep = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+            keep_paths = [keep] if keep else []
+            _jwl.drain_locked_worktree_retries(
+                install_root=install or None,
+                keep_paths=keep_paths,
+                log_fn=self.log,
+            )
+            # Soft-cap extras via existing Clear helper when a job tree (or install) is known.
+            anchor = keep or install
+            if anchor and (self.kind or "").strip().lower() == "opencode":
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
+            elif anchor and install:
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-wt-sweep: failed:{type(e).__name__} reason={reason}")
 
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
@@ -19313,11 +19783,24 @@ class Supervisor:
                         st["corrective_pending"] = False
                 if use_corrective:
                     scratch = ensure_opencode_job_scratch(wt)
+                    _intake = None
+                    try:
+                        _cwd = str(
+                            getattr(self, "worker_dir", "")
+                            or getattr(self, "cwd", "")
+                            or ""
+                        )
+                        if not _cwd:
+                            _cwd = str(Path(__file__).resolve().parent.parent / "worker")
+                        _intake = resolve_bobiverse_intake_script(_cwd)
+                    except Exception:
+                        _intake = None
                     body = opencode_external_dir_corrective_steps(
                         job_key=job_key,
                         worktree=wt,
                         outbox=outbox,
                         scratch=scratch,
+                        intake_script=_intake,
                     )
                     from_line = format_from(
                         "bob-worker", shop, body, outbox=outbox
@@ -19379,11 +19862,20 @@ class Supervisor:
                 self.log(f"opencode finish: bored on_outbox failed {type(e).__name__}")
 
     def _opencode_job_end_cleanup(self, job: Optional[str] = None) -> None:
-        """FR #6370: drop Temp worktrees; FR #8094: clear per-job context for the next offer."""
+        """FR #6370 / FR #9183: remove finished job tree, sweep extras; FR #8094 clear context."""
+        # FR #9183: remove THIS job's worktree first (KeepPath soft-cap left it behind).
+        self._prune_finished_job_worktree(job)
         wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
-        if (self.kind or "").strip().lower() == "opencode" and wt:
+        install = (
+            str(getattr(self, "install_root", "") or "")
+            or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+            or ""
+        )
+        # Sweep remaining extras; prefer install root as KeepPath so finished wt is gone.
+        anchor = install or wt
+        if (self.kind or "").strip().lower() == "opencode" and anchor:
             try:
-                opencode_cleanup_extra_worktrees(wt, log_fn=self.log)
+                opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
             except Exception as e:  # noqa: BLE001
                 self.log(f"opencode finish: cleanup failed {type(e).__name__}")
         self._clear_per_job_seat_state(job)
@@ -19511,6 +20003,14 @@ class Supervisor:
                 digest_age = self._opencode_report_doing_age_s(nick)
         except Exception:
             digest_age = None
+        turns_recent = False
+        try:
+            turns_path = Path(self.run_dir) / "opencode-turns.jsonl"
+            turns_recent = probe_opencode_turns_recent(
+                turns_path, within_s=thr, now_wall=time.time()
+            )
+        except Exception:
+            turns_recent = False
         reason = opencode_frozen_recycle_reason(
             kind=self.kind,
             out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
@@ -19518,12 +20018,13 @@ class Supervisor:
             digest_doing_age_s=digest_age,
             progress_moved_age_s=moved_age,
             threshold_s=thr,
+            turns_recent=turns_recent,
         )
         if not reason:
             return False
         self.log(
             f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
-            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+            f"moved_age={moved_age!r} turns_recent={turns_recent} thr={thr:.0f}s; recycling"
         )
         self.restart_agent(reason)
         return True
@@ -20665,13 +21166,11 @@ def run_monitor(args, log: Log) -> int:
     run_dir = _new_run_dir("monitor", "monitor")
     run_dir.mkdir(parents=True, exist_ok=True)
     ensure_console("Jeeves Monitor (%s) - closing this window ends the agent" % kind)
-    # Prefer butler icon when present on the work root
-    butler = folder / "assets" / "jeeves-butler.ico"
-    if butler.is_file():
-        try:
-            set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
-        except Exception:
-            pass
+    # FR #9211: butler / bob paths via find_window_icon(kind=monitor); AUMID + WM_SETICON.
+    try:
+        set_console_icon(folder, kind="monitor", log=log)
+    except Exception:
+        pass
     spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir,
                              install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
@@ -20938,7 +21437,8 @@ def run_agent(args, log: Log) -> int:
     log.path = run_dir / "worker.log"
     log(f"worker: pid={pid} nick={nick} shop=#{machine} kind={kind} run_dir={run_dir}")
     ensure_console(f"Bob worker {nick} ({kind}) - closing this window ends the agent")
-    set_console_icon(Path(args.install_root))
+    # FR #9211: Win11 taskbar ignores bare WM_SETICON without AUMID; kind picks OC favicon vs Bob.
+    set_console_icon(Path(args.install_root), kind=kind, log=log)
     pw = find_ergo_password(Path(args.install_root))
     sasl = None
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):

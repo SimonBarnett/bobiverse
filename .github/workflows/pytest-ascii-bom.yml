@@ -8,6 +8,7 @@
 # Complements pytest-gitclaim.yml so comment-only Unicode cannot merge with main red (#3966).
 # Writers: common/scripts/Write-BobiversePs1AsciiNoBom.ps1 + bobiverse_ps1_ascii.py
 # Pre-push: Assert-BobiverseChangedPs1Ascii.ps1
+# FR #9217: required status check on ruleset required-ci-3948 (with conflict-markers).
 name: pytest-ascii-bom
 
 on:
