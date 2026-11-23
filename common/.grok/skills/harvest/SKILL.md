@@ -403,5 +403,6 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - BOB-G3 digests must remain offerable and hold-purge exempt --- skip only in offer/assign via digest_issue_reason, or purge paths drop the gate row.
 - empty-online.disabled seat-start guard must be fail-closed: allowlist only TipForm menu/workers-*/jeeves-menu and explicit startworker; default/other/unknown triggers refuse like auto-start
 - On non-chair J:\, bypass Invoke-JeevesMonitorCheck Sync preflight (or bound it) and run python -u tools\monitor\<check>.py; clear freeze watch when target issue closed / nick absent from /report.
+- MRB TipForm Exit under #9011 park: Exit-park 5m + TipForm-Exit-park; never Stop ircBob; Ensure-BobTrayRunning heals Stopped ear before watchdog-skip-suppress
 - FR #9354: bob MSI PlanAgent comes from skills-visionary release download+sha256 into plan\ with PlanAgent.MANIFEST.json; -SkipPlanAgentExe only with -SkipMsi; then re-offer #8833
 - Write-BobiverseVendoredExeManifest must not emit Path on the success stream; Stage-Product return Stage concatenates pipeline output and heat FR6969 fails when MANIFEST.json paths join Stage.
