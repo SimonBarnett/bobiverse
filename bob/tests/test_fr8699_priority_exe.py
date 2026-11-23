@@ -11,6 +11,10 @@ def test_priority_click_starts_priority_agent_exe():
     assert "StartPriorityExe()" in cs
     assert "vendor\\priority\\PriorityAgent.exe" in cs
     assert "action\", \"start exe\"" in cs
-    assert "$miPriority.Add_Click({ Start-BobTrayPriorityExe })" in ps
+    # FR #8698 / BOB-52: click may gate fuel before Start-BobTrayPriorityExe.
+    a = ps.find("$miPriority.Add_Click({")
+    b = ps.find("$miJeeves.Add_Click({", a)
+    assert a > 0 and b > a
+    assert "Start-BobTrayPriorityExe" in ps[a:b]
     assert "vendor\\priority\\PriorityAgent.exe" in ps
     assert "Priority: start exe" in ps

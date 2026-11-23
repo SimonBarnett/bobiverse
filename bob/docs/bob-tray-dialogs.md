@@ -138,6 +138,10 @@ TipForm and Status paint Copilot as a family header plus one left-aligned UsageR
 
 Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `bob/tests/test_fr6429_opencode_tray_submenu.py`, `common/tests/test_fr6301_opencode_keys.py`, `bob/tests/test_mrb6303_docs_pins.py`.
 
+## FR #8698 / BOB-52 Priority no-token gate
+
+**Start PriorityAgent** reads this box's Priority fuel file (`BOB_PRIORITY_FUEL_FILE`, else `%LOCALAPPDATA%\Bobiverse\priority-fuel.json`). When remaining is known zero / status empty: MessageBox dialog, quit the start, tray stays up. Missing or unreadable fuel does not block (unknown passes the gate). Same order as Plan BOB-46. Evidence: `bob/docs/bob-52-priority-no-token-evidence.md`.
+
 ## FR #8695 / BOB-53 Priority MCP (mcp.ntsa.uk)
 
 **Agents > Priority** is a submenu. **Start PriorityAgent** still launches `vendor\priority\PriorityAgent.exe` (BOB-50). **Configure MCP (mcp.ntsa.uk)** registers the Grok user-level server `priority-catalog` at `https://mcp.ntsa.uk/mcp`. The same registration is what `PriorityAgent.exe` adds; the tray also refuses a wrong URL instead of keeping it.
