@@ -31,6 +31,13 @@ def test_bob03_build_jeeves_hidden_import_models_catalog():
     assert "--hidden-import" in text
 
 
+def test_bob03_build_jeeves_hidden_import_models_refresh():
+    # FR #9224: frozen chair must embed models_refresh for POST /models/refresh.
+    text = BUILD.read_text(encoding="utf-8")
+    assert "models_refresh" in text
+    assert "--hidden-import" in text
+
+
 def test_bob03_webhooks_md_documents_form_only_validation():
     text = DOCS.read_text(encoding="utf-8")
     assert "no" in text.lower() and "models/validate" in text

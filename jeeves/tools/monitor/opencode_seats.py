@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional
 from _common import EXIT_FINDING, EXIT_OK, iter_worker_entries, run_check
 
 DEFAULT_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
-DEFAULT_MACHINES = ("flamingo",)
+DEFAULT_MACHINES = ("flamingo", "redqueen")
 # Issue evidence used ~900s; align with that live stuck threshold.
 DEFAULT_STUCK_AGE_SEC = 900
 _HTTP_TIMEOUT_S = 30.0
@@ -39,6 +39,17 @@ def target_machines() -> tuple[str, ...]:
         return DEFAULT_MACHINES
     parts = tuple(p.strip().lower() for p in raw.split(",") if p.strip())
     return parts or DEFAULT_MACHINES
+
+
+def expect_seats() -> int:
+    """FR #9208: configured OpenCode free-seat expectation per shop (default 2)."""
+    raw = (os.environ.get("BOB_OPENCODE_EXPECT_SEATS") or "").strip()
+    if not raw:
+        return 2
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return 2
 
 
 def stuck_age_sec() -> float:
@@ -248,6 +259,31 @@ def check(
             )
             stuck.append({**row, "reason": "week_exhausted_while_busy"})
 
+    # FR #9208: under-count OpenCode seats per target machine (digest busy rows only).
+    expect_n = expect_seats()
+    under: list[dict[str, Any]] = []
+    if expect_n > 0:
+        by_mid: dict[str, int] = {}
+        for w in workers:
+            mid = str(w.get("machine") or "").strip().lower()
+            if not mid:
+                nick = str(w.get("nick") or "")
+                if "-" in nick:
+                    mid = nick.rsplit("-", 1)[0].lower()
+            if not mid:
+                continue
+            by_mid[mid] = by_mid.get(mid, 0) + 1
+        for mid in machines:
+            m = mid.lower()
+            have = int(by_mid.get(m, 0))
+            if have < expect_n:
+                msg = (
+                    f"opencode under-count machine={m} have={have} expect={expect_n} "
+                    "(operator TipForm starts seats; monitor never Start-BobWorker)"
+                )
+                findings.append(msg)
+                under.append({"machine": m, "have": have, "expect": expect_n})
+
     # Dedupe findings text while preserving order
     seen: set[str] = set()
     uniq: list[str] = []
@@ -258,16 +294,20 @@ def check(
         uniq.append(f)
 
     remediation = [
-        "report only — never clear_seat_doing / !assign on live working seats (harvest #1967)",
-        "intake when flamingo OpenCode age exceeds threshold or week window is exhausted while busy",
+        "report only --- never clear_seat_doing / !assign on live working seats (harvest #1967)",
+        "intake when flamingo/redqueen OpenCode age exceeds threshold or week window is exhausted while busy",
+        "FR #9208: under-count => operator TipForm Agents starts OpenCode seats; do not kill seats from monitor",
         "prefer live GET /bob/v1/report over local digest for remote OpenCode seats",
+        "FR #9208: Watch-BobTray Observe seats synthesizes GIVEUP when process gone (park-Watch-only)",
     ]
     payload = {
         "ok": not uniq,
         "machines": list(machines),
         "report_url": report_url() if not (os.environ.get("BOB_OPENCODE_SEATS_FIXTURE") or "").strip() else "fixture",
         "max_age_sec": int(max_age),
+        "expect_seats": int(expect_n),
         "opencode_worker_count": len(seats),
+        "under_count": under,
         "seats": seats,
         "stuck": stuck,
         "windows": {
@@ -285,7 +325,7 @@ def check(
 def main(argv: Optional[list[str]] = None) -> int:
     return run_check(
         "opencode_seats",
-        "Live flamingo OpenCode seats via /bob/v1/report (stuck age, mismatch, week quota)",
+        "Live flamingo/redqueen OpenCode seats via /bob/v1/report (stuck age, under-count, week quota)",
         check,
         argv=argv,
     )

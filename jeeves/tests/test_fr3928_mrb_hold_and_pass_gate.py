@@ -28,9 +28,16 @@ def test_pr_hold_reason_from_on_hold_comment_text():
 
 
 def test_pr_hold_reason_from_label():
-    assert gitclaim.pr_hold_reason(title="feat", body="", labels=("on-hold",))
+    # FR #9082: hold / on-hold are issues-only — do not gate MRB via PR label.
+    assert gitclaim.pr_hold_reason(title="feat", body="", labels=("on-hold",)) is None
+    assert gitclaim.pr_hold_reason(title="feat", body="", labels=("hold",)) is None
     assert gitclaim.pr_hold_reason(title="feat", body="", labels=("do-not-merge",))
+    assert gitclaim.pr_hold_reason(title="feat", body="", labels=("wip",))
     assert gitclaim.pr_hold_reason(title="feat", body="", labels=()) is None
+    assert gitclaim.pr_forbidden_hold_labels(("hold", "via-intake")) == ["hold"]
+    assert gitclaim.strip_issues_only_hold_labels(["hold", "harvest-lesson", "on-hold"]) == [
+        "harvest-lesson"
+    ]
 
 
 def test_pr_hold_reason_ignores_unrelated_body():
@@ -45,12 +52,22 @@ def test_pr_hold_reason_ignores_unrelated_body():
 
 
 def test_mrb_row_offerable_false_when_hold_label_or_body():
+    # FR #9082: hold/on-hold on a PR row are ignored; do-not-merge still blocks.
+    row_ignored = {
+        "task": "MRB",
+        "repo": "SimonBarnett/a-search",
+        "id": "1334",
+        "url": "https://github.com/SimonBarnett/a-search/pull/1334",
+        "labels": ["on-hold", "hold"],
+    }
+    assert gitclaim.mrb_row_offerable(row_ignored) is True
+
     row = {
         "task": "MRB",
         "repo": "SimonBarnett/a-search",
         "id": "1334",
         "url": "https://github.com/SimonBarnett/a-search/pull/1334",
-        "labels": ["on-hold"],
+        "labels": ["do-not-merge"],
     }
     assert gitclaim.mrb_row_offerable(row) is False
 

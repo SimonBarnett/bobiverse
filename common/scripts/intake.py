@@ -1457,7 +1457,7 @@ _SKILL_TREE_PATH_RE = re.compile(
 def _norm_repo_rel_path(path: str) -> str:
     """Normalize repo-relative path; keep leading ``.`` on ``.grok/...`` (FR #9180).
 
-    Do not use ``str.lstrip('./')`` — that strips every leading ``.`` / ``/`` char
+    Do not use ``str.lstrip('./')`` - that strips every leading ``.`` / ``/`` char
     and turns ``.grok/skills/...`` into ``grok/skills/...``.
     """
     p = str(path or "").replace("\\", "/")
@@ -1537,6 +1537,17 @@ def _filer_create_pr(
     draft: bool,
 ) -> dict[str, Any]:
     """Prefer create_pr (non-draft) / create_draft_pr; Fake supports both (FR #2705)."""
+    # FR #9082: hold / on-hold are issues-only --- never stamp them on pull requests.
+    try:
+        from gitclaim import strip_issues_only_hold_labels
+
+        labels = strip_issues_only_hold_labels(labels)
+    except Exception:
+        labels = [
+            x
+            for x in (labels or [])
+            if str(x).strip().lower() not in {"hold", "on-hold"}
+        ]
     if draft:
         return filer.create_draft_pr(repo, title, body, branch, files, labels)
     create_pr = getattr(filer, "create_pr", None)
