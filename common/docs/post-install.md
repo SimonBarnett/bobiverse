@@ -120,6 +120,7 @@ Expect:
 - `ircJeeves` Running; ObjectName = fleet user when `service.password` / `BOBIVERSE_SERVICE_PASSWORD` was supplied
 - Log: `joined #bobiverse,#â€¦ as Jeeves`
 - Scheduled task **`BobAutoFocus` absent** (FR #3190): the interim ops `auto-focus.py` PT2M per-item `!focus` spammer is retired. Post-upgrade restarts only `BobCallback` / `BobAutoFeed`; leftovers are unregistered via `Unregister-BobAutoFocus.ps1`. Use repo-level `!focus <Owner/repo>` only.
+- **Skill-dag MCP (FR #9136):** `<InstallRoot>\scripts\skill_dag_mcp.py` (+ index/bound) present; `<InstallRoot>\.cursor\mcp.json` points at that script with `--root <InstallRoot>\.grok\skills` (never `C:\ai\bob\...`). Smoke: `python <InstallRoot>\scripts\skill_dag_mcp.py --root <InstallRoot>\.grok\skills --once status` returns `node_count>0` when skills are installed.
 
 ### LocalSystem / DPAPI pitfalls
 
