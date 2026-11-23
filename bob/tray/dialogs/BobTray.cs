@@ -420,6 +420,35 @@ namespace BobDialogs
             catch { return false; }
         }
 
+        // FR #9142 / #9240 / #9346: <root>\run\startworker\empty-online.disabled kill switch.
+        public static bool EmptyOnlineDisabled(string root)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(root)) return false;
+                string p = Path.Combine(root, "run", "startworker", "empty-online.disabled");
+                return File.Exists(p);
+            }
+            catch { return false; }
+        }
+
+        // FR #9346: TipForm click / explicit !startworker only. Fail-closed otherwise.
+        public static bool SeatStartTriggerIsManual(string trigger)
+        {
+            string t = (trigger ?? "").Trim().ToLowerInvariant();
+            if (t.Length == 0) return false;
+            if (t == "menu" || t == "jeeves-menu" || t == "startworker") return true;
+            if (t.StartsWith("workers-")) return true;
+            return false;
+        }
+
+        // FR #9240 / #9346: same contract as Test-BobTrayEmptyOnlineBlocksAutoStart (PS shared guard).
+        public static bool EmptyOnlineBlocksAutoStart(string root, string trigger)
+        {
+            if (!EmptyOnlineDisabled(root)) return false;
+            return !SeatStartTriggerIsManual(trigger);
+        }
+
         // Same contract as Start-BobTrayWorkerExe: fresh agent every click, run-copy of the exe so a seat never locks the install,
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
@@ -442,10 +471,21 @@ namespace BobDialogs
         // FR #8679 / BOB-37: cwdOverride (e.g. J:\ for Agents > Jeeves) wins over describe-launch cwd.
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride)
         {
+            return Launch(root, mode, machine, agent, childEnv, out error, cwdOverride, "menu");
+        }
+
+        // FR #9346: trigger shares the PS empty-online.disabled guard (TipForm clicks pass menu / workers-* / jeeves-menu).
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride, string trigger)
+        {
             error = "";
             if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
             {
                 error = "Seats are off on this machine (seat target 0).";
+                return 0;
+            }
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && EmptyOnlineBlocksAutoStart(root, trigger))
+            {
+                error = "empty-online.disabled blocks auto trigger=" + ((trigger ?? "").Trim().Length > 0 ? trigger.Trim() : "other");
                 return 0;
             }
             LaunchCalls++;
@@ -2190,15 +2230,38 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
-            StartWorker(mode, agent, null, "", "");
+            StartWorker(mode, agent, null, "", "", "menu");
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
         {
-            StartWorker(mode, agent, childEnv, opencodeSlot, "");
+            StartWorker(mode, agent, childEnv, opencodeSlot, "", TipFormSeatTrigger(agent, opencodeSlot));
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride)
+        {
+            StartWorker(mode, agent, childEnv, opencodeSlot, cwdOverride, TipFormSeatTrigger(agent, opencodeSlot, cwdOverride));
+        }
+
+        // FR #9346: TipForm click triggers stay on the manual allowlist of the shared empty-online guard.
+        static string TipFormSeatTrigger(string agent, string opencodeSlot)
+        {
+            return TipFormSeatTrigger(agent, opencodeSlot, "");
+        }
+
+        static string TipFormSeatTrigger(string agent, string opencodeSlot, string cwdOverride)
+        {
+            if (!string.IsNullOrEmpty(cwdOverride) && string.Equals(cwdOverride, @"J:\", StringComparison.OrdinalIgnoreCase))
+                return "jeeves-menu";
+            string a = (agent ?? "").Trim().ToLowerInvariant();
+            if (a == "grok") return "workers-grok";
+            if (a == "cursor") return "workers-cursor";
+            if (a == "opencode" || opencodeSlot == "free" || opencodeSlot == "paid") return "workers-opencode";
+            if (a.Length == 0 || a == "auto") return "menu";
+            return "menu";
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride, string trigger)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
@@ -2237,7 +2300,8 @@ namespace BobDialogs
                 return;
             }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
+            // FR #9346: TipForm clicks pass a manual trigger so empty-online.disabled does not block Si.
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "", trigger ?? "menu");
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;
