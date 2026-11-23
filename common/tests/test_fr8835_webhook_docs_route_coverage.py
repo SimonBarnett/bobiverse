@@ -145,9 +145,10 @@ def test_fr8835_models_and_git_cards_present():
 
 def test_fr8835_coming_models_ops_marked():
     coming = {e.slug for e in docs.all_entries() if getattr(e, "status", "live") == "coming"}
-    # FR #9122: models-put is live (BOB-02); PATCH + refresh remain coming.
+    # FR #9122: models-put is live (BOB-02); FR #8820: models-refresh is live; PATCH remains coming.
     assert "models-put" not in coming
-    assert {"models-patch", "models-refresh"} <= coming
+    assert "models-refresh" not in coming
+    assert "models-patch" in coming
     page = (WWW / "docs" / "webhooks" / "models.html").read_text(encoding="utf-8")
     assert "Coming" in page and "not served" in page
     assert "clis" in page.lower()

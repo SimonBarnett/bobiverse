@@ -25,9 +25,11 @@ def test_fr7478_generator_parity_and_skips_home(tmp_path: Path, monkeypatch):
     checked_names = sorted(p.name for p in checked.glob("*.html"))
     # Hand stubs (digest-local redirect, models-validate retired notice) are not
     # registry-generated; generator output must still match for every emitted page.
+    # FR #8835 models + builds; FR #8820 refresh lives on models.html (no models-validate page).
     hand_stubs = {"digest-local.html", "models-validate.html"}
     assert set(names) == set(checked_names) - hand_stubs
     assert hand_stubs <= set(checked_names)
+    assert "models-validate.html" not in names
     assert "models.html" in names and "builds.html" in names
     for name in names:
         got = _norm((tmp_path / "docs" / "webhooks" / name).read_text(encoding="utf-8"))

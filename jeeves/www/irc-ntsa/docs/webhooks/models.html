@@ -37,14 +37,18 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <p><strong>Who calls it:</strong> Tray Weights form, Agents/Workers settings, operators.</p>
 <p><strong>Auth (named only):</strong> None.</p>
 <p><strong>Request schema:</strong> No body. HEAD returns empty body.</p>
-<p><strong>Response schema:</strong> JSON {&quot;clis&quot;:{CLI:{models:{model:{contexts:{context:{efforts:[...]}}}}}},&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]} (BOB-01 / FR #8819). clis from digest-home models-valid-combos.json; missing CLI yields models:{}.</p>
+<p><strong>Response schema:</strong> JSON {&quot;clis&quot;:{CLI:{models:{model:{contexts:{context:{efforts:[...]}}}}}},&quot;agents&quot;:[{&quot;agent&quot;,&quot;cli&quot;,&quot;model&quot;,&quot;context&quot;,&quot;effort&quot;}, ...]} (BOB-01 / FR #8819 / FR #8820). clis from digest-home models-valid-combos.json; missing CLI yields models:{}; stale:true when selection model absent.</p>
 <p><strong>Status codes:</strong> 200 JSON; never invents secret fields.</p>
 <p><strong>Retry / idempotency:</strong> Safe GET.</p>
 <p><strong>Rate limits:</strong> Proxy only.</p>
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook rewrite when deployed.</p>
 <p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122</p>
 <p><strong>Redacted example</strong></p>
-<pre>GET https://bob.ntsa.uk/bob/v1/models</pre>
+<pre>GET https://bob.ntsa.uk/bob/v1/models
+Accept: application/json
+
+200 OK
+{&quot;clis&quot;:{&quot;Grok&quot;:{&quot;models&quot;:{&quot;grok-4.7&quot;:{&quot;contexts&quot;:{&quot;256000&quot;:{&quot;efforts&quot;:[&quot;xhigh&quot;,&quot;high&quot;,&quot;medium&quot;,&quot;low&quot;]},&quot;500000&quot;:{&quot;efforts&quot;:[&quot;xhigh&quot;,&quot;high&quot;,&quot;medium&quot;,&quot;low&quot;]}}}}},&quot;Cursor&quot;:{&quot;models&quot;:{&quot;gpt-5&quot;:{&quot;contexts&quot;:{&quot;default&quot;:{&quot;efforts&quot;:[]}}}}},&quot;Opencode&quot;:{&quot;models&quot;:{&quot;opencode-go/deepseek-v4-pro&quot;:{&quot;contexts&quot;:{&quot;default&quot;:{&quot;efforts&quot;:[]}}}}}},&quot;agents&quot;:[{&quot;agent&quot;:&quot;Plan&quot;,&quot;cli&quot;:&quot;Grok&quot;,&quot;model&quot;:&quot;grok-4.7&quot;,&quot;context&quot;:&quot;256000&quot;,&quot;effort&quot;:&quot;high&quot;}]}</pre>
 </section>
 
 <section id="models-put">
@@ -86,19 +90,25 @@ Content-Type: application/json
 </section>
 
 <section id="models-refresh">
-<h2>Models refresh (POST) — coming <span class="badge">POST /bob/v1/models/refresh</span> <span class="badge">Coming — not served</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options from each CLI listing (#8820). Not served yet.</p>
+<h2>Models refresh (POST) <span class="badge">POST /bob/v1/models/refresh</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).</p>
 <p><strong>Who calls it:</strong> Operators / tray refresh.</p>
-<p><strong>Auth (named only):</strong> None once live (rate-limited).</p>
-<p><strong>Request schema:</strong> Empty or optional CLI filter JSON.</p>
-<p><strong>Response schema:</strong> JSON clis + refreshed_at + added/removed; failed CLI keeps prior.</p>
-<p><strong>Status codes:</strong> Coming — 404 today; 429 when rate-limited once live.</p>
-<p><strong>Retry / idempotency:</strong> Safe to retry; fail-closed per CLI.</p>
-<p><strong>Rate limits:</strong> TBD with #8820.</p>
-<p><strong>Reachability:</strong> Not served yet (same BobModelsWebhook prefix).</p>
-<p><strong>Source:</strong> <code>planned with #8820</code> · <strong>Related:</strong> FR #8820</p>
+<p><strong>Auth (named only):</strong> Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.</p>
+<p><strong>Request schema:</strong> Empty body or {&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]}.</p>
+<p><strong>Response schema:</strong> 200 JSON {&quot;clis&quot;:{cli:{&quot;models&quot;:[...],&quot;refreshed_at&quot;}},&quot;refresh&quot;:{cli:{&quot;status&quot;:&quot;refreshed|failed&quot;,&quot;added&quot;,&quot;removed&quot;,&quot;reason&quot;}}}; failed CLI keeps prior catalog; selections unchanged.</p>
+<p><strong>Status codes:</strong> 200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.</p>
+<p><strong>Retry / idempotency:</strong> Safe to retry; per-CLI fail-closed; second call inside 60s returns 429 with no change.</p>
+<p><strong>Rate limits:</strong> One attempt per CLI per 60s (in-memory; restart resets).</p>
+<p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).</p>
+<p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8820</p>
 <p><strong>Redacted example</strong></p>
-<pre>POST https://bob.ntsa.uk/bob/v1/models/refresh</pre>
+<pre>POST https://bob.ntsa.uk/bob/v1/models/refresh
+Content-Type: application/json
+
+{&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]}
+
+200 OK
+{&quot;clis&quot;:{&quot;grok&quot;:{&quot;models&quot;:[{&quot;model&quot;:&quot;grok-4.7&quot;,&quot;contexts&quot;:[],&quot;efforts&quot;:[]}],&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;}},&quot;refresh&quot;:{&quot;grok&quot;:{&quot;status&quot;:&quot;refreshed&quot;,&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;,&quot;added&quot;:[&quot;grok-4.7&quot;],&quot;removed&quot;:[]}}}</pre>
 </section>
 
 <footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
