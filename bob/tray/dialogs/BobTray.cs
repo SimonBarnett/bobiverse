@@ -1051,6 +1051,7 @@ namespace BobDialogs
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
             // FR #8689 / BOB-48 + FR #9267: Plan GANTT from install assets\ (repo bob\tray\assets\ fallback).
             TryApplyTrayMenuIcon(miPlan, root, "plan-gantt.ico", "plan");
+            // FR #9271 / BOB-TRAY-UI-10: flat Agents > Plan click starts Plan seat (no submenu).
             miPlan.Click += delegate {
                 // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
                 string fuel = PlanFuelPath();
@@ -2274,10 +2275,10 @@ namespace BobDialogs
             return false;
         }
 
-        // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
+        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10: Agents > Plan starts plan\PlanAgent.exe (MSI / BOB-49), not bob-worker --mode plan / bob-plan.exe.
         void StartPlanExe()
         {
-            string exe = Path.Combine(root, "vendor\\plan\\bob-plan.exe");
+            string exe = Path.Combine(root, "plan", "PlanAgent.exe");
             string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
             if (string.IsNullOrEmpty(hook))
                 hook = Path.Combine(root, "run", "models-webhook.json");
@@ -2293,8 +2294,13 @@ namespace BobDialogs
             catch { }
             string mcpPath = PlanMcpConfig.WriteConfig(root);
             TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
-            TrayLifecycle.Write("plan", "action", "start exe", "path", exe);
-            if (!File.Exists(exe)) return;
+            TrayLifecycle.Write("plan", "via", "bob-tray-Plan", "action", "start exe", "path", exe);
+            if (!File.Exists(exe))
+            {
+                TrayLifecycle.Write("plan", "action", "start exe missing", "path", exe);
+                try { MessageBox.Show("PlanAgent.exe not found at:\r\n" + exe + "\r\n\r\nInstall or repair the bob MSI (BOB-49 / skills-visionary PlanAgent).", "Plan - missing exe", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+                return;
+            }
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
@@ -2306,6 +2312,7 @@ namespace BobDialogs
             catch (Exception ex)
             {
                 TrayLifecycle.Write("plan", "action", "start exe failed", "error", ex.Message);
+                try { MessageBox.Show("Failed to start PlanAgent.exe:\r\n" + ex.Message, "Plan - start failed", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
             }
         }
 
