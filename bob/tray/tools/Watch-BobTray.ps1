@@ -4732,7 +4732,15 @@ $notify.Add_MouseUp({
     })
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-
+$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
+if (-not (Test-Path -LiteralPath $planGantt)) {
+    $planGantt = Join-Path $RepoRoot 'bob\tray\assets\plan-gantt.ico'
+}
+Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
+if (Test-Path -LiteralPath $planGantt) {
+    try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
+    catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
+}
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
         if ([string]::IsNullOrWhiteSpace($fuel)) {
