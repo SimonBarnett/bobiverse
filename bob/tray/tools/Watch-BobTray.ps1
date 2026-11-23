@@ -2906,9 +2906,17 @@ function Invoke-BobTrayStatus {
         Write-TrayLog 'status skipped: menu open (FR #9163)'
         return
     }
+    # FR #9165: while bob-tray.exe is clickfix-parked, TipForm owns Status (skip windowless bob-status risk).
+    if ((Get-Command Test-BobTrayClickFixParkPresent -ErrorAction SilentlyContinue) -and (Test-BobTrayClickFixParkPresent -Root $RepoRoot)) {
+        Write-TrayLog 'status: park present; TipForm card (FR #9165)'
+        Update-Hover
+        Show-BobTrayCard -Reason 'click'
+        return
+    }
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
-    # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
+    # when tools\bob-status.exe is not installed or (FR #9165) stays windowless. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
     if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
+    Write-TrayLog 'status: TipForm card fallback (FR #9165)'
     Update-Hover
     Show-BobTrayCard -Reason 'click'
 }

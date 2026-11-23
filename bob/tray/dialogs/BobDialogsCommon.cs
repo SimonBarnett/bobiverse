@@ -53,6 +53,15 @@ namespace BobDialogs
             return false;
         }
 
+        // FR #9165: drop the single-instance mutex when the dialog never got a visible HWND
+        // so a windowless zombie cannot block TipForm left-click Status forever.
+        public static void AbandonSingle()
+        {
+            if (keep == null) return;
+            try { keep.Close(); } catch { }
+            keep = null;
+        }
+
         public static string Arg(string[] args, string name)
         {
             for (int i = 0; i + 1 < args.Length; i++) if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return args[i + 1];

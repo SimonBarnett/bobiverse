@@ -618,10 +618,28 @@ namespace BobDialogs
             if (!Common.Single("Status", "Bobiverse status")) return 0;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            StatusForm f = new StatusForm(root);
-            Common.TimingHook(f, args);
-            Application.Run(f);
-            return 0;
+            StatusForm f = null;
+            try
+            {
+                f = new StatusForm(root);
+                // FR #9165: force HWND; abandon mutex and exit if the window never appears.
+                IntPtr h = f.Handle;
+                if (h == IntPtr.Zero)
+                {
+                    Common.AbandonSingle();
+                    try { f.Dispose(); } catch { }
+                    return 2;
+                }
+                Common.TimingHook(f, args);
+                Application.Run(f);
+                return 0;
+            }
+            catch
+            {
+                Common.AbandonSingle();
+                try { if (f != null) f.Dispose(); } catch { }
+                throw;
+            }
         }
     }
 }
