@@ -209,6 +209,16 @@ function Assert-BobiverseStageHasSkillDagMcp([string]$Stage) {
     }
 }
 
+function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
+    # FR #9224: BobCallback imports flat scripts\models_refresh.py for POST
+    # /bob/v1/models/refresh. A stage without it installs a chair that 404s refresh.
+    $mr = Join-Path $Stage 'scripts\models_refresh.py'
+    if (-not (Test-Path -LiteralPath $mr -PathType Leaf)) {
+        throw 'bobiverse pack missing scripts\models_refresh.py (common\scripts union)'
+    }
+}
+
+
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -219,6 +229,8 @@ function Stage-Product([string]$Name) {
     Assert-BobiverseStageHasOpencodeFuel -Stage $stage
     # FR #9136: skill-dag MCP trio from bob\scripts must land in every product stage scripts\.
     Assert-BobiverseStageHasSkillDagMcp -Stage $stage
+    # Flat scripts\models_refresh.py comes from common\scripts (BobCallback POST refresh).
+    Assert-BobiverseStageHasModelsRefresh -Stage $stage
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -287,7 +299,10 @@ function Stage-Product([string]$Name) {
     }
     Write-Host ("INFO $Name staged docs: {0}" -f (($docsToCopy | Sort-Object) -join ', '))
 
-    # Skills: product skill + harvest only (do not ship sibling product skills)
+    # Skills: product skill + harvest only (do not ship sibling product skills).
+    # FR #9180: staged skills come from the pack RepoRoot checkout (merged main /
+    # release tip). Harvest lessons reach MSI only after their lesson(<book>) PR
+    # merges --- agent harvest must owe that skill PR, not receipt-only.
     $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     function Find-RepoSkill([string]$n) { foreach ($sd in $skillsDirs) { $c = Join-Path $sd $n; if (Test-Path -LiteralPath $c) { return $c } } return (Join-Path $skillsDirs[0] $n) }
     $skillsDest = Join-Path $stage '.grok\skills'
@@ -324,6 +339,13 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest-agent-skills') | Out-Null
         Copy-Item -Path (Join-Path $harvestAliasSrc '*') -Destination (Join-Path $skillsDest 'harvest-agent-skills') -Recurse -Force
     }
+    # FR #9180: optional pin --- staged harvest book must include SKILL.md from merged tip.
+    $stagedHarvestSkill = Join-Path $skillsDest 'harvest\SKILL.md'
+    if (-not (Test-Path -LiteralPath $stagedHarvestSkill -PathType Leaf)) {
+        Write-Host ("WARN FR #9180 $Name stage missing harvest/SKILL.md under {0} (live skills come from merged bobiverse .grok/skills)" -f $skillsDest)
+    } else {
+        Write-Host "INFO FR #9180 $Name staged harvest/SKILL.md (merged skill book present)"
+    }
 
     # Bobiverse systray icon: every product's Start Menu shortcuts use it (bob also gets it via the tray payload).
     $trayIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\bob-systray.ico')
@@ -332,6 +354,18 @@ function Stage-Product([string]$Name) {
         Copy-Item -LiteralPath $trayIcoSrc -Destination (Join-Path $stage 'assets\bob-systray.ico') -Force
     } else {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
+    }
+    # FR #9211: OpenCode seat console icon (find_window_icon kind=opencode + launch-opencode.ps1).
+    $ocIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico')
+    if (-not $ocIcoSrc -or -not (Test-Path -LiteralPath $ocIcoSrc)) {
+        $ocIcoSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
+    }
+    if ($ocIcoSrc -and (Test-Path -LiteralPath $ocIcoSrc)) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
+        Copy-Item -LiteralPath $ocIcoSrc -Destination (Join-Path $stage 'assets\opencode-favicon.ico') -Force
+        Write-Host 'INFO FR #9211 staged assets\opencode-favicon.ico'
+    } else {
+        Write-Host 'WARN FR #9211 opencode-favicon.ico missing - OpenCode consoles keep default icon until staged'
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force

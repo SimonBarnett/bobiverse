@@ -307,6 +307,32 @@ def test_fr7467_4xx_reason_vocabulary(signed_home, monkeypatch):
     assert _err(body) == "rate limited"
 
 
+def test_fr9104_check_run_check_suite_rate_deferred_204(signed_home):
+    """FR #9104: under local rate limit, CI storms ack 204; push still 429."""
+    home, owner = signed_home
+    full = f"{owner}/rate-defer"
+    rate = intake.RateLimiter(per_min=1)
+    # Burn the bucket with a successful push.
+    assert _post(home, _payload("push", full), event="push", sign=True, rate=rate)[0] in (
+        200,
+        204,
+    )
+    for event in ("check_run", "check_suite"):
+        code, body = _post(
+            home, _payload(event, full), event=event, sign=True, rate=rate
+        )
+        assert code == 204, (event, code, body)
+        assert body == b""
+    code, body = _post(home, _payload("push", full), event="push", sign=True, rate=rate)
+    assert code == 429
+    assert _err(body) == "rate limited"
+    code, body = _post(
+        home, _payload("pull_request", full), event="pull_request", sign=True, rate=rate
+    )
+    assert code == 429
+    assert _err(body) == "rate limited"
+
+
 def test_fr7467_processing_deferred_503(signed_home, monkeypatch):
     home, owner = signed_home
     full = f"{owner}/defer"

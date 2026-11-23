@@ -1,6 +1,37 @@
 $PublicDir  = Join-Path $PSScriptRoot 'Public'
 $PrivateDir = Join-Path $PSScriptRoot 'Private'
 
+# FR #9187: if install src\Private\Invoke-BobFleet.ps1 was dollar-stripped by a
+# tray hotpatch (fed44b9b / a1a94bd7), try one heal from sibling bob\tray before
+# dot-sourcing (Import-Module otherwise floods parse errors every engine-step).
+$fleetLive = Join-Path $PrivateDir 'Invoke-BobFleet.ps1'
+if (Test-Path -LiteralPath $fleetLive) {
+    $fleetText = [IO.File]::ReadAllText($fleetLive)
+    if ([regex]::IsMatch($fleetText, 'param\s*\(\s*\[string\]\s*\)')) {
+        $installRoot = Split-Path -Parent $PSScriptRoot
+        $healCandidates = @(
+            (Join-Path $installRoot 'bob\tray\src\Private\Invoke-BobFleet.ps1'),
+            (Join-Path $PSScriptRoot '..\..\tray\src\Private\Invoke-BobFleet.ps1')
+        )
+        $healed = $false
+        foreach ($cand in $healCandidates) {
+            if (-not (Test-Path -LiteralPath $cand)) { continue }
+            $candText = [IO.File]::ReadAllText($cand)
+            if ([regex]::IsMatch($candText, 'param\s*\(\s*\[string\]\s*\)')) { continue }
+            if ($candText -notmatch 'param\(\[string\]\$Body\)') { continue }
+            $tokens = $null; $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($cand, [ref]$tokens, [ref]$errs)
+            if (@($errs).Count -gt 0) { continue }
+            Copy-Item -LiteralPath $cand -Destination $fleetLive -Force
+            $healed = $true
+            break
+        }
+        if (-not $healed) {
+            throw 'FR #9187: Invoke-BobFleet.ps1 has nameless param([string]); Sync or tray hotpatch from a tip that keeps $Body/$Issue (see FR #8877/#9035).'
+        }
+    }
+}
+
 Get-ChildItem -Path $PrivateDir -Filter '*.ps1' -ErrorAction Stop | ForEach-Object {
     . $_.FullName
 }
@@ -51,6 +82,8 @@ Export-ModuleMember -Function @(
     'Stop-BobWorker',
     'Export-BobTranscript',
     'Get-BobStallAlerts',
+    'Invoke-BobQueueIntervene',
+    'Get-BobStallFrIntake',
     'Get-BobTrayHover',
     'Get-BobTrayDigestPoolCatalog',
     'Format-BobTrayDigestPoolHeading',
@@ -83,6 +116,10 @@ Export-ModuleMember -Function @(
     'Get-BobCursorGroupRemainFromLocalDoc',
     'Get-BobCursorSpendingFromApiFixture',
     'Get-BobTrayTipPlacement',
+    'Get-BobTrayCursorTipPlacement',
+    'Test-BobTrayRectIntersectsAny',
+    'Test-BobTrayIconRectUsable',
+    'ConvertTo-BobTrayRect',
     'Get-BobFleetRegistry',
     'ConvertTo-BobIrcPoint',
     'ConvertFrom-BobIrcPoint',
