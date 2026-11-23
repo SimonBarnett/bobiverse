@@ -183,7 +183,7 @@ After you **DONE PASS** a FAIL-fixed MRB, the one fix PR can still race **CONFLI
 
 Never hostile-review or merge a PR **this seat opened** (same nick/session/worktree author). A green local pytest run is not a non-author MRB.
 
-**FR #9401 / #2604 / MRB #2607 (machine-id):** chair `review_blocked_for_author` blocks **MRB** for the exact author/implementer seat and for any sibling on the same machine id while another (unpinned) machine is live --- even when that other seat is busy. Sole-machine fleets still allow same-machine siblings (FR #5900 throughput). UAT keeps the sibling-when-other-machine-free block. DONE FR must stamp the `/pull/` URL on the superseding MRB so `mrb_row_offerable` is true; resync skips draft open PRs (`skipped_draft`) and must not enqueue them as MRB jobs.
+**FR #9401 / FR #2604 / MRB #2607 (exact-seat + machine-id):** chair `review_blocked_for_author` blocks **MRB** for the exact author/implementer seat and for any sibling on the same machine id while another (unpinned) machine is live --- even when that other seat is busy. Sole-machine fleets still allow same-machine siblings (FR #5900 throughput). UAT keeps the sibling-when-other-machine-free block. DONE FR must stamp the `/pull/` URL on the superseding MRB so `mrb_row_offerable` is true; resync skips draft open PRs (`skipped_draft`) and must not enqueue them as MRB jobs.
 
 **FR #4496:** A fold or tip-fix commit on an open product tip keeps the existing tip author name and email for that commit only via `git -c user.name` and `git -c user.email` (copy `git log -1 --format`). Never commit as the reviewing seat nick. Do not change git config.
 
