@@ -419,3 +419,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Redqueen ear relay outbox is C:\ai\bob\home\outbox.txt (bob-ear --home); ~/.bobiverse/outbox.txt is not drained. Pace !assign ~3s; avoid self-MRB; title substring fr-digest must not skip MRB offers.
 - Ghost offered_to on held/skip/ops-monitor trackers must drop the unaccepted pin (digests stay queued); !stuck classifies offered_on_held and aged idle/gone for release_ghost_offers (FR #9402).
 - FR idle_seats+auto_feed off: monitor EXIT 1 is FR #8493 alert --- do not tip-enable auto-feed; GIVEUP monitor-snapshot when ops already !assign/!bored; enable auto-feed.json only as chair-host ops
+- Jeeves butler menu icon: resolve install assets cache from https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico first (short HttpWebRequest), then jeeves/assets fallback; SkipFetch env for tests.
+- After BOB-G1 issue_fetch on offer/!assign, also wire depends_issue_fetch_checker into stuck_job_sweep.classify_queue_row and stall_detectors; strip Depends-on (...) annotations so BOB-D5 does not mark depends-unresolved

@@ -408,21 +408,28 @@ def _inbound() -> list[DocEntry]:
             method="POST",
             path=bobcallback.MODELS_PATH + "/refresh",
             direction="in",
-            purpose="Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).",
-            callers="Operators / tray refresh.",
+            purpose=(
+                "Rebuild per-CLI options catalog from chair CLI listings (FR #8820) "
+                "or from a Weights client-supplied catalog (FR #9266)."
+            ),
+            callers="Weights Refresh models (fleet seats); operators (chair listing).",
             auth="Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.",
-            request_schema='Empty body or {"clis":["grok","cursor","opencode"]}.',
+            request_schema=(
+                'Empty body or {"clis":["grok","cursor","opencode"]} (chair listing); '
+                'or {"source":"weights-client","clis":{"grok":["id",...],...}} (client catalog).'
+            ),
             response_schema=(
                 '200 JSON {"clis":{cli:{"models":[...],"refreshed_at"}},'
-                '"refresh":{cli:{"status":"refreshed|failed","added","removed","reason"}}}; '
+                '"refresh":{cli:{"status":"refreshed|failed","added","removed","reason"}},'
+                '"source":"weights-client"?}; '
                 'failed CLI keeps prior catalog; selections unchanged.'
             ),
             example_request=(
                 "POST https://bob.ntsa.uk/bob/v1/models/refresh\n"
                 "Content-Type: application/json\n\n"
-                '{"clis":["grok","cursor","opencode"]}\n\n'
+                '{"source":"weights-client","clis":{"grok":["grok-4.7"]}}\n\n'
                 "200 OK\n"
-                '{"clis":{"grok":{"models":[{"model":"grok-4.7","contexts":[],"efforts":[]}],'
+                '{"source":"weights-client","clis":{"grok":{"models":[{"model":"grok-4.7","contexts":[],"efforts":[]}],'
                 '"refreshed_at":"2026-11-23T05:00:00Z"}},'
                 '"refresh":{"grok":{"status":"refreshed","refreshed_at":"2026-11-23T05:00:00Z",'
                 '"added":["grok-4.7"],"removed":[]}}}'
@@ -432,7 +439,7 @@ def _inbound() -> list[DocEntry]:
             rate_limits="One attempt per CLI per 60s (in-memory; restart resets).",
             reachability="Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).",
             source="common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8820",
+            fr="FR #8820 / FR #9266",
             html_rel="docs/webhooks/models.html",
         ),
 
