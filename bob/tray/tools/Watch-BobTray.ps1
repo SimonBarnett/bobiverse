@@ -1627,6 +1627,58 @@ function Show-BobTrayMarchHareCursorGateDialog {
     catch { }
 }
 
+# FR #8733 / BOB-28: Workers > Open Code — dialog + quit when free and paid are both exhausted.
+# Null / missing free or go (paid) does not gate. Fixture free=0 paid/go=0 trips the gate.
+function Test-BobTrayOpenCodePaidExhausted {
+    param(
+        [string]$InstallRoot = '',
+        [string]$FuelPath = ''
+    )
+    $path = ([string]$FuelPath).Trim()
+    if (-not $path) { $path = ([string]$env:BOB_OPENCODE_FUEL_FILE).Trim() }
+    if (-not $path) { $path = ([string]$env:BOB_OPENCODE_FUEL_CACHE_FILE).Trim() }
+    if (-not $path) {
+        $root = ([string]$InstallRoot).Trim()
+        if (-not $root) { $root = ([string]$script:RepoRoot).Trim() }
+        if ($root) { $path = Join-Path $root 'run\opencode-fuel.json' }
+    }
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $doc = $raw | ConvertFrom-Json
+    }
+    catch { return $false }
+    if (-not $doc) { return $false }
+    $free = $null
+    $paid = $null
+    try {
+        if ($null -ne $doc.free -and [string]$doc.free -ne '') { $free = [int]$doc.free }
+        elseif ($null -ne $doc.'opencode-free' -and [string]$doc.'opencode-free' -ne '') { $free = [int]$doc.'opencode-free' }
+    }
+    catch { $free = $null }
+    try {
+        if ($null -ne $doc.go -and [string]$doc.go -ne '') { $paid = [int]$doc.go }
+        elseif ($null -ne $doc.paid -and [string]$doc.paid -ne '') { $paid = [int]$doc.paid }
+        elseif ($null -ne $doc.'opencode-go' -and [string]$doc.'opencode-go' -ne '') { $paid = [int]$doc.'opencode-go' }
+    }
+    catch { $paid = $null }
+    if ($null -eq $free -or $null -eq $paid) { return $false }
+    return ($free -le 0 -and $paid -le 0)
+}
+
+function Show-BobTrayOpenCodePaidExhaustedDialog {
+    Write-TrayLog 'Workers Open Code: paid exhausted dialog + quit (FR #8733 / BOB-28)'
+    try {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            'OpenCode free and paid fuel are exhausted. Not starting an OpenCode seat.',
+            'Bobiverse - Open Code',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+    catch { }
+}
+
 function Show-BobTraySessionApiKeyDialog {
     param(
         [string]$Title = 'Session API key',
@@ -1722,6 +1774,11 @@ function Start-BobTrayAgentWatch {
     # FR #8719 / BOB-23: MarchHare fleet meter before any local Cursor fuel / BYOK prompt.
     if ($kind -eq 'cursor' -and (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot)) {
         Show-BobTrayMarchHareCursorGateDialog
+        return
+    }
+    # FR #8733 / BOB-28: Open Code free+paid exhausted → dialog + quit.
+    if ($kind -eq 'opencode' -and (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot)) {
+        Show-BobTrayOpenCodePaidExhaustedDialog
         return
     }
     if ($kind -eq 'grok') {
@@ -4151,6 +4208,11 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
                 elseif ($picked -eq 'opencode') {
+                    # FR #8733 / BOB-28: free+paid exhausted -> dialog + quit (no start).
+                    if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                        Show-BobTrayOpenCodePaidExhaustedDialog
+                        return
+                    }
                     # FR #8730 / BOB-27: free first; paid when free fuel is 0 and paid is above 0.
                     $ocSlot = 'free'
                     $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
@@ -4169,6 +4231,7 @@ function Update-BobTrayWorkerAgentsMenu {
                     if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
                     # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
                     Write-TrayLog ('workers-opencode model=' + $ocModel)
+
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
                     # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
