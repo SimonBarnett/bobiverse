@@ -56,7 +56,8 @@ function Stop-BobTrayWindowlessStatus {
 
 function Start-BobTrayDialog {
     # Returns $true when the exe was started and (for status) a visible HWND exists.
-    # FR #9165: windowless single-instance must not look like success — TipForm falls back.
+    # FR #9165 / #9166: windowless single-instance must not look like success - TipForm falls back
+    # (Stop-BobTrayWindowlessStatus + MainWindowHandle probe).
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][ValidateSet('about', 'status')][string]$Name)
     $exe = Get-BobTrayDialogExe -Root $Root -Name $Name
     if (-not $exe) { return $false }
