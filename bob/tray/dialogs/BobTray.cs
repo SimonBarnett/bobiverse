@@ -1095,7 +1095,17 @@ namespace BobDialogs
             // FR #8699 / BOB-50 start stays the first child. FR #8695 / BOB-53 adds Configure MCP.
             MenuItems.Add("Priority");
             ToolStripMenuItem miPriorityStart = new ToolStripMenuItem("Start PriorityAgent");
-            miPriorityStart.Click += delegate { StartPriorityExe(); };
+            miPriorityStart.Click += delegate {
+                // FR #8698 / BOB-52: this box with no tokens shows a dialog and quits. It does not start Priority.
+                string fuel = PriorityFuelPath();
+                if (PriorityFuelEmpty(fuel))
+                {
+                    TrayLifecycle.Write("priority", "action", "no tokens", "quit", "1", "path", fuel);
+                    MessageBox.Show("Priority: this box has no tokens. PriorityAgent will quit instead of starting without fuel.", "Priority - no tokens", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                StartPriorityExe();
+            };
             miPriority.DropDownItems.Add(miPriorityStart);
             MenuItems.Add("Start PriorityAgent");
             ToolStripMenuItem miPriorityMcp = new ToolStripMenuItem("Configure MCP (mcp.ntsa.uk)");
@@ -2173,6 +2183,37 @@ namespace BobDialogs
         }
 
         bool PlanFuelEmpty(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))); }
+            catch { return false; }
+            if (doc == null) return false;
+            if (doc.ContainsKey("status") && doc["status"] != null)
+            {
+                string st = ("" + doc["status"]).Trim().ToLowerInvariant();
+                if (st == "empty" || st == "exhausted" || st == "out-of-fuel" || st == "out_of_fuel") return true;
+            }
+            foreach (string key in new string[] { "remaining_pct", "remaining", "tokens_remaining" })
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null || ("" + doc[key]).Trim().Length == 0) continue;
+                int n;
+                if (int.TryParse(("" + doc[key]).Trim(), out n)) return n <= 0;
+            }
+            return false;
+        }
+
+        // FR #8698 / BOB-52: fuel file for this box. BOB_PRIORITY_FUEL_FILE overrides the local default.
+        // Missing / unreadable file = unknown fuel = allow start (PriorityAgent applies its own check).
+        string PriorityFuelPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_PRIORITY_FUEL_FILE");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(local, "Bobiverse", "priority-fuel.json");
+        }
+
+        bool PriorityFuelEmpty(string path)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
             Dictionary<string, object> doc;

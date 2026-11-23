@@ -2182,6 +2182,23 @@ function Start-BobTrayPriorityExe {
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
 }
 
+function Test-BobTrayPriorityFuelEmpty {
+    # FR #8698 / BOB-52: true when this box's fuel file says remaining_pct <= 0 or status empty.
+    # Missing file = unknown = allow (do not block).
+    param([string]$FuelPath)
+    if ([string]::IsNullOrWhiteSpace($FuelPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $FuelPath)) { return $false }
+    try { $doc = Get-Content -Raw -LiteralPath $FuelPath | ConvertFrom-Json } catch { return $false }
+    $st = ([string]$doc.status).Trim().ToLowerInvariant()
+    if ($st -in @('empty', 'exhausted', 'out-of-fuel', 'out_of_fuel')) { return $true }
+    foreach ($k in @('remaining_pct', 'remaining', 'tokens_remaining')) {
+        $v = $doc.$k
+        if ($null -eq $v -or [string]$v -eq '') { continue }
+        return ([int]$v -le 0)
+    }
+    return $false
+}
+
 function Test-BobTrayPlanFuelEmpty {
     # FR #8692 / BOB-46: true when this box's fuel file says remaining_pct <= 0 or status empty.
     param([string]$FuelPath)
@@ -4793,8 +4810,23 @@ $miPlan.Add_Click({
         }
         Start-BobTrayPlanExe
     })
-# BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-$miPriority.Add_Click({ Start-BobTrayPriorityExe })
+# FR #8698 / BOB-52: Priority no-token gate before Start-BobTrayPriorityExe (mirror Plan BOB-46).
+$miPriority.Add_Click({
+        $fuel = [Environment]::GetEnvironmentVariable('BOB_PRIORITY_FUEL_FILE')
+        if ([string]::IsNullOrWhiteSpace($fuel)) {
+            $fuel = Join-Path $env:LOCALAPPDATA 'Bobiverse\priority-fuel.json'
+        }
+        if (Test-BobTrayPriorityFuelEmpty -FuelPath $fuel) {
+            Write-TrayLog ('Priority: no tokens; quit ' + $fuel)
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'Priority: this box has no tokens. PriorityAgent will quit instead of starting without fuel.',
+                'Priority - no tokens',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        Start-BobTrayPriorityExe
+    })
 $miJeeves.Add_Click({
         if (-not (Test-BobTrayJeevesDrive)) {
             Write-TrayLog 'Jeeves: J: map missing; quit'
