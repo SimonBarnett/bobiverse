@@ -346,6 +346,82 @@ def row_fr_hold_reason(row: dict) -> str | None:
     )
 
 
+# BOB-G3 / FR #9108: Digest flag — issues only (never title heuristics alone).
+DIGEST_ISSUE_LABELS = frozenset({"digest", "fr-digest"})
+# Forbidden on pull_request targets (intake/plan must strip; distinct from hold).
+ISSUES_ONLY_DIGEST_LABELS = DIGEST_ISSUE_LABELS
+# Line-anchored Kind: fr-digest|digest (plain or bold); prose must not match.
+DIGEST_KIND_BODY_RE = re.compile(
+    r"(?im)^[^\S\n]*(?:\*{0,2}|`{0,2})Kind(?:\*{0,2}|`{0,2})"
+    r"[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?"
+    r"[^\S\n]*(fr-digest|digest)\b"
+)
+
+
+def strip_issues_only_digest_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """BOB-G3 / FR #9108: drop ``digest`` / ``fr-digest`` from a PR label list."""
+    out: list[str] = []
+    for x in labels or []:
+        s = str(x).strip()
+        if not s:
+            continue
+        if s.lower() in ISSUES_ONLY_DIGEST_LABELS:
+            continue
+        out.append(s)
+    return out
+
+
+def pr_forbidden_digest_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """BOB-G3: which issues-only digest labels are present on a PR (sorted)."""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    return sorted(labs & ISSUES_ONLY_DIGEST_LABELS)
+
+
+def _row_is_pr_shaped_issue(row: dict) -> bool:
+    """True when the row is structurally a pull (event/URL), not an issues FR."""
+    if not isinstance(row, dict):
+        return True
+    event = str(row.get("event") or "").strip().lower()
+    if event == "pull_request":
+        return True
+    raw = str(row.get("url") or "").strip()
+    if PULL_URL_RE.search(raw):
+        return True
+    return False
+
+
+def digest_issue_reason(row: dict) -> str | None:
+    """BOB-G3 / FR #9108: why a queue row is a Digest gate record, else None.
+
+    Issues-only FR rows. Matches label ``digest`` / ``fr-digest`` (string, dict,
+    or comma-separated) or a line-anchored ``Kind: digest|fr-digest`` body stamp.
+    Never uses the title. MRB / PR-shaped rows are never digests.
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return None
+    if _row_is_pr_shaped_issue(row):
+        return None
+    labs = _depend_row_label_names(row)
+    hit = sorted(labs & DIGEST_ISSUE_LABELS)
+    if hit:
+        return f"digest label: {hit[0]}"
+    body = str(row.get("body") or "")
+    m = DIGEST_KIND_BODY_RE.search(body)
+    if m:
+        return f"digest kind: {m.group(1).strip().lower()}"
+    return None
+
+
+def row_is_digest_issue(row: dict) -> bool:
+    """True when ``digest_issue_reason`` matches (BOB-G3)."""
+    return digest_issue_reason(row) is not None
+
+
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
 _DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
 _BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
@@ -573,11 +649,12 @@ def find_open_fr_row(doc: dict | None, repo: str, num: int) -> dict | None:
 def _bob_g1_digest_gate_for_pair(
     doc: dict, repo: str, oid: str
 ) -> str | None:
-    """BOB-G1 / FR #8837 bob_g1_skip_held_digest.
+    """BOB-G1 / FR #8837 bob_g1_skip_held_digest (+ BOB-G3 Digest flag).
 
     Returns ``depends-held`` when the open depend has hold; ``ok-fr-digest`` when
-    it is an unheld ``fr-digest`` (caller must not treat OPEN as blocking); None
-    when the row is absent or has no special digest labels.
+    it is an unheld digest (``digest`` / ``fr-digest`` label or ``Kind:`` stamp;
+    caller must not treat OPEN as blocking); None when the row is absent or has
+    no digest recognition.
     """
     raw = str(oid or "").strip().lstrip("#")
     try:
@@ -589,8 +666,9 @@ def _bob_g1_digest_gate_for_pair(
         return None
     labs = _depend_row_label_names(dep)
     if "hold" in labs or "on-hold" in labs:
+        # Held digest (or any held depend) blocks children.
         return DEPENDS_HELD_REASON
-    if "fr-digest" in labs:
+    if row_is_digest_issue(dep):
         return "ok-fr-digest"
     return None
 
@@ -778,8 +856,8 @@ def row_depends_open_reason(
             labs = _depend_row_label_names(dep)
             if "hold" in labs or "on-hold" in labs:
                 return DEPENDS_HELD_REASON
-            if "fr-digest" in labs:
-                # Unheld digest satisfies while OPEN (BOB-G1 S1).
+            if row_is_digest_issue(dep):
+                # Unheld digest (label or Kind:) satisfies while OPEN (BOB-G1/G3).
                 continue
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
@@ -1135,6 +1213,8 @@ def format_list_line(
     title = _job_title(row)
     # Fixed prefix must never be truncated away.
     mark = "[critical] " if _fi_list.row_is_priority_critical(row) else ""
+    if digest_issue_reason(row):
+        mark = f"{mark}[digest] "
     head = f"#{index} {mark}{task} {repo}{ident} {age}"
     budget = max(8, int(line_max) - len(head.encode("utf-8")) - 1)
     if title:
@@ -2733,6 +2813,9 @@ def _body_for_queue(body: str, *, limit: int | None = None) -> str:
     FR #8619: when truncating a self-review-deadlock stall body, keep a compact
     `stall_idle: nick1, nick2` pin so offer/assign still blocks idle authors
     after QUEUE_BODY_LIMIT cuts the Evidence JSON.
+
+    BOB-G3 / FR #9108: also preserve a ``Kind: digest|fr-digest`` line so Digest
+    recognition survives the 500-char window (label remains the primary signal).
     """
     text = str(body or "")
     lim = QUEUE_BODY_LIMIT if limit is None else int(limit)
@@ -2746,6 +2829,13 @@ def _body_for_queue(body: str, *, limit: int | None = None) -> str:
         if not mid:
             continue
         line = f"require_machine: {mid}"
+        if line not in pins:
+            pins.append(line)
+    for m in DIGEST_KIND_BODY_RE.finditer(text):
+        kind = (m.group(1) or "").strip().lower()
+        if not kind:
+            continue
+        line = f"Kind: {kind}"
         if line not in pins:
             pins.append(line)
     if "self-review-deadlock" in text:
@@ -6921,6 +7011,8 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None
     raw = str(row.get("url") or "").strip()
     if PULL_URL_RE.search(raw):
         return False
+    # BOB-G3 digests stay structurally offerable (real issues) so purge/heal paths
+    # do not drop them; offer/assign skip via digest_issue_reason instead.
     # FR #4257: skip title heuristic when the row is clearly an issues row.
     clearly_issue = bool(ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw)) or (
         event == "issues"
@@ -12067,6 +12159,10 @@ def offer_focus_top(
                     return None  # legacy hook; row_awaits_mrb1 always False (op 2026-10-04)
                 if row_skip_fr_reason(cand):
                     return None
+                # BOB-G3 / FR #9108: Digest gate records stay queued (even when held);
+                # never offer as work. Held digests must remain for Depends-on go-gate.
+                if digest_issue_reason(cand):
+                    return None
                 # FR #4009: hold-labeled / HOLD-stamped FR — skip offer; purge so it leaves unaccepted.
                 if row_fr_hold_reason(cand):
                     if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
@@ -12518,6 +12614,10 @@ def offer_top(
                     or row_blocked_for_giveup_agent_kind(row, seat_agent_kind(home, nick or ""))
                     or row_skip_fr_reason(row)
                 ):
+                    i += 1
+                    continue
+                # BOB-G3: held digests stay as gate records (skip only).
+                if digest_issue_reason(row):
                     i += 1
                     continue
                 # FR #4009: hold-labeled / HOLD-stamped FR — skip and purge from unaccepted.
@@ -15848,6 +15948,9 @@ def assign_row(
             hold_why = row_fr_hold_reason(cand)
             if hold_why:
                 return "refused", f"row on hold: {hold_why}"
+            digest_why = digest_issue_reason(cand)
+            if digest_why:
+                return "refused", f"row is digest gate (not work): {digest_why}"
             dep_why = row_fr_depends_blocked_reason(cand, doc)
             if dep_why:
                 return "refused", f"row blocked: {dep_why}"
@@ -16068,6 +16171,10 @@ def prune_unassignable_queue(home: Path) -> dict:
                 task = str(row.get("task") or "").upper()
                 if task == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
+                    continue
+                # BOB-G3: keep digest gate rows even when held (do not fr_hold-drop).
+                if task == "FR" and digest_issue_reason(row):
+                    keep.append(row)
                     continue
                 # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
                 if task == "FR" and row_fr_hold_reason(row):

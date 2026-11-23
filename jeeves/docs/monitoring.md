@@ -44,11 +44,15 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 
 ## depends_on (FR #8848)
 
-`Test-JeevesMonitorDependsOn.ps1` / `tools/monitor/depends_on.py` exits 1 when an offered or accepted queue row has a `Depends-on:` ref that is still OPEN in the local queue (chair missed BOB-D3). A skipped row (`status=skipped`, `depends_skipped`, or `skip_reason`) exits 0. No Depends-on rows is a soft-ok. Live runs without `--chair-home` stay soft-ok until `common/scripts/depends_on_parse.py` exists or `gitclaim.py` contains `bob_d3_skip_open`. No GitHub token. Distinct from the hold label and from `fr_digest`.
+`Test-JeevesMonitorDependsOn.ps1` / `tools/monitor/depends_on.py` exits 1 when an offered or accepted queue row has a `Depends-on:` ref that is still OPEN in the local queue (chair missed BOB-D3). A skipped row (`status=skipped`, `depends_skipped`, or `skip_reason`) exits 0. No Depends-on rows is a soft-ok. Live runs without `--chair-home` stay soft-ok until `common/scripts/depends_on_parse.py` exists or `gitclaim.py` contains `bob_d3_skip_open`. No GitHub token. Distinct from the hold label and from `fr_digest`. BOB-G3: an **unheld** digest (`digest` / `fr-digest` label or body `Kind: fr-digest`) does not count as a blocking OPEN depend.
 
 ## fr_digest (FR #8849)
 
-`Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that still has both labels `fr-digest` and `hold` (chair missed BOB-G1). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
+`Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that is still a **held digest** (BOB-G1 + BOB-G3 Digest flag: `digest` or `fr-digest` label, or `Kind: digest|fr-digest`, plus `hold`). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Title alone never makes a digest. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
+
+## Digest flag (BOB-G3 / FR #9108)
+
+Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR rows with label `digest` or `fr-digest`, or line-anchored `Kind: digest|fr-digest`. Never offered or `!assign`ed as work (stay queued as gate records). `!list` marks `[digest]`. Intake strips those labels from PRs.
 
 ## github_resync_focus (FR #3146)
 
