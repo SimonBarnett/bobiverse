@@ -29,6 +29,11 @@ depends_on: []
 >    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
 >    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
 >    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
+> 6. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
+>    or `bobiverse-jeeves-*` must open or update a `lesson(<book>):` / `harvest/…` PR that patches the owning
+>    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
+>    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
+>    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -317,6 +322,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Weights S1 is a modeless grid with columns Agent, CLI, Model, Context, Effort. Dump those headers with --dump-weights-columns before the tray UI starts.
 - Seed models-valid-combos from a shipped seed on BobCallback start: create if missing, append missing models, never rewrite a malformed store.
 - Workers > Cursor menu image is assets/menu-favicons/cursor.com.ico. Log worker-favicon with that path. Do not reuse the fuel badge.
+- BOB-54 Priority menu icon: pin PRI-07 priority.ico at vendor/priority/ next to PriorityAgent.exe (same path as BOB-50 StartPriorityExe); MSI priority\ layout is BOB-55 scope
 - A fresh Install-BobWebhooks.ps1 must write the same canonical web.config the second run would upsert, or site-kit CI fails with second install changed web.config bytes.
 - When neither home has queue.json, idle_seats uses one live /bob/v1/report estimate. A local queue never fetches. Unverified gates stay named and are not applied.
 - About Plan and Priority versions come from slice VERSION files or BOBIVERSE_PLAN_VERSION and BOBIVERSE_PRIORITY_VERSION, and fall back to the bob version so the fields are never blank.
@@ -333,7 +339,16 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unsigned exit 0xffffffff with only pager info/debug or TUI chrome is an external kill. Keep cli-failure when stderr contains failed, fatal, exception, or an error level.
 - When stall alerts are non-empty, call Get-BobStallFrIntake and log stall-fr with repo SimonBarnett/bobiverse.
 - Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
+- FR #9114: MRB on-hold uses the live linked FR hold label. Stale PR HOLD comments after the FR is unlabeled are not on-hold (#8748).
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
+- FR assign with open Closes PR: DONE covering URL; do not open a twin tip (#9100/#9107)
+- FIX on CLI-exit classifier DIRTY tip: keep _stderr_is_seat_prompt_echo with grok_worker_spawn_connect_failure and unsigned_exit_stderr_is_noise; silent ORs prompt-echo and noise
+- gh_auth_blocks: Failed to log in / re-authenticate wins over Active account true even on exit 0; never invent GH_TOKEN
+- BOB-HOVER-XAI: Get-BobTrayHoverXaiPoolLabel maps SuperGrok to xAI never SG; hover remainPct uses digest xai_weekly remaining_pct including stale so it matches Format-BobTrayXaiWeeklyRow
+- Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
+- When an MRB PR carries label hold, GIVEUP reason=on-hold and do not merge.
+- Invoke-JeevesMonitorCheck: missing .py soft-skips exit 0 with skipped JSON so sparse/lagging installs do not EXIT:2 on ValidateSet-widened names; promote local J:\ hotfix via PR.
+- BOB-D1 Depends-on parser is S1 park-only: dedicated-line match with [^\S\n] (not \s), first-seen dedupe, relative #N via optional repo kwarg; do not reuse FR #8754 gitclaim backlog-token helpers for (repo, number) tuples.
 - BOB-37 S1: Agents>Jeeves dry-run prints cwd J: and StartWorker/Start-BobTrayWorkerExe use WorkingDirectory J:\ (drive mapped to ai\jeeves).
 - FIX re-offer of a folded MERGEABLE/CLEAN PR: re-query mergeable once, DONE the same URL, do not merge and do not fold again
 - FR #9053: retire POST /bob/v1/models/validate with early JSON 404 before POST_ROUTES gate; Weights validation is GET catalog dropdowns + PUT save only
@@ -343,3 +358,28 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Empty-online fill: when grok weekly remaining is known 0 and an OpenCode free leaf resolves, write agent=opencode slot=free; unknown grok or free=0 keeps auto.
 - FR #9025: fuel-exhausted recycle while process still running is expected fuel quit --- skip seat-stopped-making-progress intake; leave hang recycles filing
 - A DIRTY tray-dialog FIX must keep both sides of the bob-tray.exe Srcs list (BobModelsClient.cs from main and PlanMcpConfig.cs from the PR) and compile before push.
+- Steady OK cycle: no intake when seats busy, pools fresh, held_prs=0.
+- FR #8811: wire row_fr_depends_blocked_reason beside every FR hold offer/purge/reconcile site (bob_d7_wire_hold); Depends-on OPEN skips offer but keeps the row
+- Jeeves MSI before skill-dag left J:\scripts without skill_dag_mcp.py; tip allowlist needs InstallRoot .git --- pack Assert-BobiverseStageHasSkillDagMcp + Ensure-BobiverseSkillDagScripts + Write-BobiverseInstallSkillDagMcp on Install/Sync even when skipStaleCompose.
+- Ghost TipForm clicks with Clear toolbars=0: Clear-BobOrphanNotifyIcons -HealLadder (session explorer recycle + re-sweep) and MenuClosed Visible rebind before relaunching Watch.
+- TipForm park poll must never Wait-Job update-hover or Write-BobIrcStatus on STA: step-skip + trayHoverTimer snapshot + Update-Hover -FromSnapshot; trayDigestTimer posts for TipForm too.
+- FR #9180: bobiverse book harvest with real Lessons owes a lesson(book) PR patching .grok/skills/<book>/SKILL.md same-turn when gh is authenticated; receipt-without-skill-PR is fail-closed; -SkillFile lands at skill_book_path not harvest/<name>
+- Twin fix already merged: keep main's primitive as source of truth, wrap the branch API, and satisfy both pinned test files before push.
+- trayDigestTimer Action runspace has no parent BobBridge: Import-Module src\BobBridge.psd1 when Get-ThisMachineId or Write-BobIrcStatus is missing; dotting Get-BobIrc alone is not enough (FR #9198).
+- Drain must recreate empty outbox.txt after atomic move.
+- WinPS 5.1: never assign $pid/$PID in tray helpers (read-only automatic); use $trayPid/$killPid; pin source forbids $pid = in Stop-BobTrayProcessesProtectingSeats (MRB #9206).
+- Flamingo idle+offerable monitor intakes: re-check live /report offer_outcomes before coding; disk NACK cooldown looks like idle starve but is FR #6240 ops, twin of #9073/#9103 / PR #8871.
+- FR docstring drift after route retire: rewrite bobcallback and models_catalog together; keep /bob/v1/models/validate substring for pin tests via handler comment or retired wording.
+- FR #9217: ruleset required-ci-3948 requires pytest-ascii-bom with conflict-markers; job name must stay pytest-ascii-bom.
+- FR #9220: Depends-on offer gate indexes open FRs by owner/repo#N; relative #N resolves against the FR repo (no cross-repo bare-number false skip).
+- FR #9121: bobcallback /bob/v1/digest and /digest are 301 to /bob/v1/report; docstring must not claim same JSON body
+- FR #9229: after hold/on-hold are issues-only (#9082), fr9080 requeue hold-skip tests must use do-not-merge/wip on PR snapshots (not hold).
+- FR #9104: under local intake RateLimiter deny, bobcallback acks check_run/check_suite with 204 rate deferred (no retry storm); push/PR/issues stay 429; monitor github_rate_limit EXIT 1 under floor 500
+- TipForm menu vanishes on AppFocusChange when bob-status/tip TOPMOST steals focus --- Cancel AppFocusChange on MenuClosing, gate Status while menu open, Opening Hide-BobTrayCard + close bob-status.
+- FR #9209: OpenCode launch wrapper mirrors capture-file growth with Console.Out.Write+Flush live; end with opencode-capture-done marker, never dump full $outStr again
+- ensure_mrb_requeued_after_head_move must take issue_lookup and call linked_issue_hold_reason; prefetch outside the queue lock (FR #9243).
+- workers_last_good orphans: delete_worker/worker-remove must clear last-good + workers_stale; TTL BOB_DIGEST_LAST_GOOD_MAX_S; monitor workers_last_good_orphan.
+- Never Path.read_bytes() the whole outbox in take_outbox_records --- seek to .pos offset and cap the read (OUTBOX_READ_MAX_BYTES) or the ear OOMs (FR #9239).
+- After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.
+- OpenCode: one park-worktree at a time per seat; NACK busy, holding <first> for a second job; accept_offered refuses twin when nick already accepted (FR #9254).
+- TipForm HealEngine must compare tray-status.json age vs tray.alive freshness and refuse heartbeat mtime refresh while short/title is startup seed starting; bounded status-writer restart never touches seats; paint Bob: engine up at tray-up or Bob: status stalled after 180s

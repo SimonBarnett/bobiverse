@@ -342,9 +342,12 @@ def test_worker_exe_is_built_with_the_systray_icon_and_the_window_uses_it():
     # Build appends $icoArgs (icon + --add-data); splat @icoArgs was replaced by $argList += $icoArgs.
     assert "'--icon', $ico" in b and "--add-data" in b and "bob-systray.ico" in b
     assert "$icoArgs" in b and "$argList += $icoArgs" in b
+    assert "opencode-favicon.ico" in b  # FR #9211 MEIPASS embed
     w = _t(SCRIPTS / "bob_worker.py")
-    assert w.index("ensure_console(f\"Bob worker") < w.index("set_console_icon(Path(args.install_root))")
+    assert w.index("ensure_console(f\"Bob worker") < w.index("set_console_icon(Path(args.install_root)")
+    assert "kind=kind" in w[w.index("set_console_icon(Path(args.install_root)") : w.index("set_console_icon(Path(args.install_root)") + 80]
     assert "WM_SETICON" in w and "LoadImageW.argtypes" in w and "SendMessageW.argtypes" in w   # typed: 64-bit handles
+    assert "SetCurrentProcessExplicitAppUserModelID" in w  # FR #9211 Win11 AUMID
 
 
 def test_worker_finds_the_systray_icon_in_the_install_then_the_bundle(tmp_path, monkeypatch):

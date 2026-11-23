@@ -30,6 +30,8 @@ def _run_install(physical: Path, *, backend: str = "http://127.0.0.1:7700") -> s
         str(physical),
         "-Backend",
         backend,
+        # FR #9246: unit runs must not wait on a live BobCallback.
+        "-SkipBackendProbe",
     ]
     return subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
 
@@ -70,6 +72,14 @@ def test_sitekit_models_rule_forwards_refresh(tmp_path: Path):
     match_pat, action_url = _parse_models_rule(cfg)
     target = _expand_rewrite(match_pat, action_url, "bob/v1/models/refresh")
     assert target == "http://127.0.0.1:7700/bob/v1/models/refresh"
+    # FR #9224: method filter must admit POST (PUT/PATCH stay out).
+    block = cfg.read_text(encoding="utf-8")
+    models_block = re.search(
+        r'<rule\s+name="BobModelsWebhook"[^>]*>.*?</rule>',
+        block,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert models_block and "GET|HEAD|POST" in models_block.group(0)
 
     # Upgrade path: existing config without models rule, then re-install.
     body = cfg.read_text(encoding="utf-8")

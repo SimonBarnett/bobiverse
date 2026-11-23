@@ -2763,10 +2763,144 @@ function Get-BobiverseTipFileAllowlist {
     # FR #8863: diverged installs (sync-skip-diverged, FR #7301) and MSI VERSION newer
     # than clone (FR #7167) must still land these runtime scripts from origin tip.
     # A frozen bob-worker.exe does not execute the .py until the next MSI rebuild.
+    # FR #9136: skill_dag_index/bound are import siblings of skill_dag_mcp (--once / MCP host).
     return @(
         'bob/scripts/bob_worker.py',
-        'bob/scripts/skill_dag_mcp.py'
+        'bob/scripts/skill_dag_mcp.py',
+        'bob/scripts/skill_dag_index.py',
+        'bob/scripts/skill_dag_bound.py'
     )
+}
+
+function Get-BobiverseSkillDagScriptNames {
+    # FR #9136: flat install scripts\ must ship the MCP trio (mcp imports index; bound is the seat binder).
+    return @('skill_dag_mcp.py', 'skill_dag_index.py', 'skill_dag_bound.py')
+}
+
+function Ensure-BobiverseSkillDagScripts {
+    <#
+      FR #9136: copy skill_dag_{mcp,index,bound}.py onto InstallRoot\scripts from a
+      split-repo or flat source. Never invent C:\ai\bob paths. Returns Ok when every
+      leaf is present under scripts\ after the pass (copied or already there).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$SourceRoot = '',
+        [string]$SourceScripts = ''
+    )
+    $destDir = Join-Path $InstallRoot 'scripts'
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    $copied = @()
+    $missing = @()
+    foreach ($name in @(Get-BobiverseSkillDagScriptNames)) {
+        $dest = Join-Path $destDir $name
+        $src = $null
+        if ($SourceScripts) {
+            $c = Join-Path $SourceScripts $name
+            if (Test-Path -LiteralPath $c -PathType Leaf) { $src = $c }
+        }
+        if (-not $src -and $SourceRoot) {
+            foreach ($rel in @(
+                    (Join-Path 'bob\scripts' $name),
+                    (Join-Path 'scripts' $name),
+                    (Join-Path 'common\scripts' $name)
+                )) {
+                $c = Join-Path $SourceRoot $rel
+                if (Test-Path -LiteralPath $c -PathType Leaf) { $src = $c; break }
+                try {
+                    $via = Get-BobiverseRepoPath -Root $SourceRoot -Rel $rel
+                    if ($via -and (Test-Path -LiteralPath $via -PathType Leaf)) { $src = $via; break }
+                } catch { }
+            }
+        }
+        if (-not $src) {
+            $localBob = Join-Path $InstallRoot (Join-Path 'bob\scripts' $name)
+            if (Test-Path -LiteralPath $localBob -PathType Leaf) { $src = $localBob }
+        }
+        if ($src) {
+            if (-not (Test-Path -LiteralPath $dest -PathType Leaf) -or
+                ((Get-Item -LiteralPath $src).Length -ne (Get-Item -LiteralPath $dest).Length) -or
+                ((Get-Item -LiteralPath $src).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dest).LastWriteTimeUtc)) {
+                Copy-Item -LiteralPath $src -Destination $dest -Force
+                $copied += $name
+            }
+        }
+        if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
+            $missing += $name
+        }
+    }
+    if ($missing.Count -gt 0) {
+        return [pscustomobject]@{
+            Ok      = $false
+            Reason  = ("missing scripts\{0} (FR #9136)" -f ($missing -join ','))
+            Copied  = $copied
+            Missing = $missing
+        }
+    }
+    $why = if ($copied.Count -gt 0) { ("copied {0}" -f ($copied -join ',')) } else { 'already present' }
+    return [pscustomobject]@{
+        Ok      = $true
+        Reason  = ("skill-dag scripts ok: {0}" -f $why)
+        Copied  = $copied
+        Missing = @()
+    }
+}
+
+function Write-BobiverseInstallSkillDagMcp {
+    <#
+      FR #9136: write/merge InstallRoot\.cursor\mcp.json skill-dag stdio server.
+      command = install python (or 'python'); args = scripts\skill_dag_mcp.py --root
+      InstallRoot\.grok\skills. Never hardcode C:\ai\bob.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Python = ''
+    )
+    $scriptPath = Join-Path $InstallRoot 'scripts\skill_dag_mcp.py'
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            Ok     = $false
+            Reason = 'scripts\skill_dag_mcp.py missing (FR #9136)'
+            Path   = ''
+        }
+    }
+    $skillsRoot = Join-Path $InstallRoot '.grok\skills'
+    New-Item -ItemType Directory -Force -Path $skillsRoot | Out-Null
+    $cmd = ([string]$Python).Trim().Trim('"')
+    if (-not $cmd) {
+        try { $cmd = [string](Resolve-BobiversePython -InstallRoot $InstallRoot -AllowMissing) } catch { $cmd = '' }
+    }
+    if (-not $cmd) { $cmd = 'python' }
+    $cfgDir = Join-Path $InstallRoot '.cursor'
+    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+    $cfgPath = Join-Path $cfgDir 'mcp.json'
+    $server = [ordered]@{
+        command = $cmd
+        args    = @($scriptPath, '--root', $skillsRoot)
+    }
+    $data = @{ mcpServers = @{} }
+    if (Test-Path -LiteralPath $cfgPath -PathType Leaf) {
+        try {
+            $existing = Get-Content -LiteralPath $cfgPath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($existing -and $existing.mcpServers) {
+                $servers = @{}
+                foreach ($p in @($existing.mcpServers.PSObject.Properties)) {
+                    $servers[$p.Name] = $p.Value
+                }
+                $data.mcpServers = $servers
+            }
+        } catch {
+            $data = @{ mcpServers = @{} }
+        }
+    }
+    $data.mcpServers['skill-dag'] = $server
+    $json = ($data | ConvertTo-Json -Depth 6)
+    [IO.File]::WriteAllText($cfgPath, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding $false))
+    return [pscustomobject]@{
+        Ok     = $true
+        Reason = 'wrote skill-dag mcp.json (FR #9136)'
+        Path   = $cfgPath
+    }
 }
 
 function Sync-BobiverseTipFile {
@@ -2858,8 +2992,10 @@ function Sync-BobiverseAllowlistedTipFiles {
         [string]$GitExe = ''
     )
     $match = @{
-        'bob/scripts/bob_worker.py'    = 'FR #7000|bob_worker'
-        'bob/scripts/skill_dag_mcp.py' = 'skill-dag-mcp|FR #7000'
+        'bob/scripts/bob_worker.py'     = 'FR #7000|bob_worker'
+        'bob/scripts/skill_dag_mcp.py'  = 'skill-dag-mcp|FR #7000'
+        'bob/scripts/skill_dag_index.py' = 'skill_dag_index|FR #7000'
+        'bob/scripts/skill_dag_bound.py' = 'skill_dag_bound|FR #7000'
     }
     $results = @()
     $ok = $true

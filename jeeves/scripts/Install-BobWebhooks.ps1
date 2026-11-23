@@ -3,6 +3,7 @@
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
   (report, digest, git, intake, jira, hours, models, jeeves appliance). Site default: irc-ntsa.
+  FR #9246: after rules, GET Backend/bob/v1/report (WARN when down; -RequireBackend fails; -SkipBackendProbe for tests).
 #>
 [CmdletBinding()]
 param(
@@ -17,7 +18,10 @@ param(
     # FR #7465: publish the site kit only. Do not call appcmd and do not touch the Jeeves service.
     [switch]$SiteKit,
     # FR #8803: www/assets publish is opt-in. -SiteKit implies publish. Default run is rules-only.
-    [switch]$PublishWww
+    [switch]$PublishWww,
+    # FR #9246: after rules, GET $Backend/bob/v1/report. Default WARN when down; -RequireBackend fails.
+    [switch]$SkipBackendProbe,
+    [switch]$RequireBackend
 )
 # FR #8803: SiteKit is the site-kit deploy path; it always publishes www.
 $doPublishWww = [bool]($PublishWww -or $SiteKit)
@@ -82,7 +86,7 @@ $rewriteXml = @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD|POST$" />
           </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
@@ -357,12 +361,13 @@ function Get-BobOwnedRuleXml {
 "@
         }
         'BobModelsWebhook' {
-            # FR #8708: public IIS rewrite is GET|HEAD only (PUT stays direct/LAN).
+            # FR #8708: PUT/PATCH stay direct/LAN. FR #9224 / #8820: POST refresh must
+            # reach the chair via public Cloudflare (GET|HEAD|POST).
             return @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD$" />
+            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD|POST$" />
           </conditions>
           <action type="Rewrite" url="$BackendUrl/bob/v1/models{R:1}" />
         </rule>
@@ -738,6 +743,57 @@ if (-not $logoStaged) {
 }
 } else {
     Write-Host 'INFO FR #8803 skipping www/assets publish (pass -PublishWww or -SiteKit to enable)'
+}
+
+# FR #9246: post-install probe so a mid-deploy dead :7700 is visible (IIS 502 class of #9224/#9246).
+if (-not $SkipBackendProbe) {
+    $probeUri = ($Backend.TrimEnd('/') + '/bob/v1/report')
+    $probeOk = $false
+    $probeDetail = ''
+    try {
+        $uriObj = [Uri]$Backend
+        $probeHost = $uriObj.Host
+        $probePort = $uriObj.Port
+        if ($probePort -le 0) {
+            if ($uriObj.Scheme -eq 'https') { $probePort = 443 } else { $probePort = 80 }
+        }
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        try {
+            $iar = $tcp.BeginConnect($probeHost, $probePort, $null, $null)
+            $connected = $iar.AsyncWaitHandle.WaitOne(500)
+            if (-not $connected) {
+                $probeDetail = "tcp-timeout ${probeHost}:${probePort}"
+            } elseif (-not $tcp.Connected) {
+                $probeDetail = "tcp-refused ${probeHost}:${probePort}"
+            } else {
+                $tcp.EndConnect($iar) | Out-Null
+                try {
+                    $resp = Invoke-WebRequest -Uri $probeUri -Method GET -UseBasicParsing -TimeoutSec 3
+                    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
+                        $probeOk = $true
+                        $probeDetail = "status=$($resp.StatusCode)"
+                    } else {
+                        $probeDetail = "status=$($resp.StatusCode)"
+                    }
+                } catch {
+                    $probeDetail = $_.Exception.Message
+                }
+            }
+        } finally {
+            $tcp.Close()
+        }
+    } catch {
+        $probeDetail = $_.Exception.Message
+    }
+    if ($probeOk) {
+        Write-Host "INFO FR #9246 backend probe OK $probeUri ($probeDetail)"
+    } else {
+        $msg = "FR #9246 backend probe failed $probeUri ($probeDetail) --- IIS will 502 until BobCallback listens on $Backend"
+        if ($RequireBackend) {
+            throw $msg
+        }
+        Write-Host "WARN $msg"
+    }
 }
 
 Write-Host 'INFO Install-BobWebhooks done'

@@ -123,6 +123,34 @@ if (-not $MachineId) {
     $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
 }
 
+# FR #9199 / #9205: intentional park => strip live bob-tray.exe (Watch-only).
+# Never Stop-Process bob-tray when it parents TipForm OpenCode seats (seat-exit was=N now=0).
+if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+    try {
+        $parkedEns = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+        if ($parkedEns.Parked) {
+            if ($parkedEns.Removed) {
+                Write-Host 'INFO tray watchdog FR #9199 removed live bob-tray.exe (intentional park; Watch-only)'
+                Write-BobTrayLifecycleEvent -Event 'watchdog-park-strip-live' -Fields @{ installRoot = $InstallRoot }
+            }
+            if (Get-Command Stop-BobTrayProcessesProtectingSeats -ErrorAction SilentlyContinue) {
+                $stopPark = Stop-BobTrayProcessesProtectingSeats -Root $InstallRoot
+                if ($stopPark.SkippedForSeats -gt 0) {
+                    Write-Host ('INFO tray watchdog FR #9205 skipped kill bob-tray parenting seats count={0}' -f $stopPark.SkippedForSeats)
+                    Write-BobTrayLifecycleEvent -Event 'watchdog-park-skip-kill-seats' -Fields @{
+                        installRoot = $InstallRoot
+                        skipped     = [int]$stopPark.SkippedForSeats
+                        killed      = [int]$stopPark.Killed
+                    }
+                } elseif ($stopPark.Killed -gt 0) {
+                    Write-Host ('INFO tray watchdog FR #9205 stopped bob-tray without seat children killed={0}' -f $stopPark.Killed)
+                }
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    } catch { }
+}
+
 $snapPath = Get-BobTrayStatusSnapPath -Root $InstallRoot
 $statusAge = Get-BobTrayStatusAgeSeconds -Root $InstallRoot
 $present = Test-BobTrayProcessPresent -InstallRoot $InstallRoot
