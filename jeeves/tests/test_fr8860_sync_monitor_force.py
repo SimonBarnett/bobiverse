@@ -15,6 +15,9 @@ def test_sync_force_copies_jeeves_monitor():
     assert "tools\\monitor" in text
     # Whole tools\\ stays /XO (MRB #6162); only monitor is force-copied.
     assert "Jeeves tools\\ keep /XO" in text or "keep /XO" in text
+    # FR #9100: same-path guard
+    assert "source == destination" in text
+    assert "skipped (source == destination)" in text
 
 
 def test_start_monitor_refreshes_when_sync_script_present():
@@ -23,6 +26,8 @@ def test_start_monitor_refreshes_when_sync_script_present():
     assert "FR #8860" in text
     assert "-Product jeeves" in text
     assert "-InstallRoot $InstallRoot" in text
+    assert "FR #9100 sync-monitor exit=" in text
+    assert "tools/monitor may be stale" in text
 
 
 def test_start_monitor_resolves_sync_under_bob_common_scripts():
@@ -39,5 +44,9 @@ def test_monitoring_doc_names_drive_root_sync():
     assert "FR #8860" in text
     assert "sync-monitor-force" in text
     assert "-Product jeeves" in text
+    assert "Invoke-JeevesMonitorCheck" in text
+    assert "BOBIVERSE_REPO" in text
+    assert "Do not Sync" in text or "Do **not** Sync" in text
     assert "FR #9007" in text
     assert "common\\scripts" in text or "common/scripts" in text
+

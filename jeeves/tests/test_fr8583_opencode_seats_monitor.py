@@ -101,6 +101,8 @@ def test_finding_stuck_age_and_week_exhausted(monkeypatch, tmp_path: Path):
     fix = tmp_path / "report.json"
     fix.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.setenv("BOB_OPENCODE_SEATS_FIXTURE", str(fix))
+    monkeypatch.setenv("BOB_OPENCODE_MONITOR_MACHINES", "flamingo")
+    monkeypatch.setenv("BOB_OPENCODE_EXPECT_SEATS", "0")
     monkeypatch.setenv("BOB_OPENCODE_STUCK_AGE_SEC", "900")
     monkeypatch.delenv("BOB_REPORT_URL", raising=False)
     # now = updated(16764)+1989
@@ -144,6 +146,8 @@ def test_ok_when_fresh_and_week_ok(monkeypatch, tmp_path: Path):
     fix = tmp_path / "report.json"
     fix.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.setenv("BOB_OPENCODE_SEATS_FIXTURE", str(fix))
+    monkeypatch.setenv("BOB_OPENCODE_MONITOR_MACHINES", "flamingo")
+    monkeypatch.setenv("BOB_OPENCODE_EXPECT_SEATS", "0")
     args = SimpleNamespace(chair_home="", digest_home="", dry_run=False)
     from datetime import datetime
 
