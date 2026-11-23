@@ -105,6 +105,7 @@ def test_fr7465_site_kit_rollback_restores_tree(tmp_path: Path):
             str(www),
             "-Backend",
             "http://127.0.0.1:7700",
+            "-SkipBackendProbe",
         ],
         capture_output=True,
         text=True,
