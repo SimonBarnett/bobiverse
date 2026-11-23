@@ -32,10 +32,11 @@ def test_fr9163_never_cancel_appfocus_closing():
     assert "$e.Cancel = $true" not in t
     assert "Test-BobTrayMenuShouldCancelClose" not in t
     assert "350" in t
-    # Sticky clear before status gate
-    status = t[t.index("function Invoke-BobTrayStatus") : t.index("function Invoke-BobTrayStatus") + 900]
+    # FR #9171: arm is timestamp-based (items stay Enabled); Status dismisses stuck menu.
+    status = t[t.index("function Invoke-BobTrayStatus") : t.index("function Invoke-BobTrayStatus") + 1200]
     assert "Clear-BobTrayMenuOpenIfHidden" in status
     assert "bobTrayMenuOpen" in status
+    assert "StatusMenuDismiss" in status or "status skipped" in status
     # Opening still cleans tip/status windows
     assert "Hide-BobTrayCard" in t
     assert "Close-BobTrayStatusWindows" in t
