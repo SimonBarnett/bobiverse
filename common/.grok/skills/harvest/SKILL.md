@@ -422,3 +422,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Jeeves butler menu icon: resolve install assets cache from https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico first (short HttpWebRequest), then jeeves/assets fallback; SkipFetch env for tests.
 - After BOB-G1 issue_fetch on offer/!assign, also wire depends_issue_fetch_checker into stuck_job_sweep.classify_queue_row and stall_detectors; strip Depends-on (...) annotations so BOB-D5 does not mark depends-unresolved
 - Queue refs must stay list[str] of #N: never persist extra["refs"]=",".join; normalize on write/read/load or tuple(str(x) for x in prior) char-splits and poisons ledger keys.
+- After a tip strips BOM from one edited .cs file, check every other edited .cs in the same FR (BobAbout.cs still had BOM while BobTray.cs was clean); extend encoding assert to each edited file
