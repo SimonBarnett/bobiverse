@@ -82,7 +82,7 @@ Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `De
 | `bobiverse-jeeves-agent-depends-on` | Every monitor cycle **once BOB-D offer skip is on tip** (D1/D3+); until then load on demand only |
 | `bobiverse-jeeves-agent-fr-digest` | Every cycle **after** depends-on once BOB-G1 is on tip; until then on demand only |
 
-Token-free checks (when landed): `depends_on`, `fr_digest` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies.
+Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo.
 
 ## Auto-start (FR #954)
 
@@ -183,3 +183,8 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - **FR #4373 reopened FR stuck in done (product #4383 / MRB #4384):** when GitHub reopens an issue that already sits in `done`, webhook `issues.reopened` and `resync_from_github` must `pop_done` before append, persist reopen `history` via `_coerce_row`, clear machine pins, and re-enter `unaccepted`. Terminal PASS/MERGED must not block reopen when `open_pulls` is None. Monitor: open GitHub issues that never re-offer after reopen are this class — check `done[]` vs open state before filing empty-queue. Product: `common/scripts/gitclaim.py` `requeue_reopened_issue`; tests `jeeves/tests/test_fr4373_requeue_reopened_issues.py`.
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
 - Bored-latency heal must count `!recycleseat` by **machine slot** in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever (harvest-lesson MRB #6812; keep the product gap here, not in harvest honesty-box).
+
+## Harvested lessons
+
+- If build-jeeves / tip CI fails while waiting on FR #9376 walrus install: FR the CI failures; do not Install-JeevesWalrusWinRm -SiYes until green.
+- FR #9376 / PR #9387: document and prefer `Install-JeevesWalrusWinRm.ps1` + check `walrus_jeeves_install_ready` (full playbook in `bobiverse-jeeves-agent-install`). DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only.
