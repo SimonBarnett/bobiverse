@@ -131,3 +131,7 @@ Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepte
 - Tray FR #6285 / #7498: a stale xAI weekly row keeps the last percent in the heading and sets bar_pct null so the bar stays empty. A fresh row still fills the bar. Do not park under harvest/SKILL.md (moved from tip #7845).
 - Tray FR #7378: paint only the [stale] token red (`Add-BobTrayUsageRow` / BobStatus `DrawHeadingWithStaleToken`); never whole-heading `HeadingColor`/`r.Red` or OpenCode rows stay uncoloured. Do not park under harvest/SKILL.md (moved from tip #7388).
 - FR #7366 / #7402: after fleet OpenCode is stripped from machine rows, tests must assert `opencode-free` absent (never still equal to 100). Do not park under harvest/SKILL.md (moved from tip #7406).
+
+## Harvested lessons (intake)
+
+- When flamingo seat is idle but chair offered_to is set, file tray agent-watcher dispatch delivery under BOB-TRAY-UI digest (#9259 / #9403); pair with chair offered_to ghost (#9402).
