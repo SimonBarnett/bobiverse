@@ -168,6 +168,40 @@ def gate_open_children(
     return 1, format_open_children_report(pref, pnum, children)
 
 
+def _github_token(token: str = "") -> str:
+    tok = (
+        token
+        or os.environ.get("GH_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or ""
+    ).strip()
+    if tok:
+        return tok
+    try:
+        import gh_filer
+
+        gh_filer.ensure_gh_token_env()
+        return (
+            os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _github_get_json(url: str, *, token: str = "") -> Any:
+    tok = _github_token(token)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-open-children-gate",
+            **({"Authorization": f"Bearer {tok}"} if tok else {}),
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def fetch_open_issues(repo: str, *, token: str = "") -> list[dict]:
     """List open issues for ``repo`` via GitHub REST (cached ``OPEN_CHILDREN_CACHE_TTL_S``)."""
     pref = _canon_repo(repo)
@@ -177,22 +211,6 @@ def fetch_open_issues(repo: str, *, token: str = "") -> list[dict]:
     hit = _OPEN_ISSUES_CACHE.get(pref.lower())
     if hit is not None and (now - hit[0]) < OPEN_CHILDREN_CACHE_TTL_S:
         return list(hit[1])
-    tok = (
-        token
-        or os.environ.get("GH_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
-        or ""
-    ).strip()
-    if not tok:
-        try:
-            import gh_filer
-
-            gh_filer.ensure_gh_token_env()
-            tok = (
-                os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
-            ).strip()
-        except Exception:
-            tok = ""
     issues: list[dict] = []
     page = 1
     while page <= 20:
@@ -200,18 +218,9 @@ def fetch_open_issues(repo: str, *, token: str = "") -> list[dict]:
             {"state": "open", "per_page": "100", "page": str(page)}
         )
         api = f"https://api.github.com/repos/{pref}/issues?{q}"
-        req = urllib.request.Request(
-            api,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "bobiverse-open-children-gate",
-                **({"Authorization": f"Bearer {tok}"} if tok else {}),
-            },
-        )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                batch = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+            batch = _github_get_json(api, token=token)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
             break
         if not isinstance(batch, list) or not batch:
             break
@@ -229,6 +238,20 @@ def fetch_open_issues(repo: str, *, token: str = "") -> list[dict]:
         page += 1
     _OPEN_ISSUES_CACHE[pref.lower()] = (now, list(issues))
     return issues
+
+
+def fetch_pr_dict(repo: str, pr_num: int | str, *, token: str = "") -> dict | None:
+    """GET pull ``repo#pr_num`` including body (Closes lines). CI-G2 live ``--pr``."""
+    pref = _canon_repo(repo)
+    num = _canon_num(pr_num)
+    if not pref:
+        return None
+    api = f"https://api.github.com/repos/{pref}/pulls/{num}"
+    try:
+        data = _github_get_json(api, token=token)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def parents_from_pr_closing_refs(pr: dict, default_repo: str = "") -> list[tuple[str, int]]:
@@ -335,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
             if not part:
                 continue
             parents.append((repo, _canon_num(part)))
-    if args.pr or args.pr_json:
+    pr_mode = bool(args.pr or args.pr_json)
+    if pr_mode:
         pr_obj: dict[str, Any]
         if args.pr_json:
             with open(args.pr_json, encoding="utf-8") as fh:
@@ -344,13 +368,14 @@ def main(argv: list[str] | None = None) -> int:
                 print("open-children-gate: --pr-json must be a JSON object", file=sys.stderr)
                 return 2
         else:
-            # Live PR fetch is deferred to CI-G2; require --pr-json or --parent for now.
-            print(
-                "open-children-gate: pass --parent and/or --pr-json "
-                "(live --pr fetch is CI-G2 wiring)",
-                file=sys.stderr,
-            )
-            return 2
+            fetched = fetch_pr_dict(repo, args.pr)
+            if not isinstance(fetched, dict):
+                print(
+                    f"open-children-gate: failed to fetch PR {repo}#{args.pr}",
+                    file=sys.stderr,
+                )
+                return 2
+            pr_obj = fetched
         parents.extend(parents_from_pr_closing_refs(pr_obj, default_repo=repo))
 
     # Dedupe parents
@@ -363,8 +388,15 @@ def main(argv: list[str] | None = None) -> int:
         seen_p.add(key)
         uniq.append((r, n))
     if not uniq:
+        if pr_mode:
+            # PR with no Closes parents: nothing to gate (soft-ok for CI-G2).
+            print(
+                f"open-children-gate: ok {repo} PR has no Closes parents "
+                "(nothing to check)"
+            )
+            return 0
         print(
-            "open-children-gate: need --parent N and/or --pr-json with Closes refs",
+            "open-children-gate: need --parent N and/or --pr / --pr-json",
             file=sys.stderr,
         )
         return 2
