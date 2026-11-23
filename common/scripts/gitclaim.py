@@ -521,13 +521,87 @@ def _open_fr_bob_and_id_index(
     return bobs, keys
 
 
+# BOB-D3 / FR #8807 + BOB-G1 / FR #8837 (bob_g1_skip_held_digest).
+DEPENDS_OPEN_REASON = "depends-open"
+DEPENDS_HELD_REASON = "depends-held"
+
+
+def _depend_row_label_names(row: dict) -> set[str]:
+    """Lower-case label names from a queue FR row (BOB-G1 / FR #8837)."""
+    names: set[str] = set()
+    if not isinstance(row, dict):
+        return names
+    raw = row.get("labels") or ()
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    if not isinstance(raw, (list, tuple)):
+        return names
+    for item in raw:
+        if isinstance(item, str):
+            n = item.strip().lower()
+        elif isinstance(item, dict):
+            n = str(item.get("name") or "").strip().lower()
+        else:
+            n = ""
+        if n:
+            names.add(n)
+    return names
+
+
+def find_open_fr_row(doc: dict | None, repo: str, num: int) -> dict | None:
+    """Locate an open FR queue row by ``(repo, number)`` (BOB-G1 digest labels)."""
+    if not isinstance(doc, dict) or num < 1:
+        return None
+    want = (_repo_key(repo), int(num))
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if str(row.get("state") or "").strip().lower() == "closed":
+                continue
+            rkey = _repo_key(str(row.get("repo") or ""))
+            raw = str(row.get("id") or "").strip().lstrip("#")
+            try:
+                n = int(raw) if raw else 0
+            except ValueError:
+                continue
+            if (rkey, n) == want:
+                return row
+    return None
+
+
+def _bob_g1_digest_gate_for_pair(
+    doc: dict, repo: str, oid: str
+) -> str | None:
+    """BOB-G1 / FR #8837 bob_g1_skip_held_digest.
+
+    Returns ``depends-held`` when the open depend has hold; ``ok-fr-digest`` when
+    it is an unheld ``fr-digest`` (caller must not treat OPEN as blocking); None
+    when the row is absent or has no special digest labels.
+    """
+    raw = str(oid or "").strip().lstrip("#")
+    try:
+        num = int(raw) if raw else 0
+    except ValueError:
+        return None
+    dep = find_open_fr_row(doc, repo, num)
+    if dep is None:
+        return None
+    labs = _depend_row_label_names(dep)
+    if "hold" in labs or "on-hold" in labs:
+        return DEPENDS_HELD_REASON
+    if "fr-digest" in labs:
+        return "ok-fr-digest"
+    return None
+
+
 def row_fr_depends_blocked_reason(
     row: dict,
     doc: dict,
     *,
     docs_root: Path | None = None,
 ) -> str | None:
-    """FR #8754 / BOB-D7 (FR #8811) / FR #9220: why an FR must wait on open Depends-on.
+    """FR #8754 / BOB-D7 (FR #8811) / FR #9220 / BOB-G1 (FR #8837): Depends-on gate.
 
     bob_d7_wire_hold: call this beside every ``fr_hold_reason`` / ``row_fr_hold_reason``
     offer, enqueue, purge, and reconcile site. Distinct from hold / HOLD: stamps.
@@ -535,6 +609,8 @@ def row_fr_depends_blocked_reason(
     FR #9220: relative ``#N`` resolves against the FR's own repo; qualified
     ``owner/repo#N`` looks up that repo only. Does not purge the row - when depends
     leave the queue, the FR becomes offerable.
+
+    BOB-G1: hold on depend -> ``depends-held``; unheld ``fr-digest`` OK while OPEN.
     """
     if _canon_task(row) != "FR":
         return None
@@ -555,6 +631,11 @@ def row_fr_depends_blocked_reason(
                     continue
                 if self_key is not None and (repo, oid) == self_key:
                     continue
+                g1 = _bob_g1_digest_gate_for_pair(doc, repo, oid)
+                if g1 == DEPENDS_HELD_REASON:
+                    return f"{DEPENDS_HELD_REASON}: {tok}"
+                if g1 == "ok-fr-digest":
+                    continue
                 if (repo, oid) in open_keys:
                     return (
                         f"depends-on open: {tok} "
@@ -566,6 +647,11 @@ def row_fr_depends_blocked_reason(
             pair = (_repo_key(qm.group(1)), _norm_row_id(f"#{int(qm.group(2))}"))
             if self_key is not None and pair == self_key:
                 continue
+            g1 = _bob_g1_digest_gate_for_pair(doc, pair[0], pair[1])
+            if g1 == DEPENDS_HELD_REASON:
+                return f"{DEPENDS_HELD_REASON}: {tok}"
+            if g1 == "ok-fr-digest":
+                continue
             if pair in open_keys:
                 return f"depends-on open: {tok}"
             continue
@@ -576,15 +662,17 @@ def row_fr_depends_blocked_reason(
             pair = (home_repo, oid)
             if self_key is not None and pair == self_key:
                 continue
+            g1 = _bob_g1_digest_gate_for_pair(doc, home_repo, oid)
+            if g1 == DEPENDS_HELD_REASON:
+                return f"{DEPENDS_HELD_REASON}: {tok}"
+            if g1 == "ok-fr-digest":
+                continue
             if pair in open_keys:
                 return f"depends-on open: {tok}"
     return None
 
 
-# BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
-# BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
-# private extractor so D3 ships with Depends-on: (none) before those land.
-DEPENDS_OPEN_REASON = "depends-open"
+# BOB-D3 / FR #8807: private extractor (D1/D2 own public parse).
 # _QUALIFIED_DEPENDS_ISSUE_RE defined with FR #8754 Depends-on regexes above.
 _RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
 _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
@@ -666,11 +754,17 @@ def row_depends_open_reason(
     open_keys: set[tuple[str, int]] | None = None,
     *,
     issue_open=None,
+    doc: dict | None = None,
 ) -> str | None:
-    """BOB-D3 / FR #8807: ``depends-open`` when any Depends-on issue is OPEN, else None.
+    """BOB-D3 / FR #8807 + BOB-G1 / FR #8837 digest go-gate.
 
-    Blocks only on positive OPEN evidence (queue key set and/or ``issue_open`` True).
-    Unknown / ``GitHubLookupUnknown`` / missing stamp / ``(none)`` do not block (D5).
+    For each Depends-on ref (architecture: hold -> fr-digest ok -> OPEN skip):
+
+    * depend has ``hold`` -> ``depends-held`` (bob_g1_skip_held_digest)
+    * else ``fr-digest`` without hold -> OK while OPEN
+    * else OPEN (queue key / ``issue_open``) -> ``depends-open``
+
+    Unknown / missing stamp / ``(none)`` do not block (D5).
     """
     if _canon_task(row) != "FR":
         return None
@@ -679,6 +773,14 @@ def row_depends_open_reason(
         return None
     keys = open_keys if open_keys is not None else set()
     for repo, num in refs:
+        dep = find_open_fr_row(doc, repo, num) if doc is not None else None
+        if dep is not None:
+            labs = _depend_row_label_names(dep)
+            if "hold" in labs or "on-hold" in labs:
+                return DEPENDS_HELD_REASON
+            if "fr-digest" in labs:
+                # Unheld digest satisfies while OPEN (BOB-G1 S1).
+                continue
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
         if issue_open is None:
@@ -8427,12 +8529,14 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if me and to_c and to_c != me_l:
                     _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
-            # BOB-D3 / FR #8807: local depends-open (no checker on empty-offer path).
-            if _canon_task(cand) == "FR" and row_depends_open_reason(
-                cand, open_dep_keys_summary
-            ):
-                _record_empty_skip(r, DEPENDS_OPEN_REASON)
-                continue
+            # BOB-D3 / FR #8807 + BOB-G1 / FR #8837: local depends-open / depends-held.
+            if _canon_task(cand) == "FR":
+                dep_why = row_depends_open_reason(
+                    cand, open_dep_keys_summary, doc=raw if isinstance(raw, dict) else None
+                )
+                if dep_why:
+                    _record_empty_skip(r, dep_why)
+                    continue
             offerable += 1
         out["skips"] = skip_log
         out["out_of_focus"] = out_of_focus
@@ -12051,9 +12155,9 @@ def offer_focus_top(
                     cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
                     return None
-                # BOB-D3 / FR #8807: any Depends-on issue still OPEN — skip, do not purge.
+                # BOB-D3 / FR #8807 + BOB-G1 / FR #8837: Depends-on OPEN / held digest.
                 if row_depends_open_reason(
-                    cand, open_dep_keys, issue_open=issue_open
+                    cand, open_dep_keys, issue_open=issue_open, doc=doc
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
