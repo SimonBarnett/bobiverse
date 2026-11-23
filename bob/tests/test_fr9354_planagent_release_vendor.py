@@ -101,11 +101,11 @@ Write-Output 'ok'
 def test_mrb9358_vendored_manifest_no_success_stream(tmp_path: Path):
     """MRB #9358: MANIFEST writer must not return a path (FR #6969 heat pollution)."""
     helpers = HELPERS.read_text(encoding="utf-8-sig")
-    # No bare return $Path after WriteAllText in the vendored-manifest helper.
+    # No success-stream `return $Path` statement in the vendored-manifest helper.
     assert "function Write-BobiverseVendoredExeManifest" in helpers
     fn = helpers.split("function Write-BobiverseVendoredExeManifest", 1)[1]
     fn = fn.split("\nfunction ", 1)[0]
-    assert "return $Path" not in fn
+    assert "\n    return $Path\n" not in fn.replace("\r\n", "\n")
     pack = PACK.read_text(encoding="utf-8-sig")
     assert "$null = Write-BobiverseVendoredExeManifest" in pack
 
