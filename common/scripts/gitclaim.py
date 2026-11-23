@@ -186,6 +186,9 @@ SKIP_FR_LABELS = frozenset(
         # Still excluded from repo-UAT blocking via issue_blocks_repo_uat.
         "umbrella",
         "parent-fr",
+        # FR #9304: fr-digest epics are go-gate release switches (ACK then GIVEUP),
+        # never implement FRs. Offer children (e.g. BOB-G1) instead.
+        "fr-digest",
         "mrb-home",
         "mrb_home",
         "evergreen",
@@ -209,6 +212,11 @@ SKIP_FR_LABELS = frozenset(
         # FR #3317: harvest tip held until the intended product repo exists.
         "owner-missing",
     }
+)
+
+# FR #9304: line-anchored Kind: fr-digest (label may be missing on a stale queue row).
+FR_DIGEST_KIND_BODY_RE = re.compile(
+    r"(?im)^\s*(?:\*\*)?Kind\s*:\s*fr-digest(?:\*\*)?\s*$"
 )
 
 # Labels safe to detect in free text (title/line only when GitHub labels empty).
@@ -1856,6 +1864,9 @@ def issue_skip_fr_reason(
             return "harvest_pr_summary"
         if re.search(r"(?i)\bPR\s+opened\b", title_s):
             return "harvest_pr_summary"
+    # FR #9304: Kind: fr-digest body stamp (go-gate epic) even without the label.
+    if FR_DIGEST_KIND_BODY_RE.search(body or ""):
+        return "fr_digest_kind"
     return None
 
 
