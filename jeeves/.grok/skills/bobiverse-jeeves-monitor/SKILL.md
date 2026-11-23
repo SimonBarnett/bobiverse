@@ -190,6 +190,8 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 
 ## Harvested lessons
 
+- **FR #9489 MRB author heal:** interim queue stamp must be `<roster-machine>-<dead-pid>` (e.g. `marchhare-99999`); `ghost-1` dropped on chairs that still require `parse_seat_nick`. Tip reserved `ghost-N` (N>=1) sticks; durable fix is soft `free=` / multi-author exact-seat (FR #9478/#9480 / PR #9482).
+
 - If build-jeeves / tip CI fails while waiting on FR #9376 walrus install: FR the CI failures; do not Install-JeevesWalrusWinRm -SiYes until green.
 - **FR #9406 / #9402:** hold-labeled ops FR sticky `offered_to` must not leave a seat `busy (offered FR ...)` — clear sticky offer + drop the held FR from unaccepted (digest gate rows keep queue, lose offer pin) so gate MRB `!assign` can proceed.
 - **FR #9400:** never `Closes` ops/gate tracker issues while Depends-on / GateIssues still OPEN — tool-only PRs use `Refs` / `Toward`; reopen if GitHub auto-closed early.

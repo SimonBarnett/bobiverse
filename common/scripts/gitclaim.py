@@ -10104,16 +10104,37 @@ def free_seat_nicks(home: Path, live: set[str] | None = None) -> set[str]:
     return out
 
 
+def _reserved_heal_seat_nick(raw: str) -> str:
+    """FR #9489: operator interim author heal nicks that must stick through enrich.
+
+    Prefer ``<roster-machine>-<dead-pid>`` (e.g. ``marchhare-99999``) on fleets
+    whose Jeeves still requires ``parse_seat_nick``. ``ghost-<n>`` (n>=1) is the
+    reserved non-roster heal nick for tip builds with structural canon.
+    """
+    n = (raw or "").strip().lower()
+    if n == "copilot":
+        return "copilot"
+    m = re.match(r"^ghost-(\d+)$", n)
+    if m and int(m.group(1)) > 0:
+        return n
+    return ""
+
+
 def _canon_seat_nick(raw: str) -> str:
     v = str(raw or "").strip()
     if not v:
         return ""
-    # FR #5170: Copilot Coding Agent is a virtual seat (not machine-pid).
-    if v.lower() == "copilot":
-        return "copilot"
+    # FR #5170 / #9489: Copilot + reserved ghost-N heal nicks (not machine-pid).
+    reserved = _reserved_heal_seat_nick(v)
+    if reserved:
+        return reserved
     # FR #8095 / MRB #1278: use canonical_worker_nick structural fallback so a
     # stamped ``<machine>-<pid>`` still counts when seat_machine_ids is cold.
-    return canonical_worker_nick(v) or ""
+    cw = canonical_worker_nick(v) or ""
+    # FR #9489: do not treat ghost-0 / non-reserved ghost-* as a sticky heal.
+    if cw.lower().startswith("ghost-"):
+        return _reserved_heal_seat_nick(cw)
+    return cw
 
 
 def row_author_seats(row: dict) -> list[str]:
@@ -10307,7 +10328,7 @@ def implementer_seat_from_done_fr_pull(
 
 
 def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
-    """FR #4604 / #5923 / #5939 / #8051: merge FIX seats; recover implementer; drop stale author_seats.
+    """FR #4604 / #5923 / #5939 / #8051 / #9489: merge FIX seats; recover implementer; drop stale author_seats.
 
     Survives missing stamps on synchronize-enqueued MRB rows by reading queue truth.
     Cite-only FR DONE results are ignored (FR #5923).
@@ -10316,17 +10337,25 @@ def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
     FR #8051: when ``author_seat`` / ``implementer_seat`` are missing, backfill from
     a DONE FR whose result is this pull so done-offer cannot self-MRB.
     FR #8095: harvest-lesson tips also recover the filing seat from the body footer.
+    FR #9489: operator interim heal stamps (``ghost-N`` or ``<roster>-<dead-pid>``)
+    stay sticky --- do not overwrite with the recovered DONE-FR implementer.
     """
     if _canon_task(row) != "MRB":
         return row
     out = dict(row)
     # Drop stale multi author_seats; rebuild from FIX queue truth only.
     out.pop("author_seats", None)
-    has_impl = bool(
-        _canon_seat_nick(
-            str(out.get("implementer_seat") or out.get("author_seat") or out.get("author_nick") or "")
-        )
-    )
+    raw_impl = str(
+        out.get("implementer_seat") or out.get("author_seat") or out.get("author_nick") or ""
+    ).strip()
+    canon_impl = _canon_seat_nick(raw_impl)
+    # FR #9489: reserved heal nick sticks even when parse_seat_nick is None.
+    if not canon_impl:
+        canon_impl = _reserved_heal_seat_nick(raw_impl)
+        if canon_impl:
+            out["author_seat"] = canon_impl
+            out["implementer_seat"] = canon_impl
+    has_impl = bool(canon_impl)
     if not has_impl:
         impl = implementer_seat_from_done_fr_pull(
             doc,
