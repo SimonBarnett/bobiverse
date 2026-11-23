@@ -119,13 +119,20 @@ def test_webhook_overrides_tray_env_pin_wins(tmp_path, monkeypatch):
 
 
 def test_cli_settings_args_grok_cursor_context_unsupported():
+    # FR #9258: 256000 is invalid (allowed are 256|500) → not-passed: invalid.
     args, st = wsm.cli_settings_args("grok", model="grok-4.7", effort="low", context="256000")
     assert args == ["--model", "grok-4.7", "--reasoning-effort", "low"]
     assert st["model"] == "passed"
-    assert st["context"] == "not-passed: unsupported"
+    assert st["context"] == "not-passed: invalid"
+    # Valid Grok context with no CLI flag → unsupported-by-cli (seat still starts).
+    args2, st2 = wsm.cli_settings_args("grok", model="grok-4.7", effort="low", context="256")
+    assert "--reasoning-effort" in args2
+    assert st2["context"] == "not-passed: unsupported-by-cli"
+    # Non-Grok: context/effort are not-applicable (never unsupported).
     cargs, cst = wsm.cli_settings_args("cursor", model="gpt-5", effort="high")
     assert cargs == ["--model", "gpt-5"]
-    assert cst["effort"] == "not-passed: unsupported"
+    assert cst["effort"] == "not-applicable"
+    assert cst["context"] == "not-applicable"
 
 
 def test_append_launch_dryrun_contains_model_args(tmp_path):

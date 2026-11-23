@@ -308,15 +308,20 @@ def _inbound() -> list[DocEntry]:
             method="GET",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Fleet Weights agent rows plus CLI options catalog for the tray/forms.",
+            purpose=(
+                "Fleet Weights agent rows plus CLI options catalog for the tray/forms. "
+                "FR #9258: context (256|500) and effort (high|medium|low) are Grok-only; "
+                "Cursor/OpenCode catalog rows may have empty contexts/efforts."
+            ),
             callers="Tray Weights form, Agents/Workers settings, operators.",
             auth="None.",
             request_schema="No body. HEAD returns empty body.",
             response_schema=(
                 'JSON {"clis":{CLI:{models:{model:{contexts:{context:{efforts:[...]}}}}}},'
-                '"agents":[{"agent","cli","model","context","effort"}, ...]} '
-                "(BOB-01 / FR #8819 / FR #8820). clis from digest-home "
-                "models-valid-combos.json; missing CLI yields models:{}; "
+                '"agents":[{"agent","cli","model","context","effort"}, ...]}' 
+                "(BOB-01 / FR #8819 / FR #8820 / FR #9258). clis from digest-home "
+                "models-valid-combos.json; Grok contexts 256|500 and efforts "
+                "high|medium|low; Cursor/OpenCode may have empty contexts; "
                 "stale:true when selection model absent."
             ),
             example_request=(
@@ -324,19 +329,19 @@ def _inbound() -> list[DocEntry]:
                 "Accept: application/json\n\n"
                 "200 OK\n"
                 '{"clis":{'
-                '"Grok":{"models":{"grok-4.7":{"contexts":{"256000":{"efforts":["xhigh","high","medium","low"]},'
-                '"500000":{"efforts":["xhigh","high","medium","low"]}}}}},'
-                '"Cursor":{"models":{"gpt-5":{"contexts":{"default":{"efforts":[]}}}}},'
-                '"Opencode":{"models":{"opencode-go/deepseek-v4-pro":{"contexts":{"default":{"efforts":[]}}}}}'
+                '"Grok":{"models":{"grok-4.7":{"contexts":{"256":{"efforts":["high","medium","low"]},'
+                '"500":{"efforts":["high","medium","low"]}}}},'
+                '"Cursor":{"models":{"gpt-5":{"contexts":{"default":{"efforts":[]}}}},'
+                '"Opencode":{"models":{"opencode-go/deepseek-v4-pro":{"contexts":{"default":{"efforts":[]}}}}'
                 '},'
-                '"agents":[{"agent":"Plan","cli":"Grok","model":"grok-4.7","context":"256000","effort":"high"}]}'
+                '"agents":[{"agent":"Plan","cli":"Grok","model":"grok-4.7","context":"256","effort":"high"}]}'
             ),
             status_codes="200 JSON; never invents secret fields.",
             retry_idempotency="Safe GET.",
             rate_limits="Proxy only.",
             reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122",
+            fr="FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122 · FR #9258",
             html_rel="docs/webhooks/models.html",
         ),
         DocEntry(
