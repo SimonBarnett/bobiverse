@@ -60,11 +60,13 @@ LOCKED
 
 ## Screens
 
-No product UI.
+No product Weights/tray UI. Minimal HTML stubs document join/search states for `validate-vision-pack` (`--mocks-dir bob/docs/mocks/bob-sofa`).
 
 | id | file | state |
 |----|------|-------|
-| M1 | (n/a) | n/a |
+| M1 | home.html | primary — skill path (curl skill.md → search or onboard) |
+| M2 | empty.html | no API key yet; human must open claim_url |
+| M3 | error.html | SOFA host down or auth failure; no secrets on IRC |
 
 ## Gap vs current tree
 
