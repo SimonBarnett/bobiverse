@@ -4340,8 +4340,9 @@ function Show-BobTrayCard {
 
 function Get-BobTrayWorkerAgentChoices {
     <#
-      Agents submenu rows from bob-worker.exe --list-agents.
-      Automatic stays available. Explicit rows come only from that JSON.
+      Workers submenu rows from bob-worker.exe --list-agents.
+      FR #9262 / BOB-TRAY-UI-02: no Automatic/auto row; Grok/Cursor/Open Code only.
+      Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
       The child is killed at 8s. read_fuel can otherwise block for 90s.
     #>
@@ -4351,19 +4352,16 @@ function Get-BobTrayWorkerAgentChoices {
     # FR #6301: start entries carry no fuel/quota prose (empty reason).
     $unknownReason = ''
     $fallback = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
     $missing = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
     )
     $unknown = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
@@ -4421,9 +4419,13 @@ function Get-BobTrayWorkerAgentChoices {
                 $again.Count -eq 0 -or
                 ($nonAuto.Count -ge 3 -and $unknownFuel -ge 3)
             )
-            if (-not $refreshUnknown) { return @($again) }
+            if (-not $refreshUnknown) {
+                # FR #9262: never surface Automatic/auto in Workers menu rows.
+                return @($again | Where-Object { [string]$_.id -ne 'auto' })
+            }
         }
-        return @($obj.agents)
+        # FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu omits it.
+        return @($obj.agents | Where-Object { [string]$_.id -ne 'auto' })
     }
     catch {
         # Malformed JSON or a Start-Process throw on refresh must not replace
@@ -4469,6 +4471,8 @@ function Update-BobTrayWorkerAgentsMenu {
     $MenuItem.DropDownItems.Clear()
     foreach ($row in @($Rows)) {
         $id = [string]$row.id
+        # FR #9262 / BOB-TRAY-UI-02: skip Automatic/auto even if list-agents still emits it.
+        if ($id -eq 'auto') { continue }
         $label = [string]$row.label
         $reason = [string]$row.reason
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
@@ -4680,8 +4684,8 @@ if (Test-Path -LiteralPath $butler) {
 $miWorkers = New-Object System.Windows.Forms.ToolStripMenuItem('Workers')
 [void]$menu.Items.Add($miWorkers)
 # Do not call --list-agents here. Engine mode never shows this menu; a fuel read can take 90s.
+# FR #9262 / BOB-TRAY-UI-02: Workers seed has no Automatic/auto row.
 Update-BobTrayWorkerAgentsMenu $miWorkers @(
-    [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
     [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = '' }
