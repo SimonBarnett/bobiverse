@@ -5587,6 +5587,33 @@ def is_repo_uat(row: dict) -> bool:
     return True
 
 
+def repo_has_uat_release_to_build(repo: str, *, home: Path | None = None) -> bool:
+    """FR #9382: UAT #0 only for repos whose PASS path builds/publishes a release."""
+    try:
+        import uat_release
+
+        return bool(uat_release.repo_has_release_to_build(repo, home=home))
+    except Exception:
+        return False
+
+
+def uat_no_release_to_build_reason(row: dict, *, home: Path | None = None) -> str | None:
+    """Return ``no-release-to-build`` when this UAT row must not be offered/assigned."""
+    if _canon_task(row) != "UAT":
+        return None
+    if not is_repo_uat(row):
+        return None
+    repo = str(row.get("repo") or "").strip()
+    if repo_has_uat_release_to_build(repo, home=home):
+        return None
+    try:
+        import uat_release
+
+        return str(uat_release.NO_RELEASE_TO_BUILD)
+    except Exception:
+        return "no-release-to-build"
+
+
 def _mrb_fix_offer_stamped(row: dict) -> bool:
     """True when resync/webhook marked this fix(mrb-N) as an ordinary MRB (FR #8475)."""
     return str(row.get("mrb_fix_offer") or "").strip().lower() in ("1", "true", "yes")
@@ -12433,6 +12460,13 @@ def offer_focus_top(
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     return None
+                # FR #9382: CAST IRON — no UAT when the repo has no release to build.
+                if uat_no_release_to_build_reason(cand, home=home):
+                    if _drop_unaccepted_row(
+                        doc, cand, kind="uat-no-release", reason="no-release-to-build"
+                    ):
+                        purged = True
+                    return None
                 # FR #740 / MRB #3207: one shared lookup per MRB row; definitive not-open
                 # purges this row only; unknown (budget / 403 / 5xx) still offers.
                 if _canon_task(cand) == "MRB" and _live_verdict(pr_exists, cand) is False:
@@ -12853,6 +12887,15 @@ def offer_top(
                     continue  # FR #846 / #838 / #2340
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
+                    i += 1
+                    continue
+                # FR #9382: CAST IRON — no UAT when the repo has no release to build.
+                if uat_no_release_to_build_reason(row, home=home):
+                    if _drop_unaccepted_row(
+                        doc, row, kind="uat-no-release", reason="no-release-to-build"
+                    ):
+                        purged = True
+                        continue
                     i += 1
                     continue
                 # FR #740 / MRB #3207: definitive not-open MRB -> purge this row only.
@@ -16320,6 +16363,10 @@ def assign_row(
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
+            # FR #9382: CAST IRON — refuse UAT when the repo has no release to build.
+            no_rel = uat_no_release_to_build_reason(cand, home=home)
+            if no_rel:
+                return "refused", no_rel
             # FR #740 / #738 / #1585: refuse already-DONE MRB unless the pull is still open.
             if task_u == "MRB" and mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
@@ -17891,6 +17938,12 @@ def resync_from_github(
                     if not is_repo_uat(row):
                         dropped_detail.append(f"{_row_drop_label(row)} uat_not_repo_level")
                         continue
+                    # FR #9382: drop UAT when the repo has no release to build.
+                    if uat_no_release_to_build_reason(row, home=home):
+                        dropped_detail.append(
+                            f"{_row_drop_label(row)} uat_no_release_to_build"
+                        )
+                        continue
                     if (
                         _row_fetched(repo_s)
                         and not _repo_clear_for(repo_s)
@@ -18234,6 +18287,12 @@ def resync_from_github(
                             )
                             break
             for urepo, (merged, linked) in uat_plan.items():
+                # FR #9382: never enqueue UAT #0 for repos with no release to build.
+                if not repo_has_uat_release_to_build(urepo, home=home):
+                    _log_queue_purge(
+                        f"INFO git-claim skip uat {urepo} reason=no-release-to-build"
+                    )
+                    continue
                 if any(
                     str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
                     for r in doc["accepted"] + doc["unaccepted"]
