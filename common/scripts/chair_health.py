@@ -1335,17 +1335,23 @@ class ChairJobs:
         last_bored = gitclaim.merge_last_bored(self.home, self.digest_home)
         digest_ts = ""
         digest_last_seen = []
+        digest_machines: dict = {}
+        offerable_count = 0
         with contextlib.suppress(Exception):
             import bobreport
 
             ddoc = bobreport.load_digest(self.digest_home)
             digest_ts = str((ddoc or {}).get("ts") or "")
             machines = (ddoc or {}).get("machines") if isinstance((ddoc or {}).get("machines"), dict) else {}
+            digest_machines = dict(machines) if isinstance(machines, dict) else {}
             digest_last_seen = [
                 str(ent.get("lastSeen") or "")
                 for ent in machines.values()
                 if isinstance(ent, dict) and ent.get("lastSeen")
             ]
+            q = (ddoc or {}).get("queue") if isinstance((ddoc or {}).get("queue"), dict) else {}
+            with contextlib.suppress(Exception):
+                offerable_count = int(q.get("offerable_count") or 0)
         # FR #5701: recycle silent idle seats (remote ear via !recycleseat IRC).
         bored_healed = []
         with contextlib.suppress(Exception):
@@ -1377,6 +1383,9 @@ class ChairJobs:
             "deadlock_healed": bool(healed),
             "digest_ts": digest_ts,
             "digest_last_seen": digest_last_seen,
+            # FR #9462: online_zero_workers stall fingerprint needs digest machines + offerable.
+            "machines": digest_machines,
+            "offerable_count": offerable_count,
         }
         findings = stall_detectors.detect_all(snap)
         findings = drop_healed_bored_findings(findings, bored_healed)

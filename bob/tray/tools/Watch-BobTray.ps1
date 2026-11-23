@@ -5086,11 +5086,47 @@ $poll.Add_Tick({
                     try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
                     try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
                 }
+                # FR #9462: durable online_zero_workers alert from digest/report (TipForm Agents; no silent auto-start).
+                try {
+                    if (Get-Command Get-BobTrayOnlineZeroWorkerAlerts -ErrorAction SilentlyContinue) {
+                        $ozOfferable = 0
+                        try { $ozOfferable = [int](Get-BobTrayCachedOfferableCount) } catch { $ozOfferable = 0 }
+                        $ozMachines = $null
+                        try {
+                            $repPath = $null
+                            if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
+                                $repPath = Join-Path (Get-BobIrcHome) 'bob-peers\_report-digest.json'
+                            }
+                            if ($repPath -and (Test-Path -LiteralPath $repPath)) {
+                                $repDoc = Get-Content -LiteralPath $repPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                                if ($repDoc -and $repDoc.machines) { $ozMachines = $repDoc.machines }
+                                if ($repDoc -and $repDoc.queue -and $null -ne $repDoc.queue.offerable_count) {
+                                    $ozOfferable = [int]$repDoc.queue.offerable_count
+                                }
+                            }
+                        } catch { }
+                        if (-not $ozMachines -and $script:lastFuelSnapshot -and $script:lastFuelSnapshot.machines) {
+                            $ozMachines = $script:lastFuelSnapshot.machines
+                        }
+                        $ozAlerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $ozMachines -OfferableCount $ozOfferable)
+                        if ($ozAlerts.Count -gt 0) {
+                            $alerts = @($alerts) + @($ozAlerts)
+                            Write-TrayLog ('FR #9462 online_zero_workers alerts=' + ($ozAlerts -join ' | '))
+                        }
+                    }
+                } catch {
+                    Write-TrayLog ('FR #9462 online_zero_workers: ' + $_.Exception.Message)
+                }
                 if ($alerts.Count -gt 0) {
                     $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
                     Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
                     # BOB-43: intervene so offerable work can move (nudge under-cap fill cooldown).
-                    if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
+                    # FR #9462 / #3180: online_zero_workers is TipForm Agents only — skip auto intervene/fill nudge.
+                    $ozOnly = $true
+                    foreach ($a in @($alerts)) {
+                        if ($a -and ($a -notmatch 'online_zero_workers')) { $ozOnly = $false; break }
+                    }
+                    if (-not $ozOnly -and (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue)) {
                         $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
                         if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
                     }
@@ -5124,7 +5160,20 @@ $poll.Add_Tick({
                         param($Root)
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
-                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
+                            # FR #9462: keep online_zero_workers alert durable on tray-status.json (TipForm/Status paint).
+                            $merged = @()
+                            try {
+                                if ($h.online_zero_alerts) { $merged = @($h.online_zero_alerts) }
+                            } catch { $merged = @() }
+                            $merged = @($merged | Where-Object { $_ } | Select-Object -Unique)
+                            $kind = 'none'
+                            try {
+                                if (Get-Command Get-BobTrayAlertKind -ErrorAction SilentlyContinue) {
+                                    $kind = Get-BobTrayAlertKind -Alerts $merged -RemainingPct $h.remaining_pct
+                                }
+                            } catch { $kind = 'none' }
+                            $attn = ($merged.Count -gt 0)
+                            $model = New-BobTrayStatusModel -Hover $h -AlertKind $kind -Alerts $merged -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $attn -AttentionSeq 0 -Pulse $false
                             [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
                         }
                     })

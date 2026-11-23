@@ -77,6 +77,12 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 `Test-JeevesMonitorWorkersLastGoodOrphan.ps1` / `tools/monitor/workers_last_good_orphan.py` is **token-free** and reads only the local `digest.json`. It EXIT 1 when a machine has `workers_stale` true, empty live `workers` / `worker_list`, and a non-empty `workers_last_good` snapshot (ghost seats that still paint on GET `/bob/v1/report`). Missing digest is EXIT 0 (`digest_present=false`). Unreadable or wrong-shape JSON is EXIT 2. Remediation: `POST /bob/v1/report` `worker-remove` for each nick (or `delete-worker` by pid). Related product: last-good TTL `BOB_DIGEST_LAST_GOOD_MAX_S` (default 1800s) on export/restore.
 
+## online_zero_workers (FR #9462)
+
+`Test-JeevesMonitorOnlineZeroWorkers.ps1` / `tools/monitor/online_zero_workers.py` EXIT 1 when an **online** digest/report machine has a known empty `workers` / `worker_list` and fleet `offerable_count > 0`. Payload lists `machine_ids` and fingerprints `stall:online-zero-workers:<machine>` (chair `stall_filer` rate-caps the same id). Local `queue.json` uses digest home; missing queue uses one live `/bob/v1/report` (same non-chair path as idle_seats FR #8866).
+
+**Remediation:** TipForm → **Agents** on the empty shop (FR #3180). Do **not** silent auto-start seats from monitor. Digest stuck[] already carries `rule=online_zero_workers` (FR #8429 / MRB #8445); this check makes the gap EXIT 1 on monitor hosts that only read `/report`. TipForm paints a durable `online_zero_workers` alert/caption while the condition holds.
+
 ## ircbob_ear (FR #9144)
 
 `tools/monitor/ircbob_ear.py` is **token-free**. It EXIT 1 when digest machines show `online=false` / status `I am offline`, or `lastSeen` older than 900s (same band as `stale_digest`). On win32 it also reads local `Get-Service ircBob`; when Status is Stopped it tries one `Start-Service` and re-checks (`heal=started|failed`). TipForm `Resolve-BobTrayDigestFailNote` prefers `digest ear-offline:` over `digest unreachable:` when the ear is down or digest shows offline (pure GetResponse failures stay unreachable). Never touches Ergo / BobIrcd. Remote WinRM Start-Service is out of scope.

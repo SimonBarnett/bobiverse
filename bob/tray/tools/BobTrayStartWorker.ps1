@@ -272,6 +272,129 @@ function Get-BobTrayCachedOfferableCount {
     return 0
 }
 
+function Get-BobTrayDigestMachineWorkerCount {
+    <#
+    FR #9462: count live workers on a digest/report machine node.
+    Returns $null when the workers shape is unknown (do not alert).
+    #>
+    param($Ent)
+    if (-not $Ent) { return $null }
+    $names = @()
+    try { $names = @($Ent.PSObject.Properties.Name) } catch { $names = @() }
+    if ($names -contains 'worker_list' -and $null -ne $Ent.worker_list) {
+        return @($Ent.worker_list).Count
+    }
+    if ($names -contains 'workers') {
+        $w = $Ent.workers
+        if ($null -eq $w) { return 0 }
+        # Nick-map digest shape is a Hashtable/Dictionary — use .Count (not PSObject.Properties).
+        if ($w -is [System.Collections.IDictionary]) {
+            return [int]$w.Count
+        }
+        if ($w -is [System.Collections.IList] -and -not ($w -is [string])) {
+            return @($w).Count
+        }
+        try {
+            $props = @($w.PSObject.Properties)
+            return $props.Count
+        } catch { return 0 }
+    }
+    return $null
+}
+
+function Get-BobTrayOnlineZeroWorkerAlerts {
+    <#
+    FR #9462: durable TipForm/Status alerts when an online machine (local or
+    fleet peer on the digest) has zero workers while offerable_count > 0.
+    Alert only - never silent auto-start (FR #3180); operator uses TipForm Agents.
+    #>
+    param(
+        $Machines,
+        [int]$OfferableCount = 0
+    )
+    if ($OfferableCount -lt 1) { return @() }
+    $alerts = New-Object System.Collections.Generic.List[string]
+    $entries = @()
+    if ($null -eq $Machines) { return @() }
+    if ($Machines -is [System.Collections.IDictionary]) {
+        foreach ($k in @($Machines.Keys)) {
+            $entries += [pscustomobject]@{ id = [string]$k; ent = $Machines[$k] }
+        }
+    } elseif ($Machines.PSObject -and $Machines.PSObject.Properties) {
+        $looksLikeTiles = $false
+        foreach ($p in @($Machines.PSObject.Properties)) {
+            $v = $p.Value
+            $vNames = @()
+            try { if ($v) { $vNames = @($v.PSObject.Properties.Name) } } catch { $vNames = @() }
+            if ($v -and ($vNames -contains 'online' -or $vNames -contains 'workers' -or $vNames -contains 'worker_list')) {
+                $entries += [pscustomobject]@{ id = [string]$p.Name; ent = $v }
+            } else {
+                $looksLikeTiles = $true
+            }
+        }
+        if ($entries.Count -eq 0 -and $looksLikeTiles) {
+            foreach ($m in @($Machines)) {
+                if (-not $m) { continue }
+                $entries += [pscustomobject]@{ id = [string]$m.id; ent = $m }
+            }
+        }
+    } else {
+        foreach ($m in @($Machines)) {
+            if (-not $m) { continue }
+            $mid = $null
+            try { $mid = [string]$m.id } catch { $mid = $null }
+            if (-not $mid) { try { $mid = [string]$m.machine } catch { $mid = $null } }
+            $entries += [pscustomobject]@{ id = $mid; ent = $m }
+        }
+    }
+    foreach ($row in $entries) {
+        $mid = [string]$row.id
+        $ent = $row.ent
+        if (-not $mid -or -not $ent) { continue }
+        $online = $false
+        $entNames = @()
+        try { $entNames = @($ent.PSObject.Properties.Name) } catch { $entNames = @() }
+        try {
+            if ($entNames -contains 'online' -and $null -ne $ent.online) { $online = [bool]$ent.online }
+            elseif ($entNames -contains 'reach') {
+                $online = ([string]$ent.reach -match '(?i)online|up|ok')
+            }
+        } catch { $online = $false }
+        if (-not $online) { continue }
+        $count = $null
+        if ($entNames -contains 'workers' -and ($ent.workers -is [System.Collections.IList] -or ($ent.workers -is [System.Array]))) {
+            try { $count = @($ent.workers).Count } catch { $count = $null }
+        }
+        if ($null -eq $count -and $entNames -contains 'worker_lines') {
+            try { $count = @($ent.worker_lines | Where-Object { $_ }).Count } catch { $count = $null }
+        }
+        if ($null -eq $count) { $count = Get-BobTrayDigestMachineWorkerCount -Ent $ent }
+        if ($null -eq $count -or [int]$count -gt 0) { continue }
+        [void]$alerts.Add((
+            'ACTION_REQUIRED: online_zero_workers machine={0} offerable={1} start seats via TipForm Agents (FR #9462 / #3180)' -f $mid, $OfferableCount
+        ))
+    }
+    return @($alerts.ToArray())
+}
+
+function Format-BobTrayOnlineZeroCaption {
+    <#
+    FR #9462: TipForm / Status caption naming empty online machines while work is offerable.
+    #>
+    param(
+        $Machines,
+        [int]$OfferableCount = 0
+    )
+    $alerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $Machines -OfferableCount $OfferableCount)
+    if ($alerts.Count -lt 1) { return $null }
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach ($a in $alerts) {
+        if ($a -match 'machine=([^\s]+)') { [void]$ids.Add($Matches[1]) }
+    }
+    if ($ids.Count -lt 1) { return $null }
+    return ('online_zero_workers={0} offerable={1} - TipForm Agents (no auto-start)' -f (($ids | Select-Object -Unique) -join ','), $OfferableCount)
+}
+
 function Get-BobTrayAgentSeatUnionCount {
     <#
     MRB #8445 / FR #3181 / FR #4458: same agent-seat union CapRefusal uses
