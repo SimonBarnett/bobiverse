@@ -56,3 +56,17 @@ def test_fr9264_docs_mention_about_opencode_keys():
     assert "9264" in text
     assert "OpenCode keys" in text
     assert "About" in text
+
+
+def test_fr9264_bobtray_cs_utf8_no_bom():
+    """Edited BobTray.cs must stay UTF-8 without BOM (MRB encoding check)."""
+    raw = TRAY.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "BobTray.cs must not start with UTF-8 BOM"
+
+
+def test_fr9264_watch_set_key_helper_resolves_from_tray_root():
+    """Watch About Set key must look under bob/scripts when RepoRoot is bob/tray."""
+    text = _read(WATCH)
+    fn = text[text.index("function Show-BobTrayAbout") : text.index("function Close-BobTrayDialogs")]
+    assert "helperCandidates" in fn
+    assert r"..\scripts\Write-BobOpencodeGoApiKey.ps1" in fn

@@ -3269,12 +3269,22 @@ function Show-BobTrayAbout {
                 $cms = New-Object System.Windows.Forms.ContextMenuStrip
                 $set = $cms.Items.Add('Set key...')
                 $set.Add_Click({
-                    $helper = Join-Path $RepoRoot 'bob\scripts\Write-BobOpencodeGoApiKey.ps1'
-                    if (-not (Test-Path -LiteralPath $helper)) { $helper = Join-Path $RepoRoot 'scripts\Write-BobOpencodeGoApiKey.ps1' }
-                    if (Test-Path -LiteralPath $helper) {
+                    # $RepoRoot defaults to bob/tray (parent of tools); helper lives at bob/scripts or install scripts/.
+                    $helperCandidates = @(
+                        (Join-Path $RepoRoot '..\scripts\Write-BobOpencodeGoApiKey.ps1'),
+                        (Join-Path $RepoRoot 'scripts\Write-BobOpencodeGoApiKey.ps1'),
+                        (Join-Path $RepoRoot 'bob\scripts\Write-BobOpencodeGoApiKey.ps1')
+                    )
+                    $helper = $null
+                    foreach ($cand in $helperCandidates) {
+                        $full = [IO.Path]::GetFullPath($cand)
+                        if (Test-Path -LiteralPath $full) { $helper = $full; break }
+                    }
+                    if ($helper) {
                         # Quote -File path for spaces (Windows PowerShell 5.1 Start-Process ArgumentList).
                         $fileArg = '"{0}"' -f $helper
-                        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $fileArg) -Wait
+                        # Do not -Wait: keep About/tray UI responsive while the key prompt runs.
+                        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $fileArg)
                     } else {
                         [System.Windows.Forms.MessageBox]::Show('Write-BobOpencodeGoApiKey.ps1 not found.', 'OpenCode keys')
                     }
@@ -3291,8 +3301,15 @@ function Show-BobTrayAbout {
                         $capture = $lab
                         $mi.Add_Click({
                             if (-not (Test-Path -LiteralPath $keysDir)) { New-Item -ItemType Directory -Path $keysDir -Force | Out-Null }
-                            Set-Content -LiteralPath (Join-Path $keysDir 'selected.txt') -Value $capture -Encoding ASCII
-                            [System.Windows.Forms.MessageBox]::Show(('Selected OpenCode key ''{0}''.' -f $capture), 'OpenCode keys')
+                            try {
+                                Set-Content -LiteralPath (Join-Path $keysDir 'selected.txt') -Value $capture -Encoding ASCII -ErrorAction Stop
+                                [System.Windows.Forms.MessageBox]::Show(('Selected OpenCode key ''{0}''.' -f $capture), 'OpenCode keys')
+                            } catch {
+                                [System.Windows.Forms.MessageBox]::Show(
+                                    ('Could not select OpenCode key ''{0}'': {1}' -f $capture, $_.Exception.Message),
+                                    'OpenCode keys'
+                                )
+                            }
                         }.GetNewClosure())
                     }
                 }
