@@ -58,6 +58,7 @@ def test_fr6587_bobircd_stopped_automatic_is_finding(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "_service_start_type", fake_start)
     monkeypatch.setattr(health, "_port_listening", lambda *a, **k: True)
     monkeypatch.setattr(health, "_scheduled_task_state", lambda *_: "missing")
+    monkeypatch.setattr(health, "non_chair_overlay", lambda *a, **k: None)
 
     payload, code = health.check(_args(tmp_path))
     assert code == health.EXIT_FINDING
@@ -79,6 +80,7 @@ def test_fr6587_ircjeeves_stopped_still_finding(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "_service_start_type", fake_start)
     monkeypatch.setattr(health, "_port_listening", lambda *a, **k: True)
     monkeypatch.setattr(health, "_scheduled_task_state", lambda *_: "missing")
+    monkeypatch.setattr(health, "non_chair_overlay", lambda *a, **k: None)
 
     payload, code = health.check(_args(tmp_path))
     assert code == health.EXIT_FINDING
