@@ -3865,6 +3865,111 @@ function Initialize-BobTrayTipForm {
 
 Initialize-BobTrayTipForm
 
+function Get-BobTrayScreenWorkingAreas {
+    # FR #9178: all Screen.WorkingArea rects for TipOnScreenCheck / MenuBounds.
+    $areas = @()
+    try {
+        foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
+            $wa = $s.WorkingArea
+            $areas += [pscustomobject]@{
+                X      = [int]$wa.X
+                Y      = [int]$wa.Y
+                Width  = [int]$wa.Width
+                Height = [int]$wa.Height
+                Right  = [int]($wa.X + $wa.Width)
+                Bottom = [int]($wa.Y + $wa.Height)
+            }
+        }
+    }
+    catch { }
+    return $areas
+}
+
+function Write-BobTrayUiDiag {
+    <#
+      FR #9178: screens / cursor / iconRect / tip / menu bounds for off-screen diagnosis.
+    #>
+    param([string]$Site = 'UiDiag')
+    try {
+        $pt = [System.Windows.Forms.Cursor]::Position
+        $screens = @()
+        foreach ($a in @(Get-BobTrayScreenWorkingAreas)) {
+            $screens += ('{0},{1} {2}x{3}' -f $a.X, $a.Y, $a.Width, $a.Height)
+        }
+        $icon = $script:iconRectCache
+        $iconS = if ($icon) {
+            ('{0},{1} {2}x{3}' -f [int]$icon.X, [int]$icon.Y, [int]$icon.Width, [int]$icon.Height)
+        }
+        else { 'null' }
+        $tipS = 'none'
+        try {
+            if ($script:tip -and -not $script:tip.IsDisposed) {
+                $hwnd = if ($script:tip.IsHandleCreated) { $script:tip.Handle } else { 0 }
+                $tipS = ('hwnd={0} vis={1} loc={2},{3} size={4}x{5}' -f $hwnd, [bool]$script:tip.Visible, $script:tip.Left, $script:tip.Top, $script:tip.Width, $script:tip.Height)
+            }
+        }
+        catch { $tipS = 'err' }
+        $menuS = 'none'
+        try {
+            if ($menu) {
+                $b = $menu.Bounds
+                $menuS = ('vis={0} bounds={1},{2} {3}x{4}' -f [bool]$menu.Visible, $b.X, $b.Y, $b.Width, $b.Height)
+            }
+        }
+        catch { $menuS = 'err' }
+        Write-TrayLog ("UiDiag site=$Site cursor=$($pt.X),$($pt.Y) screens=[$($screens -join '; ')] iconRect=$iconS tip=$tipS menu=$menuS")
+    }
+    catch {
+        Write-TrayLog ("UiDiag site=$Site error: " + $_.Exception.Message)
+    }
+}
+
+function Test-BobTrayTipOnScreen {
+    # FR #9178 TipOnScreenCheck: tip bounds must intersect some WorkingArea.
+    param($TipForm = $script:tip)
+    try {
+        if (-not $TipForm -or $TipForm.IsDisposed) { return $false }
+        $rect = [pscustomobject]@{
+            X = [int]$TipForm.Left; Y = [int]$TipForm.Top
+            Width = [int]$TipForm.Width; Height = [int]$TipForm.Height
+        }
+        if (Get-Command Test-BobTrayRectIntersectsAny -ErrorAction SilentlyContinue) {
+            return [bool](Test-BobTrayRectIntersectsAny -Rect $rect -Areas (Get-BobTrayScreenWorkingAreas))
+        }
+        $pt = New-Object System.Drawing.Point ([int]$TipForm.Left), ([int]$TipForm.Top)
+        $work = [System.Windows.Forms.Screen]::FromPoint($pt).WorkingArea
+        return ($TipForm.Left -lt ($work.Right - 8) -and ($TipForm.Left + $TipForm.Width) -gt ($work.Left + 8) `
+            -and $TipForm.Top -lt ($work.Bottom - 8) -and ($TipForm.Top + $TipForm.Height) -gt ($work.Top + 8))
+    }
+    catch { return $false }
+}
+
+function Move-BobTrayTipToCursor {
+    # FR #9178 TipRelocateCursor when TipOnScreenCheck fails after ShowParkedAt.
+    param([string]$Reason = 'TipRelocateCursor')
+    try {
+        if (-not (Test-BobTrayTipAlive)) { return $false }
+        $pt = [System.Windows.Forms.Cursor]::Position
+        $work = [System.Windows.Forms.Screen]::FromPoint($pt).WorkingArea
+        $place = $null
+        if (Get-Command Get-BobTrayCursorTipPlacement -ErrorAction SilentlyContinue) {
+            $place = Get-BobTrayCursorTipPlacement -TipWidth $script:tip.Width -TipHeight $script:tip.Height `
+                -Cursor $pt -WorkArea $work
+        }
+        else {
+            $place = Get-BobTrayTipPlacement -TipWidth $script:tip.Width -TipHeight $script:tip.Height `
+                -IconRect $null -Cursor $pt -WorkArea $work -AlreadyVisible $false
+        }
+        Write-TrayLog ("TipRelocateCursor reason=$Reason to=$($place.x),$($place.y) src=$($place.source)")
+        [void]$script:tip.ShowParkedAt([int]$place.x, [int]$place.y)
+        return $true
+    }
+    catch {
+        Write-TrayLog ("TipRelocateCursor error: " + $_.Exception.Message)
+        return $false
+    }
+}
+
 function Show-BobTrayCard {
     param([string]$Reason = 'click')
     try {
@@ -3892,8 +3997,12 @@ function Show-BobTrayCard {
             $iconRect = $script:iconRectCache
             $pt = [System.Windows.Forms.Cursor]::Position
             $work = [System.Windows.Forms.Screen]::FromPoint($pt).WorkingArea
+            $screenAreas = @(Get-BobTrayScreenWorkingAreas)
+            # FR #9178 TipPlace: pass all screens so stale iconRect is dropped.
             $place = Get-BobTrayTipPlacement -TipWidth $script:tip.Width -TipHeight $script:tip.Height `
-                -IconRect $iconRect -Cursor $pt -WorkArea $work -AlreadyVisible $false
+                -IconRect $iconRect -Cursor $pt -WorkArea $work -AlreadyVisible $false `
+                -ScreenAreas $screenAreas
+            Write-TrayLog ("TipPlace src=$($place.source) xy=$($place.x),$($place.y) tip=$($script:tip.Width)x$($script:tip.Height)")
             $script:tip.Location = New-Object System.Drawing.Point ([int]$place.x), ([int]$place.y)
             $shown = $false
             try {
@@ -3912,6 +4021,11 @@ function Show-BobTrayCard {
                     return
                 }
             }
+            # FR #9178 TipOnScreenCheck / TipRelocateCursor after show.
+            if ((Test-BobTrayTipVisible) -and -not (Test-BobTrayTipOnScreen)) {
+                Write-TrayLog 'TipOnScreenCheck fail; TipRelocateCursor'
+                [void](Move-BobTrayTipToCursor -Reason 'TipOnScreenCheck')
+            }
             # Do not call Form.Show() after ShowParkedAt - that is a second dialog.
             if (-not (Test-BobTrayTipVisible)) {
                 $handle = $false
@@ -3926,6 +4040,7 @@ function Show-BobTrayCard {
             else {
                 Write-TrayLog ("tip show ok reason=$Reason src=$($place.source) loc=$($script:tip.Left),$($script:tip.Top) size=$($script:tip.Width)x$($script:tip.Height)")
             }
+            try { Write-BobTrayUiDiag -Site 'after-tip-show' } catch { }
         }
     }
     catch {
@@ -4293,6 +4408,33 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
+# FR #9178: UiDiag + MenuForceShowAtCursor when strip bounds miss every WorkingArea.
+$menu.Add_Opening({
+        try { Write-BobTrayUiDiag -Site 'MenuOpening' } catch { }
+    })
+$menu.Add_Opened({
+        try {
+            Write-BobTrayUiDiag -Site 'MenuOpened'
+            $b = $menu.Bounds
+            $onScreen = $true
+            if (Get-Command Test-BobTrayRectIntersectsAny -ErrorAction SilentlyContinue) {
+                $onScreen = [bool](Test-BobTrayRectIntersectsAny -Rect $b -Areas (Get-BobTrayScreenWorkingAreas))
+            }
+            if (-not $onScreen) {
+                $pt = [System.Windows.Forms.Cursor]::Position
+                Write-TrayLog ("MenuForceShowAtCursor from bounds={0},{1} {2}x{3} to={4},{5}" -f $b.X, $b.Y, $b.Width, $b.Height, $pt.X, $pt.Y)
+                $menu.Show($pt)
+                try { Write-BobTrayUiDiag -Site 'MenuForceShowAtCursor' } catch { }
+            }
+            else {
+                Write-TrayLog ("MenuBounds ok={0},{1} {2}x{3}" -f $b.X, $b.Y, $b.Width, $b.Height)
+            }
+        }
+        catch {
+            Write-TrayLog ('MenuOpened UiDiag: ' + $_.Exception.Message)
+        }
+    })
+
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
@@ -4370,6 +4512,12 @@ $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath 
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({ Invoke-BobTrayExit })
+$notify.Add_MouseDown({
+        param($s, $e)
+        # FR #9178: refresh iconRect + UiDiag on click (stale rect after explorer recycle).
+        try { $script:iconRectCache = Get-BobNotifyIconRect $notify } catch { }
+        try { Write-BobTrayUiDiag -Site ('MouseDown-' + [string]$e.Button) } catch { }
+    })
 $notify.Add_MouseClick({
         param($s, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
