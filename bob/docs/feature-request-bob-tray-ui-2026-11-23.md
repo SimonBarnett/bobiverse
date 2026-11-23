@@ -10,7 +10,7 @@
 
 ## Objective
 
-Restructure the Bob TipForm systray menu (remove Seats/Open log/Automatic; Exit submenu; OpenCode Free|Paid; OpenCode keys on About), fix broken Agents/Workers icons (Cursor OK), flatten Priority, Jeeves butler from bob.ntsa.uk, make Plan/Priority clicks start seats, and add Weights Refresh models via POST /bob/v1/models/refresh.
+Restructure the Bob TipForm systray menu (remove Seats/Open log/Automatic; Exit submenu; OpenCode Free|Paid; OpenCode keys on About), fix broken Agents/Workers icons (Cursor OK), flatten Priority, Jeeves butler from bob.ntsa.uk, make Plan/Priority clicks start seats, and add Weights Refresh models (client discovers local CLI catalogs, POSTs to webhook, rebinds dropdowns; Ergo does not run CLIs).
 
 LOCKED
 
@@ -22,7 +22,7 @@ Theme contract — delivered by child FRs:
 |----|--------|--------|--------------|-----------|
 | T1 | Menu IA | Target menu tree in plan (no Seats/Open log/Automatic top; Exit submenu; OpenCode Free and Paid) | TipForm menu inventory test in `tests/` + `BobTray.cs` ContextMenuStrip walk | Old top items remain |
 | T2 | Icons | Non-Cursor icons display; Priority=priority-mcp release; Jeeves=butler from bob.ntsa.uk | `Test-Path` on tray asset files under install dir + visual check | Broken/missing icons (except documented offline fallback) |
-| T3 | Weights refresh | Refresh models updates dropdown catalogs from webhook | Click Refresh; `BobModelsClient` posts `/bob/v1/models/refresh` then GET rebinds combos | No refresh button or Validate POST returns |
+| T3 | Weights refresh | Refresh discovers local models, POSTs catalog to webhook, rebinds dropdowns | Click Refresh; `BobModelsClient` posts client-built `clis` then GET rebinds combos | No refresh button, chair runs CLIs, or Validate POST returns |
 
 LOCKED
 

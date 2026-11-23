@@ -10,7 +10,7 @@
 
 ## Objective
 
-Deliver exactly one acceptance slice: Weights form Refresh models calls POST /bob/v1/models/refresh then GET and rebinds Model/Context/Effort dropdowns from clis. No validate POST.
+Deliver exactly one acceptance slice: Weights form **Refresh models** discovers available models on this machine via the local CLI APIs (Grok / Cursor / OpenCode), **POSTs that catalog to the models webhook**, then GETs and rebinds Model/Context/Effort dropdowns. The tray/Weights client owns discovery and POST; Ergo/chair does not run CLIs (no tokens on the DC). No validate POST. Supersedes Bob-ear catalogue reporting (#9250 closed not-planned).
 
 LOCKED
 
@@ -18,7 +18,7 @@ LOCKED
 
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
-| S1 | Refresh rebinds | Button posts refresh, GET updates lastClis and combo options | Click Refresh after catalog change; inspect dropdown options / client unit test | No button, or Validate POST used, or dropdowns stale |
+| S1 | Client posts catalog then rebinds | Refresh runs local model listing APIs, POSTs discovered `clis` to `/bob/v1/models` (or documented refresh route that accepts client-supplied catalog), then GET updates lastClis and combo options | Click Refresh; network/trace shows client→webhook POST body with models; dropdown options match POST; `BobModelsClient` unit test | No button; chair/Ergo shells CLIs; Validate POST used; dropdowns stale; Bob ear is the publisher |
 
 LOCKED
 
@@ -34,20 +34,22 @@ LOCKED
 
 Default: existing bobiverse tray (.NET WinForms TipForm + PowerShell fallback). Prefer TipForm first; keep PS menu inventory in sync.
 
-Why: TipForm is the live ContextMenuStrip with Seats/OpenCode keys/Exit siblings.
+Why: TipForm/WeightsForm runs on fleet seats that already have signed-in CLIs; Ergo (walrus) does not.
 
-Why-not: new tray host; restore Validate POST on Weights.
+Why-not: chair-side CLI refresh; Bob-ear periodic catalogue push (#9250); restore Validate POST on Weights.
 
 LOCKED
 
 ## Architecture
 
 `
-TipForm ContextMenuStrip / About / WeightsForm
-  -> BOB-TRAY-UI-06 change only (see Objective)
-PS Watch-BobTray.ps1 mirrors menu inventory where it still builds a strip
+WeightsForm Refresh models
+  -> local CLI model APIs (this machine)
+  -> POST catalog to models webhook (bob.ntsa.uk /bob/v1/models…)
+  -> GET /bob/v1/models
+  -> rebind Model/Context/Effort combos
+Ergo/chair: store/merge only — never spawn grok/cursor/opencode
 `
-
 LOCKED
 
 ## Screens
@@ -60,19 +62,21 @@ LOCKED
 
 ## Gap
 
-WeightsForm has Save/Close only; BobModelsClient has Get/Save.
+WeightsForm has Save/Close only; BobModelsClient has Get/Save. Live `POST /bob/v1/models/refresh` still assumes chair-side CLI listing (#8820 era), which fails on walrus (`not_installed`). #9250 proposed Bob ear as publisher — replaced by this Weights button path.
 
 ## Out of scope
 
 - Other BOB-TRAY-UI children except documented Depends-on
 - seat_target semantics; Automatic engine fill policy
 - POST /bob/v1/models/validate
+- Bob-ear periodic or on-demand catalogue reporting (#9250)
 
 ## LOCKED
 
 - One acceptance row only
 - Park-only until digest unhold
+- Client posts available models; Ergo does not discover them
 
 ## UNKNOWN
 
-- Exact bob.ntsa.uk butler asset URL path (discover at implement for UI-09)
+- Exact POST body shape vs existing refresh route (extend refresh to accept client catalog, or PUT `clis` — pick in implement PR and document)
