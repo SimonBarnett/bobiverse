@@ -416,3 +416,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR #9411: BORED_GITHUB_CALL_BUDGET=0 must not skip CLOSED live check --- use unbudgeted depends_issue_open_checker for FR closed (same as Depends-on #8754); ops-monitor MONITORING/GateIssues body cues are skip_fr and purge from unaccepted
 - After sticky-offer MRB lands, feed idle seats with ungated tray FRs (!assign); never assign hold-labeled #9403 or cast-iron UAT.
 - When an open FR PR is hundreds of commits behind and misses the live click surface (compiled BobTray StartPriorityExe), supersede it with a fresh origin/main tip that gates the real Start path; mirror the nearest sibling gate (Plan BOB-46 fuel file) for Priority.
+- On redqueen J:\, Invoke-JeevesMonitorCheck Sync pre-step can hang; run tools/monitor/*.py directly and comment #9350 instead of refiling.
