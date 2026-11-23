@@ -1,4 +1,4 @@
-﻿# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
+# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
 # Title is Bob Fleet. Primary bar is weekly remaining (CLI billing log).
 # Job list: every registered fleet machine (bundled registry + local store +
 # read-only filesystem peer peek). Fail closed: unreachable / lastSeen stale.
@@ -3254,7 +3254,7 @@ function Show-BobTrayAbout {
         $logs.Location = New-Object System.Drawing.Point 350, 398
         $logs.Size = New-Object System.Drawing.Size 100, 23
         $logs.Add_Click({
-            # FR #8677 / BOB-09: same tray log as menu Open log
+            # FR #8677 / BOB-09 / FR #9261: tray watch log (top-level Open log removed)
             if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
         })
         # FR #9264 / BOB-TRAY-UI-04: OpenCode keys on About (TipForm is primary; PS fallback mirrors the button).
@@ -3264,6 +3264,7 @@ function Show-BobTrayAbout {
         $keys.Location = New-Object System.Drawing.Point 230, 398
         $keys.Size = New-Object System.Drawing.Size 110, 23
         $keys.Add_Click({
+            param($sender, $e)
             try {
                 $cms = New-Object System.Windows.Forms.ContextMenuStrip
                 $set = $cms.Items.Add('Set key...')
@@ -3271,11 +3272,13 @@ function Show-BobTrayAbout {
                     $helper = Join-Path $RepoRoot 'bob\scripts\Write-BobOpencodeGoApiKey.ps1'
                     if (-not (Test-Path -LiteralPath $helper)) { $helper = Join-Path $RepoRoot 'scripts\Write-BobOpencodeGoApiKey.ps1' }
                     if (Test-Path -LiteralPath $helper) {
-                        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $helper) -Wait
+                        # Quote -File path for spaces (Windows PowerShell 5.1 Start-Process ArgumentList).
+                        $fileArg = '"{0}"' -f $helper
+                        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $fileArg) -Wait
                     } else {
                         [System.Windows.Forms.MessageBox]::Show('Write-BobOpencodeGoApiKey.ps1 not found.', 'OpenCode keys')
                     }
-                })
+                }.GetNewClosure())
                 $keysDir = Join-Path $RepoRoot 'config\opencode-keys'
                 $selected = ''
                 $selFile = Join-Path $keysDir 'selected.txt'
@@ -3312,13 +3315,26 @@ function Show-BobTrayAbout {
                         $dr = [System.Windows.Forms.MessageBox]::Show(('Remove OpenCode key ''{0}''?' -f $pick), 'OpenCode keys', 'OKCancel', 'Warning')
                         if ($dr -ne 'OK') { return }
                     }
-                    Remove-Item -LiteralPath (Join-Path $keysDir ($pick + '.apikey')) -Force -ErrorAction SilentlyContinue
-                    if ($selected -eq $pick) { Remove-Item -LiteralPath $selFile -Force -ErrorAction SilentlyContinue }
-                    [System.Windows.Forms.MessageBox]::Show(('Removed OpenCode key ''{0}''.' -f $pick), 'OpenCode keys')
-                })
-                $cms.Show($keys, (New-Object System.Drawing.Point 0, $keys.Height))
-            } catch { }
-        })
+                    try {
+                        Remove-Item -LiteralPath (Join-Path $keysDir ($pick + '.apikey')) -Force -ErrorAction Stop
+                        if ($selected -eq $pick) {
+                            Remove-Item -LiteralPath $selFile -Force -ErrorAction SilentlyContinue
+                        }
+                        [System.Windows.Forms.MessageBox]::Show(('Removed OpenCode key ''{0}''.' -f $pick), 'OpenCode keys')
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            ('Could not remove OpenCode key ''{0}'': {1}' -f $pick, $_.Exception.Message),
+                            'OpenCode keys'
+                        )
+                    }
+                }.GetNewClosure())
+                # Use click sender so the menu still anchors after Show-BobTrayAbout returns.
+                $anchor = if ($sender) { $sender } else { $keys }
+                $cms.Show($anchor, (New-Object System.Drawing.Point 0, $anchor.Height))
+            } catch {
+                Write-TrayLog ('about opencode keys menu error: ' + $_.Exception.Message)
+            }
+        }.GetNewClosure())
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
@@ -4402,8 +4418,9 @@ function Show-BobTrayCard {
 
 function Get-BobTrayWorkerAgentChoices {
     <#
-      Agents submenu rows from bob-worker.exe --list-agents.
-      Automatic stays available. Explicit rows come only from that JSON.
+      Workers submenu rows from bob-worker.exe --list-agents.
+      FR #9262 / BOB-TRAY-UI-02: no Automatic/auto row; Grok/Cursor/Open Code only.
+      Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
       The child is killed at 8s. read_fuel can otherwise block for 90s.
     #>
@@ -4413,19 +4430,16 @@ function Get-BobTrayWorkerAgentChoices {
     # FR #6301: start entries carry no fuel/quota prose (empty reason).
     $unknownReason = ''
     $fallback = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
     $missing = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
     )
     $unknown = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
@@ -4483,9 +4497,13 @@ function Get-BobTrayWorkerAgentChoices {
                 $again.Count -eq 0 -or
                 ($nonAuto.Count -ge 3 -and $unknownFuel -ge 3)
             )
-            if (-not $refreshUnknown) { return @($again) }
+            if (-not $refreshUnknown) {
+                # FR #9262: never surface Automatic/auto in Workers menu rows.
+                return @($again | Where-Object { [string]$_.id -ne 'auto' })
+            }
         }
-        return @($obj.agents)
+        # FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu omits it.
+        return @($obj.agents | Where-Object { [string]$_.id -ne 'auto' })
     }
     catch {
         # Malformed JSON or a Start-Process throw on refresh must not replace
@@ -4531,6 +4549,8 @@ function Update-BobTrayWorkerAgentsMenu {
     $MenuItem.DropDownItems.Clear()
     foreach ($row in @($Rows)) {
         $id = [string]$row.id
+        # FR #9262 / BOB-TRAY-UI-02: skip Automatic/auto even if list-agents still emits it.
+        if ($id -eq 'auto') { continue }
         $label = [string]$row.label
         $reason = [string]$row.reason
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
@@ -4742,8 +4762,8 @@ if (Test-Path -LiteralPath $butler) {
 $miWorkers = New-Object System.Windows.Forms.ToolStripMenuItem('Workers')
 [void]$menu.Items.Add($miWorkers)
 # Do not call --list-agents here. Engine mode never shows this menu; a fuel read can take 90s.
+# FR #9262 / BOB-TRAY-UI-02: Workers seed has no Automatic/auto row.
 Update-BobTrayWorkerAgentsMenu $miWorkers @(
-    [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
     [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = '' }
@@ -4756,7 +4776,7 @@ $miWorkers.Add_DropDownOpening({
     })
 $miWeights = $menu.Items.Add('Weights')
 $miAbout = $menu.Items.Add('About')
-$miLog = $menu.Items.Add('Open log')
+# FR #9261 / BOB-TRAY-UI-01: no top-level Open log (About Show logs opens the tray log).
 [void]$menu.Items.Add('-')
 $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
@@ -4945,7 +4965,6 @@ $miAbout.Add_Click({
         Clear-Attention
         Show-BobTrayAbout
     })
-$miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({

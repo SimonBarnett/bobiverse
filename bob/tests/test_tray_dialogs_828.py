@@ -301,7 +301,7 @@ def test_status_window_draws_only_the_dashboard_no_hover_text_block():
 
 
 @needs_csc
-def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tmp_path):
+def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp_path):
     out = tmp_path / "menu.txt"
     _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
     items = out.read_text(encoding="utf-8").splitlines()
@@ -315,7 +315,6 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Configure MCP (mcp.ntsa.uk)",
         "Jeeves",
         "Workers",
-        "Automatic - Grok, then Cursor, then OpenCode",
         "Grok",
         "Cursor",
         "Start free model (opencode/deepseek-v4.1-flash-free) [default]",
@@ -323,14 +322,14 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Open Code",
         "Weights",
         "About",
-        "Seats: on",
-        "Open log",
         "-",
         "Restart",
         "Reload engine",
         "Exit",
     ]
-    # FR #9264: OpenCode keys moved to About (not top-level).
+    # FR #9261: no top-level Seats: / Open log. FR #9264: OpenCode keys on About only.
+    assert "Seats: on" not in items
+    assert "Open log" not in items
     assert "OpenCode keys" not in items
     assert "Set key..." not in items
     assert "Remove key..." not in items
