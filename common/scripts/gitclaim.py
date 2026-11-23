@@ -10619,6 +10619,11 @@ def review_blocked_for_author(
     fleets still allow same-machine siblings (FR #2604 / #4606 / #5900). MRB never
     inherits a dead author nick via ``nick_inherits_dead_seat`` (FR #4606).
 
+    **FR #9480:** when ``row_author_seats`` span **two or more** distinct machine
+    ids (e.g. implementer on redqueen + FIX on flamingo), machine-id sibling
+    block is skipped for that row (exact-seat only) so the chair does not stamp
+    ``no_eligible_reviewer`` forever.
+
     For **UAT**: also blocks a sibling on the same machine while another machine
     has a *viable free* live seat (FR #1407 / #2487), and a recycled sole
     successor of a dead author (FR #4336).
@@ -10658,7 +10663,9 @@ def review_blocked_for_author(
     for a in authors:
         ap = bobreport.parse_seat_nick(a)
         if ap:
-            author_mids_all.add(bobreport.fold_machine_id(ap[0]))
+            amid = bobreport.fold_machine_id(ap[0])
+            if amid:
+                author_mids_all.add(amid)
     mrb_exact_seat_only = task == "MRB" and len(author_mids_all) >= 2
 
     def _seat_gave_up_uat(n_c: str) -> bool:
@@ -10711,6 +10718,7 @@ def review_blocked_for_author(
         # free seat (unless authors already span 2+ machines — exact-seat only).
         # Sole-box fleets still allow siblings. Giveup inheritance stays in
         # nick_in_giveup_seats; FIX seats use exact nick stamp (FR #4604).
+        # FR #9480: multi-machine author_seats → exact-seat only (skip sibling).
         if task == "MRB":
             if mrb_exact_seat_only:
                 continue
@@ -13546,6 +13554,7 @@ def offer_top(
             pick_i = None
             i = 0
             live = live_seat_nicks(home)
+            free = free_seat_nicks(home, live)  # FR #9478 soft machine-id
             while i < len(doc.get("unaccepted") or []):
                 row = doc["unaccepted"][i]
                 if (
