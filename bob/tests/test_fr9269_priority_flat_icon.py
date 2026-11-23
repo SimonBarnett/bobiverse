@@ -31,14 +31,18 @@ def test_fr9269_tipform_flat_priority_no_submenu():
     assert "miPriority.DropDownItems" not in cs
     assert "miPriority.Click" in cs
     assert "StartPriorityExe()" in cs
-    # Icon from tray assets (install path then repo fallback), not vendor-only.
-    assert '"assets", "priority.ico"' in cs
-    assert 'bob", "tray", "assets", "priority.ico"' in cs
-    assert "vendor\\priority\\priority.ico" not in cs.split("ToolStripMenuItem miPriority", 1)[1].split("miAgents.DropDownItems.Add(miPriority)", 1)[0]
+    # Icon: vendor\\priority then ResolveTrayMenuIconPath (assets / bob\\tray\\assets).
+    pri = cs.split("ToolStripMenuItem miPriority", 1)[1].split(
+        "miAgents.DropDownItems.Add(miPriority)", 1
+    )[0]
+    assert 'Path.Combine(root, "vendor", "priority", "priority.ico")' in pri
+    assert 'ResolveTrayMenuIconPath(root, "priority.ico")' in pri
+    assert "9269" in pri
 
 
 def test_fr9269_ps_priority_icon_assets_path():
     ps = WATCH.read_text(encoding="utf-8-sig")
+    assert "vendor\\priority\\priority.ico" in ps
     assert "assets\\priority.ico" in ps
     assert "bob\\tray\\assets\\priority.ico" in ps
     assert "$miPriority.Add_Click({" in ps

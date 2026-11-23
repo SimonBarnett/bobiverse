@@ -3254,7 +3254,7 @@ function Show-BobTrayAbout {
         $logs.Location = New-Object System.Drawing.Point 350, 398
         $logs.Size = New-Object System.Drawing.Size 100, 23
         $logs.Add_Click({
-            # FR #8677 / BOB-09: same tray log as menu Open log
+            # FR #8677 / BOB-09 / FR #9261: tray watch log (top-level Open log removed)
             if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
         })
         $ok = New-Object System.Windows.Forms.Button
@@ -4340,8 +4340,9 @@ function Show-BobTrayCard {
 
 function Get-BobTrayWorkerAgentChoices {
     <#
-      Agents submenu rows from bob-worker.exe --list-agents.
-      Automatic stays available. Explicit rows come only from that JSON.
+      Workers submenu rows from bob-worker.exe --list-agents.
+      FR #9262 / BOB-TRAY-UI-02: no Automatic/auto row; Grok/Cursor/Open Code only.
+      Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
       The child is killed at 8s. read_fuel can otherwise block for 90s.
     #>
@@ -4351,19 +4352,16 @@ function Get-BobTrayWorkerAgentChoices {
     # FR #6301: start entries carry no fuel/quota prose (empty reason).
     $unknownReason = ''
     $fallback = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
     $missing = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
     )
     $unknown = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
@@ -4421,9 +4419,13 @@ function Get-BobTrayWorkerAgentChoices {
                 $again.Count -eq 0 -or
                 ($nonAuto.Count -ge 3 -and $unknownFuel -ge 3)
             )
-            if (-not $refreshUnknown) { return @($again) }
+            if (-not $refreshUnknown) {
+                # FR #9262: never surface Automatic/auto in Workers menu rows.
+                return @($again | Where-Object { [string]$_.id -ne 'auto' })
+            }
         }
-        return @($obj.agents)
+        # FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu omits it.
+        return @($obj.agents | Where-Object { [string]$_.id -ne 'auto' })
     }
     catch {
         # Malformed JSON or a Start-Process throw on refresh must not replace
@@ -4469,27 +4471,39 @@ function Update-BobTrayWorkerAgentsMenu {
     $MenuItem.DropDownItems.Clear()
     foreach ($row in @($Rows)) {
         $id = [string]$row.id
+        # FR #9262 / BOB-TRAY-UI-02: skip Automatic/auto even if list-agents still emits it.
+        if ($id -eq 'auto') { continue }
         $label = [string]$row.label
         $reason = [string]$row.reason
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
         if ($id -eq 'opencode') {
-            # FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
+            # FR #8728 / BOB-31 + FR #9267: install assets\ then bob\tray\assets\.
             $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
+            if (-not (Test-Path -LiteralPath $ocIcon)) {
+                $ocIcon = Join-Path $RepoRoot 'bob\tray\assets\opencode-favicon.ico'
+            }
             Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
             if (Test-Path -LiteralPath $ocIcon) {
                 try { $item.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
                 catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
+            } else {
+                Write-TrayLog ('menu-icon MISSING file=opencode-favicon.ico path=' + $ocIcon)
             }
         }
         if ($id -eq 'grok') {
-            # FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon.
+            # FR #8723 / BOB-19 + FR #9267: install assets\ then bob\tray\assets\.
             $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
+            if (-not (Test-Path -LiteralPath $grokIcon)) {
+                $grokIcon = Join-Path $RepoRoot 'bob\tray\assets\grok-favicon.ico'
+            }
             Write-TrayLog ('Workers Grok: favicon ' + $grokIcon)
             if (Test-Path -LiteralPath $grokIcon) {
                 try { $item.Image = (New-Object System.Drawing.Icon($grokIcon)).ToBitmap() }
                 catch { Write-TrayLog ('Workers Grok favicon failed: ' + $_.Exception.Message) }
+            } else {
+                Write-TrayLog ('menu-icon MISSING file=grok-favicon.ico path=' + $grokIcon)
             }
         }
         $available = $false
@@ -4650,32 +4664,45 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
-# FR #9269 / BOB-TRAY-UI-08 + BOB-54: priority-mcp launcher/priority.ico in tray assets (install assets/ first).
-$priorityIco = Join-Path $RepoRoot 'assets\priority.ico'
+# FR #9269 / BOB-TRAY-UI-08 + BOB-54 + FR #9267: vendor\priority then assets\priority.ico.
+$priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
+if (-not (Test-Path -LiteralPath $priorityIco)) {
+    $priorityIco = Join-Path $RepoRoot 'assets\priority.ico'
+}
 if (-not (Test-Path -LiteralPath $priorityIco)) {
     $priorityIco = Join-Path $RepoRoot 'bob\tray\assets\priority.ico'
 }
-Write-TrayLog ('priority-icon path=' + $priorityIco)
 if (Test-Path -LiteralPath $priorityIco) {
     try {
         $priorityIcon = New-Object System.Drawing.Icon $priorityIco, 16, 16
         $miPriority.Image = $priorityIcon.ToBitmap()
         $priorityIcon.Dispose()
+        Write-TrayLog ('priority-icon path=' + $priorityIco)
     }
     catch {
         Write-TrayLog ('priority-icon failed: ' + $_.Exception.Message)
     }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=priority.ico path=' + $priorityIco)
 }
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
-# BOB-40: Agents > Jeeves uses the existing butler icon.
+# BOB-40 + FR #9267: jeeves\assets, sibling install, then assets\jeeves-butler.ico.
 $butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
 if (-not (Test-Path -LiteralPath $butler)) {
     $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
 }
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path $RepoRoot 'assets\jeeves-butler.ico'
+}
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path $RepoRoot 'bob\tray\assets\jeeves-butler.ico'
+}
 if (Test-Path -LiteralPath $butler) {
     $ico = New-Object System.Drawing.Icon $butler
     $miJeeves.Image = $ico.ToBitmap()
-    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+    Write-TrayLog ('jeeves-icon path=' + $butler)
+} else {
+    Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + $butler)
 }
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
@@ -4683,8 +4710,8 @@ if (Test-Path -LiteralPath $butler) {
 $miWorkers = New-Object System.Windows.Forms.ToolStripMenuItem('Workers')
 [void]$menu.Items.Add($miWorkers)
 # Do not call --list-agents here. Engine mode never shows this menu; a fuel read can take 90s.
+# FR #9262 / BOB-TRAY-UI-02: Workers seed has no Automatic/auto row.
 Update-BobTrayWorkerAgentsMenu $miWorkers @(
-    [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
     [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = '' }
@@ -4697,7 +4724,7 @@ $miWorkers.Add_DropDownOpening({
     })
 $miWeights = $menu.Items.Add('Weights')
 $miAbout = $menu.Items.Add('About')
-$miLog = $menu.Items.Add('Open log')
+# FR #9261 / BOB-TRAY-UI-01: no top-level Open log (About Show logs opens the tray log).
 [void]$menu.Items.Add('-')
 $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
@@ -4796,6 +4823,8 @@ Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
 if (Test-Path -LiteralPath $planGantt) {
     try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
     catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
 }
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
@@ -4886,7 +4915,6 @@ $miAbout.Add_Click({
         Clear-Attention
         Show-BobTrayAbout
     })
-$miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({
