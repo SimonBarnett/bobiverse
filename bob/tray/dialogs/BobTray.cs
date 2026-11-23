@@ -2724,6 +2724,7 @@ namespace BobDialogs
                 return statusStale ? 2 : 0;
             }
             // FR #9280: headless status-writer watchdog eval (starting-stuck / status-vs-alive).
+            // Local name writerEvalReason avoids CS0136 with Main's process-exit `reason` below.
             if (Common.Flag(args, "--status-writer-eval"))
             {
                 string snap = Path.Combine(root, "run", "tray-status.json");
@@ -2733,13 +2734,13 @@ namespace BobDialogs
                 double ago;
                 if (startedArg.Length > 0 && double.TryParse(startedArg, out ago))
                     started = DateTime.UtcNow.AddSeconds(-ago);
-                string reason = TrayStatusWriterWatch.EvaluateReason(
+                string writerEvalReason = TrayStatusWriterWatch.EvaluateReason(
                     snap, alive, started, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
                 string tout = Common.Arg(args, "--text-out");
-                string body = "reason=" + (reason.Length > 0 ? reason : "ok") + "\r\n";
+                string body = "reason=" + (writerEvalReason.Length > 0 ? writerEvalReason : "ok") + "\r\n";
                 if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
                 else Console.Write(body);
-                return reason.Length > 0 ? 2 : 0;
+                return writerEvalReason.Length > 0 ? 2 : 0;
             }
             if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
