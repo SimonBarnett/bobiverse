@@ -31,6 +31,14 @@ Typical pattern (incident 2026-10-05):
 5. File **unpinned** follow-up FRs so marchhare/flamingo stay fed while pins wait for the right box.
 6. If pin machine has **zero** shop seats, start workers there (or clear/adjust the pin) — see monitor note `require_machine pins only; no seats on …`.
 
+## Depends-on held vs starved (FR #9374)
+
+Offer already skips FRs whose `Depends-on:` targets are still OPEN (or digest-gated). The stall / stuck sweep must match that gate:
+
+- Digest `stuck` lists them as **held** with rule `depends_on_open` (or `depends_held` / `depends_unresolved`).
+- They must **not** get `unaccepted_starved` or fire `stall:idle-with-work:queue`.
+- When every Depends-on target closes, normal starve / idle-with-work detection resumes.
+
 ## Undispatched lookalikes (FR #9347)
 
 Open MERGEABLE tips can look "never dispatched" for three distinct reasons:
