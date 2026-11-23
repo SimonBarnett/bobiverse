@@ -1,16 +1,22 @@
 """BOB-01 / FR #8707: fleet agent Weights rows (GET /bob/v1/models).
 
-Public JSON shape::
+Public GET JSON shape (FR #8819 nested + FR #8820 stale)::
 
-    {"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}, ...]}
+    {"clis":{"Grok":{"models":{...}},"Cursor":{"models":{...}},"Opencode":{"models":{...}}},
+     "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":"","stale":true?}, ...]}
+
+``clis`` nests model -> context -> efforts from digest-home
+``models-valid-combos.json`` (BOB-03/04 / FR #8819). Agent rows with a non-empty
+model absent from the refresh catalog in ``models-catalog.json`` ``clis``
+(lowercase keys, FR #8820) get response-only ``stale: true``.
+
+POST /bob/v1/models/refresh (FR #8820) rebuilds the lowercase ``clis`` node
+inside ``models-catalog.json`` (models list + ``refreshed_at``); it does not
+rewrite agent selections or ``models-valid-combos.json``.
 
 Rows match ``bob/docs/mocks/systray-agents-workers/weights.html``. Optional
-digest-home ``models-catalog.json`` overrides defaults (PUT/PATCH is BOB-02).
-
-BOB-03 / FR #8710: fail-closed valid ``(cli, model, context, effort)`` combinations
-live in a **separate** digest-home file ``models-valid-combos.json`` so BOB-02 PUT
-cannot wipe the allow-list. ``POST /bob/v1/models/validate`` rejects invalid combos
-with 4xx and never persists.
+digest-home ``models-catalog.json`` holds agents + refresh ``clis`` (PUT is
+BOB-02). There is no POST /models/validate (form-only).
 """
 from __future__ import annotations
 
@@ -28,9 +34,18 @@ MODELS_CATALOG_NAME = "models-catalog.json"
 MODELS_PATH = "/bob/v1/models"
 MODELS_VALID_COMBOS_NAME = "models-valid-combos.json"
 MODELS_VALIDATE_PATH = "/bob/v1/models/validate"
+MODELS_REFRESH_PATH = "/bob/v1/models/refresh"
 
 # Worker-launchable CLI keys (bob-worker --agent). Not the Weights display labels.
 VALID_CLI_KEYS = frozenset({"grok", "cursor", "opencode"})
+
+# GET /bob/v1/models public CLI keys (Weights / FR #8819). Map from VALID_CLI_KEYS.
+CLI_PUBLIC_KEYS: tuple[str, ...] = ("Grok", "Cursor", "Opencode")
+CLI_KEY_TO_PUBLIC: dict[str, str] = {
+    "grok": "Grok",
+    "cursor": "Cursor",
+    "opencode": "Opencode",
+}
 
 ERROR_UNKNOWN_CLI = "unknown_cli"
 ERROR_UNKNOWN_MODEL = "unknown_model"
@@ -39,6 +54,12 @@ ERROR_INVALID_EFFORT = "invalid_effort"
 ERROR_EFFORT_NOT_SUPPORTED = "effort_not_supported"
 ERROR_CATALOG_UNAVAILABLE = "catalog_unavailable"
 ERROR_MALFORMED = "malformed"
+ERROR_BUSY = "busy"
+
+
+class CatalogUnavailable(Exception):
+    """HTTP 503 when models-catalog.json is unreadable/malformed for writers."""
+
 
 # Agent / CLI pairs from Weights mock (BOB-01 placeholders for model/context/effort).
 _DEFAULT_ROWS: tuple[tuple[str, str], ...] = (
@@ -110,40 +131,286 @@ def _rows_from_payload(raw: Any) -> list[dict[str, str]]:
     return out
 
 
+def empty_catalog_document() -> dict[str, Any]:
+    """Missing-file baseline for writers (FR #8820). Agents filled by readers."""
+    return {"version": 1, "clis": {}}
+
+
+def load_catalog_document(home: Path | str, *, for_write: bool = False) -> dict[str, Any]:
+    """Load full models-catalog.json without dropping ``clis`` / extra keys.
+
+    Missing file → empty document (writers) or agents defaults via callers.
+    Unreadable / malformed → CatalogUnavailable when for_write, else empty doc
+    for read paths that fall back to defaults.
+    Legacy bare-array file → ``{"agents": [...]}``.
+    """
+    path = catalog_path(home)
+    if not path.is_file():
+        return empty_catalog_document()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        if for_write:
+            raise CatalogUnavailable("models-catalog unreadable") from exc
+        return empty_catalog_document()
+    if isinstance(raw, list):
+        return {"agents": raw}
+    if not isinstance(raw, dict):
+        if for_write:
+            raise CatalogUnavailable("models-catalog malformed")
+        return empty_catalog_document()
+    return raw
+
+
+def _normalize_cli_models_entry(raw: Any) -> dict[str, Any] | None:
+    """Minimal validate one CLI catalog entry for GET/refresh."""
+    if not isinstance(raw, dict):
+        return None
+    models_raw = raw.get("models")
+    models: list[dict[str, Any]] = []
+    if isinstance(models_raw, list):
+        seen: set[str] = set()
+        for item in models_raw:
+            if not isinstance(item, dict):
+                continue
+            model = str(item.get("model") or "").strip()
+            if not model or model in seen:
+                continue
+            contexts = item.get("contexts")
+            efforts = item.get("efforts")
+            if not isinstance(contexts, list):
+                contexts = []
+            if not isinstance(efforts, list):
+                efforts = []
+            ctx = [str(x).strip() for x in contexts if str(x).strip()]
+            eft = [str(x).strip() for x in efforts if str(x).strip()]
+            seen.add(model)
+            models.append({"model": model, "contexts": ctx, "efforts": eft})
+    refreshed_at = raw.get("refreshed_at")
+    if refreshed_at is not None:
+        refreshed_at = str(refreshed_at).strip() or None
+    return {"models": models, "refreshed_at": refreshed_at}
+
+
+def clis_public_from_document(doc: dict[str, Any] | None) -> dict[str, Any]:
+    """Public ``clis`` map (lowercase keys). Unknown/bad rows skipped."""
+    out: dict[str, Any] = {
+        k: {"models": [], "refreshed_at": None} for k in sorted(VALID_CLI_KEYS)
+    }
+    if not isinstance(doc, dict):
+        return out
+    raw = doc.get("clis")
+    if not isinstance(raw, dict):
+        return out
+    for key, entry_raw in raw.items():
+        cli = str(key or "").strip().lower()
+        if cli not in VALID_CLI_KEYS:
+            continue
+        entry = _normalize_cli_models_entry(entry_raw)
+        if entry is not None:
+            out[cli] = entry
+    return out
+
+
+def model_ids_for_cli(clis: dict[str, Any], cli: str) -> set[str]:
+    key = str(cli or "").strip().lower()
+    entry = clis.get(key) if isinstance(clis, dict) else None
+    if not isinstance(entry, dict):
+        return set()
+    models = entry.get("models")
+    if not isinstance(models, list):
+        return set()
+    return {
+        str(m.get("model") or "").strip()
+        for m in models
+        if isinstance(m, dict) and str(m.get("model") or "").strip()
+    }
+
+
+def agents_public_with_stale(
+    rows: Iterable[dict[str, str]],
+    clis: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Emit agent rows; add ``stale: true`` only when model missing from clis."""
+    agents: list[dict[str, Any]] = []
+    for row in rows:
+        public: dict[str, Any] = {k: str(row.get(k) or "") for k in _ROW_KEYS}
+        model = public["model"].strip()
+        if model:
+            ids = model_ids_for_cli(clis, public["cli"])
+            if ids and model not in ids:
+                public["stale"] = True
+        agents.append(public)
+    return agents
+
+
 def load_catalog_file(home: Path | str) -> list[dict[str, str]]:
     """Load agent rows from home file, or built-in defaults when missing/empty."""
-    path = catalog_path(home)
-    if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            raw = None
-        if raw is not None:
-            rows = _rows_from_payload(raw)
-            if rows:
-                return rows
+    doc = load_catalog_document(home, for_write=False)
+    rows = _rows_from_payload(doc)
+    if rows:
+        return rows
     return default_agent_rows()
 
 
-def catalog_to_public_doc(rows: Iterable[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
-    agents: list[dict[str, str]] = []
-    for row in rows:
-        agents.append({k: str(row.get(k) or "") for k in _ROW_KEYS})
-    return {"agents": agents}
+def catalog_to_public_doc(
+    rows: Iterable[dict[str, str]],
+    *,
+    clis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clis_doc = (
+        clis
+        if clis is not None
+        else {k: {"models": [], "refreshed_at": None} for k in sorted(VALID_CLI_KEYS)}
+    )
+    return {
+        "clis": clis_doc,
+        "agents": agents_public_with_stale(rows, clis_doc),
+    }
 
 
-def catalog_to_json(rows: Iterable[dict[str, str]]) -> bytes:
+def empty_clis_public_doc() -> dict[str, Any]:
+    """FR #8819: every known CLI present with ``models: {}`` (no invented names)."""
+    return {name: {"models": {}} for name in CLI_PUBLIC_KEYS}
+
+
+def valid_combos_to_clis_public(cat: "ValidCombosCatalog") -> dict[str, Any]:
+    """FR #8819 nested GET shape from BOB-03/04 allow-list.
+
+    ``clis[DisplayCli].models[model].contexts[context].efforts = [...]``.
+    Efforts are duplicated under each context (Cartesian product of the
+    stored per-model lists). Missing/unavailable catalog -> empty models.
+    """
+    out = empty_clis_public_doc()
+    if not cat or not cat.available:
+        return out
+    for cli_key, rows in (cat.clis or {}).items():
+        pub = CLI_KEY_TO_PUBLIC.get(str(cli_key or "").strip().lower())
+        if not pub:
+            continue
+        models: dict[str, Any] = {}
+        for row in rows or ():
+            model = str(row.model or "").strip()
+            if not model:
+                continue
+            efforts = [str(e) for e in (row.efforts or ())]
+            contexts: dict[str, Any] = {}
+            for ctx in row.contexts or ():
+                ctx_s = str(ctx or "").strip()
+                if not ctx_s:
+                    continue
+                contexts[ctx_s] = {"efforts": list(efforts)}
+            models[model] = {"contexts": contexts}
+        out[pub] = {"models": models}
+    return out
+
+
+def valid_combos_public_doc(cat: "ValidCombosCatalog") -> dict[str, list[dict[str, Any]]]:
+    """FR #8716 / BOB-14: flat allow-list rows (cli -> [{model,contexts,efforts}, ...]).
+
+    GET /bob/v1/models uses `valid_combos_to_clis_public` (FR #8819 nested Si shape).
+    Keep this serializer for Weights clients / tests that still consume the flat list.
+    """
+    if not cat or not cat.available:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cli, rows in (cat.clis or {}).items():
+        key = str(cli or "").strip().lower()
+        if not key:
+            continue
+        packed: list[dict[str, Any]] = []
+        for row in rows or ():
+            packed.append(
+                {
+                    "model": str(row.model or ""),
+                    "contexts": list(row.contexts or ()),
+                    "efforts": list(row.efforts or ()),
+                }
+            )
+        if packed:
+            out[key] = packed
+    return out
+
+
+def catalog_to_json(
+    rows: Iterable[dict[str, str]],
+    *,
+    clis: dict[str, Any] | None = None,
+    home: Path | str | None = None,
+) -> bytes:
+    """Serialize agents (+ optional clis).
+
+    When ``home`` is set and ``clis`` is omitted, emit FR #8819 nested ``clis``
+    from valid-combos plus FR #8820 stale markers from the refresh catalog.
+    """
+    if home is not None and clis is None:
+        doc = load_catalog_document(home, for_write=False)
+        clis_nested = valid_combos_to_clis_public(load_valid_combos(home))
+        agents = agents_public_with_stale(rows, clis_public_from_document(doc))
+        return json.dumps(
+            {"clis": clis_nested, "agents": agents},
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
     return json.dumps(
-        catalog_to_public_doc(rows),
+        catalog_to_public_doc(rows, clis=clis),
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode("utf-8")
 
 
 def handle_models_get(home: Path | str) -> tuple[int, bytes]:
-    """BobCallback GET /bob/v1/models → fleet agent rows JSON (never 404)."""
+    """BobCallback GET /bob/v1/models -> nested clis (FR #8819) + stale agents (FR #8820)."""
     rows = load_catalog_file(home)
-    return 200, catalog_to_json(rows)
+    return 200, catalog_to_json(rows, home=home)
+
+
+def save_catalog_document(home: Path | str, doc: dict[str, Any]) -> None:
+    """Atomic replace of models-catalog.json. Callers must hold models_catalog_lock."""
+    path = catalog_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(doc, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix="models-catalog.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        last_exc: Exception | None = None
+        for _attempt in range(8):
+            try:
+                os.replace(tmp_name, path)
+                last_exc = None
+                break
+            except OSError as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        if last_exc is not None:
+            raise last_exc
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+def mutate_catalog_document(
+    home: Path | str,
+    mutator: Any,
+) -> dict[str, Any]:
+    """Lock, reload, apply mutator(doc), save. Returns the saved document.
+
+    Every writer (refresh, future PUT/PATCH, seed) must use this path so
+    ``clis`` / ``agents`` / unknown keys are not dropped.
+    """
+    with models_catalog_lock(home):
+        doc = load_catalog_document(home, for_write=True)
+        if not isinstance(doc, dict):
+            raise CatalogUnavailable("models-catalog malformed")
+        mutator(doc)
+        save_catalog_document(home, doc)
+        return doc
 
 
 # --- BOB-03 / FR #8710: fail-closed valid combinations -------------------------
@@ -401,6 +668,7 @@ def handle_models_validate(
 MODELS_LOCK_NAME = "models-catalog.lock"
 MODELS_PUT_MAX_BYTES = 64 * 1024
 _KNOWN_AGENTS = frozenset(a for a, _cli in _DEFAULT_ROWS)
+_AGENT_CLI = {agent: cli for agent, cli in _DEFAULT_ROWS}
 _MODELS_THREAD_LOCK = threading.Lock()
 
 
@@ -453,6 +721,10 @@ def validate_put_agents(raw: Any) -> tuple[list[dict[str, str]] | None, str]:
             return None, why or "invalid agent row"
         if row["agent"] not in _KNOWN_AGENTS:
             return None, f"unknown agent {row['agent']}"
+        expected_cli = _AGENT_CLI.get(row["agent"])
+        if expected_cli is not None and row["cli"] != expected_cli:
+            # FR #8819: agent row cli is read-only (Weights binds dropdowns from clis[row.cli]).
+            return None, f"cli is read-only for {row['agent']}"
         if row["agent"] in seen:
             return None, f"duplicate agent {row['agent']}"
         if _row_secretish(row):
@@ -469,31 +741,27 @@ def validate_put_agents(raw: Any) -> tuple[list[dict[str, str]] | None, str]:
 
 
 def replace_catalog_file(home: Path | str, rows: list[dict[str, str]]) -> bool:
-    """Atomically replace models-catalog.json. Return True when content changed."""
+    """Atomically replace agent rows; preserve ``clis`` and unknown keys (FR #8820)."""
     path = catalog_path(home)
-    new_bytes = catalog_to_json(rows)
+    try:
+        doc = load_catalog_document(home, for_write=True)
+    except CatalogUnavailable:
+        doc = empty_catalog_document()
+    if not isinstance(doc, dict):
+        doc = empty_catalog_document()
     old_bytes = b""
     if path.is_file():
         try:
             old_bytes = path.read_bytes()
         except OSError:
             old_bytes = b""
+    doc["agents"] = rows
+    if "version" not in doc:
+        doc["version"] = 1
+    new_bytes = json.dumps(doc, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     if old_bytes == new_bytes:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix="models-catalog.", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(new_bytes)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
-        raise
+    save_catalog_document(home, doc)
     return True
 
 
@@ -530,5 +798,273 @@ def handle_models_put(body: bytes | str, home: Path | str) -> tuple[int, bytes]:
         return 500, b'{"error":"write failed"}'
     if changed:
         return 204, b""
-    return 200, catalog_to_json(rows)
+    return 200, catalog_to_json(rows, home=home)
 
+
+# --- BOB-04 / FR #8709: seed models-valid-combos.json from shipped seed ------------
+
+MODELS_VALID_COMBOS_SEED_NAME = "models-valid-combos.seed.json"
+
+
+def resolve_valid_combos_seed_path(
+    *,
+    env: dict | None = None,
+    file_path: str | Path | None = None,
+    meipass: str | Path | None = None,
+    install_root: str | Path | None = None,
+) -> Path | None:
+    """Locate shipped ``models-valid-combos.seed.json``.
+
+    Order: ``BOB_MODELS_VALID_COMBOS_SEED`` → ``<install>/defaults/`` →
+    source ``common/defaults/`` beside this module → PyInstaller ``_MEIPASS/defaults/``.
+    """
+    import sys
+
+    e = os.environ if env is None else env
+    explicit = (e.get("BOB_MODELS_VALID_COMBOS_SEED") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_file() else None
+
+    candidates: list[Path] = []
+    if install_root is not None and str(install_root).strip():
+        root = Path(str(install_root).strip())
+        candidates.append(root / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+        candidates.append(root / "jeeves" / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+    here = Path(__file__ if file_path is None else file_path).resolve().parent
+    # common/scripts -> common/defaults
+    candidates.append(here.parent / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+    # install root guess from source layout (repo root)
+    candidates.append(here.parent.parent / "common" / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+
+    mp = meipass
+    if mp is None:
+        mp = getattr(sys, "_MEIPASS", None)
+    if mp:
+        candidates.append(Path(mp) / "defaults" / MODELS_VALID_COMBOS_SEED_NAME)
+
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def load_seed_document(path: Path | str) -> dict[str, Any]:
+    """Load and strictly validate a seed file. Raises ValueError on bad rows."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(raw, dict):
+        raise ValueError("seed root must be an object")
+    clis_raw = raw.get("clis")
+    if not isinstance(clis_raw, dict) or not clis_raw:
+        raise ValueError("seed clis missing or empty")
+    cleaned: dict[str, list[dict[str, Any]]] = {}
+    for cli_key, rows_raw in clis_raw.items():
+        cli = str(cli_key or "").strip().lower()
+        if cli not in VALID_CLI_KEYS:
+            raise ValueError(f"seed unknown cli: {cli_key!r}")
+        if not isinstance(rows_raw, list) or not rows_raw:
+            raise ValueError(f"seed cli {cli} rows missing")
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in rows_raw:
+            row, why = validate_combo_row(item)
+            if row is None:
+                raise ValueError(f"seed cli {cli} invalid row: {why}")
+            if row.model in seen:
+                continue
+            seen.add(row.model)
+            rows.append(
+                {
+                    "model": row.model,
+                    "contexts": list(row.contexts),
+                    "efforts": list(row.efforts),
+                }
+            )
+        if not rows:
+            raise ValueError(f"seed cli {cli} produced no rows")
+        cleaned[cli] = rows
+    if set(cleaned) != VALID_CLI_KEYS:
+        missing = sorted(VALID_CLI_KEYS - set(cleaned))
+        raise ValueError(f"seed missing clis: {missing}")
+    version_raw = raw.get("version", 1)
+    try:
+        version = int(version_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("seed version must be int") from exc
+    out: dict[str, Any] = {"version": version, "clis": cleaned}
+    prov = raw.get("provenance")
+    if isinstance(prov, dict):
+        out["provenance"] = prov
+    return out
+
+
+def _combo_rows_to_payload(clis: dict[str, list[ModelComboRow]]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cli, rows in clis.items():
+        out[cli] = [
+            {"model": r.model, "contexts": list(r.contexts), "efforts": list(r.efforts)}
+            for r in rows
+        ]
+    return out
+
+
+def ensure_valid_combos_seeded(
+    home: Path | str,
+    *,
+    seed_path: Path | str | None = None,
+    env: dict | None = None,
+) -> dict[str, Any]:
+    """Create or merge digest-home ``models-valid-combos.json`` from the shipped seed.
+
+    - Missing store: write the full validated seed.
+    - Existing valid store: append missing seeded ``(cli, model)`` rows; never remove
+      or rewrite operator rows.
+    - Existing malformed/unreadable store: leave unchanged and return an error status.
+
+    Returns a small status dict for logs/tests (never raises on I/O merge paths).
+    """
+    home_p = Path(home)
+    dest = valid_combos_path(home_p)
+    status: dict[str, Any] = {
+        "ok": False,
+        "path": str(dest),
+        "action": "none",
+        "added": 0,
+        "error": "",
+    }
+    try:
+        seed_file = Path(seed_path) if seed_path is not None else resolve_valid_combos_seed_path(env=env)
+        if seed_file is None or not seed_file.is_file():
+            status["error"] = "seed_missing"
+            print("ERROR models-valid-combos seed file missing", flush=True)
+            return status
+        seed_doc = load_seed_document(seed_file)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        status["error"] = f"seed_invalid:{exc}"
+        print(f"ERROR models-valid-combos seed invalid err={exc}", flush=True)
+        return status
+
+    seed_clis: dict[str, list[ModelComboRow]] = {}
+    for cli, rows in seed_doc["clis"].items():
+        parsed: list[ModelComboRow] = []
+        for item in rows:
+            row, why = validate_combo_row(item)
+            if row is None:
+                status["error"] = f"seed_invalid:{cli}:{why}"
+                print(f"ERROR models-valid-combos seed row err={status['error']}", flush=True)
+                return status
+            parsed.append(row)
+        seed_clis[cli] = parsed
+
+    if not dest.is_file():
+        try:
+            home_p.mkdir(parents=True, exist_ok=True)
+            write_doc = {
+                "version": int(seed_doc.get("version") or 1),
+                "clis": _combo_rows_to_payload(seed_clis),
+            }
+            if isinstance(seed_doc.get("provenance"), dict):
+                write_doc["provenance"] = seed_doc["provenance"]
+            dest.write_text(
+                json.dumps(write_doc, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError as exc:
+            status["error"] = f"write_failed:{exc}"
+            print(f"ERROR models-valid-combos seed write err={exc}", flush=True)
+            return status
+        status["ok"] = True
+        status["action"] = "created"
+        status["added"] = sum(len(v) for v in seed_clis.values())
+        print(
+            f"INFO models-valid-combos seeded created path={dest} added={status['added']}",
+            flush=True,
+        )
+        return status
+
+    # Existing file: merge missing models only when current catalogue loads cleanly.
+    try:
+        raw_text = dest.read_text(encoding="utf-8-sig")
+        raw = json.loads(raw_text)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        status["error"] = f"store_malformed:{exc}"
+        print(
+            f"ERROR models-valid-combos store malformed; leaving unchanged path={dest} err={exc}",
+            flush=True,
+        )
+        return status
+
+    if not isinstance(raw, dict):
+        status["error"] = "store_malformed:root"
+        print(
+            f"ERROR models-valid-combos store malformed; leaving unchanged path={dest}",
+            flush=True,
+        )
+        return status
+
+    existing = load_valid_combos(home_p)
+    if not existing.available:
+        status["error"] = "store_unavailable"
+        print(
+            f"ERROR models-valid-combos store unavailable/empty; leaving unchanged path={dest}",
+            flush=True,
+        )
+        return status
+
+    merged_clis: dict[str, list[ModelComboRow]] = {
+        cli: list(rows) for cli, rows in existing.clis.items()
+    }
+    added = 0
+    for cli, seed_rows in seed_clis.items():
+        have = {r.model for r in merged_clis.get(cli, [])}
+        bucket = list(merged_clis.get(cli, []))
+        for row in seed_rows:
+            if row.model in have:
+                continue
+            bucket.append(row)
+            have.add(row.model)
+            added += 1
+        if bucket:
+            merged_clis[cli] = bucket
+
+    if added == 0:
+        status["ok"] = True
+        status["action"] = "unchanged"
+        return status
+
+    try:
+        version_raw = raw.get("version", existing.version or 1)
+        try:
+            version = int(version_raw)
+        except (TypeError, ValueError):
+            version = int(existing.version or 1)
+        write_doc: dict[str, Any] = {
+            "version": version,
+            "clis": _combo_rows_to_payload(merged_clis),
+        }
+        if isinstance(raw.get("provenance"), dict):
+            write_doc["provenance"] = raw["provenance"]
+        elif isinstance(seed_doc.get("provenance"), dict):
+            write_doc["provenance"] = seed_doc["provenance"]
+        dest.write_text(
+            json.dumps(write_doc, indent=2, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except OSError as exc:
+        status["error"] = f"write_failed:{exc}"
+        print(f"ERROR models-valid-combos merge write err={exc}", flush=True)
+        return status
+
+    status["ok"] = True
+    status["action"] = "merged"
+    status["added"] = added
+    print(
+        f"INFO models-valid-combos seeded merged path={dest} added={added}",
+        flush=True,
+    )
+    return status

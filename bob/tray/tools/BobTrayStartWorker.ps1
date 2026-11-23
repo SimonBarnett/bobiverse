@@ -55,6 +55,105 @@ function Get-BobTrayEmptyOnlineFillCount {
     return [Math]::Min([int]$Cap, 2)
 }
 
+function Get-BobTrayCachedOpencodeFreeRemaining {
+    <#
+    FR #9000: TipForm/hover snapshot free % only. Never invent a number.
+    #>
+    $snap = $script:lastFuelSnapshot
+    if (-not $snap) { return $null }
+    foreach ($k in @('opencode_free', 'opencode-free')) {
+        if ($snap.PSObject.Properties.Name -contains $k -and $null -ne $snap.$k -and [string]$snap.$k -ne '') {
+            try { return [int]$snap.$k } catch { }
+        }
+    }
+    return $null
+}
+
+function Get-BobTrayEmptyOnlineFillAgentChoice {
+    <#
+    FR #9000: when grok weekly remaining is known 0, empty-online fill pins
+    agent=opencode slot=free so auto does not burn the 2-seat cap on hard-402.
+    Unknown grok remaining keeps auto. Known free remaining 0 keeps auto.
+    Does not invent fuel numbers. Menu/auto elsewhere is unchanged.
+    #>
+    param(
+        $GrokRemaining,
+        $OpencodeFreeRemaining,
+        [string]$Root = ''
+    )
+    if (-not $PSBoundParameters.ContainsKey('GrokRemaining')) {
+        $GrokRemaining = $null
+        if (Get-Command Get-BobTrayGrokFuelRemaining -ErrorAction SilentlyContinue) {
+            try { $GrokRemaining = Get-BobTrayGrokFuelRemaining } catch { $GrokRemaining = $null }
+        }
+    }
+    if ($null -eq $GrokRemaining -or [string]$GrokRemaining -eq '') {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+    try { $g = [int]$GrokRemaining } catch {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+    if ($g -ne 0) {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('OpencodeFreeRemaining')) {
+        $OpencodeFreeRemaining = Get-BobTrayCachedOpencodeFreeRemaining
+    }
+    if ($null -ne $OpencodeFreeRemaining -and [string]$OpencodeFreeRemaining -ne '') {
+        try {
+            if ([int]$OpencodeFreeRemaining -lt 1) {
+                return [pscustomobject]@{ agent = ''; slot = '' }
+            }
+        } catch { }
+    }
+
+    $leaf = ''
+    if (Get-Command Resolve-BobTrayOpencodeSlotModel -ErrorAction SilentlyContinue) {
+        try { $leaf = [string](Resolve-BobTrayOpencodeSlotModel -Root $Root -Slot 'free') } catch { $leaf = '' }
+    }
+    if (-not $leaf) {
+        return [pscustomobject]@{ agent = ''; slot = '' }
+    }
+    return [pscustomobject]@{ agent = 'opencode'; slot = 'free' }
+}
+
+function Get-BobTrayUnderCapFillCount {
+    <#
+      FR #8890: one busy seat is not a full shop. When offerable work remains
+      and live agent seats are below the hard cap, ask for one more seat.
+      Zero live seats stay on Get-BobTrayEmptyOnlineFillCount.
+    #>
+    param(
+        [int]$LiveAgents = 0,
+        [int]$PendingReqs = 0,
+        [bool]$SeatsOff = $false,
+        [bool]$Cooldown = $false,
+        [int]$Cap = 2,
+        [int]$Offerable = 0
+    )
+    if ($SeatsOff -or $Cooldown -or $PendingReqs -gt 0) { return 0 }
+    if ($Offerable -lt 1 -or $LiveAgents -lt 1 -or $Cap -lt 1) { return 0 }
+    if ($LiveAgents -ge $Cap) { return 0 }
+    return 1
+}
+
+function Get-BobTrayCachedOfferableCount {
+    $paths = @()
+    if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
+        $paths += (Join-Path (Get-BobIrcHome) 'bob-peers\_report-digest.json')
+    }
+    foreach ($p in $paths) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        try {
+            $j = Get-Content -LiteralPath $p -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($null -ne $j.offerable_count) { return [int]$j.offerable_count }
+            if ($j.queue -and $null -ne $j.queue.offerable_count) { return [int]$j.queue.offerable_count }
+        } catch { }
+    }
+    return 0
+}
+
 function Get-BobTrayAgentSeatUnionCount {
     <#
     MRB #8445 / FR #3181 / FR #4458: same agent-seat union CapRefusal uses

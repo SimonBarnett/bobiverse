@@ -413,7 +413,10 @@ def row_fr_depends_blocked_reason(
     *,
     docs_root: Path | None = None,
 ) -> str | None:
-    """FR #8754: why an FR must wait on open Depends-on backlog, else None.
+    """FR #8754 / BOB-D7 (FR #8811): why an FR must wait on open Depends-on, else None.
+
+    bob_d7_wire_hold: call this beside every ``fr_hold_reason`` / ``row_fr_hold_reason``
+    offer, enqueue, purge, and reconcile site. Distinct from hold / HOLD: stamps.
 
     Does not purge the row — when depends leave the queue, the FR becomes offerable.
     """
@@ -437,6 +440,120 @@ def row_fr_depends_blocked_reason(
             if oid in open_ids and oid != self_id:
                 return f"depends-on open: {tok}"
     return None
+
+
+# BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
+# BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
+# private extractor so D3 ships with Depends-on: (none) before those land.
+DEPENDS_OPEN_REASON = "depends-open"
+_QUALIFIED_DEPENDS_ISSUE_RE = re.compile(
+    r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$"
+)
+_RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
+_NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
+
+
+def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
+    """Private BOB-D3 extractor: ``(owner/repo, number)`` from Depends-on stamps.
+
+    Line-anchored, case-insensitive, optional Markdown bold. Accepts ``#N`` and
+    ``owner/repo#N`` (comma/whitespace separated). Relative ``#N`` resolves against
+    ``row["repo"]``. Repo keys are lower-cased. Empty / ``(none)`` / malformed /
+    self-reference yield no refs. Public parser/resolver: BOB-D1 / BOB-D2.
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return []
+    home_repo = _repo_key(str(row.get("repo") or ""))
+    self_num_raw = str(row.get("id") or "").strip().lstrip("#")
+    try:
+        self_num = int(self_num_raw) if self_num_raw else None
+    except ValueError:
+        self_num = None
+    blob = f"{str(row.get('title') or '')}\n{str(row.get('body') or '')}"
+    out: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for m in _DEPENDS_ON_LINE_RE.finditer(blob):
+        value = (m.group(1) or "").strip()
+        if not value or _NONE_DEPENDS_VALUE_RE.match(value):
+            continue
+        for raw in re.split(r"[,;\s]+", value):
+            tok = raw.strip().strip("`*")
+            if not tok:
+                continue
+            qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
+            if qm:
+                pair = (_repo_key(qm.group(1)), int(qm.group(2)))
+            else:
+                rm = _RELATIVE_DEPENDS_ISSUE_RE.match(tok)
+                if not rm:
+                    continue
+                if not home_repo:
+                    continue
+                pair = (home_repo, int(rm.group(1)))
+            if self_num is not None and pair[0] == home_repo and pair[1] == self_num:
+                continue
+            if pair in seen:
+                continue
+            seen.add(pair)
+            out.append(pair)
+    return out
+
+
+def open_fr_issue_keys(doc: dict) -> set[tuple[str, int]]:
+    """Open FR ``(lower repo, number)`` keys from unaccepted + accepted (not done)."""
+    keys: set[tuple[str, int]] = set()
+    if not isinstance(doc, dict):
+        return keys
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if str(row.get("state") or "").strip().lower() == "closed":
+                continue
+            repo = _repo_key(str(row.get("repo") or ""))
+            raw = str(row.get("id") or "").strip().lstrip("#")
+            if not repo or not raw:
+                continue
+            try:
+                num = int(raw)
+            except ValueError:
+                continue
+            if num < 1:
+                continue
+            keys.add((repo, num))
+    return keys
+
+
+def row_depends_open_reason(
+    row: dict,
+    open_keys: set[tuple[str, int]] | None = None,
+    *,
+    issue_open=None,
+) -> str | None:
+    """BOB-D3 / FR #8807: ``depends-open`` when any Depends-on issue is OPEN, else None.
+
+    Blocks only on positive OPEN evidence (queue key set and/or ``issue_open`` True).
+    Unknown / ``GitHubLookupUnknown`` / missing stamp / ``(none)`` do not block (D5).
+    """
+    if _canon_task(row) != "FR":
+        return None
+    refs = _row_depends_on_issue_refs(row)
+    if not refs:
+        return None
+    keys = open_keys if open_keys is not None else set()
+    for repo, num in refs:
+        if (repo, num) in keys:
+            return DEPENDS_OPEN_REASON
+        if issue_open is None:
+            continue
+        try:
+            if bool(issue_open(repo, str(num))):
+                return DEPENDS_OPEN_REASON
+        except Exception:
+            # Unknown / budget / network: fail open (D5 owns unresolved).
+            continue
+    return None
+
 
 
 @dataclass(frozen=True)
@@ -1550,6 +1667,11 @@ def issue_skip_fr_reason(
     # are not shop FR work. They must not be offered or stamped needs_human.
     if re.match(r"(?i)^stall:", title_s):
         return "stall_receipt"
+    # FR #9038: bob-worker files these when the agent CLI exits non-zero
+    # (report_agent_cli_nonzero_exit). They are detector receipts of FR #7593,
+    # already handled by GIVEUP + seat restart. Do not offer them as FR work.
+    if title_s == "bug: agent CLI nonzero exit (FR #7593)":
+        return "cli_exit_receipt"
     # FR #3658 / #3317: owner-missing hold titles (even with empty labels).
     if HARVEST_OWNER_MISSING_HOLD_TITLE_RE.search(title_s):
         return "owner_missing_hold_title"
@@ -4854,6 +4976,16 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_un:
             out["offer_unanswered"] = clean_un
+    # FR #8924: refusal waves and the one escalation survive reload.
+    try:
+        waves = int(row.get("offer_refusal_waves") or 0)
+    except (TypeError, ValueError):
+        waves = 0
+    if waves:
+        out["offer_refusal_waves"] = waves
+    escalated = str(row.get("offer_escalate_reason") or "").strip()
+    if escalated:
+        out["offer_escalate_reason"] = escalated
     # FR #8428: last seat that timed out. Idle push tries a different seat first.
     last_to = (canonical_worker_nick(str(row.get("offer_last_timeout_seat") or "")) or "").strip()
     if last_to:
@@ -5713,6 +5845,9 @@ GIVEUP_OFFER_EXTRA_S = 90.0
 OFFER_STICKY_MAX = 3
 # FR #7966: unanswered offers to one seat (timeout, no ACK/NACK/GIVEUP) stop at this count.
 OFFER_UNANSWERED_MAX = 3
+# FR #8924: one cooldown expiry may clear an offer-timeout refusal. The next
+# expiry escalates once and leaves the seat refused.
+OFFER_REFUSAL_EXPIRE_MAX = 1
 # Sticky via values that get the extended offer window (harvest hold / seat turn end).
 _RELEASE_OFFER_VIA = frozenset({"giveup", "done", "nack"})
 
@@ -5821,6 +5956,7 @@ def live_seat_can_take_unanswered(
     """
     if not isinstance(row, dict):
         return False
+    expire_offer_timeout_refusals(row, time.time())
     repo = str(row.get("repo") or "")
     for raw in live or ():
         nick = str(raw or "").strip()
@@ -5878,17 +6014,119 @@ def seat_submit_verify_in_flight(home: Path, nick: str) -> bool:
     return False
 
 
-def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
+def offer_timeout_reason(home: Path, nick: str) -> str:
+    """Why a live seat missed ACK (FR #8924). Idle with no job is idle-no-ack."""
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not want:
+        return "offer-timeout"
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return "offer-timeout:idle-no-ack"
+    for ent in (doc.get("machines") or {}).values():
+        if not isinstance(ent, dict):
+            continue
+        for wrow in bobreport._coerce_worker_list(ent.get("worker_list")):
+            if not isinstance(wrow, dict):
+                continue
+            got = (canonical_worker_nick(str(wrow.get("nick") or "")) or "").strip().lower()
+            if got != want:
+                continue
+            state = str(wrow.get("state") or "").strip().lower()
+            jobs = wrow.get("jobs")
+            work = str(wrow.get("work") or "").strip()
+            if isinstance(jobs, list) and jobs:
+                return "offer-timeout:busy-jobs"
+            if work:
+                return "offer-timeout:busy-jobs"
+            if state and state != "idle":
+                return "offer-timeout:state-" + state[:40]
+            return "offer-timeout:idle-no-ack"
+    return "offer-timeout:idle-no-ack"
+
+
+def expire_offer_timeout_refusals(row: dict, now_f: float) -> bool:
+    """Clear an offer-timeout refusal after cooldown (FR #8924).
+
+    One wave may be re-offered. A later expiry stamps offer-timeout-cap and
+    leaves the seat refused. Real giveup_reason rows keep giveup_seats.
+    """
+    if not isinstance(row, dict):
+        return False
+    until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
+    if until is None or float(now_f) < until:
+        return False
+    refused = [str(x).strip() for x in (row.get("offer_refused_by") or []) if str(x).strip()]
+    if not refused:
+        return False
+    latest: dict[str, str] = {}
+    for item in row.get("offer_outcomes") or []:
+        if not isinstance(item, dict):
+            continue
+        seat = str(item.get("seat") or "").strip().lower()
+        if seat:
+            latest[seat] = str(item.get("reason") or "")
+    timeout_seats = []
+    for seat in refused:
+        key = (canonical_worker_nick(seat) or seat).strip().lower()
+        reason = latest.get(key) or latest.get(seat.lower()) or ""
+        if reason.startswith("offer-timeout") and "cap" not in reason:
+            timeout_seats.append(seat)
+    if not timeout_seats:
+        return False
+    try:
+        waves = int(row.get("offer_refusal_waves") or 0)
+    except (TypeError, ValueError):
+        waves = 0
+    if waves >= int(OFFER_REFUSAL_EXPIRE_MAX):
+        if not str(row.get("offer_escalate_reason") or "").strip():
+            row["offer_escalate_reason"] = "offer-timeout-cap"
+            note_offer_outcome(row, timeout_seats[0], "escalate", "offer-timeout-cap")
+            return True
+        return False
+    drop = {(canonical_worker_nick(s) or s).strip().lower() for s in timeout_seats}
+    row["offer_refused_by"] = [
+        s for s in refused
+        if (canonical_worker_nick(s) or s).strip().lower() not in drop
+    ]
+    real = str(row.get("giveup_reason") or "").strip()
+    if not real or real.startswith("offer-timeout"):
+        kept = []
+        for raw in str(row.get("giveup_seats") or "").split(","):
+            seat = raw.strip()
+            if not seat:
+                continue
+            if (canonical_worker_nick(seat) or seat).strip().lower() in drop:
+                continue
+            kept.append(seat)
+        if kept:
+            row["giveup_seats"] = ",".join(kept)
+        else:
+            row.pop("giveup_seats", None)
+    counts = row.get("offer_unanswered")
+    if isinstance(counts, dict):
+        for key in list(counts):
+            if str(key).strip().lower() in drop:
+                counts.pop(key, None)
+        row["offer_unanswered"] = counts
+    row.pop("cooldown_until", None)
+    row["offer_refusal_waves"] = waves + 1
+    note_offer_outcome(row, timeout_seats[0], "expire", "offer-timeout-expired")
+    return True
+
+
+def note_unanswered_offer(row: dict, seat: str, now_f: float, reason: str = "offer-timeout") -> None:
     """Count a timed-out offer. After OFFER_UNANSWERED_MAX, refuse that seat (FR #7966).
 
     Sets cooldown_until and offer_refused_by. Also appends giveup_seats so
     row_on_cooldown blocks only that seat. Does not increment giveup_count
-    and does not stamp needs_human.
+    and does not stamp needs_human. FR #8924 records why the seat missed ACK.
     """
     canon = (canonical_worker_nick(seat) or seat or "").strip()
     if not canon or not isinstance(row, dict):
         return
-    note_offer_outcome(row, canon, "timeout", "offer-timeout")
+    why = str(reason or "offer-timeout").strip() or "offer-timeout"
+    note_offer_outcome(row, canon, "timeout", why)
     key = canon.lower()
     counts = row.get("offer_unanswered")
     if not isinstance(counts, dict):
@@ -7783,6 +8021,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
     except Exception:
         return out
     out["unaccepted"] = len(rows)
+    open_dep_keys_summary = open_fr_issue_keys(raw if isinstance(raw, dict) else {})
     me = (canonical_worker_nick(nick) or nick or "").strip()
     live = live_seat_nicks(home) if me else set()
     ledger = ledger_load(home) if me else {}
@@ -7948,6 +8187,12 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if me and to_c and to_c != me_l:
                     _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
+            # BOB-D3 / FR #8807: local depends-open (no checker on empty-offer path).
+            if _canon_task(cand) == "FR" and row_depends_open_reason(
+                cand, open_dep_keys_summary
+            ):
+                _record_empty_skip(r, DEPENDS_OPEN_REASON)
+                continue
             offerable += 1
         out["skips"] = skip_log
         out["out_of_focus"] = out_of_focus
@@ -11424,7 +11669,7 @@ def offer_focus_top(
                 if dead_pin or age >= offer_timeout_s(cand):
                     # FR #7966: a silent seat is a recorded refusal, not a fresh offer.
                     if not dead_pin:
-                        note_unanswered_offer(cand, to, now_f)
+                        note_unanswered_offer(cand, to, now_f, offer_timeout_reason(home, to))
                     else:
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
                     with contextlib.suppress(Exception):
@@ -11462,6 +11707,9 @@ def offer_focus_top(
 
             import focus_ignore  # lazy: avoid import cycle; needed before _eligible (FR #6208)
 
+            # BOB-D3 / FR #8807: build once per locked !bored pass (zero-call local keys).
+            open_dep_keys = open_fr_issue_keys(doc)
+
             def _eligible(cand: dict) -> dict | None:
                 nonlocal purged
                 # FR #6208: belt-and-braces - never offer an ignored repo (incl. fallback walk).
@@ -11485,6 +11733,10 @@ def offer_focus_top(
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
+                if expire_offer_timeout_refusals(cand, now_f):
+                    # Cap and clear both mutate the live row. A cap does not
+                    # offer, so the empty return must still persist the stamp.
+                    purged = True
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
                 # FR #8008: agent-class exclusion after repeated hard-ceiling kills.
@@ -11557,6 +11809,11 @@ def offer_focus_top(
                     return None
                 if not fr_row_offerable(
                     cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
+                ):
+                    return None
+                # BOB-D3 / FR #8807: any Depends-on issue still OPEN — skip, do not purge.
+                if row_depends_open_reason(
+                    cand, open_dep_keys, issue_open=issue_open
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -14946,10 +15203,19 @@ def enqueue_open_github_item(
                 title=claim.title, body=claim.body, labels=claim.labels
             ) or ""
         elif not why and claim.task == "FR":
+            # bob_d7_wire_hold: Depends gate beside hold in skip detail.
+            _dep_probe = {
+                "task": "FR",
+                "repo": claim.repo,
+                "id": claim.id,
+                "title": claim.title,
+                "body": claim.body,
+            }
             why = (
                 fr_hold_reason(
                     title=claim.title, body=claim.body, labels=claim.labels
                 )
+                or row_fr_depends_blocked_reason(_dep_probe, doc)
                 or issue_skip_fr_reason(
                     title=claim.title,
                     body=claim.body,
@@ -15432,6 +15698,10 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
                 if task == "FR" and row_fr_hold_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
+                    continue
+                # bob_d7_wire_hold: Depends-on OPEN is offer-skip only — keep the row.
+                if task == "FR" and row_fr_depends_blocked_reason(row, doc):
+                    keep.append(row)
                     continue
                 # FR #846: drop FR rows whose URL is a pull request.
                 if task == "FR" and not fr_row_offerable(row):
@@ -16806,6 +17076,10 @@ def resync_from_github(
                 if task_u == "FR" and row_fr_hold_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
                     continue  # FR #4009: hold label / HOLD body stamp
+                # bob_d7_wire_hold: Depends-on OPEN is offer-skip only — keep the row.
+                if task_u == "FR" and row_fr_depends_blocked_reason(row, doc):
+                    keep.append(row)
+                    continue
                 if task_u == "FR" and not fr_row_offerable(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_not_offerable")
                     continue  # FR #846: /pull/ URL is never an FR

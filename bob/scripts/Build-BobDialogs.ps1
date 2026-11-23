@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Compile the fast tray executables (t828u/t832u): bob-about.exe (Acknowledge), bob-status.exe (Status pools card) and bob-tray.exe (the systray: icon, menu, clicks, hover; hosts both windows in-process).
@@ -49,7 +49,9 @@ $built = @()
 foreach ($d in @(
         @{ Exe = 'bob-about.exe';  Srcs = @('BobAbout.cs');  Main = 'BobDialogs.AboutProgram';  Refs = @('System.ServiceProcess.dll') },
         @{ Exe = 'bob-status.exe'; Srcs = @('OpencodePaint.cs', 'BobStatus.cs'); Main = 'BobDialogs.StatusProgram'; Refs = @() },
-        @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'OpencodePaint.cs', 'BobStatus.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll', 'System.Management.dll') })) {
+        @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'OpencodePaint.cs', 'BobStatus.cs', 'BobModelsClient.cs', 'WeightsForm.cs', 'GrokNoTokenGate.cs', 'JeevesModelsWebhook.cs', 'JeevesNoTokenGate.cs', 'JeevesLazyDag.cs', 'PlanMcpConfig.cs', 'PlanModelsWebhook.cs', 'OpencodeFreeThenPaid.cs', 'OpenCodePaidExhaustedGate.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll', 'System.Management.dll') })) {
+
+
     $out = Join-Path $OutDir $d.Exe
     $tmp = $out + '.new'
     $argv = @('/nologo', '/target:winexe', '/optimize+', '/debug-', '/platform:anycpu', "/out:$tmp",

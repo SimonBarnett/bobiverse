@@ -1,7 +1,27 @@
-<!DOCTYPE html><html><head><meta charset="utf-8"><title>Weights</title>
-<style>table{border-collapse:collapse} td,th{border:1px solid #444;padding:6px} body{font-family:Segoe UI;background:#1e1e1e;color:#eee}</style></head><body>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Weights — no validate POST</title>
+<style>
+body{font-family:Segoe UI,system-ui,sans-serif;background:#1e1e1e;color:#eee;margin:1.5rem}
+h1{font-size:1.25rem;margin:0 0 .25rem}
+.sub{color:#9ab;font-size:.9rem;margin:0 0 1rem}
+table{border-collapse:collapse;width:100%;max-width:40rem}
+td,th{border:1px solid #444;padding:6px 8px;text-align:left}
+.actions{margin-top:1rem;display:flex;gap:.5rem}
+button{padding:.35rem .9rem}
+button.primary{background:#0a64c8;color:#fff;border:1px solid #084a96}
+button.secondary{background:#333;color:#eee;border:1px solid #555}
+.note{margin-top:1rem;color:#8c8;font-size:.85rem;max-width:40rem}
+.bad{text-decoration:line-through;color:#c66}
+</style>
+</head>
+<body>
 <h1>Weights</h1>
-<table><tr><th>Agent</th><th>CLI</th><th>Model</th><th>Context</th><th>Effort</th></tr>
+<p class="sub">GET|PUT /bob/v1/models · form dropdowns are validation</p>
+<table>
+<tr><th>Agent</th><th>CLI</th><th>Model</th><th>Context</th><th>Effort</th></tr>
 <tr><td>Plan</td><td>Grok</td><td>select</td><td>256|512</td><td>hi|med|low</td></tr>
 <tr><td>Priority</td><td>Grok</td><td>select</td><td>256|512</td><td>hi|med|low</td></tr>
 <tr><td>Jeeves</td><td>Grok</td><td>select</td><td>256|512</td><td>hi|med|low</td></tr>
@@ -10,4 +30,10 @@
 <tr><td>Opencode</td><td>Opencode</td><td>select</td><td>256|512</td><td>hi|med|low</td></tr>
 <tr><td>Opencode-Free</td><td>Opencode</td><td>select</td><td>256|512</td><td>hi|med|low</td></tr>
 </table>
-</body></html>
+<div class="actions">
+<button class="primary" type="button">Save</button>
+<button class="secondary" type="button">Cancel</button>
+</div>
+<p class="note">No <span class="bad">Validate</span> button. No <span class="bad">POST /bob/v1/models/validate</span>. Options come from <code>clis[row.cli]</code> on GET.</p>
+</body>
+</html>

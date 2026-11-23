@@ -53,6 +53,15 @@ namespace BobDialogs
             return false;
         }
 
+        // FR #9165: drop the single-instance mutex when the dialog never got a visible HWND
+        // so a windowless zombie cannot block TipForm left-click Status forever.
+        public static void AbandonSingle()
+        {
+            if (keep == null) return;
+            try { keep.Close(); } catch { }
+            keep = null;
+        }
+
         public static string Arg(string[] args, string name)
         {
             for (int i = 0; i + 1 < args.Length; i++) if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return args[i + 1];
@@ -119,6 +128,95 @@ namespace BobDialogs
             string sha = DeployedSourceShortSha(root);
             return sha.Length > 0 ? (v + " (" + sha + ")") : v;
         }
+
+        // FR #8675 / BOB-10: Plan and Priority build versions for About header.
+        // Priority Agent folders (safe default confirmed by public downloads + UAT product map):
+        // priority-agent, priority-mcp under AI roots.
+        static readonly string[] PriorityFolderNames = new string[] { "priority-agent", "priority-mcp" };
+
+        public static string PlanVersion(string root)
+        {
+            string v = FirstLine(Path.Combine(root, "plan\\VERSION"));
+            if (v.Length > 0)
+            {
+                string sha = ShortShaToken(ReadJsonCommit(Path.Combine(root, "plan\\BUILD.json")));
+                return sha.Length > 0 ? (v + " (" + sha + ")") : v;
+            }
+            string bob = BobVersion(root);
+            if (bob.Length > 0 && bob != "unknown") return bob + " (via bob)";
+            return "unknown";
+        }
+
+        public static string PriorityVersion(string root)
+        {
+            foreach (string dir in PriorityCandidateDirs(root))
+            {
+                string v = FirstLine(Path.Combine(dir, "VERSION"));
+                if (v.Length > 0) return v;
+                foreach (string exeName in new string[] { "PriorityAgent.exe", "priority-agent.exe" })
+                {
+                    string ep = Path.Combine(dir, exeName);
+                    if (!File.Exists(ep)) continue;
+                    try
+                    {
+                        string pv = (FileVersionInfo.GetVersionInfo(ep).ProductVersion ?? "").Trim();
+                        if (pv.Length > 0) return pv;
+                    }
+                    catch { }
+                }
+            }
+            return "not installed";
+        }
+
+        static System.Collections.Generic.IEnumerable<string> PriorityCandidateDirs(string root)
+        {
+            var seen = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            foreach (string ai in AiRootCandidates(root))
+            {
+                foreach (string name in PriorityFolderNames)
+                {
+                    string d = Path.Combine(ai, name);
+                    if (seen.Add(d)) yield return d;
+                }
+            }
+        }
+
+        static System.Collections.Generic.IEnumerable<string> AiRootCandidates(string root)
+        {
+            // C# 5 / csc .NET 4: no yield inside try/catch — resolve parent first.
+            // When BOB_AI_ROOT is set, search only that root (tests + operator pin).
+            string env = (Environment.GetEnvironmentVariable("BOB_AI_ROOT") ?? "").Trim();
+            if (env.Length > 0)
+            {
+                yield return env;
+                yield break;
+            }
+            string parent = "";
+            try { parent = Path.GetDirectoryName(root) ?? ""; } catch { parent = ""; }
+            if (!string.IsNullOrEmpty(parent)) yield return parent;
+            yield return @"C:\ai";
+            yield return @"D:\ai";
+        }
+
+        static string ReadJsonCommit(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return "";
+                string raw = File.ReadAllText(path);
+                int k = raw.IndexOf("commit", StringComparison.OrdinalIgnoreCase);
+                if (k < 0) return "";
+                int colon = raw.IndexOf(':', k);
+                if (colon < 0) return "";
+                int q1 = raw.IndexOf('"', colon + 1);
+                if (q1 < 0) return "";
+                int q2 = raw.IndexOf('"', q1 + 1);
+                if (q2 < 0) return "";
+                return raw.Substring(q1 + 1, q2 - q1 - 1).Trim();
+            }
+            catch { return ""; }
+        }
+
 
         public static string ExeSourceShortSha(string root)
         {

@@ -27,6 +27,9 @@
   FR #7167: when InstallRoot VERSION (MSI/ARP) is newer than clone common\VERSION but the sparse
   worktree tip is OK (or -ComposeOnly), still compose flat scripts and keep MSI VERSION; only
   full-skip robocopy when the tip is stale (FR #1018 older-clone rollback guard).
+  FR #8863: sync-skip-diverged (FR #7301) still overlays allowlisted runtime scripts
+  (bob/scripts/bob_worker.py, bob/scripts/skill_dag_mcp.py) plus flat scripts\ copies.
+  That does not replace a frozen bob-worker.exe; the onefile still needs an MSI rebuild.
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
@@ -462,6 +465,18 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
     } catch {
         Write-Host ("WARN sync-gitclaim-from-tip error: {0}" -f $_.Exception.Message)
     }
+    # FR #8863: allowlisted runtime scripts (bob_worker.py, skill_dag_mcp.py) even when
+    # ff is blocked or MSI VERSION is newer than the clone. Does not replace bob-worker.exe.
+    try {
+        $tf = Sync-BobiverseAllowlistedTipFiles -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
+        if ($tf.Ok) {
+            Write-Host ("INFO sync-tip-file ok bytes={0}: {1}" -f $tf.Bytes, $tf.Reason)
+        } else {
+            Write-Host ("WARN sync-tip-file skipped: {0}" -f $tf.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-tip-file error: {0}" -f $_.Exception.Message)
+    }
     # FR #7161: tip-heal recycleseat.py when compose is skipped (e.g. MSI VERSION newer than
     # clone stamp) so live flat scripts\ still get SYSTEM/dirty-recycle gates without a full ff compose.
     try {
@@ -507,15 +522,26 @@ if ($Product -eq 'bob') {
 if ($Product -eq 'jeeves') { $mirror += @{ Rel = 'tools'; Dst = 'tools'; Xf = @() } }
 foreach ($m in $mirror) {
     $from = Get-BobiverseRepoPath -Root $clone -Rel $m.Rel
+    # FR #9035: copy bob\tray\src over a drifted third_party\bob-tray\src before the install mirror.
+    if ($Product -eq 'bob' -and $m.Rel -eq 'third_party\bob-tray\src') {
+        $traySync = Sync-BobiverseTraySrcFromCanonical -CloneRoot $clone
+        if ($traySync.Source -and (Test-Path -LiteralPath $traySync.Source -PathType Container)) {
+            $from = $traySync.Source
+        }
+    }
     if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
     # FR #6154 / FR #269: never /XO on *bob* tray tools\ only - git mtimes are often older than a
     # pre-#6120 flat Get-BobAgentFuel.ps1, so /XO left OpenCode fuel helpers stale after ff.
     # Jeeves tools\ keep /XO (CodeRabbit / MRB #6162): do not force-overwrite newer install tools
     # from an older external clone.
+    # FR #9035: src also skips /XO so a newer stripped install Invoke-BobFleet.ps1 cannot win.
     $dst = Join-Path $InstallRoot $m.Dst
     if ($Product -eq 'bob' -and $m.Dst -eq 'tools') {
         $roboArgs = @($from, $dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
         $xoNote = ' (tools-no-xo FR #6154)'
+    } elseif ($Product -eq 'bob' -and $m.Dst -eq 'src') {
+        $roboArgs = @($from, $dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        $xoNote = ' (src-no-xo FR #9035)'
     } else {
         $roboArgs = @($from, $dst, '/E', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
         $xoNote = ''
@@ -523,6 +549,15 @@ foreach ($m in $mirror) {
     if ($m.Xf.Count) { $roboArgs += @('/XF') + $m.Xf }
     & robocopy.exe @roboArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok{1}" -f $m.Dst, $xoNote) }
+    # FR #9035: Parser::ParseFile plus nameless param([string]) refuses the src promote.
+    if ($Product -eq 'bob' -and $m.Dst -eq 'src') {
+        $fleetGate = Assert-BobiverseInvokeBobFleetParses -InstallRoot $InstallRoot
+        if (-not $fleetGate.Ok) {
+            Write-Host ("ALERT sync-fleet-parse-gate FAIL: {0}" -f $fleetGate.Reason)
+            throw ("FR #9035 fleet parse gate: " + $fleetGate.Reason)
+        }
+        Write-Host ("INFO sync-fleet-parse-gate ok: {0}" -f $fleetGate.Reason)
+    }
 }
 # FR #8860: tools\monitor on a composed install (including drive-root J:\) stayed
 # stale after #8585 because jeeves tools\ robocopy keeps /XO (MRB #6162) and git
@@ -621,6 +656,17 @@ if ($skillsDirs.Count -gt 0) {
 if ($Product -eq 'bob') {
     try {
         [void](Sync-BobiverseAgentFolders -RepoRoot $clone -Destination $InstallRoot)
+        # FR #8675 / BOB-10: stamp plan identity (warn-on-failure; do not stop sync).
+        $planVer = ''
+        try {
+            $vf = Join-Path $InstallRoot 'VERSION'
+            if (Test-Path -LiteralPath $vf) { $planVer = ([string](Get-Content -LiteralPath $vf -TotalCount 1 -ErrorAction Stop)).Trim() }
+        } catch { }
+        $planCommit = ''
+        try { $planCommit = [string](& git -C $clone rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+        try { Write-BobiversePlanIdentity -Destination $InstallRoot -Version $planVer -Commit $planCommit.Trim() } catch {
+            Write-Host ("WARN FR #8675 plan identity: {0}" -f $_.Exception.Message)
+        }
     } catch { Write-Host ("WARN sync worker/plan folders: {0}" -f $_.Exception.Message) }
 }
 
