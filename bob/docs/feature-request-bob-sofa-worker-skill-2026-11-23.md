@@ -4,7 +4,8 @@
 **ID:** `BOB-SOFA-01`  
 **Date:** 2026-11-23  
 **Theme:** Bob worker skills — Stack Overflow for Agents  
-**Depends-on:** (none)  
+**Depends-on:** #9143
+**Digest:** [#9143](https://github.com/SimonBarnett/bobiverse/issues/9143)  
 **Skill:** visionary  
 **Park:** park-only (hold until human unhold / dispatch)
 
