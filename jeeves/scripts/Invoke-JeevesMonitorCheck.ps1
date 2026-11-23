@@ -21,28 +21,60 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $here = if ($InstallRoot) { $InstallRoot } else { Split-Path -Parent $PSScriptRoot }
-# FR #9007: refresh tools\monitor before the check when Sync is resolvable
-# (repo tree C:\ai\bob keeps Sync under common\scripts, not jeeves\scripts).
+# FR #9007 / FR #9309: refresh tools\monitor before the check when Sync is resolvable.
+# Drive-root J:\ has empty Split-Path -Parent; resolve bob like Start-JeevesMonitor.
+# FR #9309: prefer a tip Sync that contains sync-monitor-force over a stale flat J:\scripts copy.
 $syncName = 'Sync-BobiverseFromRepo.ps1'
-$bobRoot = Split-Path -Parent $here
-$syncCands = @(
+function Resolve-BobInstallRootFromJeeves([string]$JeevesRoot) {
+    $ai = Split-Path -Parent $JeevesRoot
+    if (-not [string]::IsNullOrWhiteSpace($ai) -and $ai -ne $JeevesRoot) {
+        $sib = Join-Path $ai 'bob'
+        if (Test-Path -LiteralPath (Join-Path $sib 'worker\bob-worker.exe')) { return $sib }
+        if (Test-Path -LiteralPath $sib) { return $sib }
+    }
+    $sys = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+    foreach ($cand in @((Join-Path $sys 'ai\bob'), 'C:\ai\bob', 'D:\ai\bob')) {
+        if (Test-Path -LiteralPath (Join-Path $cand 'worker\bob-worker.exe')) { return $cand }
+    }
+    return ''
+}
+$bobRoot = Resolve-BobInstallRootFromJeeves $here
+if (-not $bobRoot) {
+    $parent = Split-Path -Parent $here
+    if ($parent -and $parent -ne $here) { $bobRoot = $parent }
+}
+$syncCands = @()
+if ($bobRoot) {
+    $syncCands += (Join-Path $bobRoot ('common\scripts\' + $syncName))
+    $syncCands += (Join-Path $bobRoot ('scripts\' + $syncName))
+}
+$syncCands += @(
     (Join-Path $PSScriptRoot $syncName),
-    (Join-Path $here ('scripts\' + $syncName)),
-    (Join-Path $bobRoot ('common\scripts\' + $syncName)),
-    (Join-Path $bobRoot ('scripts\' + $syncName))
+    (Join-Path $here ('scripts\' + $syncName))
 )
-foreach ($syncMon in $syncCands) {
-    if ($syncMon -and (Test-Path -LiteralPath $syncMon)) {
-        try {
-            if ($DryRun) {
-                & $syncMon -Product jeeves -InstallRoot $here -DryRun
-            } else {
-                & $syncMon -Product jeeves -InstallRoot $here
-            }
-        } catch {
-            Write-Warning ("FR #9007 sync-monitor before check: {0}" -f $_.Exception.Message)
+$syncMon = ''
+$syncFallback = ''
+foreach ($c in $syncCands) {
+    if (-not ($c -and (Test-Path -LiteralPath $c))) { continue }
+    $hit = $false
+    try {
+        foreach ($line in [IO.File]::ReadLines($c)) {
+            if ($line -match 'sync-monitor-force') { $hit = $true; break }
         }
-        break
+    } catch { }
+    if ($hit) { $syncMon = $c; break }
+    if (-not $syncFallback) { $syncFallback = $c }
+}
+if (-not $syncMon) { $syncMon = $syncFallback }
+if ($syncMon) {
+    try {
+        if ($DryRun) {
+            & $syncMon -Product jeeves -InstallRoot $here -DryRun
+        } else {
+            & $syncMon -Product jeeves -InstallRoot $here
+        }
+    } catch {
+        Write-Warning ("FR #9007 sync-monitor before check: {0}" -f $_.Exception.Message)
     }
 }
 $py = Join-Path $here "tools\monitor\$Check.py"

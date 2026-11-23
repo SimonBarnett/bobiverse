@@ -67,14 +67,13 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 
 `tools/monitor/ircbob_ear.py` is **token-free**. It EXIT 1 when digest machines show `online=false` / status `I am offline`, or `lastSeen` older than 900s (same band as `stale_digest`). On win32 it also reads local `Get-Service ircBob`; when Status is Stopped it tries one `Start-Service` and re-checks (`heal=started|failed`). TipForm `Resolve-BobTrayDigestFailNote` prefers `digest ear-offline:` over `digest unreachable:` when the ear is down or digest shows offline (pure GetResponse failures stay unreachable). Never touches Ergo / BobIrcd. Remote WinRM Start-Service is out of scope.
 
-## Composed drive-root monitor scripts (FR #8860 / #9007 / #9100)
+## Composed drive-root monitor scripts (FR #8860 / #9007 / #9100 / #9309)
 
-A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650 / #9007). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when it can resolve that script: beside itself (composed flat), or under `BobInstallRoot\common\scripts` / `BobInstallRoot\scripts` for a repo tree such as `C:\ai\bob` (FR #9007). Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime; FR #9100 skips when source equals destination and warns on a nonzero Sync exit without blocking monitor start. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
+A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650 / FR #9007 / FR #9309). `Start-JeevesMonitor.ps1` and `Invoke-JeevesMonitorCheck.ps1` call `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when they can resolve that script (FR #9007). **FR #9309:** prefer `BobInstallRoot\common\scripts\Sync-BobiverseFromRepo.ps1` (tip, with `sync-monitor-force`) over a stale composed flat copy under `J:\scripts` --- the flat Sync from an old MSI/compose lacked the force path, so checks such as `opencode_seats.py` (FR #8583) never landed even though AGENTS listed them. Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime; FR #9100 skips when source equals destination and warns on a nonzero Sync exit without blocking monitor start. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
 
-`Invoke-JeevesMonitorCheck.ps1` does **not** refresh `tools\monitor`; start Monitor or run Sync after a probe hotfix. UNC installs such as `\\walrus\jeeves` need `BOBIVERSE_REPO` pointing at a checkout because Sync discovery uses drive prefixes.
+UNC installs such as `\\walrus\Jeeves` need `BOBIVERSE_REPO` pointing at a checkout because Sync discovery uses drive prefixes. Drive-root `J:\` resolves bob via `C:\ai\bob` / `D:\ai\bob` (same as Start-JeevesMonitor), not `Split-Path -Parent` of `J:\` (empty).
 
-
-Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host).
+Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` with `$env:BOBIVERSE_REPO` set to a tip checkout (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host). After Sync, `tools\monitor\opencode_seats.py` and `scripts\Test-JeevesMonitorOpencodeSeats.ps1` must be present.
 
 ## empty-offer playbook (FR #2448 / #2446)
 
