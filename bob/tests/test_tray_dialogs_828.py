@@ -325,14 +325,15 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "About",
         "Seats: on",
         "Open log",
-        "OpenCode keys",
-        "Set key...",
-        "Remove key...",
         "-",
         "Restart",
         "Reload engine",
         "Exit",
     ]
+    # FR #9264: OpenCode keys moved to About (not top-level).
+    assert "OpenCode keys" not in items
+    assert "Set key..." not in items
+    assert "Remove key..." not in items
     assert "Agent" not in items
     src = (DIALOGS / "BobTray.cs").read_text(encoding="utf-8-sig")
     assert 'miStatus.Font = new Font(miStatus.Font, FontStyle.Bold)' in src and "DoubleClick" in src or "MouseClick" in src
@@ -366,7 +367,7 @@ def test_tray_engine_contract_between_exe_and_powershell():
         assert k in cs
     assert "tray-cmd.txt" in helper and "BOB_TRAY_EXE_PID" in helper and "tray-env.json" in helper
     assert "Test-BobTrayEngineMode" in ps and "Invoke-BobTrayExeCommands" in ps
-    assert "[Environment]::Exit(0)" in ps.split("-ParentGone", 1)[1][:260]                                       # a dead exe must NOT run the exit path (IRC logout / Stop-BobiverseMoot)
+    assert "[Environment]::Exit(0)" in ps.split("-ParentGone", 1)[1][:1200]                                      # a dead exe must NOT run the exit path (IRC logout / Stop-BobiverseMoot); window covers Restore-BobTrayExeFromClickFixPark preface
     assert "else { $notify.Visible = $true }" in ps                                                          # engine mode: icon is the exe's
     assert "Get-BobSystrayTrayExe" in fleet and "bob-tray.exe" in fleet
     assert "ircBob" in fleet                                                                                 # restart-on-start unchanged

@@ -208,7 +208,10 @@ namespace BobDialogs
     {
         readonly TextBox box;
 
-        public AboutForm(string root)
+        // FR #9264 / BOB-TRAY-UI-04: optional OpenCode keys action (TipForm wires it; standalone bob-about hides the button).
+        public AboutForm(string root) : this(root, null) { }
+
+        public AboutForm(string root, Action<Control> openOpencodeKeys)
         {
             Text = "Bobiverse systray - about";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -247,10 +250,19 @@ namespace BobDialogs
                 }
                 catch { }
             };
+            // FR #9264 / BOB-TRAY-UI-04: OpenCode keys set/select/remove moved here from the top tray menu.
+            Button keys = new Button();
+            keys.Name = "opencodeKeys";
+            keys.Text = "OpenCode keys"; keys.Location = new Point(230, 398); keys.Size = new Size(110, 23);
+            keys.Visible = openOpencodeKeys != null;
+            keys.Enabled = openOpencodeKeys != null;
+            keys.Click += delegate {
+                try { if (openOpencodeKeys != null) openOpencodeKeys(keys); } catch { }
+            };
             Button ok = new Button();
             ok.Text = "Close"; ok.Location = new Point(474, 398);
             ok.Click += delegate { Close(); };
-            Controls.AddRange(new Control[] { logo, title, by, ver, agents, box, logs, ok });
+            Controls.AddRange(new Control[] { logo, title, by, ver, agents, box, keys, logs, ok });
             AcceptButton = ok;
             Shown += delegate {
                 ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
