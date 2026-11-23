@@ -10564,6 +10564,10 @@ def review_blocked_for_author(
     Sole-machine fleets still allow same-machine siblings (FR #2604 / #4606 /
     #5900 throughput). MRB never inherits a dead author nick via
     ``nick_inherits_dead_seat`` (FR #4606); machine-id covers live siblings.
+    **FR #9480:** when ``row_author_seats`` span **two or more** distinct machine
+    ids (e.g. implementer on redqueen + FIX on flamingo), machine-id sibling
+    block is skipped for that row (exact-seat only) so the chair does not stamp
+    ``no_eligible_reviewer`` forever.
 
     For **UAT**: also blocks a sibling on the same machine while another machine
     has a *viable free* live seat (FR #1407 / #2487), and a recycled sole
@@ -10590,6 +10594,15 @@ def review_blocked_for_author(
     me_p = bobreport.parse_seat_nick(me)
     me_mid = bobreport.fold_machine_id(me_p[0]) if me_p else ""
     repo_uat = is_repo_uat(row)
+    # FR #9480: distinct author machine ids on the row (MRB multi-machine carve-out).
+    author_mids: set[str] = set()
+    for _a in authors:
+        _ap = bobreport.parse_seat_nick(_a)
+        if _ap:
+            _amid = bobreport.fold_machine_id(_ap[0])
+            if _amid:
+                author_mids.add(_amid)
+    mrb_multi_machine_authors = task == "MRB" and len(author_mids) >= 2
 
     def _seat_gave_up_uat(n_c: str) -> bool:
         if row_gave_up_by(row, n_c, live=live):
@@ -10637,7 +10650,10 @@ def review_blocked_for_author(
         # blocks same-machine siblings when another machine is live. Sole-box
         # fleets still allow siblings. Giveup inheritance stays in
         # nick_in_giveup_seats; FIX seats use exact nick stamp (FR #4604).
+        # FR #9480: multi-machine author_seats → exact-seat only (skip sibling).
         if task == "MRB":
+            if mrb_multi_machine_authors:
+                continue
             if author_mid and me_mid and author_mid == me_mid:
                 if _other_machine_live(author_mid):
                     return True
