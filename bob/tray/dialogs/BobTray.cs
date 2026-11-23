@@ -1437,6 +1437,21 @@ namespace BobDialogs
                                     + " pid=" + SafeEnginePid()));
                         }
                         catch { }
+                        // FR #9471: one forced ReloadEngine after storm trip so !startworker can
+                        // recover (engine.alive ticks again). Write engine.storm for TipForm/Watch.
+                        try
+                        {
+                            string stormPath = Path.Combine(aliveDir, "engine.storm");
+                            File.WriteAllText(stormPath, DateTime.UtcNow.ToString("o") + " pid=" + SafeEnginePid());
+                            TrayLifecycle.Write("engine-storm", "path", stormPath, "via", "bob-tray-watchdog");
+                        }
+                        catch { }
+                        try
+                        {
+                            TrayLifecycle.Write("engine-relaunch", "result", "storm-forced-reload", "via", "FR#9471");
+                            ReloadEngine();
+                        }
+                        catch { }
                     }
                 }
                 return;       // no restart storm

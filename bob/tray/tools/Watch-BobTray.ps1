@@ -5113,6 +5113,14 @@ $poll.Add_Tick({
                             $alerts = @($alerts) + @($ozAlerts)
                             Write-TrayLog ('FR #9462 online_zero_workers alerts=' + ($ozAlerts -join ' | '))
                         }
+                        # FR #9471: HealEngine storm stamp -> TipForm alert (no silent startworker recovery gap).
+                        if (Get-Command Get-BobTrayEngineStormAlert -ErrorAction SilentlyContinue) {
+                            $stormAlert = Get-BobTrayEngineStormAlert -Root $RepoRoot
+                            if ($stormAlert) {
+                                $alerts = @($alerts) + @($stormAlert)
+                                Write-TrayLog ('FR #9471 ' + $stormAlert)
+                            }
+                        }
                     }
                 } catch {
                     Write-TrayLog ('FR #9462 online_zero_workers: ' + $_.Exception.Message)
@@ -5124,7 +5132,7 @@ $poll.Add_Tick({
                     # FR #9462 / #3180: online_zero_workers is TipForm Agents only — skip auto intervene/fill nudge.
                     $ozOnly = $true
                     foreach ($a in @($alerts)) {
-                        if ($a -and ($a -notmatch 'online_zero_workers')) { $ozOnly = $false; break }
+                        if ($a -and ($a -notmatch 'online_zero_workers|engine_restart_storm')) { $ozOnly = $false; break }
                     }
                     if (-not $ozOnly -and (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue)) {
                         $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
