@@ -14,14 +14,29 @@ function Get-BobTrayDialogExe {
 }
 
 function Start-BobTrayDialog {
-    # Returns $true when the exe was started (it may exit at once if its window is already open: single instance).
+    # Returns $true when the exe was started with a visible HWND (or about: started).
+    # FR #9166: for status, briefly probe MainWindowHandle; if it stays 0, kill the
+    # windowless holder (frees single-instance mutex) and return $false so TipForm falls back.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][ValidateSet('about', 'status')][string]$Name)
     $exe = Get-BobTrayDialogExe -Root $Root -Name $Name
     if (-not $exe) { return $false }
     try {
         # FR #2590 / #2585: do not embed quotes in Start-Process ArgumentList values (they become part of --root).
-        [void](Start-Process -FilePath $exe -ArgumentList @('--root', $Root) -WorkingDirectory $Root -ErrorAction Stop)
-        return $true
+        $p = Start-Process -FilePath $exe -ArgumentList @('--root', $Root) -WorkingDirectory $Root -PassThru -ErrorAction Stop
+        if (-not $p) { return $false }
+        if ($Name -ne 'status') { return $true }
+        # Short probe only (TipForm UI thread). Cold status usually paints well under this.
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep -Milliseconds 50
+            try {
+                $proc = Get-Process -Id $p.Id -ErrorAction Stop
+                if ($proc.HasExited) { return $false }
+                if ($proc.MainWindowHandle -ne [IntPtr]::Zero) { return $true }
+            }
+            catch { return $false }
+        }
+        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+        return $false
     }
     catch { return $false }
 }

@@ -605,10 +605,40 @@ namespace BobDialogs
             if (!Common.Single("Status", "Bobiverse status")) return 0;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            StatusForm f = new StatusForm(root);
-            Common.TimingHook(f, args);
-            Application.Run(f);
-            return 0;
+            StatusForm f = null;
+            try
+            {
+                f = new StatusForm(root);
+                Common.TimingHook(f, args);
+                // Force HWND creation before Run. Windowless holders block TipForm left-click (FR #9166).
+                IntPtr h = f.Handle;
+                if (h == IntPtr.Zero || !f.IsHandleCreated)
+                {
+                    try { f.Dispose(); } catch { }
+                    Common.ReleaseSingle();
+                    return 2;
+                }
+                f.Show();
+                if (!f.Visible)
+                {
+                    try { f.Dispose(); } catch { }
+                    Common.ReleaseSingle();
+                    return 2;
+                }
+                Application.Run(f);
+                return 0;
+            }
+            catch
+            {
+                try { if (f != null) f.Dispose(); } catch { }
+                Common.ReleaseSingle();
+                throw;
+            }
+            finally
+            {
+                // Process exit also drops the mutex; Release after Run so a clean Close frees TipForm sooner.
+                Common.ReleaseSingle();
+            }
         }
     }
 }

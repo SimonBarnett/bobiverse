@@ -2841,8 +2841,27 @@ function Hide-BobTrayCard {
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
-    # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
-    if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
+    # when tools\bob-status.exe is not installed, hwnd stays 0 (FR #9166), or park TipForm owns the icon (#9011).
+    try {
+        if ($menu -and $menu.Visible) {
+            Write-TrayLog 'StatusSkipped visible=true'
+            return
+        }
+    } catch { }
+    $toolsDir = Join-Path $RepoRoot 'tools'
+    $parked = $false
+    try {
+        if ((Test-Path -LiteralPath (Join-Path $toolsDir 'bob-tray.exe.clickfalse-park')) -or
+            (Test-Path -LiteralPath (Join-Path $toolsDir 'bob-tray.exe.clicktrue-park'))) {
+            $parked = $true
+        }
+    } catch { }
+    if (-not $parked) {
+        if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
+    }
+    else {
+        Write-TrayLog 'StatusSkipped park=TipForm-card'
+    }
     Update-Hover
     Show-BobTrayCard -Reason 'click'
 }
@@ -4292,6 +4311,48 @@ $miLog = $menu.Items.Add('Open log')
 $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
+
+# FR #9166 / #9163 menustuck: never Cancel AppFocusChange Closing (that left sticky
+# bobTrayMenuOpen with an invisible strip so left-click StatusSkipped). Arm items
+# after 350ms; clear the sticky flag on Closed (and if Opening raced !Visible).
+$script:bobTrayMenuOpen = $false
+$menu.Add_Opening({
+        $script:bobTrayMenuOpen = $true
+        try { Hide-BobTrayCard } catch { }
+        try {
+            foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+                try { [void]$pr.CloseMainWindow() } catch { }
+            }
+        } catch { }
+        foreach ($it in @($menu.Items)) {
+            try { if ($it -and -not ($it -is [System.Windows.Forms.ToolStripSeparator])) { $it.Enabled = $false } } catch { }
+        }
+        $arm = New-Object System.Windows.Forms.Timer
+        $arm.Interval = 350
+        $arm.Add_Tick({
+                try { $arm.Stop() } catch { }
+                try { $arm.Dispose() } catch { }
+                foreach ($it in @($menu.Items)) {
+                    try { if ($it -and -not ($it -is [System.Windows.Forms.ToolStripSeparator])) { $it.Enabled = $true } } catch { }
+                }
+                Write-TrayLog 'MenuItemsArmed'
+            })
+        $arm.Start()
+    })
+$menu.Add_Closing({
+        param($sender, $e)
+        # Never Cancel AppFocusChange (or any reason): Cancel left an invisible sticky menu.
+        try { Write-TrayLog ('MenuClosing reason=' + [string]$e.CloseReason) } catch { }
+    })
+$menu.Add_Closed({
+        $script:bobTrayMenuOpen = $false
+        Write-TrayLog 'MenuFlagCleared'
+        try {
+            if ($menu -and -not $menu.Visible -and $script:bobTrayMenuOpen) {
+                $script:bobTrayMenuOpen = $false
+            }
+        } catch { }
+    })
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({
