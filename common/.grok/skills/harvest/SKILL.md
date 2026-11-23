@@ -393,3 +393,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When FR #9236 tip CONFLICTING with #9297 bobcallback intake skips: keep LOW_MEM_* constants and free_mb intake plus early pytest/UNIT_TEST_LISTENER_PORTS skips; do not drop either side.
 - FR #9310: live_seat_nicks must skip machines with workers_stale (FR #8513 last-good restore into worker_list); otherwise auto-offer targets dead nicks after workers=[].
 - Composed J:\ Start/Invoke must prefer Bob tip Sync that contains sync-monitor-force over stale J:\scripts\Sync; else tools\monitor never force-copies (opencode_seats class of #9309)
+- MRB CI-G2: PASS when build-jeeves pull_request runs open_children_gate.py --pr with issues/pull-requests read; stack may Closes CI-G1+#G2 together; soft-ok without Closes parents
