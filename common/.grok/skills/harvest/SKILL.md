@@ -382,3 +382,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Never Path.read_bytes() the whole outbox in take_outbox_records --- seek to .pos offset and cap the read (OUTBOX_READ_MAX_BYTES) or the ear OOMs (FR #9239).
 - After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.
 - OpenCode: one park-worktree at a time per seat; NACK busy, holding <first> for a second job; accept_offered refuses twin when nick already accepted (FR #9254).
+- OpenCode opencode-lost-ack-stale / opencode-frozen-progress recycles with exit_code None skip seat-stopped intake (class of #7978/#9025); MRB may repair PR body control-char nits without a fix PR.
