@@ -334,5 +334,7 @@ function Write-BobiverseVendoredExeManifest {
     }
     $utf8 = New-Object Text.UTF8Encoding $false
     [IO.File]::WriteAllText($Path, (($doc | ConvertTo-Json -Compress) + [Environment]::NewLine), $utf8)
-    return $Path
+    # FR #6969 / MRB #9358: never return $Path on the success stream. Stage-Product
+    # ends with `return $stage`; a returned MANIFEST path concatenates into $Stage
+    # and heat then throws "heat stage is not a directory: ...MANIFEST.json ...".
 }
