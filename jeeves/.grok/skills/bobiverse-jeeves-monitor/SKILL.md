@@ -82,7 +82,7 @@ Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `De
 | `bobiverse-jeeves-agent-depends-on` | Every monitor cycle **once BOB-D offer skip is on tip** (D1/D3+); until then load on demand only |
 | `bobiverse-jeeves-agent-fr-digest` | Every cycle **after** depends-on once BOB-G1 is on tip; until then on demand only |
 
-Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo.
+Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo. **CAST IRON (FR #9400):** never let a tool-only PR `Closes` #9376 (or any walrus rebuild/install / GateIssues tracker) while Depends-on / GateIssues remain OPEN — use `Refs` / `Toward` until acceptance; reopen if GitHub auto-closed early.
 
 **Ops until BOB-G1 (FR #9344):** unhold alone does not release children whose bodies still list `Depends-on: #<digest>` while live D3 skips open parents --- close the digest (or clear Depends-on) so assign can proceed.
 
@@ -191,4 +191,5 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 ## Harvested lessons
 
 - If build-jeeves / tip CI fails while waiting on FR #9376 walrus install: FR the CI failures; do not Install-JeevesWalrusWinRm -SiYes until green.
+- **FR #9400:** never `Closes` ops/gate tracker issues while Depends-on / GateIssues still OPEN — tool-only PRs use `Refs` / `Toward`; reopen if GitHub auto-closed early.
 - FR #9376 / PR #9387: document and prefer `Install-JeevesWalrusWinRm.ps1` + check `walrus_jeeves_install_ready` (full playbook in `bobiverse-jeeves-agent-install`). DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only.
