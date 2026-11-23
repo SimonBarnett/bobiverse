@@ -5129,9 +5129,11 @@ $script:trayHoverSub = Register-ObjectEvent -InputObject $script:trayHoverTimer 
 } -MessageData $script:trayHoverMsg
 $script:trayHoverTimer.Start()
 
-# FR #4142 / FR #5032 / FR #9150: ThreadPool digest heartbeat --- Write-BobIrcStatus off the
-# WinForms UI for TipForm and engine. Event Action re-dots helpers each tick.
+# FR #4142 / FR #5032 / FR #9150 / FR #9198: ThreadPool digest heartbeat --- Write-BobIrcStatus
+# off the WinForms UI for TipForm and engine. Event Action re-loads helpers each tick.
 # Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped; Write-BobIrcStatus lives in tray src.
+# FR #9198: Action runspace has no parent BobBridge --- Import-Module so Get-ThisMachineId
+# (and other Public helpers Write-BobIrcStatus needs) resolve; re-dot alone is not enough.
 $script:trayDigestTimer = New-Object System.Timers.Timer
 $script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
 $script:trayDigestTimer.AutoReset = $true
@@ -5142,6 +5144,7 @@ $script:trayDigestMsg = [pscustomobject]@{
     Common   = (Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1')
     IrcPs    = (Join-Path $RepoRoot 'src\Private\Get-BobIrc.ps1')
     StatusPs = (Join-Path $RepoRoot 'scripts\Write-BobIrcStatus.ps1')
+    Psd1     = (Join-Path $RepoRoot 'src\BobBridge.psd1')
 }
 $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTimer -EventName Elapsed -Action {
     try {
@@ -5150,6 +5153,14 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         # FR #5032: Action scope has no parent functions --- re-dot every tick.
         if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
             try { . $msg.Dialogs } catch { }
+        }
+        # FR #9198 / trayHoverTimer pattern: Import BobBridge when Public helpers missing.
+        # Dotting Get-BobIrc alone defines Write-BobIrcStatus but not Get-ThisMachineId.
+        if ($msg.Psd1 -and (Test-Path -LiteralPath $msg.Psd1)) {
+            if (-not (Get-Command Get-ThisMachineId -ErrorAction SilentlyContinue) -or
+                -not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
+                try { Import-Module $msg.Psd1 -Force } catch { }
+            }
         }
         # FR #9150: run for TipForm and engine (UI poll no longer posts digest).
         if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
