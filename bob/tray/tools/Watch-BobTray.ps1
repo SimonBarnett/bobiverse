@@ -2759,8 +2759,48 @@ function Set-Attention([string[]]$alerts) {
 }
 
 function Update-Hover {
-    param([switch]$SkipUi)
+    param(
+        [switch]$SkipUi,
+        # FR #9150 / #9149: paint TipForm/NotifyIcon from run\tray-status.json only (no Get-BobTrayHover).
+        [switch]$FromSnapshot
+    )
     try {
+        if ($FromSnapshot) {
+            $path = Join-Path $RepoRoot 'run\tray-status.json'
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+            $raw = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false))
+            $model = $raw | ConvertFrom-Json
+            if (-not $model) { return }
+            $script:hoverTitle = [string]$model.title
+            if (-not $script:hoverTitle) { $script:hoverTitle = Get-BobTrayTitle -MachineId $env:BOB_MACHINE_ID }
+            $script:hoverBody = [string]$model.body
+            $pct = $null
+            try {
+                if ($model.remaining_pct -ne $null -and [string]$model.remaining_pct -ne '') {
+                    $pct = [int]$model.remaining_pct
+                }
+            } catch { $pct = $null }
+            $script:remainingPct = $pct
+            $paint = Get-BobTrayBarPaint -RemainingPct $script:remainingPct -BarWidth 392
+            $script:alertKind = Get-BobTrayAlertKind -Alerts $script:lastAlerts -RemainingPct $script:remainingPct
+            $short = [string]$model.short
+            if (-not $short) { $short = [string]$script:hoverTitle }
+            if ($script:attention) { $short = '! ' + $short }
+            if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
+            $script:notifyTipText = $short
+            if ($SkipUi) { return }
+            Clear-BobNativeTip
+            if ($script:titleLabel) {
+                $script:titleLabel.Text = $script:hoverTitle
+                if ($script:alertLabel) {
+                    $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
+                }
+                if (-not $script:attention -and -not $paint.pulse -and $notify.Icon -ne $iconIdle) {
+                    $notify.Icon = $iconIdle
+                }
+            }
+            return
+        }
         $h = Get-BobTrayHover
         $script:hoverBody = [string]$h.body
         # FR #345: list each watch seat separately (nick + slot) on tooltip body
@@ -4735,35 +4775,15 @@ $poll.Add_Tick({
                     $script:lastAlerts = $alerts
                     Write-TrayLog ('engine stall alerts: ' + ($alerts -join ' | '))
                 }
-                # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
-                # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
+                # FR #1553 / #4142: ThreadPool owns worker-sync + digest. TipForm (#9011 park)
+                # must not Wait-Job Get-BobTrayHover on the WinForms STA (FR #9150 / #9149).
                 if (-not $engine) {
                     # FR #9046: exe timer is absent while bob-tray.exe is parked.
                     try { Update-BobTrayWatchDigestPools } catch { }
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
-                    $swW = [System.Diagnostics.Stopwatch]::StartNew()
-                    try {
-                        if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
-                            [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
-                        }
-                    } catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
-                    $swW.Stop()
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=worker-sync sec={0:n2}' -f $swW.Elapsed.TotalSeconds)
-                    # FR #7579: Update-Hover (incl. Get-BobTrayHover) under timeout so a hang cannot freeze the UI thread.
-                    [void](Invoke-BobTrayEngineStep -Name 'update-hover' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
-                        param($Root, $Tools)
-                        $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
-                        if (Test-Path -LiteralPath $dialogs) { . $dialogs }
-                        $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
-                        $h = Get-BobTrayHover
-                        if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
-                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
-                            [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
-                        }
-                    })
-                    # TipForm paint on UI thread after snapshot job (best-effort; alive already stamped).
-                    try { Update-Hover } catch { Write-TrayLog ('update-hover paint: ' + $_.Exception.Message) }
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=worker-sync reason=tipform-ui-threadpool'
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=update-hover reason=tipform-ui-snapshot'
+                    # Off-thread snapshot refresh (trayHoverTimer); UI only paints last snapshot.
+                    try { Update-Hover -FromSnapshot } catch { Write-TrayLog ('update-hover-ui: ' + $_.Exception.Message) }
                 }
                 else {
                     # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
@@ -4795,18 +4815,10 @@ $poll.Add_Tick({
                     }
                 }
                 # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
-                # FR #4142: in engine mode Write-BobIrcStatus runs on trayDigestTimer (non-UI).
-                if (-not $engine -and (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
-                    try { Write-BobIrcStatus | Out-Null } catch {
-                        if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { return }
-                        Write-TrayLog ('digest Write-BobIrcStatus: ' + $_.Exception.Message)
-                        try {
-                            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
-                                Report-BobDeterministicException -Site 'Watch-BobTray.Write-BobIrcStatus' -Exception $_.Exception -ScriptPath $PSCommandPath | Out-Null
-                            }
-                        }
-                        catch { }
-                    }
+                # FR #4142 / #9150 / #9149: TipForm and engine both use trayDigestTimer (non-UI).
+                # Never Write-BobIrcStatus on the WinForms poll — it freezes ContextMenuStrip.
+                if (-not $engine) {
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=digest-status reason=tipform-ui-threadpool'
                 }
                 Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'cycle-end name=poll'
             }
@@ -4862,10 +4874,61 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
 } -MessageData $script:trayWorkerSyncMsg
 $script:trayWorkerSyncTimer.Start()
 
-# FR #4142 / FR #5032: ThreadPool digest heartbeat --- Write-BobIrcStatus off the WinForms UI
-# thread in engine mode. Event Action runs in its own runspace: re-dot helpers each tick
-# (same pattern as trayWorkerSyncTimer). Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped;
-# Write-BobIrcStatus lives in tray src (via Bobiverse-Common / Get-BobIrc.ps1).
+# FR #9150 / #9149: TipForm hover snapshot refresh off the WinForms STA (no Wait-Job).
+# Engine mode keeps update-hover-engine on the poll warm step; this timer is TipForm-only.
+$script:trayHoverTimer = New-Object System.Timers.Timer
+$script:trayHoverTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
+$script:trayHoverTimer.AutoReset = $true
+$script:trayHoverTimer.SynchronizingObject = $null
+$script:trayHoverBusy = $false
+$script:trayHoverMsg = [pscustomobject]@{
+    Root    = $RepoRoot
+    Dialogs = (Join-Path $RepoRoot 'tools\BobTrayDialogs.ps1')
+    Tools   = $PSScriptRoot
+    Psd1    = (Join-Path $RepoRoot 'src\BobBridge.psd1')
+    Engine  = [bool](Test-BobTrayEngineMode)
+}
+$script:trayHoverSub = Register-ObjectEvent -InputObject $script:trayHoverTimer -EventName Elapsed -Action {
+    if ($script:trayHoverBusy) { return }
+    $script:trayHoverBusy = $true
+    try {
+        $msg = $Event.MessageData
+        if (-not $msg -or -not $msg.Root) { return }
+        if ($msg.Engine) { return }
+        if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
+            try { . $msg.Dialogs } catch { }
+        }
+        if ($msg.Psd1 -and (Test-Path -LiteralPath $msg.Psd1)) {
+            try { Import-Module $msg.Psd1 -Force } catch { }
+        }
+        if (-not (Get-Command Get-BobTrayHover -ErrorAction SilentlyContinue)) { return }
+        $h = Get-BobTrayHover
+        if ($h -and (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) -and (Get-Command New-BobTrayStatusModel -ErrorAction SilentlyContinue)) {
+            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' `
+                -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) `
+                -Attention $false -AttentionSeq 0 -Pulse $false
+            [void](Write-BobTrayStatusSnapshot -Root ([string]$msg.Root) -Model $model)
+        }
+    }
+    catch {
+        try {
+            $root = if ($Event.MessageData) { [string]$Event.MessageData.Root } else { '' }
+            $hf = Join-Path $root 'src\Private\Invoke-BobMustReportFailure.ps1'
+            if ($root -and (Test-Path -LiteralPath $hf)) { . $hf }
+            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                Invoke-BobMustReportFailure -Component 'tray' -Site 'trayHoverTimer' -Exception $_.Exception
+            }
+        } catch { }
+    }
+    finally {
+        $script:trayHoverBusy = $false
+    }
+} -MessageData $script:trayHoverMsg
+$script:trayHoverTimer.Start()
+
+# FR #4142 / FR #5032 / FR #9150: ThreadPool digest heartbeat --- Write-BobIrcStatus off the
+# WinForms UI for TipForm and engine. Event Action re-dots helpers each tick.
+# Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped; Write-BobIrcStatus lives in tray src.
 $script:trayDigestTimer = New-Object System.Timers.Timer
 $script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
 $script:trayDigestTimer.AutoReset = $true
@@ -4885,8 +4948,7 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
             try { . $msg.Dialogs } catch { }
         }
-        if (-not (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue)) { return }
-        if (-not (Test-BobTrayEngineMode)) { return }
+        # FR #9150: run for TipForm and engine (UI poll no longer posts digest).
         if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
             if ($msg.StatusPs -and (Test-Path -LiteralPath $msg.StatusPs)) {
                 try { . $msg.StatusPs } catch { }
@@ -5195,6 +5257,11 @@ catch { }
 try {
     if ($script:trayWorkerSyncTimer) { $script:trayWorkerSyncTimer.Stop(); $script:trayWorkerSyncTimer.Dispose() }
     if ($script:trayWorkerSyncSub) { Unregister-Event -SourceIdentifier $script:trayWorkerSyncSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayWorkerSyncSub -Force -ErrorAction SilentlyContinue }
+}
+catch { }
+try {
+    if ($script:trayHoverTimer) { $script:trayHoverTimer.Stop(); $script:trayHoverTimer.Dispose() }
+    if ($script:trayHoverSub) { Unregister-Event -SourceIdentifier $script:trayHoverSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayHoverSub -Force -ErrorAction SilentlyContinue }
 }
 catch { }
 try {
