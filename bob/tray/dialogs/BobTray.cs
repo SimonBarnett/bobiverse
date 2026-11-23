@@ -2918,6 +2918,13 @@ namespace BobDialogs
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
                 return 0;
             }
+            // FR #9266 / BOB-TRAY-UI-06: exit-before-UI Refresh models control evidence.
+            string dumpWeightsRefresh = Common.Arg(args, "--dump-weights-refresh");
+            if (dumpWeightsRefresh.Length > 0)
+            {
+                File.WriteAllText(dumpWeightsRefresh, WeightsForm.DumpRefreshButton(), new UTF8Encoding(false));
+                return 0;
+            }
             // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
             string dumpWeightsValid = Common.Arg(args, "--dump-weights-valid");
             if (dumpWeightsValid.Length > 0)
