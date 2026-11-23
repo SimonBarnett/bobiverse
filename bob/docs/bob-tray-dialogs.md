@@ -18,11 +18,11 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **Tech: C# WinForms, compiled by the in-box .NET Framework 4 `csc.exe`** (`scripts\Build-BobDialogs.ps1`, sources `dialogs\*.cs`).
   Why: ~26 KB exes, nothing to unpack at start (a PyInstaller one-file exe extracts ~10 MB to `%TEMP%` on **every** start and tkinter adds
   more), only NGEN'd framework DLLs, no extra toolchain on the build or target machine (csc ships with Windows 10/11).
-* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then `plan <version>` and `priority <version>` (FR #8675 / BOB-10), then one block of install inventory
+* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then `plan <version>` and `priority <version>` (FR #8675 / BOB-10); FR #8677 **Show logs** button opens `watch_bob_tray.log`; then one block of install inventory
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
 * **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326** / **#7510** / **#7580**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
-  workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. Non-pool fields come from `<root>\run\tray-status.json`; **pool %** (grok / OpenCode / Copilot / `digest_pools`) prefer `<root>\run\tray-digest-pools.json` (FR #7510), which `bob-tray.exe` refreshes every 60s from `https://bob.ntsa.uk/bob/v1/report` via `tools\Update-BobTrayDigestPools.ps1` whether the PS engine is alive or not. **FR #7602:** that GET (and `Read-BobReportDigestHttp`) uses `Invoke-BobDigestHttpGet` (`HttpWebRequest` Timeout + ReadWriteTimeout) so a hung or half-closed socket fails within the budget under PS 5.1. **FR #7580:** TipForm/Status paint those pool rows **as the digest publishes them** (no local age/`fetched_at` staleness in the tray); `[stale]` only when the digest meter says so. A digest fetch failure keeps the last rows, sets `digest_ok=false`, and `CrashHook.Report`s once per failure window. The Status exe never touches the network and re-reads both files every 2 s. Parked until X / Esc; drag by the title.
+  workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. Non-pool fields come from `<root>\run\tray-status.json`; **pool %** (grok / OpenCode / Copilot / `digest_pools`) prefer `<root>\run\tray-digest-pools.json` (FR #7510), which `bob-tray.exe` refreshes every 60s from `https://bob.ntsa.uk/bob/v1/report` via `tools\Update-BobTrayDigestPools.ps1` whether the PS engine is alive or not. **FR #9011:** that refresh (and the 15s WMI/heal watchdog) runs on `System.Threading.Timer` / ThreadPool with an Interlocked busy gate — never `WaitForExit` or WMI on the WinForms message pump — so NotifyIcon left/right-click stays live while `digest-fetch-failed` may still log. **FR #7602:** that GET (and `Read-BobReportDigestHttp`) uses `Invoke-BobDigestHttpGet` (`HttpWebRequest` Timeout + ReadWriteTimeout) so a hung or half-closed socket fails within the budget under PS 5.1. **FR #7580:** TipForm/Status paint those pool rows **as the digest publishes them** (no local age/`fetched_at` staleness in the tray); `[stale]` only when the digest meter says so. A digest fetch failure keeps the last rows, sets `digest_ok=false`, and `CrashHook.Report`s once per failure window. The Status exe never touches the network and re-reads both files every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
   `unlimited` when reported as such (never as zero/exhausted). Live values require the #5173 `bobreport.py` deployment on
   the digest host (`https://bob.ntsa.uk/bob/v1/report`); that deployment is separate and needs Simon's go.
@@ -51,8 +51,8 @@ It runs the Status and About windows in-process (no second process to start).
   Exe and engine talk only through files in `<root>\run`: `tray-status.json` (engine -> exe: `short` hover text, `alert`, `attention`,
   `attention_seq`, `pulse`, plus the dashboard model), `tray-env.json` (engine -> exe: the `BOB_*`/`AGENTIC_*`/`BOBIVERSE_*` environment for workers),
   `tray-cmd.txt` (exe -> engine: `ack`, `exit`, `restart`; operator/ear -> host: `reload` FR #5111). The engine leaves when the exe is gone; the exe restarts a dead engine (max 3 per 5 min).
-* **Exit** closes the windows, hides the icon, stops the ircBob service (detached) and ends the engine; **Restart** hides the icon and has the engine
-  re-launch the tray **without** restarting ircBob (FR #5111 `-SkipServiceRestart`). `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ForceNew, tidy unchanged; ircBob restart-on-start only when not skipped) and
+* **Exit** (FR #9034) closes the windows, hides the icon, and ends the tray/engine only — **never** stops the ircBob ear service. **Restart** hides the icon and has the engine
+  re-launch the tray **without** restarting ircBob (FR #5111 `-SkipServiceRestart`). Ear recycle is **Restart-BobEar**, not TipForm Exit. `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ForceNew, tidy unchanged; ircBob restart-on-start only when not skipped) and
   kills the old PowerShell tray; without the exe it starts the PowerShell tray as before, which stays a complete fallback.
   Restart allows up to 60 seconds for the graceful IRC logout and bootstrap (FR #5177). Commands are claimed before callbacks,
   and engine startup discards stale commands so an interrupted restart cannot replay.
@@ -137,6 +137,16 @@ TipForm and Status paint Copilot as a family header plus one left-aligned UsageR
 **Labelled OpenCode keys (Part D):** ear reads `config\opencode-keys\<label>.apikey` (SYSTEM+Administrators ACL) via `Write-BobOpencodeGoApiKey.ps1` or hand-copy; publishes `opencode_account` and `no key set` when absent. TipForm masked set/select menu lands in FR #6309.
 
 Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `bob/tests/test_fr6429_opencode_tray_submenu.py`, `common/tests/test_fr6301_opencode_keys.py`, `bob/tests/test_mrb6303_docs_pins.py`.
+
+## FR #8695 / BOB-53 Priority MCP (mcp.ntsa.uk)
+
+**Agents > Priority** is a submenu. **Start PriorityAgent** still launches `vendor\priority\PriorityAgent.exe` (BOB-50). **Configure MCP (mcp.ntsa.uk)** registers the Grok user-level server `priority-catalog` at `https://mcp.ntsa.uk/mcp`. The same registration is what `PriorityAgent.exe` adds; the tray also refuses a wrong URL instead of keeping it.
+
+- Compiled default `https://mcp.ntsa.uk/mcp`. Optional shipped `tray/config/default.json` key `priorityMcpUrl` is accepted only for scheme `https` and host `mcp.ntsa.uk`. Any other value is rejected and the constant is used. There is no `%LOCALAPPDATA%` override for this key.
+- Workflow: `grok mcp list`, `grok mcp add --transport http priority-catalog <url>` only when the entry is absent, then `grok mcp doctor priority-catalog`. A different URL or a `stdio` entry sets `state=wrong` and is not overwritten. `list` failure is `state=list-failed`. A missing `grok` is `state=grok-missing`.
+- Doctor is `ok` only when the exit code is 0, the output contains `handshake OK`, and it does not contain `handshake failed`.
+- Evidence file: `<root>\run\tray-priority-mcp.json` (`name`, `url`, `state`, `doctor`, `doctorMessage`, `ts`, `version`). One lifecycle line `priority-mcp` carries the same fields and no environment dump. Headless: `bob-tray.exe --priority-mcp-configure <out.json>` (no message box). The menu action shows a message box.
+- Grok resolution: `%USERPROFILE%\.grok\bin\grok.exe`, then `grok.exe` / `grok.cmd` / `grok.bat` on `PATH`.
 
 ## FR #6309 TipForm OpenCode keys menu
 
