@@ -26,7 +26,7 @@ def smoke(skills_root: Path | str) -> dict[str, Any]:
     cycle = find_cycle(nodes) if nodes else None
     if cycle:
         raise RuntimeError("skill DAG cycle: " + " -> ".join(cycle))
-    # Prove lazy: result carries ids/paths/bytes only — never concatenated bodies.
+    # Prove lazy: result carries ids/paths/bytes only - never concatenated bodies.
     slim = [{"id": n.get("id"), "path": n.get("path"), "bytes": n.get("bytes")} for n in nodes]
     line = f"jeeves-dag lazy nodes={len(slim)} root={root}"
     return {"mode": "lazy", "nodes": len(slim), "skills": slim, "line": line}

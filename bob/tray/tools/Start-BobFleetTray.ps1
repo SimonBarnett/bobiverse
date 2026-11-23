@@ -155,7 +155,9 @@ function Invoke-BobSystrayTidy {
     if (Test-Path -LiteralPath $icons) {
         Write-Output 'tidy: Clear-BobOrphanNotifyIcons'
         try {
-            & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons 2>&1 | ForEach-Object { Write-Output $_ }
+            # FR #9169: HealLadder escalates to explorer recycle when toolbars=0.
+            $clearOut = & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder 2>&1
+            $clearOut | ForEach-Object { Write-Output $_ }
         }
         catch {
             Write-Warning ("tidy notify icons failed: {0}" -f $_.Exception.Message)
@@ -351,11 +353,12 @@ else {
 
 Start-Sleep -Seconds 2
 # Second icon sweep: Explorer drops ghosts from the ForceNew kill once the new tray is up.
+# FR #9169: HealLadder recycles explorer when the first pass still reports toolbars=0.
 if (-not $SkipTidy) {
     $icons = Join-Path $RepoRoot 'tools\Clear-BobOrphanNotifyIcons.ps1'
     if (Test-Path -LiteralPath $icons) {
         try {
-            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons | Out-Null
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder | Out-Null
         }
         catch { }
     }

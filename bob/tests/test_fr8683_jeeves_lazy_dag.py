@@ -63,6 +63,6 @@ def test_lazy_dag_smoke_indexes_without_eager_bodies(tmp_path: Path):
     assert data["mode"] == "lazy"
     assert data["nodes"] == 2
     assert data["line"].startswith("jeeves-dag lazy nodes=2")
-    # Slim payload: ids/paths/bytes only — no body text from SKILL.md.
+    # Slim payload: ids/paths/bytes only - no body text from SKILL.md.
     blob = json.dumps(data)
     assert "xxxxx" not in blob and "yyyyy" not in blob
