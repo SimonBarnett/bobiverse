@@ -1073,6 +1073,8 @@ namespace BobDialogs
                 }
                 catch { }
 
+                // FR #8683 / BOB-39: lazy skill DAG on J: skills (resolve/get_skill; not eager full load).
+                TrayLifecycle.Write("jeeves-dag", "lazy", JeevesLazyDag.DryRunLine());
                 // FR #8679 / BOB-37: cwd is J: (mapped to Ergo ai\jeeves). Dry-run prints cwd J:.
                 TrayLifecycle.Write("jeeves", "cwd", "cwd J:");
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
@@ -2116,6 +2118,23 @@ namespace BobDialogs
                 TrayLifecycle.Write("marchhare-cursor-gate", "remaining", "0", "action", "dialog-quit");
                 return;
             }
+            // FR #8733 / BOB-28: Workers > Open Code — dialog + quit when free and paid are both exhausted.
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase)
+                && string.Equals((agent ?? "").Trim(), "opencode", StringComparison.OrdinalIgnoreCase)
+                && OpenCodePaidExhaustedGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE")))
+            {
+                try
+                {
+                    MessageBox.Show(
+                        OpenCodePaidExhaustedGate.Body,
+                        OpenCodePaidExhaustedGate.Title,
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                catch { }
+                TrayLifecycle.Write("workers-opencode", "action", "dialog-quit", "reason", "paid-exhausted");
+                return;
+            }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
             int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
             if (pid == 0 && err.Length > 0)
@@ -2740,6 +2759,15 @@ namespace BobDialogs
             {
                 bool exhausted = MarchHareCursorGate.IsExhausted(root);
                 File.WriteAllText(marchhareGateOut, MarchHareCursorGate.DumpStatusJson(root), new UTF8Encoding(false));
+                return exhausted ? 2 : 0;
+            }
+            // FR #8733 / BOB-28: headless free+paid exhausted check (fixture free=0 paid=0).
+            string ocPaidGateOut = Common.Arg(args, "--check-opencode-paid-exhausted");
+            if (ocPaidGateOut.Length > 0)
+            {
+                string fuelEnv = Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE");
+                bool exhausted = OpenCodePaidExhaustedGate.ShouldQuit(root, fuelEnv);
+                File.WriteAllText(ocPaidGateOut, OpenCodePaidExhaustedGate.DumpStatusJson(root, fuelEnv), new UTF8Encoding(false));
                 return exhausted ? 2 : 0;
             }
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.
