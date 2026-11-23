@@ -198,6 +198,15 @@ function Assert-BobiverseStageHasOpencodeFuel([string]$Stage) {
     }
 }
 
+function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
+    # FR #9224: BobCallback imports flat scripts\models_refresh.py for POST
+    # /bob/v1/models/refresh. A stage without it installs a chair that 404s refresh.
+    $mr = Join-Path $Stage 'scripts\models_refresh.py'
+    if (-not (Test-Path -LiteralPath $mr -PathType Leaf)) {
+        throw 'bobiverse pack missing scripts\models_refresh.py (common\scripts union)'
+    }
+}
+
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -206,6 +215,8 @@ function Stage-Product([string]$Name) {
     Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts' -Dest (Join-Path $stage 'scripts')
     # Flat scripts\opencode_fuel.py comes from common\scripts (Get-BobOpencodeFuel import).
     Assert-BobiverseStageHasOpencodeFuel -Stage $stage
+    # Flat scripts\models_refresh.py comes from common\scripts (BobCallback POST refresh).
+    Assert-BobiverseStageHasModelsRefresh -Stage $stage
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
