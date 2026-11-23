@@ -208,4 +208,5 @@ def test_fr8023_low_disk_nacks_create_failed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("shutil.disk_usage", lambda _p: Usage())
     decision = c.ensure_opencode_job_worktree(line, env, install_root=str(clone))
     assert decision["state"] == "create_failed"
-    assert "worktree-create-failed:disk" in decision["nack"]
+    # FR #9183: free-space admission class is disk-low (was disk under FR #8023).
+    assert "worktree-create-failed:disk-low" in decision["nack"]

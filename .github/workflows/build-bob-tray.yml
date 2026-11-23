@@ -105,6 +105,11 @@ jobs:
           if (-not $files) { throw "MANIFEST.json missing files hashes (FR #7248)" }
           $hoverKey = "src/Public/Get-BobTrayHover.ps1"
           if (-not $files.$hoverKey) { throw "MANIFEST.json missing $hoverKey" }
+          # FR #9187: staged Invoke-BobFleet.ps1 must parse (no nameless param([string])).
+          . "$root\common\scripts\Bobiverse-Common.ps1"
+          $fleetGate = Assert-BobiverseInvokeBobFleetParses -InstallRoot $stage
+          if (-not $fleetGate.Ok) { throw ("FR #9187 fleet parse gate: " + $fleetGate.Reason) }
+          Write-Host ("INFO FR #9187 fleet parse gate ok: {0}" -f $fleetGate.Reason)
 
       - uses: actions/upload-artifact@v4
         with:
