@@ -17,10 +17,11 @@ The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus
 
 `Test-JeevesMonitorIntakeAllowlist.ps1` / `tools/monitor/intake_allowlist.py` probes live `POST /bob/v1/intake` with do-not-file titles for known products (including `SimonBarnett/a-search` and `SimonBarnett/trutex`).
 
-- HTTP **403** with JSON `error=repo_not_allowed` → EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR).
-- HTTP **403** without that JSON (Cloudflare `error code: 1010`, HTML WAF page) → probe error, **not** allowlist drift (FR #8861). Probes send `User-Agent: BobiverseIntakeAllowlist/1.0` so `bob.ntsa.uk` (Cloudflare) does not bot-block Python-urllib's default UA.
+- Denial is **only** HTTP **403** with JSON `error=repo_not_allowed` → EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR). FR #9100: both the returned-response and raised-`HTTPError` paths use that rule.
+- Every other non-2xx (Cloudflare `error code: 1010` / HTML WAF 403, empty route-gate 403, 5xx) → probe error, **not** allowlist drift (FR #8861 / #9100). Do **not** Sync for a probe error.
+- Probes send `User-Agent: BobiverseIntakeAllowlist/1.0 (+https://github.com/SimonBarnett/bobiverse)` plus `Content-Type` / `Accept` JSON headers so `bob.ntsa.uk` (Cloudflare) does not bot-block Python-urllib's default UA.
 - Also asserts on-disk `common/scripts/intake.py` exposes `repo_allowed` / SimonBarnett owner gate (FR #3135) when the file is present.
-- Remediation for JSON `repo_not_allowed`: confirm source allow rule, then on the chair run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
+- Remediation is scoped: Sync/compose guidance only for confirmed denials; probe-error remediation says Do not Sync.
 - Overrides: `BOB_INTAKE_URL`, `BOB_INTAKE_REQUIRED_REPOS` (comma list), `BOB_INTAKE_PY`.
 
 ## open_pr_stale_base (FR #8333)
@@ -58,11 +59,14 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 - FR #4725: install and chair start seed/merge `DEFAULT_RESYNC_REPOS` into chair + digest `resync-repos.txt` (includes `SimonBarnett/ce-priority`). Pack copy: `jeeves/defaults/resync-repos.txt`.
 - Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
 
-## Composed drive-root monitor scripts (FR #8860)
+## Composed drive-root monitor scripts (FR #8860 / #9007 / #9100)
 
-A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when that script sits beside it. Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
+A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650 / #9007). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when it can resolve that script: beside itself (composed flat), or under `BobInstallRoot\common\scripts` / `BobInstallRoot\scripts` for a repo tree such as `C:\ai\bob` (FR #9007). Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime; FR #9100 skips when source equals destination and warns on a nonzero Sync exit without blocking monitor start. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
 
-Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves`.
+`Invoke-JeevesMonitorCheck.ps1` does **not** refresh `tools\monitor`; start Monitor or run Sync after a probe hotfix. UNC installs such as `\\walrus\jeeves` need `BOBIVERSE_REPO` pointing at a checkout because Sync discovery uses drive prefixes.
+
+
+Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host).
 
 ## empty-offer playbook (FR #2448 / #2446)
 

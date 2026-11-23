@@ -1818,6 +1818,42 @@ def _restore_workers_last_good_if_empty(ent: dict) -> bool:
     return True
 
 
+def _drop_nick_from_worker_snapshots(ent: dict, nick: str) -> bool:
+    """FR #9042: worker-remove must drop a nick that lives only in last-good or pid workers.
+
+    Export paints ``workers_last_good`` when the live list is empty and the machine
+    is online. A remove that only looks at ``worker_list`` then returns 200 with
+    ``changed=False`` and the ghost stays on GET /bob/v1/report.
+    """
+    if not isinstance(ent, dict):
+        return False
+    low = str(nick or "").strip().lower()
+    if not low:
+        return False
+    dropped = False
+    last = ent.get("workers_last_good")
+    if isinstance(last, list):
+        kept = []
+        for row in last:
+            if isinstance(row, dict) and str(row.get("nick") or "").strip().lower() == low:
+                dropped = True
+                continue
+            kept.append(row)
+        if dropped:
+            if kept:
+                ent["workers_last_good"] = kept
+            else:
+                ent.pop("workers_last_good", None)
+                ent.pop("workers_last_good_at", None)
+    workers = ent.get("workers")
+    if isinstance(workers, dict):
+        for pid, row in list(workers.items()):
+            if isinstance(row, dict) and str(row.get("nick") or "").strip().lower() == low:
+                workers.pop(pid, None)
+                dropped = True
+    return dropped
+
+
 def _refresh_workers_last_good_from_live(ent: dict) -> None:
     """FR #8513: a successful live upsert refreshes last-good and clears stale."""
     if not isinstance(ent, dict):
@@ -3934,8 +3970,22 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         return CallbackOutcome(ok=False, err="secret")
     if op == "worker-remove":
         if idx < 0:
-            return CallbackOutcome(ok=True, changed=False)
+            if not _drop_nick_from_worker_snapshots(ent, nick):
+                return CallbackOutcome(ok=True, changed=False)
+            if briefer_nick:
+                doc["briefer"] = briefer_nick
+            doc["ts"] = now_iso
+            _note_event(doc, "worker-remove", machine=mid, nick=nick)
+            save_digest(home, doc)
+            try:
+                import gitclaim as _gitclaim
+
+                _gitclaim.release_accepted_for_departed_nick(home, nick)
+            except Exception:
+                pass
+            return CallbackOutcome(ok=True, changed=True)
         rows.pop(idx)
+        _drop_nick_from_worker_snapshots(ent, nick)
         event = "worker-remove"
         after_rows = _coerce_worker_list(rows)
         ent["worker_list"] = after_rows

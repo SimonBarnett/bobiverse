@@ -8,6 +8,7 @@
 // poll cannot starve the ear's !startworker heartbeat check.
 // FR #4136: HealEngine also restarts when engine.alive (written by the PS queue tick) is stale while the process
 // is still alive; tray.alive carries engine_last_tick for the ear's engine_stale NACK.
+// FR #9011: never block the WinForms pump with digest WaitForExit or WMI heal — dead NotifyIcon clicks while process stays up.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -108,6 +109,8 @@ namespace BobDialogs
         const int CreateNewConsole = 0x00000010;
         const int CreateUnicodeEnvironment = 0x00000400;
         const int CreateBreakawayFromJob = 0x01000000;
+        // FR #9097: Access Denied when the parent job forbids breakaway (compiled-menu path).
+        const int ErrorAccessDenied = 5;
 
         public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
@@ -433,6 +436,12 @@ namespace BobDialogs
         // FR #6429: childEnv is applied only to the new seat process (never the tray / tray-env.json).
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error)
         {
+            return Launch(root, mode, machine, agent, childEnv, out error, "");
+        }
+
+        // FR #8679 / BOB-37: cwdOverride (e.g. J:\ for Agents > Jeeves) wins over describe-launch cwd.
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride)
+        {
             error = "";
             if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
             {
@@ -481,7 +490,11 @@ namespace BobDialogs
                 try { File.Delete(old); } catch { }
             }
 
-            if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
+            if (!string.IsNullOrEmpty(cwdOverride))
+            {
+                wd = cwdOverride;
+            }
+            else if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
             {
                 wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
                 if (!Directory.Exists(wd)) wd = root;
@@ -494,7 +507,8 @@ namespace BobDialogs
             si.lpTitle = title;
             PROCESS_INFORMATION pi;
             IntPtr envBlock = IntPtr.Zero;
-            // FR #8568: always break away from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            // FR #8568: prefer breakaway from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            // FR #9097: on Access Denied (5) retry without breakaway (seat stays in parent job / kill-on-close).
             int flags = CreateNewConsole | CreateBreakawayFromJob;
             try
             {
@@ -504,7 +518,26 @@ namespace BobDialogs
                     flags |= CreateUnicodeEnvironment;
                 }
                 if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, envBlock, wd, ref si, out pi))
-                { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    if (err != ErrorAccessDenied)
+                    {
+                        error = "start failed: " + new Win32Exception(err).Message;
+                        return 0;
+                    }
+                    // Fresh buffers: CreateProcessW can mutate the command line / STARTUPINFO.
+                    cmd = new StringBuilder(Quote(run));
+                    foreach (string a in argv) cmd.Append(' ').Append(Quote(a));
+                    si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
+                    si.lpTitle = title;
+                    int retryFlags = CreateNewConsole;
+                    if (envBlock != IntPtr.Zero) retryFlags |= CreateUnicodeEnvironment;
+                    if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, retryFlags, envBlock, wd, ref si, out pi))
+                    {
+                        error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                        return 0;
+                    }
+                }
             }
             finally
             {
@@ -940,6 +973,8 @@ namespace BobDialogs
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
         System.Threading.Timer aliveTimer;
         System.Threading.Timer digestPoolsTimer; // FR #7510: digest pool refresh independent of engine
+        int digestPoolsBusy; // FR #9011: one WaitForExit at a time on the pool timer
+        int watchdogBusy; // FR #9011: WMI/heal off the WinForms pump
         int digestPoolsPid; // FR #8971: one pools child; a slow GET must not stack processes
         readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
@@ -974,6 +1009,21 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
+            // FR #8689 / BOB-48: Plan menu uses the skills-visionary GANTT asset, not a generic icon.
+            // Install sync lays tray assets at <install>\assets\ (same as bob-systray / menu-favicons).
+            // Repo checkout keeps bob\tray\assets\; try install path first.
+            string planGantt = Path.Combine(root, "assets", "plan-gantt.ico");
+            if (!File.Exists(planGantt))
+                planGantt = Path.Combine(root, "bob", "tray", "assets", "plan-gantt.ico");
+            TrayLifecycle.Write("plan", "action", "gantt icon", "path", planGantt);
+            try
+            {
+                if (File.Exists(planGantt)) miPlan.Image = new Icon(planGantt, 16, 16).ToBitmap();
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("plan", "action", "gantt icon failed", "error", ex.Message);
+            }
             miPlan.Click += delegate {
                 // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
                 string fuel = PlanFuelPath();
@@ -1060,8 +1110,16 @@ namespace BobDialogs
                 }
                 catch { }
 
+                // FR #8683 / BOB-39: lazy skill DAG on J: skills (resolve/get_skill; not eager full load).
+                TrayLifecycle.Write("jeeves-dag", "lazy", JeevesLazyDag.DryRunLine());
+                // FR #8682 / BOB-38: skill-dag MCP root is J:\.grok\skills (config/log shows J: path).
+                TrayLifecycle.Write("jeeves-mcp", "path", JeevesJMcp.DryRunLine());
+                // FR #8679 / BOB-37: cwd is J: (mapped to Ergo ai\jeeves). Dry-run prints cwd J:.
+                TrayLifecycle.Write("jeeves", "cwd", "cwd J:");
+                System.Collections.Hashtable jeevesEnv = new System.Collections.Hashtable();
+                jeevesEnv[JeevesJMcp.EnvName] = JeevesJMcp.SkillsRoot;
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok");
+                StartWorker("agent", "grok", jeevesEnv, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
@@ -1100,7 +1158,8 @@ namespace BobDialogs
 
             flash.Interval = 450; flash.Tick += delegate { Flash(); };
             poll.Interval = 2000; poll.Tick += delegate { Reload(); };
-            watchdog.Interval = 15000; watchdog.Tick += delegate { Watchdog(); };
+            // FR #9011: Forms.Timer only queues; WMI/heal runs on ThreadPool so NotifyIcon stays clickable.
+            watchdog.Interval = 15000; watchdog.Tick += delegate { QueueWatchdog(); };
 
             IntPtr pre = menu.Handle;                    // build the native menu now: the first right-click is as fast as the tenth
             Reload();
@@ -1109,8 +1168,8 @@ namespace BobDialogs
             WriteTrayAlive();
             aliveTimer = new System.Threading.Timer(delegate { WriteTrayAlive(); }, null, 2000, 2000);
             // FR #7510: poll digest every 60s into run\tray-digest-pools.json whether the engine is alive or not.
-            RefreshDigestPools();
-            digestPoolsTimer = new System.Threading.Timer(delegate { RefreshDigestPools(); }, null, 60000, 60000);
+            // FR #9011: never WaitForExit on the WinForms ctor/UI thread (dead NotifyIcon clicks).
+            digestPoolsTimer = new System.Threading.Timer(delegate { RefreshDigestPools(); }, null, 0, 60000);
             flash.Start(); poll.Start(); watchdog.Start();
 
             string timing = Common.Arg(args, "--timing-out");
@@ -1197,6 +1256,17 @@ namespace BobDialogs
         }
 
         // FR #3180: public for headless --watchdog-ticks harness (tests).
+        void QueueWatchdog()
+        {
+            if (exiting) return;
+            if (System.Threading.Interlocked.Exchange(ref watchdogBusy, 1) == 1) return;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { Watchdog(); }
+                finally { System.Threading.Interlocked.Exchange(ref watchdogBusy, 0); }
+            });
+        }
+
         public void Watchdog()
         {
             if (exiting) return;
@@ -2060,10 +2130,15 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
-            StartWorker(mode, agent, null, "");
+            StartWorker(mode, agent, null, "", "");
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
+        {
+            StartWorker(mode, agent, childEnv, opencodeSlot, "");
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
@@ -2084,8 +2159,25 @@ namespace BobDialogs
                 TrayLifecycle.Write("marchhare-cursor-gate", "remaining", "0", "action", "dialog-quit");
                 return;
             }
+            // FR #8733 / BOB-28: Workers > Open Code — dialog + quit when free and paid are both exhausted.
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase)
+                && string.Equals((agent ?? "").Trim(), "opencode", StringComparison.OrdinalIgnoreCase)
+                && OpenCodePaidExhaustedGate.ShouldQuit(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE")))
+            {
+                try
+                {
+                    MessageBox.Show(
+                        OpenCodePaidExhaustedGate.Body,
+                        OpenCodePaidExhaustedGate.Title,
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                catch { }
+                TrayLifecycle.Write("workers-opencode", "action", "dialog-quit", "reason", "paid-exhausted");
+                return;
+            }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err);
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;
@@ -2217,17 +2309,16 @@ namespace BobDialogs
             try { if (weightsForm != null && !weightsForm.IsDisposed) weightsForm.Close(); } catch { }
         }
 
-        // Exit order unchanged (t798u): dialogs + icon go first, then the ircBob stop (detached, never waited for), then the engine is asked to leave.
+        // FR #9034: TipForm Exit is tray-only - dispose UI and ask the engine to leave; never stop ircBob.
         void ExitTray()
         {
             if (exiting) return;
             exiting = true;
             exitReason = "Exit";
-            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit");
+            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit", "ircBob", "left-running");
             TrayLifecycle.SuppressWatchdog("Exit");
             CloseWindows();
             notify.Visible = false;
-            Detached(Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\sc.exe"), "stop ircBob");
             Command("exit");
             FinishAfterEngine(4000);
         }
@@ -2257,8 +2348,10 @@ namespace BobDialogs
         // FR #7510 / #7580: host-owned digest pool refresh (powershell -File); never requires the PS engine.
         // On digest fetch failure the helper keeps last rows and writes tray-digest-fetch-fail.json;
         // CrashHook.Report once per 30 min (ties FR #7505).
+        // FR #9011: ThreadPool/timer only; Interlocked skip when a prior WaitForExit is still running.
         void RefreshDigestPools()
         {
+            if (System.Threading.Interlocked.Exchange(ref digestPoolsBusy, 1) == 1) return;
             try
             {
                 string script = Path.Combine(root, "tools\\Update-BobTrayDigestPools.ps1");
@@ -2307,6 +2400,7 @@ namespace BobDialogs
                 MaybeReportDigestFetchFail();
             }
             catch { }
+            finally { System.Threading.Interlocked.Exchange(ref digestPoolsBusy, 0); }
         }
 
         void MaybeReportDigestFetchFail()
@@ -2640,6 +2734,22 @@ namespace BobDialogs
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
                 return 0;
             }
+            // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
+            string dumpWeightsValid = Common.Arg(args, "--dump-weights-valid");
+            if (dumpWeightsValid.Length > 0)
+            {
+                BobModelsResult catalog = BobModelsClient.Get(root);
+                Dictionary<string, List<BobModelsComboRow>> clis =
+                    catalog != null ? catalog.Clis : null;
+                File.WriteAllText(dumpWeightsValid, WeightsForm.DumpValidOptions(clis), new UTF8Encoding(false));
+                TrayLifecycle.Write(
+                    "weights_valid_dump",
+                    "host", catalog != null ? (catalog.UrlHost ?? "") : "",
+                    "status", catalog != null ? catalog.Status.ToString() : "0",
+                    "clis", clis != null ? clis.Count.ToString() : "0",
+                    "ok", catalog != null && catalog.Ok ? "1" : "0");
+                return catalog != null && catalog.Ok && clis != null && clis.Count > 0 ? 0 : 2;
+            }
             // FR #8714 / BOB-13: headless Weights GET/PUT against /bob/v1/models (exit before UI).
             string weightsGetOut = Common.Arg(args, "--weights-get");
             if (weightsGetOut.Length > 0)
@@ -2690,6 +2800,15 @@ namespace BobDialogs
             {
                 bool exhausted = MarchHareCursorGate.IsExhausted(root);
                 File.WriteAllText(marchhareGateOut, MarchHareCursorGate.DumpStatusJson(root), new UTF8Encoding(false));
+                return exhausted ? 2 : 0;
+            }
+            // FR #8733 / BOB-28: headless free+paid exhausted check (fixture free=0 paid=0).
+            string ocPaidGateOut = Common.Arg(args, "--check-opencode-paid-exhausted");
+            if (ocPaidGateOut.Length > 0)
+            {
+                string fuelEnv = Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE");
+                bool exhausted = OpenCodePaidExhaustedGate.ShouldQuit(root, fuelEnv);
+                File.WriteAllText(ocPaidGateOut, OpenCodePaidExhaustedGate.DumpStatusJson(root, fuelEnv), new UTF8Encoding(false));
                 return exhausted ? 2 : 0;
             }
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.
