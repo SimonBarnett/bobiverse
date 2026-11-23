@@ -2838,19 +2838,49 @@ function Hide-BobTrayCard {
     Clear-BobNativeTip
 }
 
-function Test-BobTrayMenuShouldCancelClose {
+function Close-BobTrayStatusWindows {
+    # FR #9154 / #9163: drop a focus-stealing bob-status before the context menu opens.
+    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+        try { [void]$pr.CloseMainWindow() } catch { }
+    }
+}
+
+function Set-BobTrayMenuItemsEnabled {
+    # FR #9163: delay-enable items after Opening so a focus-steal close does not fire ItemClicked.
+    param(
+        $Menu,
+        [bool]$Enabled
+    )
+    if (-not $Menu) { return }
+    foreach ($it in @($Menu.Items)) {
+        if (-not $it) { continue }
+        if ($it -is [System.Windows.Forms.ToolStripSeparator]) { continue }
+        try { $it.Enabled = $Enabled } catch { }
+    }
+}
+
+function Clear-BobTrayMenuOpenIfHidden {
     <#
-    FR #9154: ContextMenuStrip closes with AppFocusChange when bob-status / tip
-    TOPMOST steals focus. Cancel that reason only; ItemClicked / AppClickedOutside /
-    Keyboard still close the menu.
+    FR #9163: Cancel AppFocusChange left Closed unfired and sticky bobTrayMenuOpen=true
+    with an invisible strip (StatusSkipped / icon no click). Clear the flag when the
+    menu is not Visible. Returns $true when the sticky flag was cleared.
     #>
-    param($CloseReason)
-    $name = if ($CloseReason -is [Enum]) { [string]$CloseReason } else { [string]$CloseReason }
-    return ($name -eq 'AppFocusChange')
+    param($Menu)
+    if (-not $script:bobTrayMenuOpen) { return $false }
+    $vis = $false
+    try {
+        if ($Menu -and $Menu.PSObject.Properties.Name -contains 'Visible') {
+            $vis = [bool]$Menu.Visible
+        }
+    } catch { $vis = $false }
+    if ($vis) { return $false }
+    $script:bobTrayMenuOpen = $false
+    Write-TrayLog 'click-diag MenuFlagCleared'
+    return $true
 }
 
 function Get-BobTrayForegroundProcessLog {
-    # FR #9154: optional diag on MenuClosing (hwnd / pid / name). Best-effort.
+    # FR #9154 / #9163: optional diag on MenuClosing (hwnd / pid / name). Best-effort.
     try {
         Add-Type -Namespace BobTrayFg -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -2868,18 +2898,12 @@ function Get-BobTrayForegroundProcessLog {
     }
 }
 
-function Close-BobTrayStatusWindows {
-    # FR #9154: drop a focus-stealing bob-status before the context menu opens.
-    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
-        try { [void]$pr.CloseMainWindow() } catch { }
-    }
-}
-
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
-    # FR #9154: do not launch status/tip while the NotifyIcon menu is open (focus steal).
+    # FR #9163: clear sticky menu-open when the strip is already gone; then gate if still open.
+    try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
     if ($script:bobTrayMenuOpen) {
-        Write-TrayLog 'status skipped: menu open (FR #9154)'
+        Write-TrayLog 'status skipped: menu open (FR #9163)'
         return
     }
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
@@ -3912,9 +3936,10 @@ function Show-BobTrayCard {
     try {
         # Click / Status only. No hover events. Stay parked until X.
         if ($Reason -ne 'click') { return }
-        # FR #9154: tip ShowParkedAt TOPMOST must not run while the menu is open.
+        # FR #9163: tip ShowParkedAt TOPMOST must not run while the menu is open.
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($script:bobTrayMenuOpen) {
-            Write-TrayLog 'tip skipped: menu open (FR #9154)'
+            Write-TrayLog 'tip skipped: menu open (FR #9163)'
             return
         }
         $script:cardClosed = $false
@@ -4340,33 +4365,57 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
-# FR #9154: keep ContextMenuStrip open when bob-status/tip steals focus (AppFocusChange).
+# FR #9163: never Cancel AppFocusChange Closing (that stuck bobTrayMenuOpen).
+# Delay-arm items; clear sticky flag when menu !Visible. Keep Opening tip/status cleanup.
 $script:bobTrayMenuOpen = $false
+$script:bobTrayContextMenu = $menu
+$script:bobTrayMenuArmTimer = $null
 $menu.Add_Opening({
         $script:bobTrayMenuOpen = $true
         Write-TrayLog 'click-diag MenuOpening'
         try { Hide-BobTrayCard } catch { }
         try { Close-BobTrayStatusWindows } catch { }
+        try { Set-BobTrayMenuItemsEnabled -Menu $menu -Enabled $false } catch { }
+        try {
+            if ($script:bobTrayMenuArmTimer) {
+                $script:bobTrayMenuArmTimer.Stop()
+                $script:bobTrayMenuArmTimer.Dispose()
+            }
+        } catch { }
+        $script:bobTrayMenuArmTimer = New-Object System.Windows.Forms.Timer
+        $script:bobTrayMenuArmTimer.Interval = 350
+        $script:bobTrayMenuArmTimer.Add_Tick({
+                try { $script:bobTrayMenuArmTimer.Stop() } catch { }
+                try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
+                Write-TrayLog 'click-diag MenuItemsArmed'
+            })
+        $script:bobTrayMenuArmTimer.Start()
     })
 $menu.Add_Opened({ Write-TrayLog 'click-diag MenuOpened' })
 $menu.Add_Closing({
         param($s, $e)
         $reason = $e.CloseReason
-        Write-TrayLog ('click-diag MenuClosing reason={0}' -f $reason)
-        if (Test-BobTrayMenuShouldCancelClose -CloseReason $reason) {
-            $e.Cancel = $true
-            $fg = ''
-            try { $fg = Get-BobTrayForegroundProcessLog } catch { $fg = '' }
-            Write-TrayLog ('click-diag MenuClosingCancelled {0}' -f $fg)
-        }
+        $fg = ''
+        try { $fg = Get-BobTrayForegroundProcessLog } catch { $fg = '' }
+        Write-TrayLog ('click-diag MenuClosing reason={0} {1}' -f $reason, $fg)
+        # CAST IRON FR #9163: do not set $e.Cancel for AppFocusChange (or any reason).
     })
 $menu.Add_Closed({
         $script:bobTrayMenuOpen = $false
+        try {
+            if ($script:bobTrayMenuArmTimer) {
+                $script:bobTrayMenuArmTimer.Stop()
+                $script:bobTrayMenuArmTimer.Dispose()
+                $script:bobTrayMenuArmTimer = $null
+            }
+        } catch { }
+        try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
         Write-TrayLog 'click-diag MenuClosed'
     })
 $notify.Add_MouseDown({
         param($s, $e)
         Write-TrayLog ('click-diag MouseDown {0}' -f $e.Button)
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
     })
 $notify.Add_MouseUp({
         param($s, $e)
@@ -4449,10 +4498,21 @@ $miAbout.Add_Click({
 $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
-$miExit.Add_Click({ Invoke-BobTrayExit })
+$miExit.Add_Click({
+        # FR #9163: confirm Exit so an accidental ItemClicked after focus-steal does not kill Watch.
+        $ans = [System.Windows.Forms.MessageBox]::Show(
+            'Exit TipForm Watch? ircBob stays running.',
+            'Bobiverse - Exit',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Invoke-BobTrayExit
+        }
+    })
 $notify.Add_MouseClick({
         param($s, $e)
         Write-TrayLog ('click-diag MouseClick {0}' -f $e.Button)
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
             Invoke-BobTrayStatus
