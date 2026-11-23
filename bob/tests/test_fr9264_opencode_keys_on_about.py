@@ -70,3 +70,9 @@ def test_fr9264_watch_set_key_helper_resolves_from_tray_root():
     fn = text[text.index("function Show-BobTrayAbout") : text.index("function Close-BobTrayDialogs")]
     assert "helperCandidates" in fn
     assert r"..\scripts\Write-BobOpencodeGoApiKey.ps1" in fn
+
+def test_fr9264_bobabout_cs_utf8_no_bom():
+    """Edited BobAbout.cs must stay UTF-8 without BOM (same class as BobTray MRB FAIL)."""
+    raw = ABOUT.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "BobAbout.cs must not start with UTF-8 BOM"
+

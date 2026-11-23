@@ -1,4 +1,4 @@
-﻿// t828u: Acknowledge (About) dialog as a fast compiled exe. Same content as the old PowerShell dialog (Get-BobInstallInfo +
+// t828u: Acknowledge (About) dialog as a fast compiled exe. Same content as the old PowerShell dialog (Get-BobInstallInfo +
 // Format-BobInstallInfo): ntsa badge, "by Simon Barnett", bob version + machine, and one block per install of bob/jeeves/airc/ergo
 // (version, build date, commit, path, service state). The window shows at once; the install scan runs on a worker thread.
 using System;
