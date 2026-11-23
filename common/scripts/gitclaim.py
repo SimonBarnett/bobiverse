@@ -219,6 +219,19 @@ FR_DIGEST_KIND_BODY_RE = re.compile(
     r"(?im)^\s*(?:\*\*)?Kind\s*:\s*fr-digest(?:\*\*)?\s*$"
 )
 
+# FR #9411 / #9402: ops / MONITORING rebuild-install trackers are gate records,
+# not shop FR work. Match body cues from walrus/jeeves install trackers (class
+# of #9376); do not offer even when hold was cleared for MONITORING.
+OPS_MONITOR_TRACKER_BODY_RE = re.compile(
+    r"(?is)(?:"
+    r"Instructions\s+for\s+Jeeves\s+MONITORING\s+agent"
+    r"|GateIssues\s*\("
+    r"|Do\s+\*?\*?not\*?\*?\s+`?Closes`?\s+this\s+issue[^\n]{0,80}"
+    r"(?:walrus\s+rebuild|rebuild/install\s+tracker|GateIssues)"
+    r"|Ops\s+install\s+NOT\s+done"
+    r")"
+)
+
 # Labels safe to detect in free text (title/line only when GitHub labels empty).
 # Bare ``mrb`` is labels-only — otherwise titles like "harden MRB/FR routing" (#595)
 # would false-positive. ``owner-missing`` is also labels-only (FR #3661 / class of
@@ -2094,6 +2107,23 @@ def copilot_fr_pr_covers_issue(
     return want in extract_closes_issue_ids(title, body, repo=repo)
 
 
+def ops_monitor_tracker_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #9411 / #9402: why an issue is an ops/MONITORING gate tracker (None = ordinary FR).
+
+    These trackers must not be ``feature-request`` shop work. Chair skips enqueue/offer
+    even when ``hold`` was cleared so MONITORING can finish (class of #9376 / #9411).
+    """
+    blob = f"{title or ''}\n{body or ''}"
+    if OPS_MONITOR_TRACKER_BODY_RE.search(blob):
+        return "ops_monitor_tracker"
+    return None
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -2169,6 +2199,10 @@ def issue_skip_fr_reason(
     # FR #9304: Kind: fr-digest body stamp (go-gate epic) even without the label.
     if FR_DIGEST_KIND_BODY_RE.search(body or ""):
         return "fr_digest_kind"
+    # FR #9411 / #9402: ops / MONITORING rebuild-install trackers are not shop FR work.
+    ops = ops_monitor_tracker_reason(title=title_s, body=body or "", labels=tuple(labs))
+    if ops:
+        return ops
     return None
 
 
@@ -12317,6 +12351,9 @@ def offer_focus_top(
     # FR #8754: Depends-on live OPEN check is unbudgeted — prereqs are often OPEN on
     # GitHub while absent from the local FR queue; zero !bored budget must not skip them.
     depends_issue_open = depends_issue_open_checker(issue_open)
+    # FR #9411: CLOSED FR live check is also unbudgeted — BORED_GITHUB_CALL_BUDGET=0
+    # otherwise never fires and CLOSED ops trackers stay offerable (class of #9376).
+    fr_closed_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -12454,7 +12491,14 @@ def offer_focus_top(
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
                     return None  # legacy hook; row_awaits_mrb1 always False (op 2026-10-04)
-                if row_skip_fr_reason(cand):
+                skip_why = row_skip_fr_reason(cand)
+                if skip_why:
+                    # FR #9411: ops-monitor trackers leave the unaccepted queue (not sticky).
+                    if skip_why == "ops_monitor_tracker":
+                        if _drop_unaccepted_row(
+                            doc, cand, kind="ops-monitor", reason=skip_why
+                        ):
+                            purged = True
                     return None
                 # BOB-G3 / FR #9108: Digest gate records stay queued (even when held);
                 # never offer as work. Held digests must remain for Depends-on go-gate.
@@ -12521,38 +12565,32 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     return None
-                # FR #3188: one budgeted live open-check; definitive closed -> purge this row only.
-                if _canon_task(cand) == "FR" and issue_open is not None:
+                # FR #9411 / #2340: unbudgeted live open-check; definitive closed -> purge.
+                # (Budgeted issue_open is a no-op when BORED_GITHUB_CALL_BUDGET=0.)
+                if _canon_task(cand) == "FR" and _fr_issue_is_closed(
+                    cand, issue_open=fr_closed_issue_open
+                ):
                     repo = str(cand.get("repo") or "").strip()
                     num = str(cand.get("id") or "").strip().lstrip("#")
-                    if repo and num and str(cand.get("state") or "").strip().lower() != "closed":
-                        try:
-                            if not bool(issue_open(repo, num)):
-                                _log_queue_purge(
-                                    f"INFO git-claim purge closed-fr {repo}#{num} "
-                                    f"reason=issue_open=False"
-                                )
-                                doc["unaccepted"] = [
-                                    r
-                                    for r in (doc.get("unaccepted") or [])
-                                    if not (
-                                        isinstance(r, dict)
-                                        and str(r.get("repo") or "").strip() == repo
-                                        and str(r.get("id") or "").strip().lstrip("#") == num
-                                        and _canon_task(r) == "FR"
-                                    )
-                                ]
-                                purged = True
-                                return None
-                        except Exception:
-                            pass
+                    _log_queue_purge(
+                        f"INFO git-claim purge closed-fr {repo}#{num} "
+                        f"reason=issue_open=False"
+                    )
+                    if _drop_unaccepted_row(
+                        doc, cand, kind="closed-fr", reason="issue_open=False"
+                    ):
+                        purged = True
+                    return None
                 # FR #1313 / MRB #3207: definitive is_pull=True on this FR row -> purge it only.
                 if _canon_task(cand) == "FR" and _live_verdict(is_pull, cand) is True:
                     if _drop_unaccepted_row(doc, cand, kind="fr-is-pull", reason="is_pull=True"):
                         purged = True
                     return None
                 if not fr_row_offerable(
-                    cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
+                    cand,
+                    is_pull=is_pull,
+                    pr_exists=pr_exists,
+                    issue_open=fr_closed_issue_open,
                 ):
                     return None
                 # BOB-D3 / FR #8807 + BOB-G1 / FR #8837 + FR #8754 live GitHub OPEN.
@@ -12880,6 +12918,8 @@ def offer_top(
     now_f = _time.time() if now is None else float(now)
     budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
     depends_issue_open = depends_issue_open_checker(issue_open)
+    # FR #9411: unbudgeted CLOSED FR check (budget 0 would otherwise never fire).
+    fr_closed_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -12925,8 +12965,19 @@ def offer_top(
                     or row_on_cooldown(row, now_f, nick or "", live=live)
                     or row_gave_up_by(row, nick or "", live=live)
                     or row_blocked_for_giveup_agent_kind(row, seat_agent_kind(home, nick or ""))
-                    or row_skip_fr_reason(row)
                 ):
+                    i += 1
+                    continue
+                # FR #9411: ops-monitor trackers leave the unaccepted queue (parity with
+                # offer_focus_top); other skip_fr reasons stay sticky skip.
+                skip_why = row_skip_fr_reason(row)
+                if skip_why:
+                    if skip_why == "ops_monitor_tracker":
+                        if _drop_unaccepted_row(
+                            doc, row, kind="ops-monitor", reason=skip_why
+                        ):
+                            purged = True
+                            continue
                     i += 1
                     continue
                 # BOB-G3: held digests stay as gate records (skip only).
@@ -12960,21 +13011,19 @@ def offer_top(
                 ):
                     i += 1
                     continue  # FR #254
-                if _canon_task(row) == "FR" and issue_open is not None:
+                # FR #9411: unbudgeted CLOSED check (see offer_focus_top).
+                if _canon_task(row) == "FR" and _fr_issue_is_closed(
+                    row, issue_open=fr_closed_issue_open
+                ):
                     repo = str(row.get("repo") or "").strip()
                     num = str(row.get("id") or "").strip().lstrip("#")
-                    if repo and num and str(row.get("state") or "").strip().lower() != "closed":
-                        try:
-                            if not bool(issue_open(repo, num)):
-                                _log_queue_purge(
-                                    f"INFO git-claim purge closed-fr {repo}#{num} "
-                                    f"reason=issue_open=False"
-                                )
-                                del doc["unaccepted"][i]
-                                purged = True
-                                continue
-                        except Exception:
-                            pass
+                    _log_queue_purge(
+                        f"INFO git-claim purge closed-fr {repo}#{num} "
+                        f"reason=issue_open=False"
+                    )
+                    del doc["unaccepted"][i]
+                    purged = True
+                    continue
                 # FR #1313 / MRB #3207: definitive is_pull=True on this FR row -> purge it only.
                 if _canon_task(row) == "FR" and _live_verdict(is_pull, row) is True:
                     if _drop_unaccepted_row(doc, row, kind="fr-is-pull", reason="is_pull=True"):
@@ -12983,7 +13032,10 @@ def offer_top(
                     i += 1
                     continue
                 if not fr_row_offerable(
-                    row, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
+                    row,
+                    is_pull=is_pull,
+                    pr_exists=pr_exists,
+                    issue_open=fr_closed_issue_open,
                 ):
                     i += 1
                     continue  # FR #846 / #838 / #2340
@@ -16458,8 +16510,18 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
+            # FR #9411: refuse ops-monitor trackers even when hold was cleared.
+            _assign_skip = row_skip_fr_reason(cand)
+            if task_u == "FR" and _assign_skip == "ops_monitor_tracker":
+                return "refused", "ops-monitor tracker (not shop FR; FR #9411)"
+            # FR #9411: unbudgeted closed check when caller omitted issue_open.
+            _fr_open = (
+                issue_open
+                if issue_open is not None
+                else depends_issue_open_checker(None)
+            )
             if task_u == "FR" and not fr_row_offerable(
-                cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=issue_open
+                cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=_fr_open
             ):
                 return "refused", "row is a pull or CLOSED issue (not an offerable FR; #846/#838/#2340)"
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
