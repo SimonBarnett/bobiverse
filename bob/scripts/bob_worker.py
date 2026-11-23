@@ -5064,6 +5064,24 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "fuel-exhausted-recycle"}
+    # FR #9279: OpenCode frozen-progress / lost-ack-stale recycles (FR #8596 / #8646 / #9009)
+    # are intentional hang recovery while the process is still running. Filing "seat stopped
+    # making progress" every time is noise (class of #9279 after external-dir-loop GIVEUP
+    # cleared ACK and left digest doing aged). Recycle still happens; skip intake only.
+    if exit_code is None and _fuel_reason in (
+        "opencode-lost-ack-stale",
+        "opencode-frozen-progress",
+    ):
+        if log:
+            try:
+                log(
+                    "worker: opencode freeze recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9279 reason=%s)"
+                    % _fuel_reason
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "opencode-freeze-recycle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"

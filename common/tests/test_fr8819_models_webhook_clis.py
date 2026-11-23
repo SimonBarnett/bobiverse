@@ -23,19 +23,19 @@ def test_fr8819_get_returns_nested_clis_and_agents(tmp_path: Path):
             "grok": [
                 {
                     "model": "grok-fixture-a",
-                    "contexts": ["256000", "500000"],
+                    "contexts": ["256", "500"],
                     "efforts": ["high", "low"],
                 },
                 {
                     "model": "grok-fixture-b",
-                    "contexts": ["128000"],
+                    "contexts": ["256"],
                     "efforts": ["medium"],
                 },
             ],
             "cursor": [
                 {
                     "model": "cursor-fixture-x",
-                    "contexts": ["default"],
+                    "contexts": [],
                     "efforts": [],
                 }
             ],
@@ -70,20 +70,19 @@ def test_fr8819_get_returns_nested_clis_and_agents(tmp_path: Path):
     assert set(clis.keys()) == {"Grok", "Cursor", "Opencode"}
     grok_models = clis["Grok"]["models"]
     assert list(grok_models.keys()) == ["grok-fixture-a", "grok-fixture-b"]
-    assert grok_models["grok-fixture-a"]["contexts"]["256000"]["efforts"] == [
+    assert grok_models["grok-fixture-a"]["contexts"]["256"]["efforts"] == [
         "high",
         "low",
     ]
-    assert grok_models["grok-fixture-a"]["contexts"]["500000"]["efforts"] == [
+    assert grok_models["grok-fixture-a"]["contexts"]["500"]["efforts"] == [
         "high",
         "low",
     ]
     assert grok_models["grok-fixture-b"]["contexts"] == {
-        "128000": {"efforts": ["medium"]}
+        "256": {"efforts": ["medium"]}
     }
-    assert clis["Cursor"]["models"]["cursor-fixture-x"]["contexts"] == {
-        "default": {"efforts": []}
-    }
+    # FR #9258: non-Grok rows keep the model with empty contexts (no offer).
+    assert clis["Cursor"]["models"]["cursor-fixture-x"]["contexts"] == {}
     assert clis["Opencode"]["models"] == {}
 
 
