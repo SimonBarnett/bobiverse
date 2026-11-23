@@ -34,7 +34,7 @@ class DocEntry:
     source: str
     fr: str
     html_rel: str
-    # FR #8835: "coming" = documented but not served yet (PUT/PATCH/refresh).
+    # FR #8835: "coming" = documented but not served yet (PATCH remains; PUT live FR #9273).
     status: str = "live"  # live | coming
 
 
@@ -339,9 +339,11 @@ def _inbound() -> list[DocEntry]:
             status_codes="200 JSON; never invents secret fields.",
             retry_idempotency="Safe GET.",
             rate_limits="Proxy only.",
-            reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
+            reachability=(
+                "Public Cloudflare via BobModelsWebhook (GET|HEAD|POST|PUT; FR #9273)."
+            ),
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122 · FR #9258",
+            fr="FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122 · FR #9258 · FR #9273",
             html_rel="docs/webhooks/models.html",
         ),
         DocEntry(
@@ -350,22 +352,28 @@ def _inbound() -> list[DocEntry]:
             method="PUT",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Persist Weights full replace (BOB-02 / FR #8708 / FR #8819). Agent cli is read-only.",
-            callers="Tray Weights form (direct listener / allowlisted LAN peer).",
-            auth="None (schema + peer allowlist).",
-            request_schema="JSON agents rows; changing cli for a known agent returns 400.",
+            purpose=(
+                "Persist Weights full replace (BOB-02 / FR #8708 / FR #8819). "
+                "IIS BobModelsWebhook forwards PUT with GET|HEAD|POST (FR #9273). Agent cli is read-only."
+            ),
+            callers="Tray Weights form Save (public Cloudflare / allowlisted peer).",
+            auth="Peer allow-list (BOB_REPORT_ALLOW); empty/invalid body → 400; foreign peer → 403.",
+            request_schema="JSON agents rows; changing cli for a known agent returns 400 (FR #8819).",
             response_schema="204 when changed; 200 when unchanged; 4xx on schema/cli mutation.",
             example_request=(
                 "PUT http://127.0.0.1:7700/bob/v1/models\n"
                 "Content-Type: application/json\n\n"
                 '{"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}'
             ),
-            status_codes="204 / 200 / 400 / 403; public IIS rewrites GET|HEAD|POST (PUT stays direct/LAN).",
+            status_codes="204 / 200 / 400 / 403; public IIS rewrites GET|HEAD|POST|PUT (FR #9273); never IIS HTML 404 when rule deployed.",
             retry_idempotency="Idempotent full replace.",
-            rate_limits="Peer allowlist; public proxy GET|HEAD|POST (FR #9224); PUT direct/LAN.",
-            reachability="Direct bobcallback / allowlisted LAN for PUT. Public Cloudflare BobModelsWebhook is GET|HEAD|POST (FR #9224).",
+            rate_limits="Peer allowlist; public proxy GET|HEAD|POST|PUT (FR #9273).",
+            reachability=(
+                "Public Cloudflare via BobModelsWebhook — forwards GET, HEAD, POST, and PUT "
+                "(FR #9273). PATCH stays blocked at IIS."
+            ),
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8708 / BOB-02 · FR #8819 · FR #9122",
+            fr="FR #8708 / BOB-02 · FR #8819 · FR #9122 · FR #9273",
             html_rel="docs/webhooks/models.html",
             status="live",
         ),
