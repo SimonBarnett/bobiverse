@@ -417,3 +417,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After sticky-offer MRB lands, feed idle seats with ungated tray FRs (!assign); never assign hold-labeled #9403 or cast-iron UAT.
 - When an open FR PR is hundreds of commits behind and misses the live click surface (compiled BobTray StartPriorityExe), supersede it with a fresh origin/main tip that gates the real Start path; mirror the nearest sibling gate (Plan BOB-46 fuel file) for Priority.
 - Redqueen ear relay outbox is C:\ai\bob\home\outbox.txt (bob-ear --home); ~/.bobiverse/outbox.txt is not drained. Pace !assign ~3s; avoid self-MRB; title substring fr-digest must not skip MRB offers.
+- Ghost offered_to on held/skip/ops-monitor trackers must drop the unaccepted pin (digests stay queued); !stuck classifies offered_on_held and aged idle/gone for release_ghost_offers (FR #9402).
