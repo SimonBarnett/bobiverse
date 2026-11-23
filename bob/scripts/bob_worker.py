@@ -3608,10 +3608,12 @@ def describe_agent_child_launch(
 def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
     """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
     install = str(Path(worker_dir).parent)
+    intake = str(resolve_bobiverse_intake_script(worker_dir))
     pairs = (
         ("@@WORKER_DIR@@", worker_dir),
         ("@@OUTBOX@@", str(outbox_path_for_run(home))),
         ("@@INSTALL@@", install),
+        ("@@INTAKE_SCRIPT@@", intake),
         ("@@NICK@@", nick),
         ("@@MACHINE@@", machine),
     )
@@ -3694,7 +3696,7 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append DONE: "
         f"FR = 'DONE FR owner/repo#N <pr-url>' (no PASS/FAIL — FR #2419); "
         f"MRB/UAT = 'DONE <MRB|UAT> owner/repo#N PASS|FAIL <url>' "
-        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {resolve_bobiverse_intake_script(worker_dir)} "
         f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). "
         f"HARVEST REPO (FR #3189): ALWAYS pass the job's repo explicitly: "
         f"`..\\scripts\\Invoke-BobiverseHarvest.ps1 -Repo <owner/repo from the job id> -Summary ... -Lesson ...` "
@@ -3731,7 +3733,7 @@ def plan_prompt(plan_dir: str) -> str:
         f"You are a NEW Bobiverse plan agent (fresh session - never resume or continue an older plan). Your working folder is {plan_dir}. "
         f"FIRST read the skills in {plan_dir}\\.grok\\skills and {plan_dir}\\AGENTS.md (start with visionary). "
         f"Plan-mode only: no IRC, no builds. Create this plan's output in a NEW subfolder {plan_dir}\\work\\plan-<yyyyMMdd-HHmmss> and never touch earlier plans. "
-        f"CAST IRON: harvest skills and file every issue/FR/bug with {Path(plan_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"CAST IRON: harvest skills and file every issue/FR/bug with {resolve_bobiverse_intake_script(install_root=Path(plan_dir).parent)} in the same turn. "
         f"HARVEST HOW-TO-PLAN ONLY: a harvest lesson is a reusable lesson about HOW to plan (process, pitfalls, repo-setup steps) and goes to -Repo SimonBarnett/skills-visionary. "
         f"NEVER harvest the plan itself (requirements, designs, architecture or product decisions, FR/issue lists): that content stays in the plan subfolder and the product repo docs/FRs, never in a skill book. "
         f"Never print or store secrets."
@@ -3876,7 +3878,10 @@ def record_maintenance_session(session_id: str, cwd: str, kind: str, state_path:
 
 
 def maintenance_icon_path(folder: Path) -> Optional[Path]:
-    """FR #2522: the tray's Jeeves butler icon for the maintenance window (work root first, then bundled)."""
+    """FR #2522 / #9211: Jeeves butler icon (work root, install assets, jeeves\\assets, MEIPASS)."""
+    found = find_window_icon(folder, kind="maintenance")
+    if found:
+        return found
     cands = [Path(folder) / "assets" / "jeeves-butler.ico"]
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
@@ -5608,21 +5613,58 @@ def skill_dag_down_giveup_line(
 
 
 def opencode_fleet_script_roots(worker_cwd: str) -> list[Path]:
-    """Install script dirs the seat skills tell OpenCode to read (FR #8064).
+    """Install script dirs the seat skills tell OpenCode to read (FR #8064 / #9214).
 
     ``worker_cwd`` is ``<ai root>\\bob\\worker``. The fleet copies live beside
-    that, not inside the job worktree: ``bob\\scripts`` and ``common\\scripts``.
+    that, not inside the job worktree: ``bob\\scripts``, ``common\\scripts``, and
+    flat ``scripts`` (composed installs often only have the intake helper there).
     """
     install = Path(worker_cwd).resolve().parent
-    return [install / "bob" / "scripts", install / "common" / "scripts"]
+    return [
+        install / "bob" / "scripts",
+        install / "common" / "scripts",
+        install / "scripts",
+    ]
+
+
+def resolve_bobiverse_intake_script(
+    worker_cwd: str | Path | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> Path:
+    """Prefer an install intake script path OpenCode is allowed to read (FR #9214).
+
+    Order: ``common\\scripts`` (allowed since FR #8064), flat ``scripts`` (FR #9214),
+    then ``bob\\scripts``. Falls back to the ``common\\scripts`` path even when the
+    file is missing so CAST IRON prompts stay on an allowlisted root.
+    """
+    if install_root is not None:
+        install = Path(install_root).resolve()
+    elif worker_cwd is not None:
+        install = Path(worker_cwd).resolve().parent
+    else:
+        install = Path.cwd().resolve()
+    name = "Report-BobiverseIntakeIssue.ps1"
+    candidates = [
+        install / "common" / "scripts" / name,
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand.resolve()
+        except OSError:
+            continue
+    return candidates[0].resolve()
 
 
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill roots and fleet scripts.
 
-    FR #7196 / #7909: skill-dag roots. FR #8064: ``bob\\scripts`` and
-    ``common\\scripts`` so harvest/intake reads are not auto-rejected. Edit
-    stays deny. ``C:\\passwords`` stays deny and is never an allow.
+    FR #7196 / #7909: skill-dag roots. FR #8064 / #9214: ``bob\\scripts``,
+    ``common\\scripts``, and flat ``scripts`` so harvest/intake reads are not
+    auto-rejected. Edit stays deny. ``C:\\passwords`` stays deny and is never an allow.
     """
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
@@ -6040,6 +6082,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         oc_fallback = (
             f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
         )
+        # FR #9211: pin OpenCode favicon on the launch-opencode PowerShell console (Win11 AUMID + WM_SETICON).
+        oc_ico_path = find_window_icon(Path(install_root) if install_root else None, kind="opencode")
+        oc_ico_lit = esc(str(oc_ico_path)) if oc_ico_path else ""
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             oc_fallback,
@@ -6047,6 +6092,49 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             f"$turnsLog = '{esc(turns_log)}'",
+            f"$bobOcIco = '{oc_ico_lit}'",
+            r"function Set-BobConsoleIcon([string]$IcoPath, [string]$Aumid) {",
+            r"    # FR #9211: title-bar + taskbar icon for the OpenCode seat console on Win11.",
+            r"    if (-not $IcoPath) {",
+            r"        $root = $env:BOB_INSTALL_ROOT",
+            r"        if (-not $root) { $root = 'C:\ai\bob' }",
+            r"        foreach ($rel in @('assets\opencode-favicon.ico','tray\assets\opencode-favicon.ico','bob\tray\assets\opencode-favicon.ico','assets\bob-systray.ico')) {",
+            r"            $try = Join-Path $root $rel",
+            r"            if (Test-Path -LiteralPath $try) { $IcoPath = $try; break }",
+            r"        }",
+            r"    }",
+            r"    if (-not $IcoPath -or -not (Test-Path -LiteralPath $IcoPath)) {",
+            r"        Write-Output 'console-icon: miss ico=none kind=opencode'",
+            r"        return $false",
+            r"    }",
+            r"    if (-not $Aumid) { $Aumid = 'Bobiverse.OpenCode' }",
+            r"    try {",
+            "        Add-Type -Namespace BobFr9211 -Name ConsoleIcon -MemberDefinition @'",
+            '            [System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();',
+            '            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr LoadImage(System.IntPtr h, string f, uint t, int cx, int cy, uint fu);',
+            '            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);',
+            '            [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);',
+            r"'@ -ErrorAction SilentlyContinue",
+            r"        [void][BobFr9211.ConsoleIcon]::SetCurrentProcessExplicitAppUserModelID($Aumid)",
+            r"        $hwnd = [BobFr9211.ConsoleIcon]::GetConsoleWindow()",
+            r"        if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 50; $hwnd = [BobFr9211.ConsoleIcon]::GetConsoleWindow() }",
+            r"        if ($hwnd -eq [IntPtr]::Zero) { Write-Output ('console-icon: miss hwnd=0 ico=' + $IcoPath); return $false }",
+            r"        $ok = $false",
+            r"        foreach ($pair in @(@(0,16),@(1,32))) {",
+            r"            $h = [BobFr9211.ConsoleIcon]::LoadImage([IntPtr]::Zero, $IcoPath, 1, $pair[1], $pair[1], 0x10)",
+            r"            if ($h -ne [IntPtr]::Zero) {",
+            r"                [void][BobFr9211.ConsoleIcon]::SendMessage($hwnd, 0x80, [IntPtr]$pair[0], $h)",
+            r"                $ok = $true",
+            r"            }",
+            r"        }",
+            r"        Write-Output ('console-icon: ' + $(if ($ok) { 'ok' } else { 'load-fail' }) + ' path=' + $IcoPath + ' hwnd=' + $hwnd + ' kind=opencode aumid=' + $Aumid + ' win11=aumid+wm_seticon')",
+            r"        return $ok",
+            r"    } catch {",
+            r"        Write-Output ('console-icon: error ' + $_.Exception.Message)",
+            r"        return $false",
+            r"    }",
+            r"}",
+            r"[void](Set-BobConsoleIcon -IcoPath $bobOcIco -Aumid 'Bobiverse.OpenCode')",
             r"$script:ocTurnN = 0",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
@@ -6959,20 +7047,67 @@ def disable_console_quick_edit(k32=None) -> bool:
         return False
 
 
-def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
-    """Window icon: jeeves-butler.ico (monitor) or bob-systray.ico; install then PyInstaller embed."""
+def _window_icon_names(kind: Optional[str] = None) -> list:
+    """FR #9211: preferred .ico basenames by seat kind (OpenCode favicon, butler, Bob tray)."""
+    k = (kind or "").strip().lower()
+    if k in ("opencode", "oc"):
+        return ["opencode-favicon.ico", "bob-systray.ico", "jeeves-butler.ico"]
+    if k in ("monitor", "maintenance", "jeeves", "butler"):
+        return ["jeeves-butler.ico", "bob-systray.ico"]
+    return ["bob-systray.ico", "jeeves-butler.ico", "opencode-favicon.ico"]
+
+
+def _window_icon_aumid(kind: Optional[str] = None) -> str:
+    """FR #9211: Win11 taskbar groups by AppUserModelID; pin a stable id per seat family."""
+    k = (kind or "").strip().lower()
+    if k in ("opencode", "oc"):
+        return "Bobiverse.OpenCode"
+    if k in ("monitor", "maintenance", "jeeves", "butler"):
+        return "Bobiverse.Jeeves"
+    return "Bobiverse.BobWorker"
+
+
+def find_window_icon(
+    install_root: Optional[Path] = None, kind: Optional[str] = None
+) -> Optional[Path]:
+    """FR #9211: resolve a console .ico (install assets, tray, jeeves, MEIPASS, source tree)."""
+    names = _window_icon_names(kind)
     cands: list = []
+    roots: list = []
     if install_root:
-        cands.append(Path(install_root) / "assets" / "jeeves-butler.ico")
-        cands.append(Path(install_root) / "assets" / "bob-systray.ico")
+        ir = Path(install_root)
+        roots.extend(
+            [
+                ir / "assets",
+                ir / "tray" / "assets",
+                ir / "bob" / "tray" / "assets",
+                ir / "jeeves" / "assets",
+                ir.parent / "jeeves" / "assets",
+            ]
+        )
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
-        cands.append(Path(mei) / "assets" / "bob-systray.ico")
-    cands.append(Path(__file__).resolve().parent.parent / "assets" / "bob-systray.ico")
-    cands.append(Path(__file__).resolve().parent.parent / "tray" / "assets" / "bob-systray.ico")  # t829u: bob/tray is a first-class source
-    cands.append(Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "assets" / "bob-systray.ico")
+        roots.append(Path(mei) / "assets")
+    here = Path(__file__).resolve().parent.parent  # bob/ when scripts live under bob/scripts
+    roots.extend(
+        [
+            here / "assets",
+            here / "tray" / "assets",  # t829u: bob/tray is a first-class source
+            here / "third_party" / "bob-tray" / "assets",
+            here.parent / "jeeves" / "assets",
+            here.parent / "bob" / "tray" / "assets",
+        ]
+    )
+    for root in roots:
+        for name in names:
+            cands.append(root / name)
+    seen: set = set()
     for c in cands:
         try:
+            key = str(c).lower()
+            if key in seen:
+                continue
+            seen.add(key)
             if c.is_file():
                 return c
         except OSError:
@@ -6980,9 +7115,17 @@ def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] = None) -> bool:
-    """t794u: put the systray icon on the worker's console window (title bar + taskbar). The exe itself carries the same icon
-    (PyInstaller --icon). Typed ctypes (HWND/HICON are pointers); never raises, never prints."""
+def set_console_icon(
+    install_root: Optional[Path] = None,
+    icon: Optional[Path] = None,
+    kind: Optional[str] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """t794u / FR #9211: set console title-bar + taskbar icon (WM_SETICON) and Win11 AppUserModelID.
+
+    The hashed bob-worker.exe also carries bob-systray via PyInstaller --icon. Typed ctypes
+    (HWND/HICON are pointers); never raises. Logs path/hwnd/aumid when ``log`` is given.
+    """
     if os.name != "nt":
         return False
     try:
@@ -6992,21 +7135,59 @@ def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] =
         u32 = ctypes.WinDLL("user32", use_last_error=True)
         k32.GetConsoleWindow.restype = ctypes.c_void_p
         u32.LoadImageW.restype = ctypes.c_void_p
-        u32.LoadImageW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u32.LoadImageW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
         u32.SendMessageW.restype = ctypes.c_ssize_t
-        u32.SendMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        u32.SendMessageW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.c_size_t,
+            ctypes.c_ssize_t,
+        ]
+        aumid = _window_icon_aumid(kind)
+        try:
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
+            shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.HRESULT
+            shell32.SetCurrentProcessExplicitAppUserModelID(aumid)
+        except Exception:
+            aumid = aumid + "(aumid-fail)"
+        ico = Path(icon) if icon else find_window_icon(install_root, kind=kind)
         hwnd = k32.GetConsoleWindow()
-        ico = Path(icon) if icon else find_window_icon(install_root)
+        if not hwnd:
+            # Console HWND can lag AllocConsole; one short retry helps Win11.
+            time.sleep(0.05)
+            hwnd = k32.GetConsoleWindow()
         if not hwnd or not ico:
+            if log:
+                log(
+                    f"console-icon: miss hwnd={hwnd!r} ico={ico} kind={kind or '-'} aumid={aumid}"
+                )
             return False
         done = False
-        for which, px in ((0, 16), (1, 32)):   # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
+        for which, px in ((0, 16), (1, 32)):  # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
             h = u32.LoadImageW(None, str(ico), 1, px, px, 0x10)
             if h:
-                u32.SendMessageW(hwnd, 0x80, which, h)   # WM_SETICON
+                u32.SendMessageW(hwnd, 0x80, which, h)  # WM_SETICON
                 done = True
+        if log:
+            log(
+                f"console-icon: {'ok' if done else 'load-fail'} path={ico} hwnd={hwnd} "
+                f"kind={kind or '-'} aumid={aumid} win11=aumid+wm_seticon"
+            )
         return done
-    except Exception:
+    except Exception as e:
+        if log:
+            try:
+                log(f"console-icon: error {type(e).__name__}")
+            except Exception:
+                pass
         return False
 
 
@@ -9855,18 +10036,41 @@ def opencode_external_dir_corrective_steps(
     worktree: str | Path,
     outbox: str | Path,
     scratch: str | Path,
+    reject_path: str | Path | None = None,
+    intake_script: str | Path | None = None,
 ) -> str:
-    """FR #8247: short corrective after an ``external_directory`` rejection (names allowed scratch)."""
+    """FR #8247 / #9214: short corrective after an ``external_directory`` rejection.
+
+    Names allowed scratch. When the reject is under install ``scripts`` (or an
+    intake_script is provided), point harvest at the allowlisted intake helper.
+    """
     key = (job_key or "job").strip() or "job"
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
     sc = str(scratch or "").strip()
+    intake = str(intake_script or "").strip()
+    rejected = str(reject_path or "").strip()
+    harvest_hint = ""
+    if intake:
+        harvest_hint = (
+            " For harvest/intake use the allowed script "
+            + intake
+            + " (common\\scripts or flat scripts under the install). "
+        )
+    else:
+        norm = rejected.replace("/", "\\").lower()
+        if "\\scripts\\" in norm or norm.endswith("\\scripts"):
+            harvest_hint = (
+                " For harvest/intake prefer common\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+                "(allowed) over a denied install path. "
+            )
     return (
         f"CORRECTIVE {key}: OpenCode rejected external_directory (path outside the job tree). "
         f"Use only the allowed scratch directory {sc} (worktree .bob\\tmp). "
         f"TEMP/TMP/TMPDIR already point there for this seat. "
         f"Do not request external_directory and never use %TEMP% or the user Temp folder. "
         f"Keep all scratch and tool paths inside {wt}. "
+        f"{harvest_hint}"
         f"Finish remaining work. {opencode_typed_delivery(key, outbox=ob)} "
         "The turn is not over until DONE is written."
     )
@@ -19579,11 +19783,24 @@ class Supervisor:
                         st["corrective_pending"] = False
                 if use_corrective:
                     scratch = ensure_opencode_job_scratch(wt)
+                    _intake = None
+                    try:
+                        _cwd = str(
+                            getattr(self, "worker_dir", "")
+                            or getattr(self, "cwd", "")
+                            or ""
+                        )
+                        if not _cwd:
+                            _cwd = str(Path(__file__).resolve().parent.parent / "worker")
+                        _intake = resolve_bobiverse_intake_script(_cwd)
+                    except Exception:
+                        _intake = None
                     body = opencode_external_dir_corrective_steps(
                         job_key=job_key,
                         worktree=wt,
                         outbox=outbox,
                         scratch=scratch,
+                        intake_script=_intake,
                     )
                     from_line = format_from(
                         "bob-worker", shop, body, outbox=outbox
@@ -20949,13 +21166,11 @@ def run_monitor(args, log: Log) -> int:
     run_dir = _new_run_dir("monitor", "monitor")
     run_dir.mkdir(parents=True, exist_ok=True)
     ensure_console("Jeeves Monitor (%s) - closing this window ends the agent" % kind)
-    # Prefer butler icon when present on the work root
-    butler = folder / "assets" / "jeeves-butler.ico"
-    if butler.is_file():
-        try:
-            set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
-        except Exception:
-            pass
+    # FR #9211: butler / bob paths via find_window_icon(kind=monitor); AUMID + WM_SETICON.
+    try:
+        set_console_icon(folder, kind="monitor", log=log)
+    except Exception:
+        pass
     spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir,
                              install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
@@ -21222,7 +21437,8 @@ def run_agent(args, log: Log) -> int:
     log.path = run_dir / "worker.log"
     log(f"worker: pid={pid} nick={nick} shop=#{machine} kind={kind} run_dir={run_dir}")
     ensure_console(f"Bob worker {nick} ({kind}) - closing this window ends the agent")
-    set_console_icon(Path(args.install_root))
+    # FR #9211: Win11 taskbar ignores bare WM_SETICON without AUMID; kind picks OC favicon vs Bob.
+    set_console_icon(Path(args.install_root), kind=kind, log=log)
     pw = find_ergo_password(Path(args.install_root))
     sasl = None
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
