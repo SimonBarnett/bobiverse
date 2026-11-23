@@ -9236,6 +9236,10 @@ def live_seat_nicks(home: Path, *, now: float | None = None) -> set[str]:
     and then only for entries that are locally alive or freshly heartbeated.
     Tests must not rely on COMPUTERNAME/BOB_MACHINE_ID or live OS pids (FR #7098
     SYSTEM ircBob): fixture ``worker_list`` plus a heartbeat ``updated``.
+
+    FR #9310: skip machines with ``workers_stale`` (FR #8513 last-good restore).
+    Restored ghosts must not receive auto-offers after the live list emptied
+    (offer-to-ghost class: marchhare-8112 while ``workers=[]``).
     """
     import time as _time
 
@@ -9248,6 +9252,9 @@ def live_seat_nicks(home: Path, *, now: float | None = None) -> set[str]:
     local_ids = _local_digest_machine_ids()
     for mid, ent in (doc.get("machines") or {}).items():
         if not isinstance(ent, dict):
+            continue
+        # FR #9310: last-good paint / restore is TipForm-only — not offerable.
+        if ent.get("workers_stale"):
             continue
         rows = bobreport._coerce_worker_list(ent.get("worker_list"))
         if rows:
