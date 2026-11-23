@@ -376,3 +376,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR #9104: under local intake RateLimiter deny, bobcallback acks check_run/check_suite with 204 rate deferred (no retry storm); push/PR/issues stay 429; monitor github_rate_limit EXIT 1 under floor 500
 - TipForm menu vanishes on AppFocusChange when bob-status/tip TOPMOST steals focus --- Cancel AppFocusChange on MenuClosing, gate Status while menu open, Opening Hide-BobTrayCard + close bob-status.
 - FR #9209: OpenCode launch wrapper mirrors capture-file growth with Console.Out.Write+Flush live; end with opencode-capture-done marker, never dump full $outStr again
+- Never Path.read_bytes() the whole outbox in take_outbox_records --- seek to .pos offset and cap the read (OUTBOX_READ_MAX_BYTES) or the ear OOMs (FR #9239).
