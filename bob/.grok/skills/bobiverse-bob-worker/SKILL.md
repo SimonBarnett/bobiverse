@@ -34,7 +34,7 @@ Everything about starting and running a **worker agent** from the bob install (`
 3. **Selection preview, starts nothing**: `& <ai root>\bob\worker\bob-worker.exe --mode agent --dry-run` prints JSON
    (`decision`, `reason`, the fuel readings, the cwd). Use `--list-agents` for the Agents menu JSON (no start).
 
-`--mode plan` is the plan variant (see skill `bobiverse-bob-plan`).
+`--mode plan` is the plan variant. MSI vendors `plan\PlanAgent.exe` from skills-visionary (FR #8833 / #9354). How-to-plan content lives at https://github.com/SimonBarnett/skills-visionary (`bob/agents/plan/README.md`). Tray **Plan** / `bob-worker.exe --mode plan --install-root <ai root>\bob` starts a NEW plan seat against `<root>\plan` (log: `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-plan.log`). Missing `plan\` → exit 64.
 
 ## ALWAYS a NEW agent (CAST IRON, t765u)
 

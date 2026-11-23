@@ -988,7 +988,7 @@ $namedBook = $null
 foreach ($candidate in @(
         'bobiverse-bob-job-irc', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-fr',
         'bobiverse-bob-job-uat', 'bobiverse-bob-worker', 'bobiverse-bob-commands',
-        'bobiverse-bob-troubleshooting', 'bobiverse-bob-plan', 'bobiverse-worker-seat',
+        'bobiverse-bob-troubleshooting', 'bobiverse-worker-seat',
         'bobiverse-fleet-ops', 'bobiverse-bob', 'bobiverse-jeeves-commands',
         'bobiverse-jeeves-monitor', 'bobiverse-jeeves-troubleshooting', 'bobiverse-jeeves',
         'bobiverse-airc-commands', 'bobiverse-airc-troubleshooting', 'bobiverse-airc',

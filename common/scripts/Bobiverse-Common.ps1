@@ -4429,12 +4429,13 @@ function Assert-BobiversePlanCastIronSkillsVisionary {
 function Sync-BobiverseAgentFolders {
     <#
     .SYNOPSIS
-      Build/refresh the bob agent working folders <Destination>\worker and <Destination>\plan from the repo (bob-agents\<n> + shared skills).
+      Build/refresh the bob agent working folder <Destination>\worker from the repo (bob-agents\worker + shared skills).
     .DESCRIPTION
       Used by Pack-BobiverseRelease (Destination = the MSI stage), Install-Bob (repo installs) and Sync-BobiverseFromRepo (dev sync).
       Writes AGENTS.md + CLAUDE.md + GROK.md + .cursor\rules\bobiverse-<n>.mdc + .grok\skills\* (every skill carries the CAST IRON harvest rule) and
       NEVER deletes anything: plan\work\* (the plans' outputs) and a running worker\bob-worker.exe are left alone. The exe is built by Build-BobWorker.ps1.
-      FR #3667: after plan\ refresh, Assert-BobiversePlanCastIronSkillsVisionary soft-checks CAST IRON examples.
+      FR #8833: plan\ is no longer synced from bob/agents/plan (removed; pointer README only). Pack vendors PlanAgent.exe (FR #9354).
+      FR #3667: after sync, Assert-BobiversePlanCastIronSkillsVisionary soft-checks CAST IRON examples when plan\AGENTS.md exists.
     #>
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
@@ -4443,8 +4444,8 @@ function Sync-BobiverseAgentFolders {
     $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     $enc = New-Object System.Text.UTF8Encoding($false)
     $defs = @(
-        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-plan', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills', 'bob-setup-opencode') }, # FR #6159 OpenCode setup on worker seats
-        @{ Name = 'plan';   Shared = @('harvest', 'harvest-agent-skills') }
+        # FR #8833: drop bobiverse-bob-plan + plan agent folder (skills-visionary owns Plan).
+        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills', 'bob-setup-opencode') } # FR #6159 OpenCode setup on worker seats
     )
     $made = 0
     foreach ($d in $defs) {

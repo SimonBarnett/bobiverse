@@ -96,14 +96,33 @@ function Resolve-WatchAgentHealthSrc {
 }
 
 function Stage-BobAgentFolders([string]$Stage) {
-    # t762u: bob MSI payload gains worker\ (bob-worker.exe + AGENTS/skills) and plan\ (plan-mode skills); built by the shared Common function.
+    # t762u: bob MSI payload gains worker\ (bob-worker.exe + AGENTS/skills); plan\ is vendored (FR #8833 / #9354).
     # FR #1481: also stage scripts\bob-ear.exe (frozen irc_agent) so ircBob does not need system Python for the ear.
     $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
-    if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
-    # FR #8700 / BOB-49: bob-ear (bob product) MSI must include Plan agent build (plan\ layout).
-    # FR #9354: also vendor PlanAgent.exe from SimonBarnett/skills-visionary releases (sha256 fail-closed).
+    if ($made -lt 1) { throw 'bob pack requires bob-agents\worker' }
+    # FR #8700 / BOB-49: bob-ear (bob product) MSI must include Plan agent.
+    # FR #9354: vendor PlanAgent.exe from SimonBarnett/skills-visionary releases (sha256 fail-closed).
+    # FR #8833: bob/agents/plan source tree removed; ensure plan\ + pointer AGENTS.md for the stage.
     $planDir = Join-Path $Stage 'plan'
+    New-Item -ItemType Directory -Force -Path $planDir | Out-Null
     $planAgents = Join-Path $planDir 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $planAgents -PathType Leaf)) {
+        $enc = New-Object System.Text.UTF8Encoding($false)
+        $stub = @(
+            '# Plan agent (vendored)'
+            ''
+            'Plan lives in https://github.com/SimonBarnett/skills-visionary (FR #8833).'
+            'This folder is filled at pack time with PlanAgent.exe from the skills-visionary release (FR #9354 / BOB-49).'
+            'Tray Plan starts a NEW plan agent every time (never resume).'
+            ''
+            '> **CAST IRON RULE - HARVEST AND FILE EVERYTHING**'
+            '> File via intake webhook (`POST https://bob.ntsa.uk/bob/v1/intake`; offline queued/retried):'
+            '> `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary -Kind issue -Title t -Body b`'
+            '> `..\scripts\Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/skills-visionary -Summary s -Lesson l`'
+            ''
+        ) -join [Environment]::NewLine
+        [IO.File]::WriteAllText($planAgents, $stub + [Environment]::NewLine, $enc)
+    }
     if (-not (Test-Path -LiteralPath $planDir -PathType Container)) {
         throw 'BOB-49: bob MSI stage missing plan\ (Plan agent build)'
     }
