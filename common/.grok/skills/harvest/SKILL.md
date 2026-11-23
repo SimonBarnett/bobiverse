@@ -383,3 +383,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.
 - OpenCode: one park-worktree at a time per seat; NACK busy, holding <first> for a second job; accept_offered refuses twin when nick already accepted (FR #9254).
 - TipForm HealEngine must compare tray-status.json age vs tray.alive freshness and refuse heartbeat mtime refresh while short/title is startup seed starting; bounded status-writer restart never touches seats; paint Bob: engine up at tray-up or Bob: status stalled after 180s
+- SiteKit owned-rule HTML comments must sit immediately before <rule name=...>, never inside <conditions>/<rule>; Get-BobOwnedRuleXml drops inner comments and second Install fails byte-stable CI (fr8934 / CR on #9278).
