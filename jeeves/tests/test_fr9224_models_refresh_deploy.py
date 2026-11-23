@@ -34,8 +34,9 @@ def test_fr9224_build_jeeves_hidden_import_models_refresh():
 
 def test_fr9224_iis_models_webhook_allows_post():
     text = INSTALL.read_text(encoding="utf-8")
-    assert text.count('pattern="^GET|HEAD|POST$"') >= 2
-    # Old GET|HEAD-only pattern must be gone from REQUEST_METHOD conditions.
+    # FR #9273: grouped pattern includes PUT; old ungrouped ^GET|HEAD|POST$ must be gone.
+    assert text.count('pattern="^(GET|HEAD|POST|PUT)$"') >= 2
+    assert 'pattern="^GET|HEAD|POST$"' not in text
     assert 'pattern="^GET|HEAD$"' not in text
 
 
@@ -47,5 +48,9 @@ def test_fr9224_pack_asserts_models_refresh_stage():
 
 def test_fr9224_webhooks_md_documents_post_iis():
     text = DOCS.read_text(encoding="utf-8")
-    assert "GET|HEAD|POST" in text or "forwards GET|HEAD|POST" in text
+    assert (
+        "GET|HEAD|POST|PUT" in text
+        or "forwards GET|HEAD|POST|PUT" in text
+        or "GET|HEAD|POST" in text
+    )
     assert "models/refresh" in text

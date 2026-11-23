@@ -22,7 +22,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
-| PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); direct/LAN; IIS GET\|HEAD only |
+| PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -76,14 +76,16 @@ Serves the validated JSON array from digest-home `builds-catalog.json` (missing 
 curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 ```
 
-### GET models / Weights rows (BOB-01 / FR #8707 / FR #8819)
+### GET models / Weights rows (BOB-01 / FR #8707 / FR #8819 / FR #9258)
 
 Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders.
+
+**FR #9258 (Grok-only context/effort):** context and effort apply only to the Grok CLI. Allowed contexts are `256` or `500`; allowed efforts are `high`, `medium`, or `low` (case-insensitive). Cursor and OpenCode catalog rows are valid with empty `contexts` / `efforts`, so the Weights form and tray start dialog offer those dropdowns only for Grok. Non-Grok stored `workerStartContext` / `workerStartEffort` values are ignored and dropped on the next write; pass status is `not-applicable`.
 
 `clis` is the nested allow-list for dropdowns (Si locked shape, FR #8819):
 
 ```json
-{"clis":{"Grok":{"models":{"<model>":{"contexts":{"<context>":{"efforts":["…"]}}}}},"Cursor":{"models":{}},"Opencode":{"models":{}}},
+{"clis":{"Grok":{"models":{"<model>":{"contexts":{"256":{"efforts":["high","medium","low"]},"500":{"efforts":["high","medium","low"]}}}}},"Cursor":{"models":{}},"Opencode":{"models":{}}},
  "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}
 ```
 
@@ -95,7 +97,7 @@ curl -sS "https://bob.ntsa.uk/bob/v1/models"
 
 ### PUT models / Weights rows (BOB-02 / FR #8708 / FR #8819)
 
-Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged. Agent row **`cli` is read-only** (FR #8819): a body that changes `cli` for a known agent returns **400** and leaves the store unchanged. Primary validation of model/context/effort is the Weights form dropdowns from `clis[row.cli]` (no POST validate required for this FR).
+Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS `BobModelsWebhook` forwards **GET|HEAD|POST|PUT** (FR #9273 grouped `^(GET|HEAD|POST|PUT)$`); PATCH stays blocked at IIS (backend would 405). Peer allow-list still applies on the chair (`BOB_REPORT_ALLOW`). Returns 204 when changed, 200 when unchanged. Agent row **`cli` is read-only** (FR #8819): a body that changes `cli` for a known agent returns **400** and leaves the store unchanged. Primary validation of model/context/effort is the Weights form dropdowns from `clis[row.cli]` (no POST validate required for this FR).
 
 ```bash
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
@@ -119,16 +121,16 @@ Rules:
 - Agent selections are never rewritten. GET `/bob/v1/models` adds response-only `stale: true` when a row's model is non-empty and absent from `clis[lower(cli)].models`.
 - Rate limit: one attempt per CLI per 60 s (in-memory; process restart resets). A second call inside the window returns **429** `rate_limited` with `retry_after_s` and changes nothing.
 - BOB-04 seeds (`models-valid-combos.json`) remain the starting allow-list until the first successful refresh writes `refreshed_at` on a CLI entry in `models-catalog.json`.
-- Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) forwards GET|HEAD|POST (FR #9224; PUT/PATCH stay direct/LAN).
+- Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) forwards GET|HEAD|POST|PUT (FR #9224 / FR #9273); PATCH stays blocked at IIS.
 - Operator check: the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`.
 
 ```bash
 curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh"
 ```
 
-### Models validation (form-only — Si 2026-11-22)
+### Models validation (form-only — Si 2026-11-22 / FR #9258)
 
-There is **no** `POST /bob/v1/models/validate`. Available model / context / effort per CLI belong on **GET `/bob/v1/models`**. The Weights systray form shows current values and offers those options as dropdowns — that is the validation. A POST to `/bob/v1/models/validate` returns **404** `no_models_validate`.
+There is **no** `POST /bob/v1/models/validate`. Available model / context / effort per CLI belong on **GET `/bob/v1/models`**. The Weights systray form shows current values and offers those options as dropdowns — that is the validation. Context and effort dropdowns are populated only for Grok (`256`|`500`, `high`|`medium`|`low`); Cursor/OpenCode rows have empty lists. A POST to `/bob/v1/models/validate` returns **404** `no_models_validate`.
 
 ### POST report (status / ops)
 
@@ -246,7 +248,7 @@ When the handler is offline, webhook intakes should be cached and processed on r
 
 When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening on 127.0.0.1:7700. See [fr-1014-intake-arr-restore.md](./fr-1014-intake-arr-restore.md). Assert: .\scripts\Assert-BobIntakeLocal.ps1.
 
-**FR #9246 post-install probe:** `Install-BobWebhooks.ps1` GETs `$Backend/bob/v1/report` after writing rules. Default is WARN when the backend is down (IIS would 502); pass `-RequireBackend` to fail the install, or `-SkipBackendProbe` in unit tests.
+**FR #9246 / #9273 post-install probe:** `Install-BobWebhooks.ps1` GETs `$Backend/bob/v1/report` after writing rules, then sends a no-op `PUT /bob/v1/models` expecting a backend status (400/403/2xx), never an IIS HTML 404. Default is WARN when the backend is down or PUT is not forwarded; pass `-RequireBackend` to fail the install, or `-SkipBackendProbe` in unit tests. IIS `BobModelsWebhook` forwards GET|HEAD|POST|PUT.
 
 
 ## Jeeves appliance static assets (FR #7411)
@@ -257,7 +259,7 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 
 Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
 
-**Coverage rule (FR #8835):** every public route under `/bob/v1/*` served by Jeeves/BobCallback (plus local health/digest and outbound stall/wake) MUST have (1) a card in Webhooks & API on the home page, (2) a page under `docs/webhooks/`, and (3) a row on `docs/webhooks/index.html`. Registry: `common/scripts/bob_webhook_docs.py`. Route inventory: `common/scripts/bob_route_inventory.py`. Enforced by `common/tests/test_fr8835_webhook_docs_route_coverage.py` (also run from `pytest-ascii-bom`). Coming operations (models PUT/PATCH #8708) use DocEntry.status="coming" until served. POST models/refresh (#8820) is live.
+**Coverage rule (FR #8835):** every public route under `/bob/v1/*` served by Jeeves/BobCallback (plus local health/digest and outbound stall/wake) MUST have (1) a card in Webhooks & API on the home page, (2) a page under `docs/webhooks/`, and (3) a row on `docs/webhooks/index.html`. Registry: `common/scripts/bob_webhook_docs.py`. Route inventory: `common/scripts/bob_route_inventory.py`. Enforced by `common/tests/test_fr8835_webhook_docs_route_coverage.py` (also run from `pytest-ascii-bom`). Coming operations (models PATCH) use DocEntry.status="coming" until served. POST models/refresh (#8820) and PUT models (#8708 / #8819 / #9122 / #9273 IIS forward) are live.
 
 **Static-only content publish (FR #8835 / #8803):** for HTML/docs-only updates, copy `jeeves/www/irc-ntsa/**` to the IIS site physical path **excluding `web.config`**, `*.bak`, and `_backup-*`, and do **not** delete live files. Do **not** re-run `Install-BobWebhooks.ps1` for content-only changes --- that installer rewrites WebSocket rules (#8803). Use `Install-BobWebhooks.ps1` only when rewrite rules or site wiring must change. Regenerate pages with `python common/scripts/gen_bob_webhook_docs_html.py` after registry edits.
 

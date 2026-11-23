@@ -6,7 +6,12 @@ login HTML (FR #6815). Local bobcallback answers `/bob/v1/digest` and `/digest` 
 **301** `Location: /bob/v1/report` (same webhook; no duplicate JSON handler). Those
 aliases are not published through the bob.ntsa.uk IIS rewrite today
 (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows + clis catalog (BOB-01 / FR #8707 / #8820). POST **/bob/v1/models/refresh** rebuilds clis from CLI listings (FR #8820). POST **/bob/v1/models/validate** is not served (form-only validation).
+returns fleet agent Weights rows (BOB-01 / FR #8707 / #8820) plus a ``clis`` catalogue
+whose model/context/effort options come from digest-home ``models-valid-combos.json``
+(missing/malformed combo file yields empty model maps, not an error). POST ``/bob/v1/models/refresh`` rebuilds clis from CLI listings (FR #8820). FR #9053 retired ``POST /bob/v1/models/validate``: the route returns JSON 404
+``no_models_validate`` and does not check or persist the tuple. The Weights form
+limits dropdowns to that GET catalogue; ``PUT /bob/v1/models`` persists agent rows
+and does not apply the combo allow-list.
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -71,6 +76,10 @@ LOW_MEM_BACKOFF_ENV = "BOB_CALLBACK_LOW_MEM_BACKOFF_S"
 DEFAULT_LOW_MEM_BACKOFF_S = 15.0
 LOW_MEM_MAX_DEFER_ENV = "BOB_CALLBACK_LOW_MEM_MAX_DEFER"
 DEFAULT_LOW_MEM_MAX_DEFER = 4
+# FR #9297: reserved ports used only by unit tests (never a live listener). Filing
+# intake for these was the #9297/#9298 storm after FR #7618 / #9236 self-probe tests.
+UNIT_TEST_LISTENER_PORTS = frozenset({9})
+ALLOW_TEST_INTAKE_ENV = "BOB_CALLBACK_ALLOW_TEST_INTAKE"
 # Public readers (IIS / browsers / UAT): use reportUrl. /bob/v1/digest is the same webhook and 301s here.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
@@ -756,6 +765,18 @@ def handle_report_post(
         if eid:
             webhook_queue.mark_done(home, eid, result={"ok": False, "err": "digest_lock_busy"})
         return 503, b'{"ok":false,"err":"digest_lock_busy"}'
+    except RuntimeError as exc:
+        # FR #9238: thread exhaustion under digest.lock / apply — soft 503, no intake storm.
+        msg = str(exc).lower()
+        if "can't start new thread" in msg or "start new thread" in msg:
+            print(f"INFO report reject 503 thread_exhausted err={exc}", flush=True)
+            if eid:
+                webhook_queue.mark_done(
+                    home, eid, result={"ok": False, "err": "thread_exhausted"}
+                )
+            return 503, b'{"ok":false,"err":"thread_exhausted"}'
+        _try_report_handler_failure(home, filer, route="report", err=str(exc))
+        return 500, b""
     except Exception as exc:  # noqa: BLE001 — surface as 500 + failure intake
         _try_report_handler_failure(home, filer, route="report", err=str(exc))
         return 500, b""
@@ -1433,7 +1454,11 @@ def report_http_listener_fault(
     free_mb: float | None = None,
     report_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """FR #7618 / #9236: one intake/crash report for accept/serve or self-probe failure. No secrets."""
+    """FR #7618 / #9236 / #9297: one intake/crash report for accept/serve or self-probe failure. No secrets.
+
+    Never files under PYTEST_CURRENT_TEST, and never files for UNIT_TEST_LISTENER_PORTS
+    (port 9) unless BOB_CALLBACK_ALLOW_TEST_INTAKE=1. Includes free_mb for FR #9236.
+    """
     if free_mb is None:
         with contextlib.suppress(Exception):
             free_mb = free_memory_mb()
@@ -1446,6 +1471,19 @@ def report_http_listener_fault(
             exc_type=type(exc).__name__ if exc else "",
             free_mb=free_mb,
         )
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    allow_test = (os.environ.get(ALLOW_TEST_INTAKE_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if int(port or 0) in UNIT_TEST_LISTENER_PORTS and not allow_test:
+        print(
+            f"INFO listener-fault skip unit-test-port={int(port)} (FR #9297)",
+            flush=True,
+        )
+        return {"ok": True, "skipped": True, "reason": "unit-test-port"}
     title = "bug: Jeeves HTTP listener fault (FR #7618)"
     if why in {"low-memory", "self-probe-low-memory"} or (
         isinstance(exc, MemoryError)
@@ -1462,8 +1500,6 @@ def report_http_listener_fault(
         "Fix: inspect memory pressure / accept path; do not leave the port bound but dead.\n"
         "No secrets."
     )
-    if os.environ.get("PYTEST_CURRENT_TEST") and report_fn is None:
-        return {"ok": True, "skipped": True, "reason": "pytest"}
     try:
         import crash_report
         from datetime import datetime, timezone
@@ -1739,6 +1775,23 @@ def serve(
     """Blocking listener: public GET digest + validated, secret-free POST report/git/intake/jira."""
     from http.server import ThreadingHTTPServer
 
+    class _BobCallbackHTTPServer(ThreadingHTTPServer):
+        # FR #9238 / #9236: Thread.start failure must not kill serve_forever (FR #7618 exit).
+        def process_request(self, request, client_address):  # noqa: N802 — stdlib API
+            try:
+                return super().process_request(request, client_address)
+            except RuntimeError as exc:
+                msg = str(exc).lower()
+                if "can't start new thread" in msg or "start new thread" in msg:
+                    print(
+                        f"WARN http process_request thread_exhausted peer={client_address}: {exc}",
+                        flush=True,
+                    )
+                    with contextlib.suppress(Exception):
+                        request.close()
+                    return
+                raise
+
     listen_port = resolve_listen_port(int(port))
     # Loud, once: the roster is what Jeeves published (the receiver never asks ChanServ).
     roster = bobreport.roster_machine_ids(home)
@@ -1767,7 +1820,7 @@ def serve(
     # FR #1388: bind :7700 BEFORE drain_pending. drain (webhook replay / intake outbox /
     # GitHub) can block for seconds while chair holds digest.lock — historically left
     # bobcallback.py alive with no LISTEN (SYN_SENT clients).
-    httpd = ThreadingHTTPServer((host, listen_port), handler)
+    httpd = _BobCallbackHTTPServer((host, listen_port), handler)
     _start_health_watchdog(home, host, listen_port, httpd)
 
     def _bg_drain() -> None:

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -46,6 +49,14 @@ def test_main_returns_1_when_irc_agent_oom(monkeypatch, tmp_path):
     """Chair path: persistent MemoryError loading irc_agent -> exit 1 (NSSM restart)."""
     home = tmp_path / "home"
     home.mkdir()
+
+    # FR #9291: main() assigns BOB_DIGEST_HOME / BOB_HOME for the chair process.
+    # monkeypatch.delenv(..., raising=False) is a no-op when the key is absent and
+    # does not register undo — so a later raw os.environ[...] = leaked into the
+    # suite (webhooks 403 not-on-roster, queue append into live digest home).
+    # setenv first so undo always clears/restores after the test.
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(home))
+    monkeypatch.setenv("BOB_HOME", str(home))
 
     monkeypatch.setattr(jeeves_main, "harden_stdio_replace", lambda: None)
     monkeypatch.setattr(jeeves_main, "resolve_digest_home", lambda **kw: home)
@@ -97,3 +108,38 @@ def test_main_returns_1_when_irc_agent_oom(monkeypatch, tmp_path):
     )
     assert rc == 1
     locks.release_instance_mutex.assert_called()
+    # Chair path sets DIGEST_HOME for the process lifetime; monkeypatch.delenv above
+    # restores/clears it when this test ends (FR #9291).
+    assert os.environ.get("BOB_DIGEST_HOME") == str(home)
+
+
+def test_fr9291_no_digest_home_leak_after_main_oom_path():
+    """Collection-ordered: after test_main_returns_1_when_irc_agent_oom, env is clean.
+
+    Without monkeypatch.delenv on BOB_DIGEST_HOME, fleet_digest_home redirected
+    later webhooks/queue tests into the deleted pytest tmp and returned 403/empty.
+    """
+    leaked = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if leaked:
+        norm = leaked.replace("\\", "/").lower()
+        assert "pytest" not in norm, (
+            f"BOB_DIGEST_HOME leaked from prior jeeves_main.main: {leaked!r}"
+        )
+
+    import bobcallback
+    import bobreport
+    import registered_machines as rm
+
+    home = Path(tempfile.mkdtemp())
+    rm.sync_from_chanserv(home, ["#bobiverse", "#marchhare"])
+    assert "marchhare" in bobreport.roster_machine_ids(home)
+    code, _ = bobcallback.handle_request(
+        "POST",
+        "/bob/v1/report",
+        {"Content-Type": "application/json"},
+        json.dumps({"op": "merge", "machine": "marchhare", "weekly": 1}).encode(),
+        "127.0.0.1",
+        home,
+        {"127.0.0.1"},
+    )
+    assert code in (200, 204), code
