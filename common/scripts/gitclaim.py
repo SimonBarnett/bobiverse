@@ -365,11 +365,12 @@ def linked_issue_hold_reason(
     refs: tuple[str, ...] | list[str] = (),
     issue_lookup=None,
 ) -> str | None:
-    """FR #9080: hold on a Closes-linked issue blocks dirty-FIX / MRB requeue.
+    """FR #9080 / #9243: hold on a Closes-linked issue blocks dirty-FIX / MRB requeue.
 
     Operator policy (2026-11-22): ``hold`` is issues-only. Dirty-FIX and head-move
-    requeue must still respect the linked FR/issue hold even when the PR has no
-    ``hold`` label.
+    requeue (``ensure_mrb_requeued_after_head_move`` when ``issue_lookup`` is
+    passed) must still respect the linked FR/issue hold even when the PR has no
+    ``hold`` label. ``issue_lookup=None`` returns None (no network).
     """
     if issue_lookup is None:
         return None
@@ -3063,8 +3064,9 @@ def ensure_mrb_requeued_after_head_move(
     refs: tuple[str, ...] | list[str] = (),
     pr_snapshot: dict | None = None,
     fetch_pr=None,
+    issue_lookup=None,
 ) -> str:
-    """FR #4929 / #9080: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
+    """FR #4929 / #9080 / #9243: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
 
     Used when a FIX push (synchronize) or DONE FIX lands after a prior MRB PASS
     so the new head is offerable without waiting for ``!resync``.
@@ -3074,6 +3076,13 @@ def ensure_mrb_requeued_after_head_move(
     ``fetch_pr``, or a prior queue row before append. Never stamp empty labels that
     hide a GitHub ``hold``. When ``pr_hold_reason`` hits, purge the unaccepted twin
     and return ``skipped``.
+
+    FR #9243: also honour ``linked_issue_hold_reason`` when ``issue_lookup`` is
+    provided (same injectable shape as ``enqueue_conflict_fix``). Do **not**
+    invent a default network fetch here — callers under the queue lock must pass
+    a prefetched lookup or omit it (omit = no linked check, lock-safe). Lookup
+    failures inside ``linked_issue_hold_reason`` continue per-issue (fail-open).
+    An accepted MRB row is left alone; only the unaccepted twin is purged.
     """
     repo_c = canonical_queue_repo(repo)
     num = str(pr or "").strip().lstrip("#")
@@ -3137,6 +3146,15 @@ def ensure_mrb_requeued_after_head_move(
         title_s = f"requeue after {why} (FR #4929)"
 
     hold = pr_hold_reason(title=title_s, body=body_s, labels=labels_t)
+    # FR #9243: linked FR/issue hold (issues-only labels / HOLD: body) blocks
+    # head-move requeue the same way dirty-FIX does — only when lookup is passed.
+    if not hold and issue_lookup is not None:
+        hold = linked_issue_hold_reason(
+            repo_c,
+            body=body_s,
+            refs=refs_t,
+            issue_lookup=issue_lookup,
+        )
     if hold:
         doc["unaccepted"] = [
             r
