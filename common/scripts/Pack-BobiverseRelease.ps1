@@ -330,6 +330,18 @@ function Stage-Product([string]$Name) {
     } else {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
     }
+    # FR #9211: OpenCode seat console icon (find_window_icon kind=opencode + launch-opencode.ps1).
+    $ocIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico')
+    if (-not $ocIcoSrc -or -not (Test-Path -LiteralPath $ocIcoSrc)) {
+        $ocIcoSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
+    }
+    if ($ocIcoSrc -and (Test-Path -LiteralPath $ocIcoSrc)) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
+        Copy-Item -LiteralPath $ocIcoSrc -Destination (Join-Path $stage 'assets\opencode-favicon.ico') -Force
+        Write-Host 'INFO FR #9211 staged assets\opencode-favicon.ico'
+    } else {
+        Write-Host 'WARN FR #9211 opencode-favicon.ico missing - OpenCode consoles keep default icon until staged'
+    }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
     # Issue #4: bob/jeeves public packs skip Ergo PASS unless -EmbedErgoPassword.
