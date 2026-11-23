@@ -412,3 +412,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When adding uat_release.repo_has_release_to_build gates, extend jeeves/tests conftest BOB_UAT_RELEASE_REPOS for synthetic o/* UAT fixtures in the same PR; denial tests must use real non-release names (wetherby).
 - gh pr comment --body with multiline here-string can fail accepts-at-most-1-arg; use --body-file for MRB boards
 - Monitor unit tests that expect EXIT_FINDING must monkeypatch non_chair_overlay to None; fresh live /bob/v1/report + missing queue.json soft-passes findings on CI/worker (FR #8579)
+- PR_HOLD_TITLE_RE: bare mid-title on hold is product prose (Create fr-digest on hold); only leading On hold or on hold: counts
