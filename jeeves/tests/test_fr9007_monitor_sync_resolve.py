@@ -21,7 +21,17 @@ def test_invoke_check_syncs_before_run():
     assert "FR #9007" in text
     assert "Sync-BobiverseFromRepo.ps1" in text
     assert "common\\scripts\\" in text
-    assert "-Product jeeves" in text
+    # FR #9007 product pin. FR #9350 may pass args via Start-Process ArgumentList
+    # ("-Product", "jeeves") instead of an in-process "-Product jeeves" string.
+    assert "-Product" in text
+    assert "jeeves" in text
+    assert (
+        "-Product jeeves" in text
+        or "'-Product', 'jeeves'" in text
+        or '"-Product", "jeeves"' in text
+        or ("'-Product'" in text and "'jeeves'" in text)
+        or ('"-Product"' in text and '"jeeves"' in text)
+    )
 
 
 def test_docs_cover_repo_tree_sync_path():

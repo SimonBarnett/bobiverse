@@ -15690,6 +15690,12 @@ class BoredEmitter:
             return
         if now < float(self._done_miss_armed_at) + float(self.done_miss_grace_s):
             return
+        # FR #9277: activity stamped after arm means the turn_ended was stale while streaming.
+        active = self._agent_active_at
+        armed = self._done_miss_armed_at
+        if active is not None and armed is not None and float(active) > float(armed):
+            self._cancel_done_miss_for_progress(now, why="progress after arm before remind")
+            return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._done_miss_reminded = True
         self._done_miss_reply_until = now + float(self.done_miss_reply_s)
@@ -15954,11 +15960,30 @@ class BoredEmitter:
                 self._idle_since = now
             self._hb_notify_all()
 
+    def _cancel_done_miss_for_progress(self, now: float, *, why: str) -> bool:
+        """FR #9277: progress after a false turn_ended cancels armed (pre-remind) done-miss.
+
+        Caller holds ``_cv``. Returns True when an arm was cleared.
+        """
+        if not self._ack_open:
+            return False
+        if self._done_miss_armed_at is None or self._done_miss_reminded:
+            return False
+        key = self._done_miss_key or (self._ack_job_key or "job")
+        self._clear_done_miss()
+        self.log(f"done-miss: cancelled ({why}) key={key}")
+        return True
+
     def note_agent_active(self, at: float | None = None) -> None:
-        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s."""
+        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s.
+
+        FR #9277: progress / I/O on the same ACK also cancels an armed done-miss so a
+        false ``turn_ended`` while the seat is still streaming cannot remind/GIVEUP.
+        """
         with self._cv:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
+            self._cancel_done_miss_for_progress(now, why="agent still active / progress")
             self._hb_notify_all()
 
     def note_agent_active_nb(self, at: float | None = None, *, timeout: float = 0.05) -> bool:
@@ -15973,6 +15998,7 @@ class BoredEmitter:
         try:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
+            self._cancel_done_miss_for_progress(now, why="progress heartbeat")
             self._hb_notify_all()
             return True
         finally:
@@ -17596,8 +17622,18 @@ class Supervisor:
             return lost
         if kind == "opencode":
             lost = fuel_explicitly_exhausted(fuel, "opencode", start_model=start_model)
-            self.log(f"out-of-fuel: mid-job reading {snap}")
-            return lost
+            known = fuel_reading_known(fuel, "opencode", start_model=start_model)
+            # FR #9277: paid/go mid-job with unknown pool (go=None, free=0 noise) is not
+            # out-of-fuel. Do not spam ``out-of-fuel: mid-job reading`` every poll.
+            if lost or known:
+                self.log(f"out-of-fuel: mid-job reading {snap}")
+                self._last_midjob_fuel_snap = snap
+                return lost
+            prev = getattr(self, "_last_midjob_fuel_snap", None)
+            if prev != snap:
+                self.log(f"fuel: mid-job reading {snap} (unknown pool; not exhausted)")
+                self._last_midjob_fuel_snap = snap
+            return False
         return False
 
     def _clear_watchdogs_for_out_of_fuel(self) -> None:

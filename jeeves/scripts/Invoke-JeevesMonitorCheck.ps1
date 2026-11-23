@@ -17,7 +17,11 @@ param(
     [switch]$DryRun,
     [string]$InstallRoot = '',
     [string]$ChairHome = '',
-    [string]$DigestHome = ''
+    [string]$DigestHome = '',
+    # FR #9350: bound live Sync so a hung worktree fetch cannot block tools\monitor checks.
+    [int]$SyncTimeoutSec = 25,
+    # FR #9350: at-most-once Sync per interval (per InstallRoot stamp); 0 disables throttle.
+    [int]$SyncMinIntervalSec = 300
 )
 $ErrorActionPreference = 'Stop'
 $here = if ($InstallRoot) { $InstallRoot } else { Split-Path -Parent $PSScriptRoot }
@@ -66,15 +70,59 @@ foreach ($c in $syncCands) {
     if (-not $syncFallback) { $syncFallback = $c }
 }
 if (-not $syncMon) { $syncMon = $syncFallback }
+# Env overrides (scheduled hosts may pin without editing the wrapper).
+if ($env:BOB_MONITOR_SYNC_TIMEOUT_SEC -match '^\d+$') {
+    $SyncTimeoutSec = [int]$env:BOB_MONITOR_SYNC_TIMEOUT_SEC
+}
+if ($env:BOB_MONITOR_SYNC_MIN_INTERVAL_SEC -match '^\d+$') {
+    $SyncMinIntervalSec = [int]$env:BOB_MONITOR_SYNC_MIN_INTERVAL_SEC
+}
+if ($SyncTimeoutSec -lt 5) { $SyncTimeoutSec = 5 }
+if ($SyncTimeoutSec -gt 120) { $SyncTimeoutSec = 120 }
 if ($syncMon) {
-    try {
-        if ($DryRun) {
-            & $syncMon -Product jeeves -InstallRoot $here -DryRun
-        } else {
-            & $syncMon -Product jeeves -InstallRoot $here
+    $doSync = $true
+    $stamp = Join-Path $here '.bobiverse-monitor-last-sync'
+    if (-not $DryRun -and $SyncMinIntervalSec -gt 0 -and (Test-Path -LiteralPath $stamp)) {
+        try {
+            $ageSec = ([datetime]::UtcNow - (Get-Item -LiteralPath $stamp).LastWriteTimeUtc).TotalSeconds
+            if ($ageSec -lt $SyncMinIntervalSec) {
+                Write-Warning ("FR #9350 skip sync: last sync {0:N0}s ago < MinInterval={1}s" -f $ageSec, $SyncMinIntervalSec)
+                $doSync = $false
+            }
+        } catch { }
+    }
+    if ($doSync) {
+        # FR #9350: never call Sync in-process. A hung fetch leaves the wrapper with empty
+        # stdout and never reaches tools\monitor\*.py. Bound WaitForExit; kill and proceed.
+        $outLog = Join-Path $env:TEMP ("jeeves-mon-sync-{0}.out.log" -f $PID)
+        $errLog = Join-Path $env:TEMP ("jeeves-mon-sync-{0}.err.log" -f $PID)
+        $argList = @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-File', $syncMon, '-Product', 'jeeves', '-InstallRoot', $here
+        )
+        if ($DryRun) { $argList += '-DryRun' }
+        $p = $null
+        try {
+            $p = Start-Process -FilePath (Get-Command powershell.exe).Source -ArgumentList $argList `
+                -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+            $ms = [Math]::Max(5000, $SyncTimeoutSec * 1000)
+            if (-not $p.WaitForExit($ms)) {
+                try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+                Write-Warning ("FR #9350 sync-monitor timeout after {0}s; proceeding with existing tools\monitor" -f $SyncTimeoutSec)
+            } elseif ($p.ExitCode -ne 0) {
+                Write-Warning ("FR #9350 sync-monitor exit={0}; proceeding with existing tools\monitor" -f $p.ExitCode)
+            }
+        } catch {
+            Write-Warning ("FR #9007/#9350 sync-monitor before check: {0}" -f $_.Exception.Message)
+        } finally {
+            if ($p) { try { $p.Dispose() } catch { } }
+            # Stamp after every attempt so a hanging Sync does not re-fire every check.
+            if (-not $DryRun) {
+                try {
+                    [IO.File]::WriteAllText($stamp, ([datetime]::UtcNow.ToString('o')))
+                } catch { }
+            }
         }
-    } catch {
-        Write-Warning ("FR #9007 sync-monitor before check: {0}" -f $_.Exception.Message)
     }
 }
 $py = Join-Path $here "tools\monitor\$Check.py"
