@@ -246,6 +246,8 @@ When the handler is offline, webhook intakes should be cached and processed on r
 
 When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening on 127.0.0.1:7700. See [fr-1014-intake-arr-restore.md](./fr-1014-intake-arr-restore.md). Assert: .\scripts\Assert-BobIntakeLocal.ps1.
 
+**FR #9246 post-install probe:** `Install-BobWebhooks.ps1` GETs `$Backend/bob/v1/report` after writing rules. Default is WARN when the backend is down (IIS would 502); pass `-RequireBackend` to fail the install, or `-SkipBackendProbe` in unit tests.
+
 
 ## Jeeves appliance static assets (FR #7411)
 

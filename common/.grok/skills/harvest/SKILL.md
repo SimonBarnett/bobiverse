@@ -344,6 +344,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR assign with open Closes PR: DONE covering URL; do not open a twin tip (#9100/#9107)
 - FIX on CLI-exit classifier DIRTY tip: keep _stderr_is_seat_prompt_echo with grok_worker_spawn_connect_failure and unsigned_exit_stderr_is_noise; silent ORs prompt-echo and noise
 - gh_auth_blocks: Failed to log in / re-authenticate wins over Active account true even on exit 0; never invent GH_TOKEN
+- BOB-HOVER-XAI: Get-BobTrayHoverXaiPoolLabel maps SuperGrok to xAI never SG; hover remainPct uses digest xai_weekly remaining_pct including stale so it matches Format-BobTrayXaiWeeklyRow
 - Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
 - When an MRB PR carries label hold, GIVEUP reason=on-hold and do not merge.
 - Invoke-JeevesMonitorCheck: missing .py soft-skips exit 0 with skipped JSON so sparse/lagging installs do not EXIT:2 on ValidateSet-widened names; promote local J:\ hotfix via PR.
@@ -379,3 +380,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - ensure_mrb_requeued_after_head_move must take issue_lookup and call linked_issue_hold_reason; prefetch outside the queue lock (FR #9243).
 - workers_last_good orphans: delete_worker/worker-remove must clear last-good + workers_stale; TTL BOB_DIGEST_LAST_GOOD_MAX_S; monitor workers_last_good_orphan.
 - Never Path.read_bytes() the whole outbox in take_outbox_records --- seek to .pos offset and cap the read (OUTBOX_READ_MAX_BYTES) or the ear OOMs (FR #9239).
+- After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.

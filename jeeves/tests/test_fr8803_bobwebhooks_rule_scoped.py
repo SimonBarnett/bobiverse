@@ -59,6 +59,8 @@ def _run(site: Path, *extra: str) -> subprocess.CompletedProcess[str]:
         str(site),
         "-Backend",
         "http://127.0.0.1:7700",
+        # FR #9246: unit runs must not wait on a live BobCallback.
+        "-SkipBackendProbe",
         *extra,
     ]
     return subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
