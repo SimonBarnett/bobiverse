@@ -657,11 +657,12 @@ def classify_queue_row(
             # the local queue; issue_open alone still yields depends_on_open.
             with contextlib.suppress(Exception):
                 issue_fetch = gitclaim.depends_issue_fetch_checker()
-        dep_why = gitclaim.row_depends_open_reason(
+        # FR #9455: same depends_gate_reason as offer/!assign (no path fork).
+        dep_why = gitclaim.depends_gate_reason(
             row,
-            open_keys,
+            doc or None,
+            open_keys=open_keys,
             issue_open=issue_open,
-            doc=doc or None,
             issue_fetch=issue_fetch,
         )
         if dep_why:

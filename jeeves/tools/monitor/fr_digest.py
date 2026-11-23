@@ -58,7 +58,8 @@ def product_on_tip() -> bool:
         text = gitclaim.read_text(encoding="utf-8")
     except OSError:
         return False
-    return "bob_g1_skip_held_digest" in text
+    # FR #8837 + FR #9455 shared gate markers mean BOB-G1 is on tip.
+    return "bob_g1_skip_held_digest" in text or "bob_g1_shared_gate" in text
 
 
 def _row_repo(row: dict) -> str:

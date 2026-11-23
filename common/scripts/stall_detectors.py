@@ -478,8 +478,8 @@ def _idle_has_offerable(home: Any, idle: list[str]) -> bool:
 def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> bool:
     """FR #9374: True when offer would skip this FR (Depends-on / digest).
 
-    Matches ``gitclaim.row_depends_open_reason`` / ``digest_issue_reason`` so
-    ``idle_with_work`` does not treat blocked FRs as waiting work.
+    Matches ``gitclaim.depends_gate_reason`` / ``digest_issue_reason`` so
+    ``idle_with_work`` does not treat blocked FRs as waiting work (FR #9455).
     """
     if str(row.get("task") or "").upper() != "FR":
         return False
@@ -512,7 +512,7 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
                 issue_open = gitclaim.depends_issue_open_checker()
             except Exception:
                 issue_open = None
-        # FR #9434 / #9418: unheld fr-digest absent from queue needs issue_fetch.
+        # FR #9434 / #9418 / #9455: unheld fr-digest absent from queue needs issue_fetch.
         if issue_fetch is None:
             try:
                 issue_fetch = gitclaim.depends_issue_fetch_checker()
@@ -529,11 +529,11 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
             open_keys = set()
     try:
         return bool(
-            gitclaim.row_depends_open_reason(
+            gitclaim.depends_gate_reason(
                 row,
-                open_keys,
+                doc or None,
+                open_keys=open_keys,
                 issue_open=issue_open,
-                doc=doc or None,
                 issue_fetch=issue_fetch,
             )
         )
