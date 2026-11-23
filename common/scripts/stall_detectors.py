@@ -19,6 +19,7 @@ ACK_STALE_ID = "ack-stale"
 BORED_LATENCY_ID = "bored-latency"
 STALE_DIGEST_ID = "stale-digest"
 IDLE_WITH_WORK_ID = "idle-with-work"
+ONLINE_ZERO_WORKERS_ID = "online-zero-workers"
 
 # FR #6462: operator / FR #6407 unpin tokens on require_machine. These mean "no
 # machine pin" (same set as gitclaim.row_require_machine / _stamp_require_machine).
@@ -477,8 +478,8 @@ def _idle_has_offerable(home: Any, idle: list[str]) -> bool:
 def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> bool:
     """FR #9374: True when offer would skip this FR (Depends-on / digest).
 
-    Matches ``gitclaim.row_depends_open_reason`` / ``digest_issue_reason`` so
-    ``idle_with_work`` does not treat blocked FRs as waiting work.
+    Matches ``gitclaim.depends_gate_reason`` / ``digest_issue_reason`` so
+    ``idle_with_work`` does not treat blocked FRs as waiting work (FR #9455).
     """
     if str(row.get("task") or "").upper() != "FR":
         return False
@@ -511,7 +512,7 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
                 issue_open = gitclaim.depends_issue_open_checker()
             except Exception:
                 issue_open = None
-        # FR #9434 / #9418: unheld fr-digest absent from queue needs issue_fetch.
+        # FR #9434 / #9418 / #9455: unheld fr-digest absent from queue needs issue_fetch.
         if issue_fetch is None:
             try:
                 issue_fetch = gitclaim.depends_issue_fetch_checker()
@@ -528,11 +529,11 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
             open_keys = set()
     try:
         return bool(
-            gitclaim.row_depends_open_reason(
+            gitclaim.depends_gate_reason(
                 row,
-                open_keys,
+                doc or None,
+                open_keys=open_keys,
                 issue_open=issue_open,
-                doc=doc or None,
                 issue_fetch=issue_fetch,
             )
         )
@@ -640,6 +641,66 @@ def detect_stale_digest(snap: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _machine_worker_count(ent: dict) -> int | None:
+    if not isinstance(ent, dict):
+        return None
+    if "worker_list" in ent and ent.get("worker_list") is not None:
+        wl = ent.get("worker_list")
+        if isinstance(wl, (list, dict)):
+            return len(wl)
+        return 0
+    if "workers" not in ent:
+        return None
+    raw = ent.get("workers")
+    if isinstance(raw, (list, dict)):
+        return len(raw)
+    return 0
+
+
+def detect_online_zero_workers(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    """FR #9462: online digest machine with zero workers while offerable_count > 0.
+
+    Fingerprint ``stall:online-zero-workers:<machine>`` (rate-capped by stall_filer).
+    Does not start seats — TipForm Agents only (FR #3180).
+    """
+    try:
+        offerable = int(snap.get("offerable_count") or 0)
+    except (TypeError, ValueError):
+        offerable = 0
+    if offerable < 1:
+        try:
+            offerable = int(snap.get("ungated_unaccepted") or 0)
+        except (TypeError, ValueError):
+            offerable = 0
+    if offerable < 1:
+        return []
+    machines = snap.get("machines")
+    if not isinstance(machines, dict):
+        return []
+    found: list[dict[str, Any]] = []
+    for mid, ent in sorted(machines.items(), key=lambda kv: str(kv[0]).lower()):
+        if not isinstance(ent, dict) or not ent.get("online"):
+            continue
+        count = _machine_worker_count(ent)
+        if count is None or count > 0:
+            continue
+        mid_s = str(mid)
+        found.append(
+            {
+                "id": ONLINE_ZERO_WORKERS_ID,
+                "key": mid_s.lower(),
+                "title": f"stall:online-zero-workers:{mid_s.lower()}",
+                "evidence": {
+                    "machine": mid_s,
+                    "offerable_count": offerable,
+                    "workers": 0,
+                    "remediation": "TipForm Agents (no silent auto-start; FR #3180)",
+                },
+            }
+        )
+    return found
+
+
 DETECTORS = (
     detect_self_review_deadlock,
     detect_all_gave_up,
@@ -649,6 +710,7 @@ DETECTORS = (
     detect_bored_latency,
     detect_stale_digest,
     detect_idle_with_work,
+    detect_online_zero_workers,
 )
 
 

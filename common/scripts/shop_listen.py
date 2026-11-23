@@ -973,6 +973,12 @@ def return_job_to_unaccepted(
             if reason and not console_closed_giveup:
                 with contextlib.suppress(Exception):
                     gitclaim.apply_require_machine_giveup_stamp(job, reason)
+            # FR #9469: blocked:depends-on / blocked-on / depends_unresolved with a
+            # parseable #N stamps plain Depends-on: on queue body + GitHub issue so
+            # BOB-D3 skips re-offer until that ref is CLOSED (union existing deps).
+            if reason and not console_closed_giveup:
+                with contextlib.suppress(Exception):
+                    gitclaim.apply_depends_on_giveup_stamp(job, reason)
             if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so

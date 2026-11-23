@@ -4476,9 +4476,12 @@ function Update-BobTrayWorkerAgentsMenu {
         $label = [string]$row.label
         $reason = [string]$row.reason
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
-        $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
-        $item.Tag = $id
+        $available = $false
+        try { $available = [bool]$row.available } catch { $available = $false }
+        # FR #9263 / BOB-TRAY-UI-03: Open Code expands Free|Paid only (Weights model at click).
         if ($id -eq 'opencode') {
+            $oc = New-Object System.Windows.Forms.ToolStripMenuItem $text
+            $oc.Enabled = $available
             # FR #8728 / BOB-31 + FR #9267: install assets\ then bob\tray\assets\.
             $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
             if (-not (Test-Path -LiteralPath $ocIcon)) {
@@ -4486,12 +4489,50 @@ function Update-BobTrayWorkerAgentsMenu {
             }
             Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
             if (Test-Path -LiteralPath $ocIcon) {
-                try { $item.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
+                try { $oc.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
                 catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
             } else {
                 Write-TrayLog ('menu-icon MISSING file=opencode-favicon.ico path=' + $ocIcon)
             }
+            foreach ($slot in @('free', 'paid')) {
+                $slotLabel = if ($slot -eq 'free') { 'Free' } else { 'Paid' }
+                $child = New-Object System.Windows.Forms.ToolStripMenuItem $slotLabel
+                $child.Tag = ('opencode|{0}' -f $slot)
+                $child.Enabled = $available
+                $child.Add_Click({
+                        param($sender, $e)
+                        $picked = ''
+                        if ($sender) { $picked = [string]$sender.Tag }
+                        if ($picked -notlike 'opencode|*') { return }
+                        # Parse slot from Tag (avoid foreach closure on $slot / $Matches).
+                        $ocSlot = if ($picked.EndsWith('|paid')) { 'paid' } else { 'free' }
+                        if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                            Show-BobTrayOpenCodePaidExhaustedDialog
+                            return
+                        }
+                        $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                        if ([string]::IsNullOrWhiteSpace($catalog)) {
+                            $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
+                            $catalog = Join-Path $install 'home\models-catalog.json'
+                        }
+                        $rowAgent = if ($ocSlot -eq 'free') { 'Opencode-Free' } else { 'Opencode' }
+                        $webhook = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName $rowAgent
+                        $ocModel = if ($ocSlot -eq 'paid') { 'opencode-go/deepseek-v4-pro' } else { 'opencode/deepseek-v4.1-flash-free' }
+                        if (-not [string]::IsNullOrWhiteSpace($webhook)) { $ocModel = $webhook }
+                        Write-TrayLog ('workers-opencode slot=' + $ocSlot)
+                        Write-TrayLog ('Workers Open Code: webhook model ' + $ocModel + ' agent ' + $rowAgent + ' path ' + $catalog)
+                        Write-TrayLog ('workers-opencode model=' + $ocModel)
+                        Write-TrayLog 'Workers Open Code: opencode CLI start'
+                        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Trigger 'workers-opencode'
+                    })
+                [void]$oc.DropDownItems.Add($child)
+            }
+            Write-TrayLog 'Workers Open Code: submenu Free|Paid (FR #9263)'
+            [void]$MenuItem.DropDownItems.Add($oc)
+            continue
         }
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
+        $item.Tag = $id
         if ($id -eq 'grok') {
             # FR #8723 / BOB-19 + FR #9267: install assets\ then bob\tray\assets\.
             $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
@@ -4565,34 +4606,34 @@ function Update-BobTrayWorkerAgentsMenu {
                     Write-TrayLog ('Workers Grok: webhook model ' + $model + ' path ' + $catalog)
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
-                elseif ($picked -eq 'opencode') {
-                    # FR #8733 / BOB-28: free+paid exhausted -> dialog + quit (no start).
+                elseif ($picked -eq 'opencode' -or $picked -match '^opencode\|(free|paid)$') {
+                    # FR #9263: Free|Paid submenu tags opencode|free / opencode|paid.
+                    # Legacy flat Tag=opencode keeps free-first (BOB-27) for older dumps.
+                    $ocSlot = 'free'
+                    if ($picked -match '^opencode\|(free|paid)$') { $ocSlot = $Matches[1] }
+                    elseif ($picked -eq 'opencode') {
+                        if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                            Show-BobTrayOpenCodePaidExhaustedDialog
+                            return
+                        }
+                        $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
+                        if (-not $ocFuel) { $ocFuel = Join-Path $RepoRoot 'run\opencode-fuel.json' }
+                        if (Test-Path -LiteralPath $ocFuel) {
+                            $ocDoc = Get-Content -LiteralPath $ocFuel -Raw
+                            $ocFree = $null
+                            $ocPaid = $null
+                            if ($ocDoc -match '"free"\s*:\s*(-?\d+)') { $ocFree = [int]$Matches[1] }
+                            if ($ocDoc -match '"paid"\s*:\s*(-?\d+)') { $ocPaid = [int]$Matches[1] }
+                            if ($null -ne $ocFree -and $ocFree -le 0 -and $null -ne $ocPaid -and $ocPaid -gt 0) { $ocSlot = 'paid' }
+                        }
+                    }
                     if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
                         Show-BobTrayOpenCodePaidExhaustedDialog
                         return
                     }
-                    # FR #8730 / BOB-27: free first; paid when free fuel is 0 and paid is above 0.
-                    $ocSlot = 'free'
-                    $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
-                    if (-not $ocFuel) { $ocFuel = Join-Path $RepoRoot 'run\opencode-fuel.json' }
-                    if (Test-Path -LiteralPath $ocFuel) {
-                        $ocDoc = Get-Content -LiteralPath $ocFuel -Raw
-                        $ocFree = $null
-                        $ocPaid = $null
-                        if ($ocDoc -match '"free"\s*:\s*(-?\d+)') { $ocFree = [int]$Matches[1] }
-                        if ($ocDoc -match '"paid"\s*:\s*(-?\d+)') { $ocPaid = [int]$Matches[1] }
-                        if ($null -ne $ocFree -and $ocFree -le 0 -and $null -ne $ocPaid -and $ocPaid -gt 0) { $ocSlot = 'paid' }
-                    }
-                    if ($ocSlot -eq 'paid') { Write-TrayLog 'workers-opencode slot=paid reason=free-exhausted' }
+                    if ($ocSlot -eq 'paid') { Write-TrayLog 'workers-opencode slot=paid' }
                     else { Write-TrayLog 'workers-opencode slot=free' }
-                    $ocModel = 'opencode/deepseek-v4.1-flash-free'
-                    if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
-                    # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
-                    Write-TrayLog ('workers-opencode model=' + $ocModel)
-
-                    # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
-                    Write-TrayLog 'Workers Open Code: opencode CLI start'
-                    # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
+                    $ocModel = if ($ocSlot -eq 'paid') { 'opencode-go/deepseek-v4-pro' } else { 'opencode/deepseek-v4.1-flash-free' }
                     $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
                     if ([string]::IsNullOrWhiteSpace($catalog)) {
                         $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
@@ -4600,11 +4641,10 @@ function Update-BobTrayWorkerAgentsMenu {
                     }
                     $rowAgent = if ($ocSlot -eq 'free') { 'Opencode-Free' } else { 'Opencode' }
                     $webhook = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName $rowAgent
-                    $paidModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode'
-                    $freeModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode-Free'
-                    Write-TrayLog ('Workers Open Code: webhook model ' + $paidModel + ' agent Opencode path ' + $catalog)
-                    Write-TrayLog ('Workers Open Code: webhook model ' + $freeModel + ' agent Opencode-Free path ' + $catalog)
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $webhook + ' agent ' + $rowAgent + ' path ' + $catalog)
                     if (-not [string]::IsNullOrWhiteSpace($webhook)) { $ocModel = $webhook }
+                    Write-TrayLog ('workers-opencode model=' + $ocModel)
+                    Write-TrayLog 'Workers Open Code: opencode CLI start'
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Trigger 'workers-opencode'
                 }
                 else {
@@ -5086,11 +5126,55 @@ $poll.Add_Tick({
                     try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
                     try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
                 }
+                # FR #9462: durable online_zero_workers alert from digest/report (TipForm Agents; no silent auto-start).
+                try {
+                    if (Get-Command Get-BobTrayOnlineZeroWorkerAlerts -ErrorAction SilentlyContinue) {
+                        $ozOfferable = 0
+                        try { $ozOfferable = [int](Get-BobTrayCachedOfferableCount) } catch { $ozOfferable = 0 }
+                        $ozMachines = $null
+                        try {
+                            $repPath = $null
+                            if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
+                                $repPath = Join-Path (Get-BobIrcHome) 'bob-peers\_report-digest.json'
+                            }
+                            if ($repPath -and (Test-Path -LiteralPath $repPath)) {
+                                $repDoc = Get-Content -LiteralPath $repPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                                if ($repDoc -and $repDoc.machines) { $ozMachines = $repDoc.machines }
+                                if ($repDoc -and $repDoc.queue -and $null -ne $repDoc.queue.offerable_count) {
+                                    $ozOfferable = [int]$repDoc.queue.offerable_count
+                                }
+                            }
+                        } catch { }
+                        if (-not $ozMachines -and $script:lastFuelSnapshot -and $script:lastFuelSnapshot.machines) {
+                            $ozMachines = $script:lastFuelSnapshot.machines
+                        }
+                        $ozAlerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $ozMachines -OfferableCount $ozOfferable)
+                        if ($ozAlerts.Count -gt 0) {
+                            $alerts = @($alerts) + @($ozAlerts)
+                            Write-TrayLog ('FR #9462 online_zero_workers alerts=' + ($ozAlerts -join ' | '))
+                        }
+                        # FR #9471: HealEngine storm stamp -> TipForm alert (no silent startworker recovery gap).
+                        if (Get-Command Get-BobTrayEngineStormAlert -ErrorAction SilentlyContinue) {
+                            $stormAlert = Get-BobTrayEngineStormAlert -Root $RepoRoot
+                            if ($stormAlert) {
+                                $alerts = @($alerts) + @($stormAlert)
+                                Write-TrayLog ('FR #9471 ' + $stormAlert)
+                            }
+                        }
+                    }
+                } catch {
+                    Write-TrayLog ('FR #9462 online_zero_workers: ' + $_.Exception.Message)
+                }
                 if ($alerts.Count -gt 0) {
                     $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
                     Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
                     # BOB-43: intervene so offerable work can move (nudge under-cap fill cooldown).
-                    if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
+                    # FR #9462 / #3180: online_zero_workers is TipForm Agents only — skip auto intervene/fill nudge.
+                    $ozOnly = $true
+                    foreach ($a in @($alerts)) {
+                        if ($a -and ($a -notmatch 'online_zero_workers|engine_restart_storm')) { $ozOnly = $false; break }
+                    }
+                    if (-not $ozOnly -and (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue)) {
                         $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
                         if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
                     }
@@ -5124,7 +5208,20 @@ $poll.Add_Tick({
                         param($Root)
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
-                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
+                            # FR #9462: keep online_zero_workers alert durable on tray-status.json (TipForm/Status paint).
+                            $merged = @()
+                            try {
+                                if ($h.online_zero_alerts) { $merged = @($h.online_zero_alerts) }
+                            } catch { $merged = @() }
+                            $merged = @($merged | Where-Object { $_ } | Select-Object -Unique)
+                            $kind = 'none'
+                            try {
+                                if (Get-Command Get-BobTrayAlertKind -ErrorAction SilentlyContinue) {
+                                    $kind = Get-BobTrayAlertKind -Alerts $merged -RemainingPct $h.remaining_pct
+                                }
+                            } catch { $kind = 'none' }
+                            $attn = ($merged.Count -gt 0)
+                            $model = New-BobTrayStatusModel -Hover $h -AlertKind $kind -Alerts $merged -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $attn -AttentionSeq 0 -Pulse $false
                             [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
                         }
                     })

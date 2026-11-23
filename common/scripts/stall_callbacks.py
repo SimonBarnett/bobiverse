@@ -60,6 +60,8 @@ _DETECTOR_EVENT = {
     "stale-digest": EVENT_CHAIR_DEGRADED,
     "resync-fail": EVENT_RESYNC_FAILED,
     "idle-with-work": EVENT_IDLE_WITH_WORK,
+    # FR #9462: empty online shop while work is offerable (TipForm Agents; no auto-start).
+    "online-zero-workers": EVENT_SEAT_DOWN,
 }
 
 _SECRET_RX = re.compile(

@@ -3329,6 +3329,21 @@ class Client:
             )
         except Exception as e:  # never let a command kill the reader
             info(f"WARN startworker decide failed: {type(e).__name__}: {e}")
+            # FR #9471: never silent when this ear owns the target machine (marchhare class).
+            if startworker.targets_local(body, local, chan):
+                line = (
+                    f"NACK startworker: decide failed ({type(e).__name__}); "
+                    "restart the tray or wait for watchdog"
+                )
+                info(f"INFO startworker nick={who} ok=False reason=decide_failed machine={local} chan={chan or 'pm'}")
+                try:
+                    if to_channel and chan:
+                        self.send_privmsg_lines("PRIVMSG " + chan + " :" + line)
+                        time.sleep(FLOOD_S)
+                    else:
+                        self.whisper(who, line)
+                except Exception as send_exc:
+                    info(f"WARN startworker NACK send failed: {type(send_exc).__name__}: {send_exc}")
             return True
         if dec is None:
             return True

@@ -725,6 +725,12 @@ if ($Product -eq 'bob') {
             Write-Host ("WARN FR #8675 plan identity: {0}" -f $_.Exception.Message)
         }
     } catch { Write-Host ("WARN sync worker/plan folders: {0}" -f $_.Exception.Message) }
+    # FR #9468: mirror plan\/priority\ MSI payloads into vendor\ for TipForm Plan/Priority clicks.
+    try {
+        $null = Copy-BobTrayVendorExes -Root $InstallRoot
+    } catch {
+        Write-Host ("WARN FR #9468 vendor tray exes: {0}" -f $_.Exception.Message)
+    }
 }
 
 # Agent-start layer for this product (AGENTS.md / CLAUDE.md / GROK.md / .cursor rule) from AGENTS.<product>.md.

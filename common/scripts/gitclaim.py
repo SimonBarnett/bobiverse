@@ -698,6 +698,7 @@ def _open_fr_bob_and_id_index(
 
 
 # BOB-D3 / FR #8807 + BOB-G1 / FR #8837 (bob_g1_skip_held_digest).
+# FR #9455 bob_g1_shared_gate: offer + assign + stuck share depends_gate_reason.
 DEPENDS_OPEN_REASON = "depends-open"
 DEPENDS_HELD_REASON = "depends-held"
 
@@ -818,6 +819,7 @@ def row_fr_depends_blocked_reason(
     doc: dict,
     *,
     docs_root: Path | None = None,
+    issue_fetch=None,
 ) -> str | None:
     """FR #8754 / BOB-D7 (FR #8811) / FR #9220 / BOB-G1 (FR #8837): Depends-on gate.
 
@@ -829,6 +831,8 @@ def row_fr_depends_blocked_reason(
     leave the queue (or stamp ``state=closed``, BOB-D4 / FR #8808), the FR becomes offerable.
 
     BOB-G1: hold on depend -> ``depends-held``; unheld digest/fr-digest OK while OPEN.
+    FR #9455: pass ``issue_fetch`` so digests absent from the local queue still resolve
+    (same as ``row_depends_open_reason`` / ``depends_gate_reason``).
     """
     if _canon_task(row) != "FR":
         return None
@@ -849,7 +853,9 @@ def row_fr_depends_blocked_reason(
                     continue
                 if self_key is not None and (repo, oid) == self_key:
                     continue
-                g1 = _bob_g1_digest_gate_for_pair(doc, repo, oid)
+                g1 = _bob_g1_digest_gate_for_pair(
+                    doc, repo, oid, issue_fetch=issue_fetch
+                )
                 if g1 == DEPENDS_HELD_REASON:
                     return f"{DEPENDS_HELD_REASON}: {tok}"
                 if g1 == "ok-fr-digest":
@@ -865,7 +871,9 @@ def row_fr_depends_blocked_reason(
             pair = (_repo_key(qm.group(1)), _norm_row_id(f"#{int(qm.group(2))}"))
             if self_key is not None and pair == self_key:
                 continue
-            g1 = _bob_g1_digest_gate_for_pair(doc, pair[0], pair[1])
+            g1 = _bob_g1_digest_gate_for_pair(
+                doc, pair[0], pair[1], issue_fetch=issue_fetch
+            )
             if g1 == DEPENDS_HELD_REASON:
                 return f"{DEPENDS_HELD_REASON}: {tok}"
             if g1 == "ok-fr-digest":
@@ -880,7 +888,9 @@ def row_fr_depends_blocked_reason(
             pair = (home_repo, oid)
             if self_key is not None and pair == self_key:
                 continue
-            g1 = _bob_g1_digest_gate_for_pair(doc, home_repo, oid)
+            g1 = _bob_g1_digest_gate_for_pair(
+                doc, home_repo, oid, issue_fetch=issue_fetch
+            )
             if g1 == DEPENDS_HELD_REASON:
                 return f"{DEPENDS_HELD_REASON}: {tok}"
             if g1 == "ok-fr-digest":
@@ -888,6 +898,54 @@ def row_fr_depends_blocked_reason(
             if pair in open_keys:
                 return f"depends-on open: {tok}"
     return None
+
+
+def depends_gate_reason(
+    row: dict,
+    doc: dict | None = None,
+    *,
+    open_keys: set[tuple[str, int]] | None = None,
+    issue_open=None,
+    issue_fetch=None,
+    docs_root: Path | None = None,
+) -> str | None:
+    """FR #9455 ``bob_g1_shared_gate``: one Depends-on reason for offer, assign, stuck.
+
+    Returns ``depends-held`` / ``depends-open`` / ``depends-unresolved`` / None.
+    Prefer this over calling ``row_depends_open_reason`` and
+    ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
+    digests were absent from the local queue).
+    """
+    if _canon_task(row) != "FR":
+        return None
+    qdoc = doc if isinstance(doc, dict) else {}
+    fetch = issue_fetch
+    opener = issue_open
+    keys = open_keys if open_keys is not None else open_fr_issue_keys(qdoc)
+    why = row_depends_open_reason(
+        row,
+        keys,
+        issue_open=opener,
+        doc=qdoc,
+        issue_fetch=fetch,
+    )
+    if why:
+        return why
+    blocked = row_fr_depends_blocked_reason(
+        row, qdoc, docs_root=docs_root, issue_fetch=fetch
+    )
+    if not blocked:
+        return None
+    if blocked == DEPENDS_HELD_REASON or blocked.startswith(f"{DEPENDS_HELD_REASON}:"):
+        return DEPENDS_HELD_REASON
+    if blocked == DEPENDS_OPEN_REASON or blocked.startswith("depends-on open"):
+        return DEPENDS_OPEN_REASON
+    if (
+        blocked == DEPENDS_UNRESOLVED_REASON
+        or blocked.startswith(f"{DEPENDS_UNRESOLVED_REASON}:")
+    ):
+        return DEPENDS_UNRESOLVED_REASON
+    return DEPENDS_OPEN_REASON
 
 
 # BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
@@ -3324,6 +3382,105 @@ def apply_require_machine_giveup_stamp(row: dict, reason: str) -> str:
     return mid
 
 
+# FR #9469: GIVEUP blocked:depends-on / blocked-on / depends_unresolved with a
+# parseable issue ref must stamp a plain Depends-on: line on the issue body.
+_BLOCKED_DEPENDS_CUE_RE = re.compile(
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+)
+_BLOCKED_DEPENDS_QUAL_RE = re.compile(
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"[^\n]*?\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
+)
+_BLOCKED_DEPENDS_REL_RE = re.compile(
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"[^\n]*?#(\d+)\b"
+)
+
+
+def parse_blocked_depends_giveup_refs(
+    reason: str,
+    *,
+    home_repo: str = "",
+) -> list[tuple[str, int]]:
+    """FR #9469: ``(repo, number)`` refs from a blocked Depends-on GIVEUP reason."""
+    text = str(reason or "").strip()
+    if not text or not _BLOCKED_DEPENDS_CUE_RE.search(text):
+        return []
+    home = str(home_repo or "").strip()
+    out: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for m in _BLOCKED_DEPENDS_QUAL_RE.finditer(text):
+        pair = (m.group(1), int(m.group(2)))
+        key = (pair[0].lower(), pair[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(pair)
+    if out:
+        return out
+    for m in _BLOCKED_DEPENDS_REL_RE.finditer(text):
+        pair = (home, int(m.group(1)))
+        key = (pair[0].lower(), pair[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(pair)
+    return out
+
+
+def apply_depends_on_giveup_stamp(
+    row: dict,
+    reason: str,
+    *,
+    patch_github: bool = True,
+    filer=None,
+) -> list[tuple[str, int]]:
+    """FR #9469: union Depends-on refs from a blocked GIVEUP into body + GitHub.
+
+    Updates ``row["body"]`` with a plain ``Depends-on:`` line (unions existing).
+    When ``patch_github`` is true, PATCHes the issue body via ``gh`` so BOB-D3
+    skips re-offer while any ref stays OPEN. Returns the refs that were stamped
+    from the reason (empty when the reason is not a blocked-depends cue).
+    """
+    if not isinstance(row, dict):
+        return []
+    home = str(row.get("repo") or "").strip()
+    refs = parse_blocked_depends_giveup_refs(reason, home_repo=home)
+    if not refs:
+        return []
+    try:
+        import depends_on as _dep
+    except Exception:
+        return []
+    body = str(row.get("body") or "")
+    new_body, changed = _dep.merge_depends_on_body(body, refs, repo=home)
+    if changed:
+        row["body"] = _body_for_queue(new_body) if new_body else new_body
+    if patch_github and home:
+        num = str(row.get("id") or "").strip().lstrip("#")
+        if num.isdigit():
+            try:
+                api = filer
+                if api is None:
+                    import gh_filer
+
+                    api = gh_filer.default_filer()
+                # Prefer live GitHub body so we union remote Depends-on too.
+                remote = ""
+                with contextlib.suppress(Exception):
+                    issue = fetch_github_issue_dict(home, num)
+                    if isinstance(issue, dict):
+                        remote = str(issue.get("body") or "")
+                base = remote if remote.strip() else str(row.get("body") or body)
+                patched, did = _dep.merge_depends_on_body(base, refs, repo=home)
+                if did or (patched and patched != remote):
+                    api.edit_issue_body(home, int(num), patched)
+                    row["body"] = _body_for_queue(patched)
+            except Exception:
+                pass
+    return refs
+
+
 def row_blocked_for_machine(row: dict, nick: str) -> bool:
     """True when this seat must not be offered the row (FR #587 require_machine)."""
     req = row_require_machine(row)
@@ -3349,11 +3506,57 @@ def fr_issue_key(repo: str, ident: str) -> str:
     return f"{r}{i}"
 
 
+def normalize_row_refs(raw) -> list[str]:
+    """FR #9475: always ``list[str]`` of ``#N``; heal comma-strings and char-split lists.
+
+    Synchronize / enqueue historically wrote ``extra["refs"]=",".join(...)`` then
+    ``row[k]=v``, leaving a string. ``tuple(str(x) for x in prior_refs)`` then
+    iterates characters (``"#9270"`` -> ``["#","9",...]``), poisoning ledger
+    link keys and false self-MRB / no_eligible_reviewer stamps.
+    """
+    if raw is None or raw == "":
+        return []
+    parts: list[str] = []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw if str(x).strip() != ""]
+        if items and all(len(x) == 1 for x in items):
+            joined = "".join(items)
+            parts = [p.strip() for p in re.split(r"[,\s;]+", joined) if p.strip()]
+        else:
+            parts = items
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        s = str(p or "").strip()
+        if not s:
+            continue
+        num = s[1:].strip() if s.startswith("#") else s
+        if not num.isdigit():
+            continue
+        tok = f"#{num}"
+        if tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
+def _refs_need_heal(raw) -> bool:
+    """True when stored refs are a comma-string or a char-split list (FR #9475)."""
+    if isinstance(raw, str):
+        return bool(raw.strip())
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw if str(x).strip() != ""]
+        return bool(items) and all(len(x) == 1 for x in items)
+    return False
+
+
 def _row_refs(row: dict) -> list[str]:
-    refs = row.get("refs") or []
-    if isinstance(refs, str):
-        return [x for x in refs.split(",") if x]
-    return [str(x) for x in refs]
+    return normalize_row_refs(row.get("refs") if isinstance(row, dict) else None)
 
 
 def fr_superseded_by_mrb(doc: dict, repo: str, ident: str) -> bool:
@@ -3596,9 +3799,10 @@ def ensure_mrb_requeued_after_head_move(
         if isinstance(pl, str):
             pl = [pl]
         labels_t = tuple(str(x) for x in pl if str(x).strip())
-    refs_t: tuple[str, ...] = tuple(str(x) for x in (refs or ()) if str(x).strip())
+    refs_t: tuple[str, ...] = tuple(normalize_row_refs(refs or ()))
     if not refs_t and prior is not None and prior.get("refs"):
-        refs_t = tuple(str(x) for x in (prior.get("refs") or []) if str(x).strip())
+        # FR #9475: never iterate a refs string by character.
+        refs_t = tuple(normalize_row_refs(prior.get("refs")))
     if not refs_t:
         refs_t = extract_closes_issue_ids(body_s, repo=repo_c)
     if not title_s:
@@ -4483,7 +4687,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                 row["event"] = claim.event
                 row["action"] = claim.action
                 if claim.refs:
-                    row["refs"] = list(claim.refs)
+                    row["refs"] = normalize_row_refs(claim.refs)
                 if claim.title:
                     row["title"] = claim.title
                 if claim.action in ("labeled", "unlabeled") or claim.labels:
@@ -4495,6 +4699,10 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                         continue
                     # FR #2623: keep the true implementer when a citing DONE refreshes the MRB.
                     if k in _IMPLEMENTER_KEEP_KEYS and str(row.get(k) or "").strip():
+                        continue
+                    # FR #9475: never persist refs as a comma-joined string.
+                    if k == "refs":
+                        row["refs"] = normalize_row_refs(v)
                         continue
                     row[k] = v
                 if claim.docs_mrb_orphan:
@@ -4521,7 +4729,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
         "seq": seq,
     }
     if claim.refs:
-        row["refs"] = list(claim.refs)
+        row["refs"] = normalize_row_refs(claim.refs)
     if claim.title:
         row["title"] = claim.title
     if claim.body:
@@ -4538,10 +4746,11 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     for k, v in extra.items():
         if not v:
             continue
-        if k == "refs" and isinstance(v, str):
-            row["refs"] = [x for x in v.split(",") if x]
-        else:
-            row[k] = v
+        # FR #9475: never persist refs as a comma-joined string (or raw split crumbs).
+        if k == "refs":
+            row["refs"] = normalize_row_refs(v)
+            continue
+        row[k] = v
     _stamp_require_machine(row, claim)
     doc["unaccepted"].append(row)
     return "added"
@@ -4854,11 +5063,15 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
                 if claim.body:
                     r["body"] = _body_for_queue(claim.body)
                 if claim.refs:
-                    r["refs"] = list(claim.refs)
+                    r["refs"] = normalize_row_refs(claim.refs)
                 for k, v in extra.items():
                     if not v:
                         continue
                     if k in _IMPLEMENTER_KEEP_KEYS and str(r.get(k) or "").strip():
+                        continue
+                    # FR #9475: never persist refs as a comma-joined string.
+                    if k == "refs":
+                        r["refs"] = normalize_row_refs(v)
                         continue
                     r[k] = v
                 if claim.harvest_lesson:
@@ -5663,21 +5876,25 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_counts:
             out["author_commit_counts"] = clean_counts
+    # FR #9475: heal poisoned refs before copying no_eligible_* stamps.
+    refs_raw = row.get("refs")
+    refs_healed = False
+    if refs_raw:
+        refs_healed = _refs_need_heal(refs_raw)
+        normalized = normalize_row_refs(refs_raw)
+        if normalized:
+            out["refs"] = normalized
     try:
         since = float(row.get("no_eligible_since") or 0)
     except (TypeError, ValueError):
         since = 0.0
-    if since > 0:
-        out["no_eligible_since"] = since
-    # FR #7574: one no_eligible_reviewer report must survive queue reload.
-    if row.get("no_eligible_reported"):
-        out["no_eligible_reported"] = True
-    if row.get("refs"):
-        refs = row.get("refs")
-        if isinstance(refs, list):
-            out["refs"] = [str(x) for x in refs]
-        else:
-            out["refs"] = str(refs)
+    # Clear no_eligible_* when refs heal so false self-MRB deadlocks can recover.
+    if not refs_healed:
+        if since > 0:
+            out["no_eligible_since"] = since
+        # FR #7574: one no_eligible_reviewer report must survive queue reload.
+        if row.get("no_eligible_reported"):
+            out["no_eligible_reported"] = True
     if row.get("labels"):
         labs = row.get("labels")
         if isinstance(labs, list):
@@ -10262,18 +10479,7 @@ MRB_PARENT_RE = re.compile(r"(?i)\bmrb-(\d+)\b")
 
 
 def _row_refs_list(row: dict) -> list[str]:
-    refs = row.get("refs") or []
-    if isinstance(refs, str):
-        refs = [p.strip() for p in refs.replace(";", ",").split(",") if p.strip()]
-    out: list[str] = []
-    for r in refs:
-        s = str(r).strip()
-        if not s:
-            continue
-        if not s.startswith("#"):
-            s = f"#{s}"
-        out.append(s)
-    return out
+    return normalize_row_refs(row.get("refs") if isinstance(row, dict) else None)
 
 
 def related_mrb_rows(doc: dict, uat_row: dict) -> list[dict]:
@@ -10358,6 +10564,10 @@ def review_blocked_for_author(
     Sole-machine fleets still allow same-machine siblings (FR #2604 / #4606 /
     #5900 throughput). MRB never inherits a dead author nick via
     ``nick_inherits_dead_seat`` (FR #4606); machine-id covers live siblings.
+    **FR #9480:** when ``row_author_seats`` span **two or more** distinct machine
+    ids (e.g. implementer on redqueen + FIX on flamingo), machine-id sibling
+    block is skipped for that row (exact-seat only) so the chair does not stamp
+    ``no_eligible_reviewer`` forever.
 
     For **UAT**: also blocks a sibling on the same machine while another machine
     has a *viable free* live seat (FR #1407 / #2487), and a recycled sole
@@ -10384,6 +10594,15 @@ def review_blocked_for_author(
     me_p = bobreport.parse_seat_nick(me)
     me_mid = bobreport.fold_machine_id(me_p[0]) if me_p else ""
     repo_uat = is_repo_uat(row)
+    # FR #9480: distinct author machine ids on the row (MRB multi-machine carve-out).
+    author_mids: set[str] = set()
+    for _a in authors:
+        _ap = bobreport.parse_seat_nick(_a)
+        if _ap:
+            _amid = bobreport.fold_machine_id(_ap[0])
+            if _amid:
+                author_mids.add(_amid)
+    mrb_multi_machine_authors = task == "MRB" and len(author_mids) >= 2
 
     def _seat_gave_up_uat(n_c: str) -> bool:
         if row_gave_up_by(row, n_c, live=live):
@@ -10431,7 +10650,10 @@ def review_blocked_for_author(
         # blocks same-machine siblings when another machine is live. Sole-box
         # fleets still allow siblings. Giveup inheritance stays in
         # nick_in_giveup_seats; FIX seats use exact nick stamp (FR #4604).
+        # FR #9480: multi-machine author_seats → exact-seat only (skip sibling).
         if task == "MRB":
+            if mrb_multi_machine_authors:
+                continue
             if author_mid and me_mid and author_mid == me_mid:
                 if _other_machine_live(author_mid):
                     return True
@@ -12821,8 +13043,14 @@ def offer_focus_top(
                     ensure_fr_queue_body(cand, fetch_issue=fetch_issue)
                     if str(cand.get("body") or "") != _body_before:
                         purged = True
-                # FR #8754: Depends-on backlog still open in queue — skip offer; keep row.
-                if row_fr_depends_blocked_reason(cand, doc):
+                # FR #9455 bob_g1_shared_gate: one Depends-on gate (offer = assign = stuck).
+                if depends_gate_reason(
+                    cand,
+                    doc,
+                    open_keys=open_dep_keys,
+                    issue_open=depends_issue_open,
+                    issue_fetch=depends_issue_fetch,
+                ):
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
@@ -12896,15 +13124,6 @@ def offer_focus_top(
                     is_pull=is_pull,
                     pr_exists=pr_exists,
                     issue_open=fr_closed_issue_open,
-                ):
-                    return None
-                # BOB-D3 / FR #8807 + BOB-G1 / FR #8837 + FR #8754 live GitHub OPEN.
-                if row_depends_open_reason(
-                    cand,
-                    open_dep_keys,
-                    issue_open=depends_issue_open,
-                    doc=doc,
-                    issue_fetch=depends_issue_fetch,
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -13309,15 +13528,12 @@ def offer_top(
                         continue
                     i += 1
                     continue
-                # FR #8754: Depends-on backlog still open (queue keys + live GitHub OPEN).
-                if row_fr_depends_blocked_reason(row, doc):
-                    i += 1
-                    continue
-                if row_depends_open_reason(
+                # FR #9455 bob_g1_shared_gate: one Depends-on gate for top/bored walk.
+                if depends_gate_reason(
                     row,
-                    open_dep_keys_top,
+                    doc,
+                    open_keys=open_dep_keys_top,
                     issue_open=depends_issue_open,
-                    doc=doc,
                     issue_fetch=depends_issue_fetch,
                 ):
                     i += 1
@@ -15437,13 +15653,10 @@ def heal_false_needs_human_for_infra_soft(home: Path) -> list[str]:
 
 def _row_link_keys(row: dict) -> list[str]:
     repo = str(row.get("repo") or "")
-    refs = row.get("refs") or []
-    if isinstance(refs, str):
-        refs = [x for x in re.split(r"[,\s]+", refs) if x]
+    refs = normalize_row_refs(row.get("refs") if isinstance(row, dict) else None)
     keys = [_lkey(repo, row.get("id"))]
     for r in refs:
-        if str(r).strip():
-            keys.append(_lkey(repo, r))
+        keys.append(_lkey(repo, r))
     sup = str(row.get("supersedes") or "").strip()
     if "#" in sup:
         keys.append(sup.lower())
@@ -16505,7 +16718,9 @@ def enqueue_open_github_item(
                 fr_hold_reason(
                     title=claim.title, body=claim.body, labels=claim.labels
                 )
-                or row_fr_depends_blocked_reason(_dep_probe, doc)
+                or depends_gate_reason(
+                    _dep_probe, doc, issue_fetch=depends_issue_fetch_checker()
+                )
                 or issue_skip_fr_reason(
                     title=claim.title,
                     body=claim.body,
@@ -16797,16 +17012,12 @@ def assign_row(
             digest_why = digest_issue_reason(cand)
             if digest_why:
                 return "refused", f"row is digest gate (not work): {digest_why}"
-            dep_why = row_fr_depends_blocked_reason(cand, doc)
-            if dep_why:
-                return "refused", f"row blocked: {dep_why}"
-            # FR #8754: live GitHub OPEN for Depends-on refs not in the local FR queue.
-            # FR #9418: also fetch issue dict so unheld fr-digest absent from queue is G1-ok.
-            live_dep = row_depends_open_reason(
+            # FR #9455 bob_g1_shared_gate: !assign uses the same helper as offer/stuck.
+            live_dep = depends_gate_reason(
                 cand,
-                open_fr_issue_keys(doc),
+                doc,
+                open_keys=open_fr_issue_keys(doc),
                 issue_open=depends_issue_open_checker(issue_open),
-                doc=doc,
                 issue_fetch=depends_issue_fetch_checker(fetch_issue),
             )
             if live_dep:
@@ -17051,8 +17262,10 @@ def prune_unassignable_queue(home: Path) -> dict:
                 if task == "FR" and row_fr_hold_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
                     continue
-                # bob_d7_wire_hold: Depends-on OPEN is offer-skip only — keep the row.
-                if task == "FR" and row_fr_depends_blocked_reason(row, doc):
+                # bob_d7_wire_hold / FR #9455: Depends-on OPEN is offer-skip only — keep.
+                if task == "FR" and depends_gate_reason(
+                    row, doc, issue_fetch=depends_issue_fetch_checker()
+                ):
                     keep.append(row)
                     continue
                 # FR #846: drop FR rows whose URL is a pull request.
@@ -18446,8 +18659,10 @@ def resync_from_github(
                 if task_u == "FR" and row_fr_hold_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
                     continue  # FR #4009: hold label / HOLD body stamp
-                # bob_d7_wire_hold: Depends-on OPEN is offer-skip only — keep the row.
-                if task_u == "FR" and row_fr_depends_blocked_reason(row, doc):
+                # bob_d7_wire_hold / FR #9455: Depends-on OPEN is offer-skip only — keep.
+                if task_u == "FR" and depends_gate_reason(
+                    row, doc, issue_fetch=depends_issue_fetch_checker()
+                ):
                     keep.append(row)
                     continue
                 if task_u == "FR" and not fr_row_offerable(row):

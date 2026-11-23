@@ -281,6 +281,16 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ("INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701 / #9354 tag={0})" -f $priVendor.tag)
+    # FR #9468: tray Plan/Priority resolve vendor\plan\bob-plan.exe and vendor\priority\PriorityAgent.exe.
+    # Release sources: skills-visionary plan-* (PlanAgent.exe) and priority-mcp launcher-* (PriorityAgent.exe).
+    $null = Copy-BobTrayVendorExes -Root $Stage -Require
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\bob-plan.exe') -PathType Leaf)) {
+        throw 'FR #9468: bob MSI stage missing vendor\plan\bob-plan.exe'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\priority\PriorityAgent.exe') -PathType Leaf)) {
+        throw 'FR #9468: bob MSI stage missing vendor\priority\PriorityAgent.exe'
+    }
+
 
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'

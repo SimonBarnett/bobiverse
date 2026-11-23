@@ -4,6 +4,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -305,6 +306,8 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
     out = tmp_path / "menu.txt"
     _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
     items = out.read_text(encoding="utf-8").splitlines()
+    # FR #9263: Free|Paid labels may append " [running]" when a live slot exists on the box.
+    items = [re.sub(r" \[running\]$", "", x) for x in items]
     # FR #8713 / BOB-06: Agents{Plan,Priority,Jeeves}; Workers hold CLI starts; Weights; About; Exit.
     assert items == [
         "Status",
@@ -317,8 +320,8 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
         "Workers",
         "Grok",
         "Cursor",
-        "Start free model (opencode/deepseek-v4.1-flash-free) [default]",
-        "Start paid model (opencode-go/deepseek-v4-pro)",
+        "Free",
+        "Paid",
         "Open Code",
         "Weights",
         "About",

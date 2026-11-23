@@ -27,14 +27,15 @@ def test_fr6429_tray_submenu_tags_and_labels():
     assert "AddOpencodeModelSubmenu" in tray
     assert "opencode|free" in tray
     assert "opencode|paid" in tray
-    assert "Start free model" in tray
-    assert "Start paid model" in tray
+    assert "Free" in tray  # FR #9263: Free|Paid labels
+    assert "Paid" in tray
     assert 'DefaultOpencodeFreeModel = "%s"' % FREE_DEFAULT in tray
     assert 'DefaultOpencodePaidModel = "%s"' % PAID_DEFAULT in tray
     seed = tray[tray.index("void SeedAgentChoices") : tray.index("void SeedAgentChoices") + 900]
     assert "AddOpencodeModelSubmenu" in seed
     assert 'AddAgentChoice(parent, "opencode", "OpenCode"' not in seed
-    assert 'AddAgentChoice(parent, "auto"' in seed
+    # FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row (merged with #9263 tip).
+    assert 'AddAgentChoice(parent, "auto"' not in seed
     assert 'AddAgentChoice(parent, "grok"' in seed
     assert 'AddAgentChoice(parent, "cursor"' in seed
 
@@ -44,7 +45,8 @@ def test_fr6429_launch_uses_child_env_block_only():
     assert "BuildChildEnvironmentBlock" in tray
     assert "CreateUnicodeEnvironment" in tray
     assert "IDictionary childEnv" in tray
-    click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 1400]
+    click = tray[tray.index("void OnAgentChoiceClick") :]
+    click = click[:6000]
     assert 'env["BOB_OPENCODE_MODEL"]' in click
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in click
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in tray
@@ -105,8 +107,8 @@ def test_fr6429_format_helper_region_and_missing():
 def test_fr6429_docs_pin_submenu_and_child_env():
     text = DOCS.read_text(encoding="utf-8")
     assert "FR #6429" in text
-    assert "Start free model" in text
-    assert "Start paid model" in text
+    # FR #9263: menu labels are Free|Paid only (was "Start free/paid model").
+    assert "**Free**" in text and "**Paid**" in text
     assert FREE_DEFAULT in text
     assert PAID_DEFAULT in text
     assert "child seat process only" in text or "CreateProcessW" in text
