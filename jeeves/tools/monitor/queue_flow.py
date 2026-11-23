@@ -367,6 +367,13 @@ def check(args):
             notes.append(
                 "skill/harvest intakes are offerable promote FRs (FR #1682); if gated empty, check other gates - open skill count may still be in unaccepted"
             )
+        # FR #9347: needs_human walls after giveup_count>=2 — surface recycle path.
+        nh = int(gated_counts.get("needs-human") or 0)
+        if nh:
+            notes.append(
+                f"needs_human={nh}: !cleargiveup owner/repo#N [seat] or !recycle "
+                "(giveup_count>=2 walls; !bored will not take these; FR #9347)"
+            )
     elif offerable_n > 0 and idle_seat_count > 0:
         findings.append(
             f"true starve: ungated_offerable={offerable_n} idle_seats={idle_seat_count}"
@@ -439,6 +446,24 @@ def check(args):
             f"row missing pull url: {repo}{ident if str(ident).startswith('#') else '#' + str(ident)}"
         )
 
+    # FR #9347: phase-gated MRB PASS tips are held-pass (not undispatched).
+    held_pass_n = 0
+    with contextlib.suppress(Exception):
+        from _common import ensure_script_dir_on_path
+
+        ensure_script_dir_on_path("mrb_merge_on_green.py")
+        import mrb_merge_on_green as _mog
+
+        led = _mog.load_ledger(qpath.parent)
+        for row in led.get("pending") or []:
+            if isinstance(row, dict) and str(row.get("status") or "").lower() == "skip_hold":
+                held_pass_n += 1
+        if held_pass_n:
+            notes.append(
+                f"held-pass={held_pass_n}: MRB PASS merge-on-green skip_hold "
+                "(phase-gated; not undispatched; FR #9347)"
+            )
+
     ok = not findings
     return (
         {
@@ -453,6 +478,7 @@ def check(args):
             "idle_seat_count": idle_seat_count,
             "pending_offer_count": pending_offers,
             "gated_counts": gated_counts,
+            "held_pass_count": held_pass_n,
             "missing_pull_url_count": len(missing_url),
             "empty_offer_starve_age_s": int(age_s) if pin_starve else 0,
             "notes": notes,
