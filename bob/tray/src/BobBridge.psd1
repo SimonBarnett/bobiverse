@@ -78,6 +78,8 @@
         'Get-BobCursorGroupRemainFromLocalDoc',
         'Get-BobCursorSpendingFromApiFixture',
         'Get-BobTrayTipPlacement',
+        'Get-BobTrayCursorTipPlacement',
+        'Test-BobTrayRectIntersectsAny',
         'Get-BobFleetRegistry',
         'ConvertTo-BobIrcPoint',
         'ConvertFrom-BobIrcPoint',
