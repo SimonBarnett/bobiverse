@@ -1,4 +1,4 @@
-﻿// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
+// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
 // windows (hosted in-process) all run natively, so the menu opens at once and nothing waits on PowerShell.
 // The slow DATA work (digest webhook, Cursor/Grok usage, stall alerts, IRC watcher, !startworker queue) stays in the existing
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
