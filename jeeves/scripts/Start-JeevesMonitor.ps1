@@ -145,7 +145,7 @@ if (-not (Test-Path -LiteralPath $run)) {
 # health/queue/stale_digest soft-pass via live /bob/v1/report when fresh).
 $chairProbe = Join-Path $env:USERPROFILE '.jeeves\queue.json'
 if (-not (Test-Path -LiteralPath $chairProbe)) {
-    Write-Warning "FR #8579: no local chair queue at $chairProbe - this looks like a non-chair host. Monitor checks soft-pass local chair probes when live https://irc.ntsa.uk/bob/v1/report is fresh; prefer running monitor on the ionos chair for local service truth."
+    Write-Warning "FR #8579: no local chair queue at $chairProbe - this looks like a non-chair host. Monitor checks soft-pass local chair probes when live https://bob.ntsa.uk/bob/v1/report is fresh; prefer running monitor on the ionos chair for local service truth."
 }
 $argv = @('--mode', 'monitor', '--install-root', $BobInstallRoot, '--work-root', $InstallRoot)
 if ($DryRun) {
