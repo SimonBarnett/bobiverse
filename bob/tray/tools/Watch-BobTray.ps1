@@ -2382,6 +2382,11 @@ $script:lastFuelSnapshot = $null
 $script:alertKind = 'none'
 $script:iconRectCache = $null
 $script:cardClosed = $false
+# FR #9170: timestamp menu arm (items stay Enabled). Exit ignores clicks for menuArmMs after MenuOpened.
+# Never bulk Enabled=false — STA starve greys the menu for tens of seconds (MenuItemsArmed ~30s late).
+$script:menuArmMs = 350
+$script:menuArmUntilUtc = [datetime]::MinValue
+$script:menuOpenSticky = $false
 $script:tileHost = $null
 $script:tip = $null
 $script:tipRecreating = $false
@@ -2999,22 +3004,22 @@ function Get-BobTrayForegroundProcessLog {
 function Invoke-BobTrayStatus {
     # FR #9163: clear sticky menu-open when the strip is already gone; then gate if still open.
     try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+    if ($menu -and -not $menu.Visible) { $script:menuOpenSticky = $false }
     if ($script:bobTrayMenuOpen) {
         Write-TrayLog 'status skipped: menu open (FR #9163)'
         return
     }
     # FR #9165: while bob-tray.exe is clickfix-parked, TipForm owns Status (skip windowless bob-status risk).
+    # FR #9170: do not Update-Hover here (STA Wait-Job starved the old Enabled=false arm / StatusSkipped).
     if ((Get-Command Test-BobTrayClickFixParkPresent -ErrorAction SilentlyContinue) -and (Test-BobTrayClickFixParkPresent -Root $RepoRoot)) {
-        Write-TrayLog 'status: park present; TipForm card (FR #9165)'
-        Update-Hover
+        Write-TrayLog 'status: park present; TipForm card (FR #9165/#9170)'
         Show-BobTrayCard -Reason 'click'
         return
     }
-    # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
-    # when tools\bob-status.exe is not installed or (FR #9165) stays windowless. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
+    # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot the engine Update-Hover writes). The in-process card is the fallback
+    # when tools\bob-status.exe is not installed or (FR #9165) stays windowless. TipForm paints from last poll (FR #9170).
     if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
-    Write-TrayLog 'status: TipForm card fallback (FR #9165)'
-    Update-Hover
+    Write-TrayLog 'status: TipForm card fallback (FR #9165/#9170 no Update-Hover)'
     Show-BobTrayCard -Reason 'click'
 }
 
@@ -4041,6 +4046,8 @@ function Show-BobTrayCard {
     try {
         # Click / Status only. No hover events. Stay parked until X.
         if ($Reason -ne 'click') { return }
+        # FR #9170: clear sticky when strip is not Visible (never StatusSkipped).
+        if ($menu -and -not $menu.Visible) { $script:menuOpenSticky = $false }
         # FR #9163: tip ShowParkedAt TOPMOST must not run while the menu is open.
         try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($script:bobTrayMenuOpen) {
@@ -4476,33 +4483,21 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
-# FR #9163: never Cancel AppFocusChange Closing (that stuck bobTrayMenuOpen).
-# Delay-arm items; clear sticky flag when menu !Visible. Keep Opening tip/status cleanup.
+# FR #9170: timestamp arm (items stay enabled; never bulk Enabled=false).
+# FR #9163: never Cancel Closing; Opening cleans tip/status. FR #9169: NotifyIconRebound.
 $script:bobTrayMenuOpen = $false
 $script:bobTrayContextMenu = $menu
-$script:bobTrayMenuArmTimer = $null
 $menu.Add_Opening({
         $script:bobTrayMenuOpen = $true
         Write-TrayLog 'click-diag MenuOpening'
         try { Hide-BobTrayCard } catch { }
         try { Close-BobTrayStatusWindows } catch { }
-        try { Set-BobTrayMenuItemsEnabled -Menu $menu -Enabled $false } catch { }
-        try {
-            if ($script:bobTrayMenuArmTimer) {
-                $script:bobTrayMenuArmTimer.Stop()
-                $script:bobTrayMenuArmTimer.Dispose()
-            }
-        } catch { }
-        $script:bobTrayMenuArmTimer = New-Object System.Windows.Forms.Timer
-        $script:bobTrayMenuArmTimer.Interval = 350
-        $script:bobTrayMenuArmTimer.Add_Tick({
-                try { $script:bobTrayMenuArmTimer.Stop() } catch { }
-                try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
-                Write-TrayLog 'click-diag MenuItemsArmed'
-            })
-        $script:bobTrayMenuArmTimer.Start()
     })
-$menu.Add_Opened({ Write-TrayLog 'click-diag MenuOpened' })
+$menu.Add_Opened({
+        $script:menuArmUntilUtc = [datetime]::UtcNow.AddMilliseconds([int]$script:menuArmMs)
+        $script:menuOpenSticky = $true
+        Write-TrayLog ("click-diag MenuOpened arm-ts ms=$($script:menuArmMs)")
+    })
 $menu.Add_Closing({
         param($s, $e)
         $reason = $e.CloseReason
@@ -4513,14 +4508,7 @@ $menu.Add_Closing({
     })
 $menu.Add_Closed({
         $script:bobTrayMenuOpen = $false
-        try {
-            if ($script:bobTrayMenuArmTimer) {
-                $script:bobTrayMenuArmTimer.Stop()
-                $script:bobTrayMenuArmTimer.Dispose()
-                $script:bobTrayMenuArmTimer = $null
-            }
-        } catch { }
-        try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
+        $script:menuOpenSticky = $false
         Write-TrayLog 'click-diag MenuClosed'
         # FR #9169: soft rebind Shell_NotifyIcon after MenuClosed so a dead/ghost
         # registration recovers without needing an explorer recycle first.
@@ -4543,6 +4531,7 @@ $notify.Add_MouseUp({
     })
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
+
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
         if ([string]::IsNullOrWhiteSpace($fuel)) {
@@ -4620,6 +4609,11 @@ $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath 
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({
+        # FR #9170: ignore Exit inside the timestamp arm window (items stay enabled; no grey menu).
+        if ([datetime]::UtcNow -lt $script:menuArmUntilUtc) {
+            Write-TrayLog 'Exit ignored reason=menu-arm-ts'
+            return
+        }
         # FR #9163: confirm Exit so an accidental ItemClicked after focus-steal does not kill Watch.
         $ans = [System.Windows.Forms.MessageBox]::Show(
             'Exit TipForm Watch? ircBob stays running.',
@@ -4630,12 +4624,19 @@ $miExit.Add_Click({
             Invoke-BobTrayExit
         }
     })
+
 $notify.Add_MouseClick({
         param($s, $e)
         Write-TrayLog ('click-diag MouseClick {0}' -f $e.Button)
         try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
+            # FR #9170: dismiss stuck ContextMenuStrip then show TipForm (was StatusSkipped while Visible).
+            if (($menu -and $menu.Visible) -or $script:menuOpenSticky) {
+                Write-TrayLog 'StatusMenuDismiss'
+                try { $menu.Close() } catch { }
+                $script:menuOpenSticky = $false
+            }
             Invoke-BobTrayStatus
         }
     })
