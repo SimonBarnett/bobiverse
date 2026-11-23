@@ -2626,7 +2626,10 @@ function Write-BobIrcStatus {
         [switch]$PostDigestWebhook,
         [switch]$PassThru
     )
-    $id = Get-ThisMachineId
+    # FR #9198: soft-fail when Action/runspace lacks Get-ThisMachineId (CommandNotFound);
+    # trayDigestTimer must Import-Module BobBridge so this usually resolves.
+    $id = $null
+    try { $id = Get-ThisMachineId } catch { $id = $null }
     if (-not $id) { return }
     $cfg = Get-BobiverseConfig
     if (-not $cfg) { return }

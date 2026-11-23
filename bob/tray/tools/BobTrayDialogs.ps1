@@ -13,17 +13,73 @@ function Get-BobTrayDialogExe {
     return $null
 }
 
+function Test-BobTrayClickFixParkPresent {
+    <#
+    FR #9165: while bob-tray.exe is clickfix-parked, TipForm Watch owns the icon —
+    skip bob-status.exe and paint the in-process tip card instead.
+    #>
+    param([Parameter(Mandatory)][string]$Root)
+    $tools = Join-Path $Root 'tools'
+    foreach ($leaf in @(
+            'bob-tray.exe.clickfalse-park',
+            'bob-tray.exe.clicktrue-park',
+            'bob-tray.exe.clickfix-park'
+        )) {
+        if (Test-Path -LiteralPath (Join-Path $tools $leaf) -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
+function Test-BobTrayStatusWindowVisible {
+    # FR #9165: any bob-status with a non-zero MainWindowHandle counts as painted.
+    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($pr.MainWindowHandle -ne [IntPtr]::Zero) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+function Stop-BobTrayWindowlessStatus {
+    # FR #9165: kill windowless bob-status so the single-instance mutex can clear.
+    $n = 0
+    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($pr.MainWindowHandle -eq [IntPtr]::Zero) {
+                Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue
+                $n++
+            }
+        } catch { }
+    }
+    return $n
+}
+
 function Start-BobTrayDialog {
-    # Returns $true when the exe was started (it may exit at once if its window is already open: single instance).
+    # Returns $true when the exe was started and (for status) a visible HWND exists.
+    # FR #9165 / #9166: windowless single-instance must not look like success - TipForm falls back
+    # (Stop-BobTrayWindowlessStatus + MainWindowHandle probe).
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][ValidateSet('about', 'status')][string]$Name)
     $exe = Get-BobTrayDialogExe -Root $Root -Name $Name
     if (-not $exe) { return $false }
     try {
         # FR #2590 / #2585: do not embed quotes in Start-Process ArgumentList values (they become part of --root).
         [void](Start-Process -FilePath $exe -ArgumentList @('--root', $Root) -WorkingDirectory $Root -ErrorAction Stop)
-        return $true
     }
     catch { return $false }
+    if ($Name -ne 'status') { return $true }
+    # Already painted (second launch brought window forward) or new process got an HWND.
+    $deadline = [datetime]::UtcNow.AddMilliseconds(2000)
+    while ([datetime]::UtcNow -lt $deadline) {
+        if (Test-BobTrayStatusWindowVisible) { return $true }
+        Start-Sleep -Milliseconds 100
+    }
+    $killed = Stop-BobTrayWindowlessStatus
+    if ($killed -gt 0) {
+        $msg = ("FR #9165 stopped windowless bob-status count={0}" -f $killed)
+        if (Get-Command Write-TrayLog -ErrorAction SilentlyContinue) { Write-TrayLog $msg }
+        else { Write-Host ("WARN " + $msg) }
+    }
+    return $false
 }
 
 function ConvertTo-BobTrayStatusBar {
