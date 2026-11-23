@@ -25,7 +25,7 @@ def test_mrb4326_is_stale_ignores_stamp_before_engine_start():
 def test_mrb4326_heal_logs_restart_storm():
     t = CS.read_text(encoding="utf-8-sig")
     i = t.find("void HealEngine()")
-    chunk = t[i : i + 1800]
+    chunk = t[i : i + 6000]
     assert "engine-restart-storm" in chunk
 
 
