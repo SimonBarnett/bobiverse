@@ -5514,6 +5514,18 @@ $poll.Start()
 [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
+# FR #9280: leave the startup seed "starting" as soon as the engine message loop is up,
+# even when the first hover/digest step timed out. Card must not stay on starting forever.
+try {
+    if ((Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) -and (Get-Command New-BobTrayStatusModel -ErrorAction SilentlyContinue)) {
+        $mid = [string]$env:BOB_MACHINE_ID
+        $ver = ''
+        try { if (Get-Command Get-BobTrayProductVersionLabel -ErrorAction SilentlyContinue) { $ver = Get-BobTrayProductVersionLabel } } catch { }
+        $upModel = New-BobTrayStatusModel -Hover $null -AlertKind 'none' -Alerts @() -Version $ver `
+            -Machine $mid -Title 'Bob' -Short 'Bob: engine up' -Attention $false -AttentionSeq 0 -Pulse $false
+        [void](Write-BobTrayStatusSnapshot -Root $RepoRoot -Model $upModel)
+    }
+} catch { }
 try {
     if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
         Write-BobTrayLifecycleEvent -Event 'tray-up' -Fields @{ via = $(if (Test-BobTrayEngineMode) { 'engine' } else { 'Watch-BobTray' }) }

@@ -1350,7 +1350,12 @@ namespace BobDialogs
             {
                 stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
             }
-            bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
+            // FR #9280: compare tray-status.json vs tray.alive; detect indefinite "starting".
+            // Never starts/stops/retargets worker seats — only the PS status-writer engine.
+            string writerReason = TrayStatusWriterWatch.EvaluateReason(
+                snapFile, aliveFile, engineStartedUtc, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
+            bool statusStale = writerReason.Length > 0
+                || TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
             if (!exited && !stale && !statusStale)
             {
                 if (engineFailureArmed)
@@ -1363,6 +1368,10 @@ namespace BobDialogs
             }
             if (exited)
                 TrayEngineFailure.Report(root, "dead", machine, snapFile, lastEngineExitCode, "engine process exited");
+            else if (writerReason == "starting-stuck")
+                TrayEngineFailure.Report(root, "starting-stuck", machine, snapFile, lastEngineExitCode, "status card stuck on starting");
+            else if (writerReason == "status-vs-alive")
+                TrayEngineFailure.Report(root, "status-vs-alive", machine, snapFile, lastEngineExitCode, "tray-status.json stale while tray.alive fresh");
             else if (statusStale)
                 TrayEngineFailure.Report(root, "status-stale", machine, snapFile, lastEngineExitCode, "tray-status.json stale >= 120s");
             else
@@ -1648,6 +1657,16 @@ namespace BobDialogs
                                 state = new TrayState();
                                 state.Short = "Bob: engine down";
                             }
+                        }
+                    }
+                    // FR #9280: never leave the card on startup seed "starting" indefinitely.
+                    else if (TrayStatusAge.IsStartingSeed(state.Short) && engineStartedUtc != DateTime.MinValue)
+                    {
+                        double sinceStart = (DateTime.UtcNow - engineStartedUtc).TotalSeconds;
+                        if (sinceStart >= TrayStatusWriterWatch.StartingStuckSeconds
+                            && state.Short != "Bob: status stalled")
+                        {
+                            state.Short = "Bob: status stalled";
                         }
                     }
                 }
@@ -2704,7 +2723,25 @@ namespace BobDialogs
                 else Console.Write(body);
                 return statusStale ? 2 : 0;
             }
-                        if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
+            // FR #9280: headless status-writer watchdog eval (starting-stuck / status-vs-alive).
+            if (Common.Flag(args, "--status-writer-eval"))
+            {
+                string snap = Path.Combine(root, "run", "tray-status.json");
+                string alive = Path.Combine(root, "run", "startworker", "tray.alive");
+                DateTime started = DateTime.UtcNow;
+                string startedArg = Common.Arg(args, "--engine-started-ago-s");
+                double ago;
+                if (startedArg.Length > 0 && double.TryParse(startedArg, out ago))
+                    started = DateTime.UtcNow.AddSeconds(-ago);
+                string reason = TrayStatusWriterWatch.EvaluateReason(
+                    snap, alive, started, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "reason=" + (reason.Length > 0 ? reason : "ok") + "\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return reason.Length > 0 ? 2 : 0;
+            }
+            if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
             string ticksArg = Common.Arg(args, "--watchdog-ticks");
             if (ticksArg.Length > 0)
@@ -3103,6 +3140,75 @@ namespace BobDialogs
                 return age >= staleSeconds;
             }
             catch { return false; }
+        }
+
+        // FR #9280: read short/title from tray-status.json (startup seed uses short=starting).
+        public static string ReadShortOrTitle(string snapFile)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(snapFile) || !File.Exists(snapFile)) return "";
+                string json;
+                using (FileStream fs = new FileStream(snapFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true)) json = sr.ReadToEnd();
+                Dictionary<string, object> d = Common.Dict(Common.ParseJson(json));
+                if (d == null) return "";
+                string shortText = Common.Str(d, "short");
+                if (!string.IsNullOrEmpty(shortText)) return shortText;
+                return Common.Str(d, "title");
+            }
+            catch { return ""; }
+        }
+
+        public static bool IsStartingSeed(string shortOrTitle)
+        {
+            return string.Equals((shortOrTitle ?? "").Trim(), "starting", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    // FR #9280: status writer health vs tray.alive (never touches worker seats).
+    internal static class TrayStatusWriterWatch
+    {
+        public const double AliveFreshSeconds = 30;
+        public const double StartingStuckSeconds = 180;
+        public const double StatusWriteIntervalSeconds = 15;
+        public const double StatusStaleMultiples = 8; // 8 * 15s = 120s
+
+        public static bool AliveIsFresh(string aliveFile, DateTime utcNow, double freshSeconds)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(aliveFile) || !File.Exists(aliveFile)) return false;
+                double age = (utcNow - File.GetLastWriteTimeUtc(aliveFile)).TotalSeconds;
+                return age >= 0 && age <= freshSeconds;
+            }
+            catch { return false; }
+        }
+
+        // Returns empty, "starting-stuck", "status-vs-alive", or "status-stale".
+        public static string EvaluateReason(
+            string snapFile,
+            string aliveFile,
+            DateTime engineStartedUtc,
+            DateTime utcNow,
+            double statusStaleSeconds)
+        {
+            try
+            {
+                if (engineStartedUtc == DateTime.MinValue) return "";
+                double sinceStart = (utcNow - engineStartedUtc).TotalSeconds;
+                if (sinceStart < 0) sinceStart = 0;
+                string label = TrayStatusAge.ReadShortOrTitle(snapFile);
+                if (TrayStatusAge.IsStartingSeed(label) && sinceStart >= StartingStuckSeconds)
+                    return "starting-stuck";
+                double staleAfter = Math.Max(statusStaleSeconds, StatusWriteIntervalSeconds * StatusStaleMultiples);
+                bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, staleAfter);
+                if (!statusStale) return "";
+                if (AliveIsFresh(aliveFile, utcNow, AliveFreshSeconds))
+                    return "status-vs-alive";
+                return "status-stale";
+            }
+            catch { return ""; }
         }
     }
 
