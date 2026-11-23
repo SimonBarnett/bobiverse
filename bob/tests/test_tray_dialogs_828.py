@@ -315,7 +315,6 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Configure MCP (mcp.ntsa.uk)",
         "Jeeves",
         "Workers",
-        "Automatic - Grok, then Cursor, then OpenCode",
         "Grok",
         "Cursor",
         "Start free model (opencode/deepseek-v4.1-flash-free) [default]",

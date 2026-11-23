@@ -1810,7 +1810,7 @@ namespace BobDialogs
             parent.DropDownItems.Clear();
             // FR #6301: start entries carry no fuel/quota state text.
             // FR #6429: OpenCode is a free/paid model submenu (replaces the FR #6301 flat OpenCode row).
-            AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
+            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/Open Code only.
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
             AddOpencodeModelSubmenu(parent, true, record);
@@ -2081,7 +2081,7 @@ namespace BobDialogs
             {
                 parent.DropDownItems.Clear();
                 // FR #7189: timeout/error keeps rows enabled. Only Unsupported / missing exe greys.
-                AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
+                // FR #9262 / BOB-TRAY-UI-02: no Automatic/auto fallback row.
                 bool grey = (err ?? "").IndexOf("no --list-agents", StringComparison.OrdinalIgnoreCase) >= 0
                     || (err ?? "").IndexOf("bob-worker.exe not found", StringComparison.OrdinalIgnoreCase) >= 0
                     || (err ?? "") == WorkerLauncher.RebuildListReason
@@ -2102,6 +2102,8 @@ namespace BobDialogs
                 string reason = Common.Str(row, "reason");
                 if (!available && reason.Length > 0 && id != "auto") label = label + " - " + reason;
                 if (id.Length == 0) continue;
+                // FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu skips it.
+                if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
                 {
                     AddOpencodeModelSubmenu(parent, available, false);
