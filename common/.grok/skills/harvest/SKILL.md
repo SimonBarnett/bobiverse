@@ -390,3 +390,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - OpenCode opencode-lost-ack-stale / opencode-frozen-progress recycles with exit_code None skip seat-stopped intake (class of #7978/#9025); MRB may repair PR body control-char nits without a fix PR.
 - monkeypatch.setenv(BOB_DIGEST_HOME/BOB_HOME) before jeeves_main.main so undo clears the chair tmp home; bare delenv raising=False when absent registers no undo and leaks into later suite tests (FR #9291).
 - fr-digest / umbrella epics: ACK then GIVEUP; never Closes a living digest; children implement (job-irc umbrella rule).
+- When FR #9236 tip CONFLICTING with #9297 bobcallback intake skips: keep LOW_MEM_* constants and free_mb intake plus early pytest/UNIT_TEST_LISTENER_PORTS skips; do not drop either side.
