@@ -11,7 +11,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/bob/v1/report` | Public fleet digest JSON. `/bob/v1/digest` is the **same** webhook and **301**s here. |
-| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge|delete-worker|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. |
+| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
@@ -245,6 +245,8 @@ When the handler is offline, webhook intakes should be cached and processed on r
 ## Intake ARR 502.3 (FR #1014)
 
 When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening on 127.0.0.1:7700. See [fr-1014-intake-arr-restore.md](./fr-1014-intake-arr-restore.md). Assert: .\scripts\Assert-BobIntakeLocal.ps1.
+
+**FR #9246 post-install probe:** `Install-BobWebhooks.ps1` GETs `$Backend/bob/v1/report` after writing rules. Default is WARN when the backend is down (IIS would 502); pass `-RequireBackend` to fail the install, or `-SkipBackendProbe` in unit tests.
 
 
 ## Jeeves appliance static assets (FR #7411)
