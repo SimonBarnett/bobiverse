@@ -54,6 +54,32 @@ function Get-BobStallFrIntake {
     }
 }
 
+
+function Invoke-BobQueueIntervene {
+    <#
+      BOB-43: after stall detect, intervene so the queue can move again.
+      Writes startWorkerDir/queue-intervene.nudge so under-cap fill can bypass cooldown.
+    #>
+    param(
+        [string[]]$Alerts,
+        [string]$StartWorkerDir
+    )
+    if (-not $Alerts -or $Alerts.Count -eq 0) {
+        return [pscustomobject]@{ Intervened = $false; Action = 'none' }
+    }
+    $action = 'nudge-under-cap-fill'
+    if ($StartWorkerDir -and (Test-Path -LiteralPath $StartWorkerDir)) {
+        $nudge = Join-Path $StartWorkerDir 'queue-intervene.nudge'
+        Set-Content -LiteralPath $nudge -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+    }
+    [pscustomobject]@{
+        Intervened = $true
+        Action     = $action
+        Alert      = [string]$Alerts[0]
+        LogLine    = ('queue-intervene action={0} alert={1}' -f $action, [string]$Alerts[0])
+    }
+}
+
 function Get-BobStallAlerts {
     param(
         $Seen,

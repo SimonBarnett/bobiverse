@@ -19,7 +19,7 @@ def test_compiled_jeeves_click_logs_grok_start_and_launches():
     src = TRAY.read_text(encoding="utf-8-sig")
     block = _fn(src, 'ToolStripMenuItem miJeeves', "menu.Items.Add(miAgents)")
     assert 'action", "grok start"' in block
-    assert 'StartWorker("agent", "grok")' in block
+    assert 'StartWorker("agent", "grok"' in block
 
 
 def test_ps_jeeves_click_logs_grok_start_and_launches():

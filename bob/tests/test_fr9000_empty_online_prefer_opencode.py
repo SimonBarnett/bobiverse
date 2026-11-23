@@ -80,15 +80,17 @@ Write-Output ("{0}|{1}" -f $(if ($c.agent) { $c.agent } else { 'auto' }), $(if (
 
 
 @WIN
-def test_free_known_zero_stays_auto(tmp_path: Path):
+def test_free_known_zero_skips_not_auto(tmp_path: Path):
+    # FR #9142 / #9023: grok=0 + free=0 must skip fill, not fall through to auto->Grok.
     helper = TRAY_TOOLS / "BobTrayStartWorker.ps1"
     out = _ps(
         tmp_path,
         r"""
 . "%s"
 $c = Get-BobTrayEmptyOnlineFillAgentChoice -GrokRemaining 0 -OpencodeFreeRemaining 0 -Root "%s"
-Write-Output ("{0}|{1}" -f $(if ($c.agent) { $c.agent } else { 'auto' }), $(if ($c.slot) { $c.slot } else { '-' }))
+$skip = if ($c.skip) { '1' } else { '0' }
+Write-Output ("{0}|{1}|{2}" -f $skip, $(if ($c.agent) { $c.agent } else { 'auto' }), $c.reason)
 """
         % (helper.as_posix(), tmp_path.as_posix()),
     )
-    assert "auto|-" in out.replace("\r", "")
+    assert "1|auto|no-fuel" in out.replace("\r", "")
