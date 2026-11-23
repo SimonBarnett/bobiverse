@@ -7944,6 +7944,47 @@ def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) ->
     return False
 
 
+
+def probe_opencode_turns_recent(
+    turns_path: Path | str,
+    *,
+    within_s: float,
+    now_wall: float | None = None,
+) -> bool:
+    """True when opencode-turns.jsonl has turn_started/ended within within_s (FR #9009).
+
+    Digest worker.updated can lag while OpenCode is still turning. A fresh turn
+    marker means the seat is not frozen; do not recycle for opencode-frozen-progress.
+    """
+    path = Path(turns_path)
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    now = float(now_wall) if now_wall is not None else time.time()
+    cutoff = now - max(1.0, float(within_s))
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        typ = str(obj.get("type") or "")
+        if typ not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts >= cutoff:
+            return True
+    return False
+
+
 def probe_opencode_headless_receipt(
     turns_path: Path | str,
     *,
@@ -11189,6 +11230,13 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            # FR #9056: re-delivery of an already-open same job while holding — no-op.
+            # Do not append another pending copy or emit NACK ack-not-sent.
+            if self._ack_refuse_is_duplicate(line):
+                self.log(
+                    "relay: ignore re-offer of already-ACKed open job " + (line or "")[:120]
+                )
+                return "duplicate"
             first_held = False
             with self._lock:
                 if line == self._last_line and not self._consume_context_refusal(line):
@@ -11201,9 +11249,15 @@ class Relay:
                     del self._pending[0]
             # FR #4115: ACK the first held assign on receipt (before inject / turn end).
             # FR #8246: if that ACK is suppressed, drop the hold and do not inject later.
-            if first_held and not self._ack_offer_or_refuse(line):
-                self._drop_pending_line(line)
-                return "ack_not_sent"
+            # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK).
+            if first_held:
+                ack_st = self._ack_offer_or_refuse(line)
+                if ack_st == "refused":
+                    self._drop_pending_line(line)
+                    return "ack_not_sent"
+                if ack_st == "duplicate":
+                    self._drop_pending_line(line)
+                    return "duplicate"
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -11245,10 +11299,17 @@ class Relay:
                 ack_first = bool(assign_job_ref(line))
         # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
         # FR #8246: a suppressed ACK is one decision with inject — do not deliver the job.
-        if ack_first and not self._ack_offer_or_refuse(line):
-            if not do_inject:
-                self._drop_pending_line(line)
-            return "ack_not_sent"
+        # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK / no re-inject).
+        if ack_first:
+            ack_st = self._ack_offer_or_refuse(line)
+            if ack_st == "refused":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "ack_not_sent"
+            if ack_st == "duplicate":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "duplicate"
         if do_inject:
             return self._do_inject(line)
         return "held"
@@ -11257,10 +11318,23 @@ class Relay:
         with self._lock:
             self._pending = [p for p in self._pending if p != line]
 
-    def _ack_offer_or_refuse(self, line: str) -> bool:
-        """FR #8246: fresh offer clears the finished mark, then ACK.
+    def _ack_refuse_is_duplicate(self, line: str) -> bool:
+        """FR #9056: True when program ACK for this job is already open."""
+        ack = ack_on_receipt_line(line)
+        if not ack or not self.ack_refuse_reason:
+            return False
+        try:
+            return self.ack_refuse_reason(ack) == "duplicate ACK"
+        except Exception:
+            return False
 
-        Returns False when the ACK would be dropped. Caller must not inject.
+    def _ack_offer_or_refuse(self, line: str) -> str:
+        """FR #8246 / #9056: fresh offer clears the finished mark, then ACK.
+
+        Returns:
+          ``"acked"`` — ACK written; caller may inject/hold.
+          ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
         if self.prepare_offer:
             try:
@@ -11274,6 +11348,11 @@ class Relay:
                 reason = self.ack_refuse_reason(ack)
             except Exception:
                 reason = None
+        if reason == "duplicate ACK":
+            # FR #9056: program already ACK'd this in-flight job (held flush / receipt).
+            # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
+            self.log(f"relay: ACK already open for same job; no-op ({reason})")
+            return "duplicate"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -11283,9 +11362,9 @@ class Relay:
                     self.write_outbox(nack)
                 except Exception:
                     pass
-            return False
+            return "refused"
         self._ack_on_receipt(line)
-        return True
+        return "acked"
 
     def _ack_on_receipt(self, line: str) -> None:
         """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
@@ -11433,7 +11512,8 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
-            if self._ack_offer_or_refuse(line):
+            # FR #9056: only inject on a fresh ACK; duplicate/refused skip re-inject.
+            if self._ack_offer_or_refuse(line) == "acked":
                 self._do_inject(line)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
@@ -12762,6 +12842,7 @@ def opencode_frozen_recycle_reason(
     digest_doing_age_s: float | None,
     progress_moved_age_s: float | None,
     threshold_s: float = 900.0,
+    turns_recent: bool = False,
 ) -> str:
     """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
 
@@ -12770,6 +12851,11 @@ def opencode_frozen_recycle_reason(
     `limited=true` with rolling remaining must not set `out_of_fuel` (that
     hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
     hard 402 / exhausted holds.
+
+    FR #9009: recent opencode-turns.jsonl activity (turn_started/ended) means the
+    agent is still working even when digest worker.updated is stale. That
+    suppresses frozen-progress / lost-ack-stale recycles (FR #8646 still applies
+    when turns are not recent).
     """
     if (kind or "").strip().lower() != "opencode":
         return ""
@@ -12785,8 +12871,13 @@ def opencode_frozen_recycle_reason(
     if digest_age is not None and digest_age >= thr:
         if not ack_open:
             return "opencode-lost-ack-stale"
+        # FR #9009: fresh turns mean the agent is working despite a stale digest stamp.
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     return ""
 
@@ -17463,19 +17554,24 @@ class Supervisor:
             if ref:
                 self.bored.note_stand_down(ref)
 
-    def may_send_outbox(self, payload: str) -> bool:
-        """FR #4730: drop replayed ACK for a finished job before it hits IRC.
+    def may_send_outbox(self, payload: str):
+        """FR #4730 / #9056: drop replayed ACK for a finished or already-open job.
 
-        Used for the run-dir outbox. Do not apply the OpenCode job-key filter here
+        Used for the run-dir outbox. Returns True, or ``(False, reason)`` so drain
+        logs ``duplicate ACK`` / ``finished-job ACK replay`` instead of bare
+        ``stale replay``. Do not apply the OpenCode job-key filter here
         (FR #6333 MRB): program NACKs for a new key can arrive while `_opencode_job_key`
         is still the previous job. Job-key filtering is `may_send_job_outbox` only.
         """
         if self.bored is None:
             return True
         try:
-            return bool(self.bored.should_forward_outbox(payload))
+            reason = self.bored.outbox_ack_refuse_reason(payload)
         except Exception:
             return True
+        if reason:
+            return (False, reason)
+        return True
 
     def may_send_job_outbox(self, payload: str):
         """FR #6333 / #6472: worktree ``.bob/outbox.txt`` job-key filter then ACK rules.
@@ -19588,6 +19684,14 @@ class Supervisor:
                 digest_age = self._opencode_report_doing_age_s(nick)
         except Exception:
             digest_age = None
+        turns_recent = False
+        try:
+            turns_path = Path(self.run_dir) / "opencode-turns.jsonl"
+            turns_recent = probe_opencode_turns_recent(
+                turns_path, within_s=thr, now_wall=time.time()
+            )
+        except Exception:
+            turns_recent = False
         reason = opencode_frozen_recycle_reason(
             kind=self.kind,
             out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
@@ -19595,12 +19699,13 @@ class Supervisor:
             digest_doing_age_s=digest_age,
             progress_moved_age_s=moved_age,
             threshold_s=thr,
+            turns_recent=turns_recent,
         )
         if not reason:
             return False
         self.log(
             f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
-            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+            f"moved_age={moved_age!r} turns_recent={turns_recent} thr={thr:.0f}s; recycling"
         )
         self.restart_agent(reason)
         return True
