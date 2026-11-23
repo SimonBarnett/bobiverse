@@ -21,7 +21,9 @@ param(
     # FR #9350: bound live Sync so a hung worktree fetch cannot block tools\monitor checks.
     [int]$SyncTimeoutSec = 25,
     # FR #9350: at-most-once Sync per interval (per InstallRoot stamp); 0 disables throttle.
-    [int]$SyncMinIntervalSec = 300
+    [int]$SyncMinIntervalSec = 300,
+    # FR #9435: skip Sync entirely (env BOB_MONITOR_SKIP_SYNC=1 also). Prefer when tip-fresh.
+    [switch]$SkipSync
 )
 $ErrorActionPreference = 'Stop'
 $here = if ($InstallRoot) { $InstallRoot } else { Split-Path -Parent $PSScriptRoot }
@@ -77,10 +79,45 @@ if ($env:BOB_MONITOR_SYNC_TIMEOUT_SEC -match '^\d+$') {
 if ($env:BOB_MONITOR_SYNC_MIN_INTERVAL_SEC -match '^\d+$') {
     $SyncMinIntervalSec = [int]$env:BOB_MONITOR_SYNC_MIN_INTERVAL_SEC
 }
+if ($env:BOB_MONITOR_SKIP_SYNC -match '^(1|true|yes)$') { $SkipSync = $true }
 if ($SyncTimeoutSec -lt 5) { $SyncTimeoutSec = 5 }
 if ($SyncTimeoutSec -gt 120) { $SyncTimeoutSec = 120 }
+# FR #9435: tip-fresh = local tools\monitor probe is same age or newer than tip sibling copy.
+function Test-BobMonitorTipFresh([string]$InstallHere, [string]$BobRoot) {
+    $local = Join-Path $InstallHere 'tools\monitor\stale_digest.py'
+    if (-not (Test-Path -LiteralPath $local)) { return $false }
+    $cands = @()
+    if ($BobRoot) {
+        $ai = Split-Path -Parent $BobRoot
+        if ($ai) { $cands += (Join-Path $ai 'jeeves\tools\monitor\stale_digest.py') }
+        $cands += (Join-Path $BobRoot 'jeeves\tools\monitor\stale_digest.py')
+    }
+    $tip = ''
+    foreach ($c in $cands) {
+        if ($c -and (Test-Path -LiteralPath $c)) {
+            try {
+                $a = [string](Resolve-Path -LiteralPath $c).Path
+                $b = [string](Resolve-Path -LiteralPath $local).Path
+                if (-not [string]::Equals($a, $b, [StringComparison]::OrdinalIgnoreCase)) { $tip = $c; break }
+            } catch { $tip = $c; break }
+        }
+    }
+    if (-not $tip) { return $false }
+    try {
+        $lt = (Get-Item -LiteralPath $local).LastWriteTimeUtc
+        $tt = (Get-Item -LiteralPath $tip).LastWriteTimeUtc
+        return ($lt -ge $tt)
+    } catch { return $false }
+}
 if ($syncMon) {
     $doSync = $true
+    if ($SkipSync) {
+        Write-Warning 'FR #9435 skip sync: -SkipSync / BOB_MONITOR_SKIP_SYNC'
+        $doSync = $false
+    } elseif (Test-BobMonitorTipFresh -InstallHere $here -BobRoot $bobRoot) {
+        Write-Warning 'FR #9435 skip sync: tools\monitor already tip-fresh'
+        $doSync = $false
+    }
     $stamp = Join-Path $here '.bobiverse-monitor-last-sync'
     if (-not $DryRun -and $SyncMinIntervalSec -gt 0 -and (Test-Path -LiteralPath $stamp)) {
         try {
@@ -107,8 +144,15 @@ if ($syncMon) {
                 -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
             $ms = [Math]::Max(5000, $SyncTimeoutSec * 1000)
             if (-not $p.WaitForExit($ms)) {
-                try { if (-not $p.HasExited) { $p.Kill() } } catch { }
-                Write-Warning ("FR #9350 sync-monitor timeout after {0}s; proceeding with existing tools\monitor" -f $SyncTimeoutSec)
+                # FR #9435: kill process tree (hung git grandchildren inherit Sync powershell).
+                try {
+                    if (-not $p.HasExited) {
+                        Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" -ArgumentList @('/PID', [string]$p.Id, '/T', '/F') -Wait -WindowStyle Hidden | Out-Null
+                    }
+                } catch {
+                    try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+                }
+                Write-Warning ("FR #9350/#9435 sync-monitor timeout after {0}s; proceeding with existing tools\monitor" -f $SyncTimeoutSec)
             } elseif ($p.ExitCode -ne 0) {
                 Write-Warning ("FR #9350 sync-monitor exit={0}; proceeding with existing tools\monitor" -f $p.ExitCode)
             }
