@@ -1066,8 +1066,10 @@ switch -Regex ($bookName) {
             $skillBookPath = '.grok/skills/harvest-agent-skills/SKILL.md'
         }
     }
-    # FR #9303 / SV #198: tip open is intake-side; intake.py with_mcp_catalog_mirror
-    # also ships apps/mcp-catalog/catalog/<book>/SKILL.md (no tip worktree for build-skill-dag).
+    # FR #9303 / #9329 / SV #198: tip open is intake-side; intake.py mirrors
+    # apps/mcp-catalog/catalog/<book>/{SKILL.md,meta.json} and patches
+    # docs/skill-sources/skills-visionary/_dag when dag.json is readable (no tip
+    # worktree for a full tools/build-skill-dag.py rebuild).
     '^harvest-skills-visionary$' { $skillBookPath = '.grok/skills/harvest-skills-visionary/SKILL.md' }
     '^dayworks-launcher$' { $skillBookPath = 'dayworks/.grok/skills/dayworks-launcher/SKILL.md' }
     '^harvest$' { $skillBookPath = 'common/.grok/skills/harvest/SKILL.md' }
