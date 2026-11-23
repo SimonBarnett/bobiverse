@@ -394,6 +394,12 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR #9310: live_seat_nicks must skip machines with workers_stale (FR #8513 last-good restore into worker_list); otherwise auto-offer targets dead nicks after workers=[].
 - SV harvest tips without a worktree: mirror catalog SKILL.md + meta.json from frontmatter; patch docs/skill-sources/_dag when dag.json is readable, else omit full rebuild.
 - Composed J:\ Start/Invoke must prefer Bob tip Sync that contains sync-monitor-force over stale J:\scripts\Sync; else tools\monitor never force-copies (opencode_seats class of #9309)
+<<<<<<< ours
 - MRB BOB-D8: FAIL tip that says Depends-on not enforced after D1-D7 closed; one fix PR marks enforced + pin tests; FAIL-supersede original tip; Closes on fix
+=======
+- BOB-D6 FR_BODY_FETCH_SHARED_CACHE: clear TTLCache in pytest fixtures or pass cache={} --- empty negative-cache hits make fetch_issue look never called.
+>>>>>>> theirs
 - MRB CI-G2: PASS when build-jeeves pull_request runs open_children_gate.py --pr with issues/pull-requests read; stack may Closes CI-G1+#G2 together; soft-ok without Closes parents
 - skill-dag resolve must not sum SKILL.md body sizes across depends_on when packing matched metadata; charge response metadata and skip only single bodies over max_bytes so MRB keeps job-irc (FR #9330 / PR #9334).
+- Fresh MRB re-offer after FIX: clear Relay _finished_refs on ACK; treat already-finished NACK as terminal only when done[] verdict SHA matches current head.
+- BOB-G3 digests must remain offerable and hold-purge exempt --- skip only in offer/assign via digest_issue_reason, or purge paths drop the gate row.
