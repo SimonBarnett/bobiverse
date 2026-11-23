@@ -109,6 +109,8 @@ namespace BobDialogs
         const int CreateNewConsole = 0x00000010;
         const int CreateUnicodeEnvironment = 0x00000400;
         const int CreateBreakawayFromJob = 0x01000000;
+        // FR #9097: Access Denied when the parent job forbids breakaway (compiled-menu path).
+        const int ErrorAccessDenied = 5;
 
         public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
@@ -505,7 +507,8 @@ namespace BobDialogs
             si.lpTitle = title;
             PROCESS_INFORMATION pi;
             IntPtr envBlock = IntPtr.Zero;
-            // FR #8568: always break away from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            // FR #8568: prefer breakaway from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            // FR #9097: on Access Denied (5) retry without breakaway (seat stays in parent job / kill-on-close).
             int flags = CreateNewConsole | CreateBreakawayFromJob;
             try
             {
@@ -515,7 +518,26 @@ namespace BobDialogs
                     flags |= CreateUnicodeEnvironment;
                 }
                 if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, envBlock, wd, ref si, out pi))
-                { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    if (err != ErrorAccessDenied)
+                    {
+                        error = "start failed: " + new Win32Exception(err).Message;
+                        return 0;
+                    }
+                    // Fresh buffers: CreateProcessW can mutate the command line / STARTUPINFO.
+                    cmd = new StringBuilder(Quote(run));
+                    foreach (string a in argv) cmd.Append(' ').Append(Quote(a));
+                    si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
+                    si.lpTitle = title;
+                    int retryFlags = CreateNewConsole;
+                    if (envBlock != IntPtr.Zero) retryFlags |= CreateUnicodeEnvironment;
+                    if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, retryFlags, envBlock, wd, ref si, out pi))
+                    {
+                        error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                        return 0;
+                    }
+                }
             }
             finally
             {
