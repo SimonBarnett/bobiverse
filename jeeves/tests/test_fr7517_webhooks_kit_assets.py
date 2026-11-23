@@ -163,6 +163,7 @@ def test_fr7517_clean_kit_install_publishes_assets(tmp_path: Path):
             str(physical),
             "-Backend",
             "http://127.0.0.1:7700",
+            "-SkipBackendProbe",
         ],
         capture_output=True,
         text=True,
