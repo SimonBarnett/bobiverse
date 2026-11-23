@@ -18,7 +18,8 @@ def test_evidence_doc():
 def test_pack_stage_bob_requires_plan_and_marker():
     text = PACK.read_text(encoding="utf-8-sig")
     assert "Stage-BobAgentFolders" in text
-    assert "bob pack requires bob-agents\\worker and bob-agents\\plan" in text
+    assert "bob pack requires bob-agents\\worker" in text
+    assert "bob pack requires bob-agents\\worker and bob-agents\\plan" not in text
     assert "BOB-49" in text
     assert "BOB-49-PLAN-IN-MSI.txt" in text
     assert "bob MSI stage missing plan" in text

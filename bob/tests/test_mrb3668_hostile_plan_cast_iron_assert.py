@@ -1,10 +1,13 @@
-"""docs/mrb-3668: hostile pins for FR #3667 post-Sync plan CAST IRON assert (PR #3668)."""
+"""docs/mrb-3668: hostile pins for FR #3667 post-Sync plan CAST IRON assert (PR #3668).
+
+FR #8833: bobiverse-bob-plan removed; heal notes stay in fleet-ops + Pack stub.
+"""
 from __future__ import annotations
 
 from repo_layout import ROOT
 
 COMMON = ROOT / "common" / "scripts" / "Bobiverse-Common.ps1"
-PLAN_SKILL = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-plan" / "SKILL.md"
+PACK = ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1"
 FLEET_SKILL = ROOT / "common" / ".grok" / "skills" / "bobiverse-fleet-ops" / "SKILL.md"
 PRODUCT_TEST = ROOT / "bob" / "tests" / "test_fr3667_plan_cast_iron_post_sync_assert.py"
 
@@ -46,14 +49,13 @@ def test_mrb3668_assert_called_once_at_end_of_sync_agent_folders():
 
 
 def test_mrb3668_heal_skill_rows_contiguous():
-    plan = _read(PLAN_SKILL)
-    assert "WARN FR #3667" in plan
-    assert "Do not re-land #3510 source text" in plan
+    pack = _read(PACK)
+    assert "skills-visionary" in pack
+    assert "Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary" in pack
     fleet = _read(FLEET_SKILL)
     assert "class of #3667" in fleet
     assert "WARN FR #3667" in fleet
-    # UTF-8 hygiene on changed skill tips (no mojibake markers).
-    assert "â" not in plan
+    assert "â" not in pack
     assert "â" not in fleet
 
 
@@ -62,4 +64,4 @@ def test_mrb3668_product_fr3667_suite_present():
     body = _read(PRODUCT_TEST)
     assert "Assert-BobiversePlanCastIronSkillsVisionary" in body
     assert "WARN FR #3667" in body
-    assert "INFO FR #3667 plan CAST IRON skills-visionary ok" in body
+    assert "skills-visionary" in body

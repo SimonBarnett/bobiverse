@@ -25,15 +25,12 @@ def test_mrb3448_mrb2363_remap_anchor_after_consolehome_new_item():
     assert "Resolve-AircSafeConsoleHome" in text
 
 
-def test_mrb3448_plan_skill_keeps_how_to_plan_and_fleet_tooling_repo():
-    text = _read("bob/.grok/skills/bobiverse-bob-plan/SKILL.md")
-    assert "Harvest how-to-plan only" in text
-    assert "bobiverse#3097" in text
-    assert "`-Repo SimonBarnett/bobiverse`" in text
-    assert "bob-worker/tray/fleet tooling" in text
-    # Must not restore product-decisions-as-harvest routing.
-    assert "product decisions → `-Repo SimonBarnett/<product>`" not in text
-    assert "(use `-Repo SimonBarnett/<product>` for product decisions)" not in text
+def test_mrb3448_plan_pointer_readme_routes_to_skills_visionary():
+    # FR #8833: bobiverse-bob-plan skill removed; pointer README remains.
+    text = _read("bob/agents/plan/README.md")
+    assert "skills-visionary" in text
+    assert "releases/latest" in text
+    assert "8833" in text
 
 
 def test_mrb3448_unregister_autofocus_discovers_ai_root():

@@ -36,10 +36,8 @@ DUPLICATE_RULE_FILES = (
     "bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md",
     "bob/.grok/skills/bobiverse-bob-job-uat/SKILL.md",
     "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
-    "bob/.grok/skills/bobiverse-bob-plan/SKILL.md",
     "bob/agents/worker/.grok/skills/bobiverse-worker-seat/SKILL.md",
     "bob/agents/worker/AGENTS.md",
-    "bob/agents/plan/AGENTS.md",
     "common/.grok/skills/harvest/SKILL.md",
     "common/.grok/skills/harvest-agent-skills/SKILL.md",
     "jeeves/.grok/skills/bobiverse-jeeves/SKILL.md",
@@ -88,7 +86,8 @@ def test_tray_agents_menu_lists_choices_and_plan_stays_one_click():
     assert "ToolStripMenuItem('Workers')" in block or "$menu.Items.Add('Workers')" in block
     assert "Update-BobTrayWorkerAgentsMenu" in block
     assert "DropDownOpening" in block
-    assert "$miPlan.Add_Click({ Start-BobTrayPlanExe })" in t
+    assert "$miPlan.Add_Click({" in t
+    assert "Start-BobTrayPlanExe" in t
     assert "Get-BobTrayWorkerAgentChoices" in t
     assert "--list-agents" in t
     assert "Start-BobTrayWorkerExe -Mode 'agent' -Agent" in t
@@ -246,15 +245,17 @@ def bob_stage(tmp_path_factory):
 def test_stage_has_worker_plan_folders_and_the_exe_inputs(bob_stage):
     s = bob_stage
     wk = ["AGENTS.md", "CLAUDE.md", "GROK.md", ".cursor/rules/bobiverse-worker.mdc", ".grok/skills/bobiverse-bob/SKILL.md",
-          ".grok/skills/bobiverse-bob-worker/SKILL.md", ".grok/skills/bobiverse-bob-plan/SKILL.md",
+          ".grok/skills/bobiverse-bob-worker/SKILL.md",
           ".grok/skills/bobiverse-worker-seat/SKILL.md", ".grok/skills/bobiverse-fleet-ops/SKILL.md", ".grok/skills/harvest/SKILL.md"]
     wk += [f".grok/skills/{j}/SKILL.md" for j in JOB_SKILLS]
     for f in wk:
         assert (s / "worker" / f).is_file(), f"worker/{f}"
-    for f in ("AGENTS.md", "CLAUDE.md", "GROK.md", ".cursor/rules/bobiverse-plan.mdc", ".grok/skills/visionary/SKILL.md",
-              ".grok/skills/plan-create-repo/SKILL.md", ".grok/skills/harvest/SKILL.md", "docs/templates/vision.md",
-              "tools/validate-vision-pack.py"):
-        assert (s / "plan" / f).is_file(), f"plan/{f}"
+    # FR #8833 / #9354: plan\ is vendored PlanAgent.exe + stub AGENTS (not in-tree plan skills).
+    assert (s / "plan" / "AGENTS.md").is_file()
+    assert (s / "plan" / "PlanAgent.exe").is_file()
+    assert (s / "plan" / "PlanAgent.MANIFEST.json").is_file()
+    agents = (s / "plan" / "AGENTS.md").read_text(encoding="utf-8")
+    assert "skills-visionary" in agents
     assert (s / "tools" / "Get-BobAgentFuel.ps1").is_file()
     assert (s / "tools" / "Get-BobOpencodeFuel.ps1").is_file()  # FR #6159
     assert (s / "scripts" / "opencode_fuel.py").is_file()  # FR #6159 flat compose
@@ -270,13 +271,12 @@ def test_stage_has_worker_plan_folders_and_the_exe_inputs(bob_stage):
 
 
 def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_stage):
-    files = sorted((bob_stage / "worker").rglob("SKILL.md")) + sorted((bob_stage / "plan").rglob("SKILL.md")) + [
+    files = sorted((bob_stage / "worker").rglob("SKILL.md")) + [
         bob_stage / "worker" / "AGENTS.md", bob_stage / "plan" / "AGENTS.md", bob_stage / "worker" / "CLAUDE.md",
-        bob_stage / "plan" / "GROK.md", bob_stage / "worker" / ".cursor" / "rules" / "bobiverse-worker.mdc",
-        bob_stage / "plan" / ".cursor" / "rules" / "bobiverse-plan.mdc"]
+        bob_stage / "worker" / ".cursor" / "rules" / "bobiverse-worker.mdc"]
     # FR #2835: Sync-BobiverseAgentFolders drops nested skill-dba\.grok; keep the pin if a copy sneaks back.
     files = [f for f in files if "skill-dba" not in f.as_posix().split("/")]
-    assert len(files) >= 11 + 8 + 6
+    assert len(files) >= 11
     rule_core = RULE[:-1]  # all markers except the -Repo pin
     for f in files:
         t = f.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
@@ -330,16 +330,15 @@ def test_sync_agent_folders_never_deletes_plan_work_or_the_running_exe(tmp_path)
     exe.write_bytes(b"MZ-pretend-running")
     ps = tmp_path / "s.ps1"
     ps.write_text(". '%s'\n$n = Sync-BobiverseAgentFolders -RepoRoot '%s' -Destination '%s'\nWrite-Output \"MADE=$n\"\n"
-                  % (ROOT / "scripts" / "Bobiverse-Common.ps1", ROOT, dest), encoding="utf-8")
+                  % (ROOT / "common" / "scripts" / "Bobiverse-Common.ps1", ROOT, dest), encoding="utf-8")
     for _ in range(2):   # idempotent
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps)], capture_output=True, text=True,
                            timeout=120, creationflags=0x08000000)
-        assert r.returncode == 0 and "MADE=2" in r.stdout, r.stdout[-600:] + r.stderr[-600:]
+        assert r.returncode == 0 and "MADE=1" in r.stdout, r.stdout[-600:] + r.stderr[-600:]
     assert keep.read_text(encoding="utf-8") == "my plan"
     assert exe.read_bytes() == b"MZ-pretend-running"
     assert (dest / "worker" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md").is_file()
     assert (dest / "worker" / ".grok" / "skills" / "bobiverse-bob-job-mrb" / "SKILL.md").is_file()
-    assert (dest / "plan" / "AGENTS.md").is_file()
 
 
 def test_install_sync_and_pack_use_the_shared_folder_builder():
@@ -357,8 +356,6 @@ BOOK_TOPICS = {
                              "#<machine>", "<machine>-<pid>", "IRC is lost", "kill", "no reconnect", "hung", "backoff", "logs",
                              "Troubleshooting", "NEW agent", "--resume", "PING", "pong", "Exit codes", "run copy", "Plan",
                              "ONE window", "!bored", "bobiverse-bob-job-irc"],
-    "bobiverse-bob-plan": ["tray", "Plan", "--mode plan", r"<ai root>\bob\plan", "visionary", "NEW agent", "--resume", "agent.cmd", "agent.exe",
-                           "logs", "Troubleshooting", "work", "ONE window"],
 }
 
 
@@ -377,9 +374,12 @@ def test_bob_book_start_guides_cover_every_required_topic(book):
 
 def test_bob_agents_md_points_at_the_new_guides():
     t = (ROOT / "AGENTS.bob.md").read_text(encoding="utf-8-sig")
-    for x in ("bobiverse-bob-worker", "bobiverse-bob-plan", "bobiverse-bob-job-irc", "NEW", "cursor", "grok"):
+    for x in ("bobiverse-bob-worker", "bobiverse-bob-job-irc", "NEW", "cursor", "grok"):
         assert x.lower() in t.lower(), x
     assert re.search(r"(?i)never.{0,40}resume", t)
+    # FR #8833: Plan guide is skills-visionary / pointer README, not bobiverse-bob-plan.
+    readme = (ROOT / "bob" / "agents" / "plan" / "README.md").read_text(encoding="utf-8")
+    assert "skills-visionary" in readme
 
 
 # ------------------------------------------------------------------------------------------------ job skills (t772u): ACK/DONE + one skill each for FR / MRB / UAT

@@ -259,7 +259,7 @@ Checks:
 
 - **MRB airc / product transport defaults vs FR acceptance (class of MRB #8044 / FR #7999 / FR #8057):** judge default order against the FR literally. Current #7999/#8057 acceptance is WSS first (`wss,tls`); #8052 wrongly flipped to `tls,wss` on a stale line and #8057 restored it. If acceptance says TLS first then WSS, the tip default must be `tls,wss`. FAIL, land one stacked fix, then re-PASS the tip. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #8054).
 
-- **Per-component CI (FR #7276 / FR #7524 / MRB #7540):** new `build-bob-plan` owns `bob/agents/plan/**` and `bobiverse-bob-plan` alone — pin exactly one workflow owner; `git add -f` `.github/workflows/*` when the job worktree `.git/info/exclude` ignores `.github/*`. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7542).
+- **Per-component CI (FR #7276 / FR #7524 / MRB #7540 / FR #8833):** Plan CI and source live in SimonBarnett/skills-visionary; bobiverse keeps only `bob/agents/plan/README.md` and vendors `PlanAgent.exe` at pack (FR #9354). Pin exactly one workflow owner for in-tree paths; `git add -f` `.github/workflows/*` when the job worktree `.git/info/exclude` ignores `.github/*`. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7542).
 
 - **Locked Windows atomic replace (class of FR #7518 / MRB #7536):** tip needs retry+backoff on WinError 5/32 plus one crash_report and keep-last-set; unique tmp + stale `*.tmp` cleanup. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7539).
 
