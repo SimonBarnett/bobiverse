@@ -51,6 +51,8 @@ Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe
 
 **CAST IRON unchanged:** never ErgoWalrus / BobIrcd / ircd.yaml / NSSM env / identity / queue.json / IIS. Post-check still uses `bobiverse-jeeves-agent-monitor` (+ `!resync`, IRC `+o`).
 
+**If build fails: FR the issues; do not install.** A red `build-jeeves` / failed tip CI / missing green artifact means file (or de-dup) FRs for the build failures and stop. Never `-SiYes` / WinRM / Slab-install from a failed build or red main. Re-run DryRun only after a successful green run on tip.
+
 ## Who and when (hard gates)
 
 - **Slab is the sole installer** for fleet MSI / multi-machine waves. For **walrus jeeves.exe-only** hotpatch, MONITORING may run `Install-JeevesWalrusWinRm.ps1` after Si `-SiYes` (FR #9376); it still does not invent approval.
@@ -146,4 +148,5 @@ the previous build is confirmed healthy again by the same post-check.
 
 ## Harvested lessons
 
+- If build-jeeves or tip CI fails: FR the failures and do not install on walrus (no -SiYes / no WinRM / no Slab) until a green artifact exists (FR #9376).
 - FR #9376: walrus jeeves.exe WinRM hotpatch is `Install-JeevesWalrusWinRm.ps1` (DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only). Gate readiness is monitor check `walrus_jeeves_install_ready` / fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE` (PR #9387).

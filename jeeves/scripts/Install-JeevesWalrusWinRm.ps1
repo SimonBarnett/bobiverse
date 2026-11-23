@@ -6,7 +6,7 @@
 .DESCRIPTION
   Operator-host tool (typically redqueen). Resolves a green build-jeeves artifact
   (or -ArtifactDir), verifies SHA-256, checks the Depends-on / Plan-agent gate
-  issue list, then either prints a DryRun plan (default) or — only with -SiYes —
+  issue list, then either prints a DryRun plan (default) or - only with -SiYes -
   opens WinRM to walrus, writes backup + ROLLBACK.ps1, swaps jeeves.exe (+ sha /
   MANIFEST / provenance) under C:\ai\jeeves\jeeves\, restarts ircJeeves only, and
   probes remote :7700/health.
@@ -15,7 +15,8 @@
   - Live mutate requires -SiYes (agent/automation "go" is not enough).
   - Never touches ErgoWalrus, BobIrcd, ircd.yaml, NSSM env, CredMan, identity,
     queue.json, or IIS.
-  - Never installs from red main / hash mismatch.
+  - Never installs from red main / hash mismatch / failed build-jeeves.
+  - If no successful build-jeeves artifact: exit without WinRM; operator must FR the build failures (do not -SiYes).
   - Default is DryRun when -SiYes is absent.
 
   One JSON object on stdout. Never prints secrets.
