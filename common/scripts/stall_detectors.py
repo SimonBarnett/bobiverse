@@ -490,6 +490,7 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
     doc: dict[str, Any] = {}
     open_keys: set = set()
     issue_open = snap.get("depends_issue_open")
+    issue_fetch = snap.get("depends_issue_fetch")
     home = snap.get("home")
     if home is not None:
         try:
@@ -510,6 +511,12 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
                 issue_open = gitclaim.depends_issue_open_checker()
             except Exception:
                 issue_open = None
+        # FR #9434 / #9418: unheld fr-digest absent from queue needs issue_fetch.
+        if issue_fetch is None:
+            try:
+                issue_fetch = gitclaim.depends_issue_fetch_checker()
+            except Exception:
+                issue_fetch = None
     else:
         doc = {
             "unaccepted": list(snap.get("unaccepted") or []),
@@ -522,7 +529,11 @@ def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> boo
     try:
         return bool(
             gitclaim.row_depends_open_reason(
-                row, open_keys, issue_open=issue_open, doc=doc or None
+                row,
+                open_keys,
+                issue_open=issue_open,
+                doc=doc or None,
+                issue_fetch=issue_fetch,
             )
         )
     except Exception:

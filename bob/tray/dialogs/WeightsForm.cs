@@ -2,6 +2,7 @@
 // FR #8714 / BOB-13: load/save via GET/PUT /bob/v1/models only (no local store).
 // FR #8716 / BOB-14: Model/Context/Effort dropdowns from webhook `clis` catalog per CLI.
 // FR #9053 / BOB-WEIGHTS-NO-VALIDATE: no Validate button; form dropdowns only (no validate POST).
+// FR #9266 / BOB-TRAY-UI-06: Refresh models — local CLI discover → POST refresh → GET rebind.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -21,10 +22,12 @@ namespace BobDialogs
         readonly string installRoot;
         DataGridView grid;
         Label status;
+        Button refresh;
         Button save;
         Button close;
         int loadBusy;
         int saveBusy;
+        int refreshBusy;
         List<Dictionary<string, string>> lastSaved;
         Dictionary<string, List<BobModelsComboRow>> lastClis =
             new Dictionary<string, List<BobModelsComboRow>>(StringComparer.OrdinalIgnoreCase);
@@ -37,7 +40,7 @@ namespace BobDialogs
             Text = "Bob - Weights";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(720, 400);
+            ClientSize = new Size(800, 400);
             MaximizeBox = false;
             MinimizeBox = false;
             TopMost = true;
@@ -48,7 +51,7 @@ namespace BobDialogs
             grid = new DataGridView();
             grid.Name = "weightsGrid";
             grid.Location = new Point(12, 12);
-            grid.Size = new Size(696, 290);
+            grid.Size = new Size(776, 290);
             grid.AllowUserToAddRows = false;
             grid.AllowUserToDeleteRows = false;
             grid.AllowUserToOrderColumns = false;
@@ -91,33 +94,42 @@ namespace BobDialogs
             Label subtitle = new Label();
             subtitle.Name = "weightsSubtitle";
             subtitle.Location = new Point(12, 318);
-            subtitle.Size = new Size(500, 18);
+            subtitle.Size = new Size(420, 18);
             subtitle.ForeColor = Color.FromArgb(154, 171, 187);
-            subtitle.Text = "GET|PUT /bob/v1/models — form dropdowns are validation";
+            subtitle.Text = "GET|PUT /bob/v1/models — Refresh posts local CLI catalog";
 
             status = new Label();
             status.Name = "weightsStatus";
             status.Location = new Point(12, 336);
-            status.Size = new Size(420, 28);
+            status.Size = new Size(400, 28);
             status.Text = "Loading…";
+
+            refresh = new Button();
+            refresh.Name = "weightsRefresh";
+            refresh.Text = "Refresh models";
+            refresh.Location = new Point(448, 348);
+            refresh.Size = new Size(120, 28);
+            refresh.Enabled = false;
+            refresh.Click += delegate { BeginRefreshModels(); };
 
             save = new Button();
             save.Name = "weightsSave";
             save.Text = "Save";
-            save.Location = new Point(520, 348);
+            save.Location = new Point(580, 348);
             save.Size = new Size(88, 28);
             save.Enabled = false;
             save.Click += delegate { BeginSave(); };
 
             close = new Button();
             close.Text = "Cancel";
-            close.Location = new Point(620, 348);
+            close.Location = new Point(680, 348);
             close.Size = new Size(88, 28);
             close.Click += delegate { Close(); };
 
             Controls.Add(grid);
             Controls.Add(subtitle);
             Controls.Add(status);
+            Controls.Add(refresh);
             Controls.Add(save);
             Controls.Add(close);
             AcceptButton = close;
@@ -133,6 +145,7 @@ namespace BobDialogs
             if (Interlocked.Exchange(ref loadBusy, 1) == 1) return;
             status.Text = "Loading…";
             save.Enabled = false;
+            refresh.Enabled = false;
             string rootCopy = installRoot;
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -158,6 +171,7 @@ namespace BobDialogs
                 status.Text = "Error: " + err + (st > 0 ? " (" + st + ")" : "");
                 status.ForeColor = Color.Firebrick;
                 save.Enabled = false;
+                refresh.Enabled = true;
                 TrayLifecycle.Write(
                     "weights_get",
                     "host", r != null ? (r.UrlHost ?? "") : "",
@@ -174,6 +188,7 @@ namespace BobDialogs
             status.Text = "Loaded " + r.Rows.Count + " row(s) from " + r.UrlHost
                 + (cliN > 0 ? ("; valid clis=" + cliN) : "; valid catalog missing");
             save.Enabled = true;
+            refresh.Enabled = true;
             TrayLifecycle.Write(
                 "weights_get",
                 "host", r.UrlHost ?? "",
@@ -184,12 +199,107 @@ namespace BobDialogs
                 "ok", "1");
         }
 
+        void BeginRefreshModels()
+        {
+            if (Interlocked.Exchange(ref refreshBusy, 1) == 1) return;
+            refresh.Enabled = false;
+            save.Enabled = false;
+            status.ForeColor = SystemColors.ControlText;
+            status.Text = "Discovering local CLI models…";
+            string rootCopy = installRoot;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                BobModelsDiscoverResult discovered = BobModelsClient.DiscoverLocalModels();
+                BobModelsResult post = null;
+                BobModelsResult get = null;
+                if (discovered != null && discovered.TotalCount > 0)
+                {
+                    post = BobModelsClient.PostClientCatalog(rootCopy, discovered.Models);
+                    if (post != null && post.Ok)
+                        get = BobModelsClient.Get(rootCopy);
+                }
+                try
+                {
+                    if (!IsHandleCreated || IsDisposed) return;
+                    BeginInvoke((MethodInvoker)delegate { ApplyRefresh(discovered, post, get); });
+                }
+                catch { }
+                finally { Interlocked.Exchange(ref refreshBusy, 0); }
+            });
+        }
+
+        void ApplyRefresh(BobModelsDiscoverResult discovered, BobModelsResult post, BobModelsResult get)
+        {
+            if (IsDisposed) return;
+            int total = discovered != null ? discovered.TotalCount : 0;
+            TrayLifecycle.Write(
+                "weights_refresh_discover",
+                "total", total.ToString(),
+                "grok", discovered != null && discovered.Reasons.ContainsKey("grok") ? discovered.Reasons["grok"] : "",
+                "cursor", discovered != null && discovered.Reasons.ContainsKey("cursor") ? discovered.Reasons["cursor"] : "",
+                "opencode", discovered != null && discovered.Reasons.ContainsKey("opencode") ? discovered.Reasons["opencode"] : "");
+
+            if (total <= 0)
+            {
+                status.ForeColor = Color.Firebrick;
+                status.Text = "Refresh failed: no local CLI models discovered";
+                refresh.Enabled = true;
+                save.Enabled = grid.Rows.Count > 0;
+                return;
+            }
+
+            TrayLifecycle.Write(
+                "weights_refresh_post",
+                "host", post != null ? (post.UrlHost ?? "") : "",
+                "status", post != null ? post.Status.ToString() : "0",
+                "bodyHash", post != null ? (post.BodyHash ?? "") : "",
+                "ok", post != null && post.Ok ? "1" : "0");
+
+            if (post == null || !post.Ok)
+            {
+                string err = post != null && !string.IsNullOrEmpty(post.Error) ? post.Error : "POST refresh failed";
+                int st = post != null ? post.Status : 0;
+                status.ForeColor = Color.Firebrick;
+                status.Text = "Refresh failed: " + err + (st > 0 ? " (" + st + ")" : "");
+                refresh.Enabled = true;
+                save.Enabled = grid.Rows.Count > 0;
+                return;
+            }
+
+            if (get != null && get.Ok)
+            {
+                lastClis = get.Clis ?? lastClis;
+                BindRows(get.Rows);
+                int cliN = lastClis != null ? lastClis.Count : 0;
+                status.ForeColor = Color.DarkGreen;
+                status.Text = "Refreshed " + total + " model(s); clis=" + cliN;
+                TrayLifecycle.Write(
+                    "weights_refresh_get",
+                    "host", get.UrlHost ?? "",
+                    "status", get.Status.ToString(),
+                    "clis", cliN.ToString(),
+                    "ok", "1");
+            }
+            else
+            {
+                if (post.Clis != null && post.Clis.Count > 0)
+                    lastClis = post.Clis;
+                List<Dictionary<string, string>> rows = ReadGridRows();
+                if (rows.Count > 0) BindRows(rows);
+                status.ForeColor = Color.DarkOrange;
+                status.Text = "Posted catalog; GET rebind incomplete";
+            }
+            refresh.Enabled = true;
+            save.Enabled = true;
+        }
+
         void BeginSave()
         {
             if (Interlocked.Exchange(ref saveBusy, 1) == 1) return;
             List<Dictionary<string, string>> rows = ReadGridRows();
             lastSaved = rows;
             save.Enabled = false;
+            refresh.Enabled = false;
             status.ForeColor = SystemColors.ControlText;
             status.Text = "Saving…";
             string rootCopy = installRoot;
@@ -231,6 +341,7 @@ namespace BobDialogs
                 status.ForeColor = Color.Firebrick;
                 status.Text = "Save failed: " + err + (st > 0 ? " (" + st + ")" : "");
                 save.Enabled = true;
+                refresh.Enabled = true;
                 return;
             }
 
@@ -244,6 +355,7 @@ namespace BobDialogs
             status.ForeColor = match ? Color.DarkGreen : Color.DarkOrange;
             status.Text = match ? "Saved" : "Mismatch";
             save.Enabled = true;
+            refresh.Enabled = true;
         }
 
         void BindRows(List<Dictionary<string, string>> rows)
@@ -379,6 +491,12 @@ namespace BobDialogs
         public static string DumpColumnHeaders()
         {
             return string.Join("\r\n", ColumnHeaders) + "\r\n";
+        }
+
+        /// <summary>FR #9266: exit-before-UI evidence for Refresh models control.</summary>
+        public static string DumpRefreshButton()
+        {
+            return "weightsRefresh\tRefresh models\r\n";
         }
 
         public static string DumpValidOptions(Dictionary<string, List<BobModelsComboRow>> clis)
