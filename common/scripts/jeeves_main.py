@@ -35,6 +35,24 @@ def get_source_commit() -> str:
         return "unknown"
 
 
+def import_heavy(name: str):
+    """FR #9242: import a frozen/heavy module; retry once after MemoryError.
+
+    PyInstaller extract can raise ``MemoryError: Unable to allocate output buffer``
+    under host RAM pressure (walrus crash-sig dcffcd163f9b6192 at ``import irc_agent``).
+    One ``gc.collect`` retry often succeeds; persistent OOM re-raises so ``main`` exits 1
+    for NSSM AppExit Restart.
+    """
+    import gc
+    import importlib
+
+    try:
+        return importlib.import_module(name)
+    except MemoryError:
+        gc.collect()
+        return importlib.import_module(name)
+
+
 def harden_stdio_replace() -> None:
     """FR #5157: NSSM/cp1252 stdout must not raise on U+2192 (same as #4396/#4397)."""
     for name in ("stdout", "stderr"):
@@ -690,7 +708,7 @@ def start_http_thread(
     exits the process non-zero so NSSM restarts — never leave :port bound but dead while
     the chair IRC side still looks alive.
     """
-    import bobcallback
+    bobcallback = import_heavy("bobcallback")
 
     bobcallback.assert_home_usable(home)
     httpd = bobcallback.serve(home, host=host, port=port, briefer_nick=briefer_nick)
@@ -841,11 +859,11 @@ def main(argv: list[str] | None = None) -> int:
             no_maintenance_agent=bool(args.no_maintenance_agent),
         )
 
-    import jeeves_locks
+    jeeves_locks = import_heavy("jeeves_locks")
 
     jeeves_locks.enable_inproc_locks()
     # Wire gitclaim in-proc path
-    import gitclaim  # noqa: F401 — import after enable so _lock sees RLock
+    import_heavy("gitclaim")  # noqa: F401 — import after enable so _lock sees RLock
 
     if not jeeves_locks.try_acquire_instance_mutex(home):
         _print_json({"ok": False, "err": "already_running", "fr": 1993})
@@ -858,6 +876,12 @@ def main(argv: list[str] | None = None) -> int:
                 host, port = parse_http_bind(args.http)
             try:
                 _t, httpd = start_http_thread(home, host=host, port=port, briefer_nick=args.nick)
+            except MemoryError as exc:
+                safe_print(
+                    f"ERROR FR #9242 MemoryError loading bobcallback: {exc}",
+                    flush=True,
+                )
+                return 1
             except OSError as exc:
                 safe_print(f"ERROR http bind failed {host}:{port} err={exc}", flush=True)
                 return 1
@@ -883,7 +907,15 @@ def main(argv: list[str] | None = None) -> int:
                     "--home",
                     str(Path(args.home).expanduser() if args.home else home),
                 ] + list(unknown)
-                import irc_agent
+                try:
+                    irc_agent = import_heavy("irc_agent")
+                except MemoryError as exc:
+                    # Crash-sig dcffcd163f9b6192: pyimod extract OOM at import irc_agent.
+                    safe_print(
+                        f"ERROR FR #9242 MemoryError loading irc_agent: {exc}",
+                        flush=True,
+                    )
+                    return 1
 
                 # irc_agent.main parses sys.argv — temporarily replace.
                 old = sys.argv
@@ -896,9 +928,19 @@ def main(argv: list[str] | None = None) -> int:
 
         p.error("specify --self-test, --heal, --http-only, or --chair --http HOST:PORT")
         return 2
+    except MemoryError as exc:
+        safe_print(
+            f"ERROR FR #9242 MemoryError during jeeves startup import: {exc}",
+            flush=True,
+        )
+        return 1
     finally:
         jeeves_locks.release_instance_mutex()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except MemoryError as exc:
+        sys.stderr.write(f"ERROR FR #9242 MemoryError during jeeves startup: {exc}\n")
+        raise SystemExit(1)

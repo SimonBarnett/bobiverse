@@ -77,6 +77,7 @@ def test_fr7442_install_publishes_favicon_and_mime(tmp_path: Path):
         str(site),
         "-Backend",
         "http://127.0.0.1:7700",
+        "-SkipBackendProbe",
         "-WwwSource",
         str(www),
         "-PublishWww",

@@ -3,6 +3,8 @@
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
   (report, digest, git, intake, jira, hours, models, jeeves appliance). Site default: irc-ntsa.
+  FR #9246: after rules, GET Backend/bob/v1/report (WARN when down; -RequireBackend fails; -SkipBackendProbe for tests).
+  FR #9273: BobModelsWebhook forwards GET|HEAD|POST|PUT (grouped); post-install also probes PUT /bob/v1/models.
 #>
 [CmdletBinding()]
 param(
@@ -17,7 +19,10 @@ param(
     # FR #7465: publish the site kit only. Do not call appcmd and do not touch the Jeeves service.
     [switch]$SiteKit,
     # FR #8803: www/assets publish is opt-in. -SiteKit implies publish. Default run is rules-only.
-    [switch]$PublishWww
+    [switch]$PublishWww,
+    # FR #9246: after rules, GET $Backend/bob/v1/report. Default WARN when down; -RequireBackend fails.
+    [switch]$SkipBackendProbe,
+    [switch]$RequireBackend
 )
 # FR #8803: SiteKit is the site-kit deploy path; it always publishes www.
 $doPublishWww = [bool]($PublishWww -or $SiteKit)
@@ -79,10 +84,11 @@ $rewriteXml = @"
           <match url="^bob/v1/hours(.*)" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
         </rule>
+        <!-- FR #9273: grouped ^(GET|HEAD|POST|PUT)$ so Weights Save PUT reaches bobcallback (was ungrouped ^GET|HEAD|POST$ and omitted PUT -> IIS HTML 404). PATCH stays blocked here; backend 405 if ever admitted. -->
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD|POST$" />
+            <add input="{REQUEST_METHOD}" pattern="^(GET|HEAD|POST|PUT)$" />
           </conditions>
           <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
@@ -357,13 +363,13 @@ function Get-BobOwnedRuleXml {
 "@
         }
         'BobModelsWebhook' {
-            # FR #8708: PUT/PATCH stay direct/LAN. FR #9224 / #8820: POST refresh must
-            # reach the chair via public Cloudflare (GET|HEAD|POST).
+            # FR #9224 / #8820: POST refresh via Cloudflare. FR #9273: PUT models too
+            # (Weights Save); grouped ^(GET|HEAD|POST|PUT)$. PATCH stays out (backend 405).
             return @"
         <rule name="BobModelsWebhook" stopProcessing="true">
           <match url="^bob/v1/models(.*)" ignoreCase="true" />
           <conditions>
-            <add input="{REQUEST_METHOD}" pattern="^GET|HEAD|POST$" />
+            <add input="{REQUEST_METHOD}" pattern="^(GET|HEAD|POST|PUT)$" />
           </conditions>
           <action type="Rewrite" url="$BackendUrl/bob/v1/models{R:1}" />
         </rule>
@@ -739,6 +745,108 @@ if (-not $logoStaged) {
 }
 } else {
     Write-Host 'INFO FR #8803 skipping www/assets publish (pass -PublishWww or -SiteKit to enable)'
+}
+
+# FR #9246: post-install probe so a mid-deploy dead :7700 is visible (IIS 502 class of #9224/#9246).
+# FR #9273: also no-op PUT /bob/v1/models -- expect backend 400/403 (or 2xx), never IIS HTML 404.
+if (-not $SkipBackendProbe) {
+    $probeUri = ($Backend.TrimEnd('/') + '/bob/v1/report')
+    $putProbeUri = ($Backend.TrimEnd('/') + '/bob/v1/models')
+    $probeOk = $false
+    $probeDetail = ''
+    $putProbeOk = $false
+    $putProbeDetail = ''
+    try {
+        $uriObj = [Uri]$Backend
+        $probeHost = $uriObj.Host
+        $probePort = $uriObj.Port
+        if ($probePort -le 0) {
+            if ($uriObj.Scheme -eq 'https') { $probePort = 443 } else { $probePort = 80 }
+        }
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        try {
+            $iar = $tcp.BeginConnect($probeHost, $probePort, $null, $null)
+            $connected = $iar.AsyncWaitHandle.WaitOne(500)
+            if (-not $connected) {
+                $probeDetail = "tcp-timeout ${probeHost}:${probePort}"
+            } elseif (-not $tcp.Connected) {
+                $probeDetail = "tcp-refused ${probeHost}:${probePort}"
+            } else {
+                $tcp.EndConnect($iar) | Out-Null
+                try {
+                    $resp = Invoke-WebRequest -Uri $probeUri -Method GET -UseBasicParsing -TimeoutSec 3
+                    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
+                        $probeOk = $true
+                        $probeDetail = "status=$($resp.StatusCode)"
+                    } else {
+                        $probeDetail = "status=$($resp.StatusCode)"
+                    }
+                } catch {
+                    $probeDetail = $_.Exception.Message
+                }
+                # FR #9273: empty PUT -- bobcallback peer/body errors are success for "reached backend".
+                try {
+                    $putResp = Invoke-WebRequest -Uri $putProbeUri -Method PUT -Body ([byte[]]@()) -ContentType 'application/json' -UseBasicParsing -TimeoutSec 3
+                    $putCode = [int]$putResp.StatusCode
+                    $putBody = [string]$putResp.Content
+                    if ($putCode -eq 404 -and ($putBody -match '(?i)File or directory not found|<!DOCTYPE html')) {
+                        $putProbeDetail = "IIS HTML 404 status=$putCode"
+                    } elseif ($putCode -ge 200 -and $putCode -lt 500) {
+                        $putProbeOk = $true
+                        $putProbeDetail = "status=$putCode"
+                    } else {
+                        $putProbeDetail = "status=$putCode"
+                    }
+                } catch {
+                    $ex = $_.Exception
+                    $putCode = 0
+                    $putBody = ''
+                    try {
+                        if ($ex.Response) {
+                            $putCode = [int]$ex.Response.StatusCode
+                            $sr = New-Object System.IO.StreamReader($ex.Response.GetResponseStream())
+                            $putBody = $sr.ReadToEnd()
+                            $sr.Close()
+                        }
+                    } catch { }
+                    if ($putCode -eq 404 -and ($putBody -match '(?i)File or directory not found|<!DOCTYPE html' -or -not $putBody)) {
+                        # Empty 404 from dead static IIS is the Weights Save failure class.
+                        $putProbeDetail = "IIS HTML 404 status=404 ($($ex.Message))"
+                    } elseif ($putCode -in 400, 403, 401, 204, 200) {
+                        $putProbeOk = $true
+                        $putProbeDetail = "status=$putCode"
+                    } elseif ($putCode -ge 200 -and $putCode -lt 500) {
+                        $putProbeOk = $true
+                        $putProbeDetail = "status=$putCode"
+                    } else {
+                        $putProbeDetail = "status=$putCode $($ex.Message)"
+                    }
+                }
+            }
+        } finally {
+            $tcp.Close()
+        }
+    } catch {
+        $probeDetail = $_.Exception.Message
+    }
+    if ($probeOk) {
+        Write-Host "INFO FR #9246 backend probe OK $probeUri ($probeDetail)"
+    } else {
+        $msg = "FR #9246 backend probe failed $probeUri ($probeDetail) --- IIS will 502 until BobCallback listens on $Backend"
+        if ($RequireBackend) {
+            throw $msg
+        }
+        Write-Host "WARN $msg"
+    }
+    if ($putProbeOk) {
+        Write-Host "INFO FR #9273 models PUT probe OK $putProbeUri ($putProbeDetail)"
+    } elseif ($probeOk -or $putProbeDetail) {
+        $putMsg = "FR #9273 models PUT probe failed $putProbeUri ($putProbeDetail) --- Weights Save will 404 until BobModelsWebhook forwards PUT"
+        if ($RequireBackend) {
+            throw $putMsg
+        }
+        Write-Host "WARN $putMsg"
+    }
 }
 
 Write-Host 'INFO Install-BobWebhooks done'

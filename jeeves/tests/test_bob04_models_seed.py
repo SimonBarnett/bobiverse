@@ -30,7 +30,7 @@ def test_bob04_every_seed_row_passes_validate_combo_row():
     doc = mc.load_seed_document(SEED)
     for cli, rows in doc["clis"].items():
         for item in rows:
-            row, why = mc.validate_combo_row(item)
+            row, why = mc.validate_combo_row(item, cli=cli)
             assert row is not None, (cli, item, why)
 
 
@@ -57,7 +57,7 @@ def test_bob04_preserves_operator_rows(tmp_path: Path):
     path = mc.valid_combos_path(tmp_path)
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["clis"]["grok"].append(
-        {"model": "operator-only-model", "contexts": ["999k"], "efforts": ["low"]}
+        {"model": "operator-only-model", "contexts": ["256"], "efforts": ["low"]}
     )
     path.write_text(json.dumps(doc), encoding="utf-8")
     status = mc.ensure_valid_combos_seeded(tmp_path, seed_path=SEED)

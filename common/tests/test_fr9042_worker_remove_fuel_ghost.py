@@ -1,6 +1,7 @@
 """FR #9042: worker-remove drops an out_of_fuel nick that exists only in last-good."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import bobreport
@@ -8,6 +9,11 @@ import registered_machines as rm
 
 MID = "redqueen"
 NICK = "redqueen-7500"
+
+
+def _fresh_iso() -> str:
+    # FR #9145: last-good older than BOB_DIGEST_LAST_GOOD_MAX_S is not exported.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _home(tmp_path: Path, monkeypatch) -> Path:
@@ -21,6 +27,7 @@ def test_remove_drops_out_of_fuel_ghost_from_last_good(tmp_path, monkeypatch):
     home = _home(tmp_path, monkeypatch)
     doc = bobreport.load_digest(home)
     ent = bobreport._machine_entry(doc, MID)
+    now = _fresh_iso()
     ent["online"] = True
     ent["worker_list"] = []
     ent["workers"] = {
@@ -32,9 +39,9 @@ def test_remove_drops_out_of_fuel_ghost_from_last_good(tmp_path, monkeypatch):
         }
     }
     ent["workers_last_good"] = [
-        {"nick": NICK, "state": "out_of_fuel", "work": "out-of-fuel", "updated": "2026-11-22T15:00:00Z"}
+        {"nick": NICK, "state": "out_of_fuel", "work": "out-of-fuel", "updated": now}
     ]
-    ent["workers_last_good_at"] = "2026-11-22T15:00:00Z"
+    ent["workers_last_good_at"] = now
     bobreport.save_digest(home, doc)
     exported = bobreport.export_machine_for_tray(home, MID, ent)
     assert NICK in {w["nick"] for w in (exported.get("workers") or [])}
