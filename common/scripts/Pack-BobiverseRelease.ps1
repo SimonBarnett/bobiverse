@@ -478,16 +478,29 @@ function Stage-Product([string]$Name) {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
     }
     # FR #9211: OpenCode seat console icon (find_window_icon kind=opencode + launch-opencode.ps1).
-    $ocIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico')
-    if (-not $ocIcoSrc -or -not (Test-Path -LiteralPath $ocIcoSrc)) {
-        $ocIcoSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
-    }
-    if ($ocIcoSrc -and (Test-Path -LiteralPath $ocIcoSrc)) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
-        Copy-Item -LiteralPath $ocIcoSrc -Destination (Join-Path $stage 'assets\opencode-favicon.ico') -Force
-        Write-Host 'INFO FR #9211 staged assets\opencode-favicon.ico'
-    } else {
-        Write-Host 'WARN FR #9211 opencode-favicon.ico missing - OpenCode consoles keep default icon until staged'
+    # FR #9267: stage all non-Cursor tray menu glyphs under assets\ for TipForm / Watch-BobTray.
+    $stageAssets = Join-Path $stage 'assets'
+    New-Item -ItemType Directory -Force -Path $stageAssets | Out-Null
+    foreach ($menuIco in @(
+            'opencode-favicon.ico',
+            'grok-favicon.ico',
+            'plan-gantt.ico',
+            'priority.ico',
+            'jeeves-butler.ico'
+        )) {
+        $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("bob\tray\assets\$menuIco")
+        if (-not $srcIco -or -not (Test-Path -LiteralPath $srcIco)) {
+            $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("third_party\bob-tray\assets\$menuIco")
+        }
+        if ($menuIco -eq 'opencode-favicon.ico' -and (-not $srcIco -or -not (Test-Path -LiteralPath $srcIco))) {
+            $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico'
+        }
+        if ($srcIco -and (Test-Path -LiteralPath $srcIco)) {
+            Copy-Item -LiteralPath $srcIco -Destination (Join-Path $stageAssets $menuIco) -Force
+            Write-Host ("INFO FR #9267/#9211 staged assets\{0}" -f $menuIco)
+        } else {
+            Write-Host ("WARN FR #9267 menu icon missing: {0}" -f $menuIco)
+        }
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force

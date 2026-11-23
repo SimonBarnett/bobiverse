@@ -34,7 +34,8 @@ def test_fr6429_tray_submenu_tags_and_labels():
     seed = tray[tray.index("void SeedAgentChoices") : tray.index("void SeedAgentChoices") + 900]
     assert "AddOpencodeModelSubmenu" in seed
     assert 'AddAgentChoice(parent, "opencode", "OpenCode"' not in seed
-    assert 'AddAgentChoice(parent, "auto"' in seed
+    # FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row (merged with #9263 tip).
+    assert 'AddAgentChoice(parent, "auto"' not in seed
     assert 'AddAgentChoice(parent, "grok"' in seed
     assert 'AddAgentChoice(parent, "cursor"' in seed
 

@@ -1,9 +1,17 @@
-"""FR #8820: POST /bob/v1/models/refresh — rebuild per-CLI models catalog.
+"""FR #8820 / FR #9266: POST /bob/v1/models/refresh — rebuild per-CLI models catalog.
 
 Listing sources (no scraping, no cloud API keys):
   - Grok: ``grok models`` (https://docs.x.ai/docs/cli)
   - Cursor: ``agent models`` (Cursor agent CLI)
   - OpenCode: ``opencode models`` (https://opencode.ai)
+
+FR #9266 / BOB-TRAY-UI-06: Weights client may POST a discovered catalog instead of
+chair-side CLI spawn::
+
+  ``{"source":"weights-client","clis":{"grok":["id",...],"cursor":[...],"opencode":[...]}}``
+
+``clis`` values may also be ``[{"model":"id",...}, ...]``. Chair listing (empty body
+or ``{"clis":["grok",...]}``) remains for ops; fleet seats own discovery.
 
 A failed or empty listing leaves that CLI's store entry untouched. Agent
 selections are never rewritten; GET marks absent models ``stale: true``.
@@ -31,6 +39,9 @@ REFRESH_CLIS: tuple[str, ...] = ("grok", "cursor", "opencode")
 RATE_WINDOW_S = 60.0
 LISTING_TIMEOUT_S = 20.0
 LISTING_STDOUT_CAP = 256 * 1024
+CHAIR_BODY_LIMIT = 4096
+CLIENT_CATALOG_BODY_LIMIT = 256 * 1024
+CLIENT_SOURCE = "weights-client"
 
 REASON_NOT_INSTALLED = "not_installed"
 REASON_TIMEOUT = "timeout"
@@ -353,9 +364,10 @@ class ModelsRefreshController:
         self,
         body: bytes | str | None = None,
     ) -> tuple[int, bytes]:
-        requested, err = _parse_request_clis(body)
+        requested, client_catalog, err = _parse_refresh_request(body)
         if err is not None:
             return err
+        assert requested is not None
         ok, retry_after = self._reserve(requested)
         if not ok:
             payload = {
@@ -366,32 +378,45 @@ class ModelsRefreshController:
 
         results: dict[str, Any] = {}
         successful: dict[str, list[str]] = {}
-        for cli in requested:
-            lister = self.listers.get(cli)
-            if lister is None:
-                results[cli] = {
-                    "status": "failed",
-                    "reason": REASON_NOT_INSTALLED,
-                    "refreshed_at": None,
-                }
-                continue
-            try:
-                ids = list(lister())
+        if client_catalog is not None:
+            # FR #9266: merge client-discovered ids; never spawn CLIs on the chair.
+            for cli in requested:
+                ids = client_catalog.get(cli) or []
                 if not ids:
-                    raise ListingError(REASON_EMPTY_LISTING)
-                successful[cli] = ids
-            except ListingError as exc:
-                results[cli] = {
-                    "status": "failed",
-                    "reason": exc.reason,
-                    "refreshed_at": None,
-                }
-            except Exception:
-                results[cli] = {
-                    "status": "failed",
-                    "reason": REASON_SPAWN_ERROR,
-                    "refreshed_at": None,
-                }
+                    results[cli] = {
+                        "status": "failed",
+                        "reason": REASON_EMPTY_LISTING,
+                        "refreshed_at": None,
+                    }
+                    continue
+                successful[cli] = list(ids)
+        else:
+            for cli in requested:
+                lister = self.listers.get(cli)
+                if lister is None:
+                    results[cli] = {
+                        "status": "failed",
+                        "reason": REASON_NOT_INSTALLED,
+                        "refreshed_at": None,
+                    }
+                    continue
+                try:
+                    ids = list(lister())
+                    if not ids:
+                        raise ListingError(REASON_EMPTY_LISTING)
+                    successful[cli] = ids
+                except ListingError as exc:
+                    results[cli] = {
+                        "status": "failed",
+                        "reason": exc.reason,
+                        "refreshed_at": None,
+                    }
+                except Exception:
+                    results[cli] = {
+                        "status": "failed",
+                        "reason": REASON_SPAWN_ERROR,
+                        "refreshed_at": None,
+                    }
 
         refreshed_at = _utc_iso(time.time())
 
@@ -413,10 +438,11 @@ class ModelsRefreshController:
                     "removed": removed,
                 }
                 log.info(
-                    "models_refresh cli=%s status=refreshed added=%d removed=%d",
+                    "models_refresh cli=%s status=refreshed added=%d removed=%d source=%s",
                     cli,
                     len(added),
                     len(removed),
+                    "weights-client" if client_catalog is not None else "chair",
                 )
             for cli, info in results.items():
                 if info.get("status") == "failed":
@@ -441,44 +467,116 @@ class ModelsRefreshController:
             return 503, _json_bytes({"error": "catalog_unavailable"})
 
         clis_public = mc.clis_public_from_document(doc)
-        return 200, _json_bytes({"clis": clis_public, "refresh": results})
+        out: dict[str, Any] = {"clis": clis_public, "refresh": results}
+        if client_catalog is not None:
+            out["source"] = CLIENT_SOURCE
+        return 200, _json_bytes(out)
 
 
-def _parse_request_clis(body: bytes | str | None) -> tuple[list[str], tuple[int, bytes] | None]:
+def _model_ids_from_client_entry(value: Any) -> list[str] | None:
+    """Accept ``[\"id\", ...]`` or ``[{\"model\":\"id\"}, ...]``. None = bad shape."""
+    if not isinstance(value, list):
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        mid = ""
+        if isinstance(item, str):
+            mid = item.strip()
+        elif isinstance(item, dict):
+            mid = str(item.get("model") or "").strip()
+        else:
+            return None
+        if not mid:
+            continue
+        if mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    return out
+
+
+def _parse_refresh_request(
+    body: bytes | str | None,
+) -> tuple[list[str] | None, dict[str, list[str]] | None, tuple[int, bytes] | None]:
+    """Return ``(cli_names, client_catalog_or_None, error_or_None)``."""
     if body is None or body == b"" or body == "":
-        return list(REFRESH_CLIS), None
+        return list(REFRESH_CLIS), None, None
     raw = body if isinstance(body, (bytes, bytearray)) else str(body).encode("utf-8")
-    if len(raw) > 4096:
-        return [], (400, _json_bytes({"error": "bad_json"}))
+    # Peek for client catalog so we can allow a larger body.
+    peek_limit = CLIENT_CATALOG_BODY_LIMIT
+    if len(raw) > peek_limit:
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
     try:
         text = raw.decode("utf-8")
     except UnicodeError:
-        return [], (400, _json_bytes({"error": "bad_json"}))
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
     if not text.strip():
-        return list(REFRESH_CLIS), None
+        return list(REFRESH_CLIS), None, None
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        return [], (400, _json_bytes({"error": "bad_json"}))
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
     if not isinstance(payload, dict):
-        return [], (400, _json_bytes({"error": "bad_json"}))
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
+
+    items = payload.get("clis") if "clis" in payload else None
+    # FR #9266: dict ``clis`` = client-supplied catalog (Weights Refresh).
+    if isinstance(items, dict):
+        allowed_keys = {"clis", "source"}
+        if set(payload.keys()) - allowed_keys:
+            return None, None, (400, _json_bytes({"error": "bad_json"}))
+        source = str(payload.get("source") or "").strip().lower()
+        if source and source != CLIENT_SOURCE:
+            return None, None, (400, _json_bytes({"error": "bad_json"}))
+        if not items:
+            return None, None, (400, _json_bytes({"error": "bad_json"}))
+        catalog: dict[str, list[str]] = {}
+        order: list[str] = []
+        for raw_cli, raw_models in items.items():
+            cli = str(raw_cli or "").strip().lower()
+            if cli not in REFRESH_CLIS:
+                return None, None, (
+                    400,
+                    _json_bytes({"error": "unknown_cli", "cli": cli}),
+                )
+            ids = _model_ids_from_client_entry(raw_models)
+            if ids is None:
+                return None, None, (400, _json_bytes({"error": "bad_json"}))
+            if cli not in catalog:
+                order.append(cli)
+            catalog[cli] = ids
+        return order, catalog, None
+
+    # Chair listing path: empty body keys or ``{"clis":["grok",...]}``.
+    if len(raw) > CHAIR_BODY_LIMIT:
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
     if set(payload.keys()) - {"clis"}:
-        return [], (400, _json_bytes({"error": "bad_json"}))
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
     if "clis" not in payload:
-        return list(REFRESH_CLIS), None
-    items = payload.get("clis")
+        return list(REFRESH_CLIS), None, None
     if not isinstance(items, list) or not items:
-        return [], (400, _json_bytes({"error": "bad_json"}))
+        return None, None, (400, _json_bytes({"error": "bad_json"}))
     out: list[str] = []
     seen: set[str] = set()
     for item in items:
         cli = str(item or "").strip().lower()
         if cli not in REFRESH_CLIS:
-            return [], (400, _json_bytes({"error": "unknown_cli", "cli": cli}))
+            return None, None, (
+                400,
+                _json_bytes({"error": "unknown_cli", "cli": cli}),
+            )
         if cli not in seen:
             seen.add(cli)
             out.append(cli)
-    return out, None
+    return out, None, None
+
+
+def _parse_request_clis(body: bytes | str | None) -> tuple[list[str], tuple[int, bytes] | None]:
+    """Back-compat wrapper: chair listing names only (ignores client catalog)."""
+    requested, _catalog, err = _parse_refresh_request(body)
+    if err is not None:
+        return [], err
+    return list(requested or []), None
 
 
 def _json_bytes(obj: Any) -> bytes:

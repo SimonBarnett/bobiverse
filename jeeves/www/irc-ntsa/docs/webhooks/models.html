@@ -91,24 +91,24 @@ Content-Type: application/json
 
 <section id="models-refresh">
 <h2>Models refresh (POST) <span class="badge">POST /bob/v1/models/refresh</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).</p>
-<p><strong>Who calls it:</strong> Operators / tray refresh.</p>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Rebuild per-CLI options catalog from chair CLI listings (FR #8820) or from a Weights client-supplied catalog (FR #9266).</p>
+<p><strong>Who calls it:</strong> Weights Refresh models (fleet seats); operators (chair listing).</p>
 <p><strong>Auth (named only):</strong> Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.</p>
-<p><strong>Request schema:</strong> Empty body or {&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]}.</p>
-<p><strong>Response schema:</strong> 200 JSON {&quot;clis&quot;:{cli:{&quot;models&quot;:[...],&quot;refreshed_at&quot;}},&quot;refresh&quot;:{cli:{&quot;status&quot;:&quot;refreshed|failed&quot;,&quot;added&quot;,&quot;removed&quot;,&quot;reason&quot;}}}; failed CLI keeps prior catalog; selections unchanged.</p>
+<p><strong>Request schema:</strong> Empty body or {&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]} (chair listing); or {&quot;source&quot;:&quot;weights-client&quot;,&quot;clis&quot;:{&quot;grok&quot;:[&quot;id&quot;,...],...}} (client catalog).</p>
+<p><strong>Response schema:</strong> 200 JSON {&quot;clis&quot;:{cli:{&quot;models&quot;:[...],&quot;refreshed_at&quot;}},&quot;refresh&quot;:{cli:{&quot;status&quot;:&quot;refreshed|failed&quot;,&quot;added&quot;,&quot;removed&quot;,&quot;reason&quot;}},&quot;source&quot;:&quot;weights-client&quot;?}; failed CLI keeps prior catalog; selections unchanged.</p>
 <p><strong>Status codes:</strong> 200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.</p>
 <p><strong>Retry / idempotency:</strong> Safe to retry; per-CLI fail-closed; second call inside 60s returns 429 with no change.</p>
 <p><strong>Rate limits:</strong> One attempt per CLI per 60s (in-memory; restart resets).</p>
 <p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).</p>
-<p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8820</p>
+<p><strong>Source:</strong> <code>common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8820 / FR #9266</p>
 <p><strong>Redacted example</strong></p>
 <pre>POST https://bob.ntsa.uk/bob/v1/models/refresh
 Content-Type: application/json
 
-{&quot;clis&quot;:[&quot;grok&quot;,&quot;cursor&quot;,&quot;opencode&quot;]}
+{&quot;source&quot;:&quot;weights-client&quot;,&quot;clis&quot;:{&quot;grok&quot;:[&quot;grok-4.7&quot;]}}
 
 200 OK
-{&quot;clis&quot;:{&quot;grok&quot;:{&quot;models&quot;:[{&quot;model&quot;:&quot;grok-4.7&quot;,&quot;contexts&quot;:[],&quot;efforts&quot;:[]}],&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;}},&quot;refresh&quot;:{&quot;grok&quot;:{&quot;status&quot;:&quot;refreshed&quot;,&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;,&quot;added&quot;:[&quot;grok-4.7&quot;],&quot;removed&quot;:[]}}}</pre>
+{&quot;source&quot;:&quot;weights-client&quot;,&quot;clis&quot;:{&quot;grok&quot;:{&quot;models&quot;:[{&quot;model&quot;:&quot;grok-4.7&quot;,&quot;contexts&quot;:[],&quot;efforts&quot;:[]}],&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;}},&quot;refresh&quot;:{&quot;grok&quot;:{&quot;status&quot;:&quot;refreshed&quot;,&quot;refreshed_at&quot;:&quot;2026-11-23T05:00:00Z&quot;,&quot;added&quot;:[&quot;grok-4.7&quot;],&quot;removed&quot;:[]}}}</pre>
 </section>
 
 <footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
