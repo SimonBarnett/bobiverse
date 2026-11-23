@@ -62,20 +62,21 @@ DEFAULT_LISTENER_PROBE_S = 10.0
 LISTENER_PROBE_FAILS_ENV = "BOB_CALLBACK_LISTENER_PROBE_FAILS"
 DEFAULT_LISTENER_PROBE_FAILS = 2
 LISTENER_EXIT_CODE = 1
-# Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
+# Public readers (IIS / browsers / UAT): use reportUrl. /bob/v1/digest is the same webhook and 301s here.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
-    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours|"
-    "/bob/v1/models/validate; "
-    "front-door GET is /bob/v1/report|/jeeves (local bobcallback also serves /bob/v1/digest); "
+    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
+    "front-door GET is /bob/v1/report|/jeeves (/bob/v1/digest 301s to /bob/v1/report); "
     "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
+# GET/HEAD/POST on these paths 301 to REPORT_PATH (same webhook; no duplicate handler).
+DIGEST_REDIRECT_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS})
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
-DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
+DIGEST_GET_PATHS = frozenset({REPORT_PATH})
 POST_ROUTES = frozenset(
-    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_VALIDATE_PATH}
+    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH}
 )
 PUT_ROUTES = frozenset({MODELS_PATH})  # BOB-02 / FR #8708
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
@@ -1017,7 +1018,11 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
-    # GET/HEAD digest: local paths include /digest aliases; public front-door is REPORT_PATH only (#149).
+    # /bob/v1/digest and /digest are the same webhook as /bob/v1/report — permanent redirect.
+    if route in DIGEST_REDIRECT_PATHS:
+        stash_response_headers([("Location", REPORT_PATH)])
+        return 301, b""
+    # GET/HEAD fleet digest JSON (canonical path).
     if verb in ("GET", "HEAD") and route in DIGEST_GET_PATHS:
         code, payload = handle_digest_get(home, briefer_nick)
         if verb == "HEAD":
@@ -1071,9 +1076,11 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
-    # POST to digest-only aliases is not a write path.
-    if route in (DIGEST_PATH, DIGEST_ALIAS):
-        return 405, b""
+    # FR #9053: POST /bob/v1/models/validate is not served (form-only validation).
+    # Answer before the POST_ROUTES gate so the body is JSON, not an empty 404.
+    if verb == "POST" and route == MODELS_VALIDATE_PATH:
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return 404, b'{"error":"no_models_validate","hint":"use GET /bob/v1/models catalog; Weights form validates"}'
     gate = _check_post_route(verb, route, peer_ip, allow_ips)
     if gate[0] != 0:
         return gate[0], gate[1]
@@ -1089,11 +1096,6 @@ def handle_request(
         return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
         return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
-    # BOB-03 / FR #8710: non-persisting combo validate (peer-gated like other POSTs).
-    if route == MODELS_VALIDATE_PATH:
-        code, payload = models_catalog.handle_models_validate(body, home)
-        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
-        return code, payload
     return handle_report_post(headers, body, home, briefer_nick, filer=filer, rate=report_rate)
 
 
@@ -1679,8 +1681,7 @@ def main() -> None:
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
         f"PUT {MODELS_PATH} "
-        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
-        f"POST {MODELS_VALIDATE_PATH}",
+        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
         flush=True,
     )
     try:

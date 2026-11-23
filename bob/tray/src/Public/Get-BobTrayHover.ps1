@@ -2402,10 +2402,12 @@ function Update-BobTrayDigestPools {
                 if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
                     throw 'Invoke-BobDigestHttpGet missing'
                 }
-                $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
-                # FR #8049: one immediate retry on transient 503 before failing the poll.
-                if ($got -and [int]$got.StatusCode -eq 503) {
-                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
+                # FR #8988: 12s budget plus one retry on GetResponse/503 (not only 503).
+                if (Get-Command Invoke-BobDigestHttpGetWithRetry -ErrorAction SilentlyContinue) {
+                    $got = Invoke-BobDigestHttpGetWithRetry -Uri $u -TimeoutSec 12
+                }
+                else {
+                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 12
                 }
                 if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
                     $code = $(if ($got) { $got.StatusCode } else { 'null' })
@@ -2599,6 +2601,13 @@ function Update-BobTrayDigestPools {
             try { $opencodeWindows = $prev.opencode_windows } catch { }
             try { $opencodeWindowLines = @($prev.opencode_window_lines) } catch { $opencodeWindowLines = @() }
             try { $opencodeBars = @($prev.opencode_bars) } catch { $opencodeBars = @() }
+            try {
+                if ($null -ne $prev.ts -and [string]$prev.ts -ne '') {
+                    $age = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$prev.ts
+                    if ($age -lt 0) { $age = 0 }
+                    $note = (($note + ' last-good age=' + $age + 's').Trim())
+                }
+            } catch { }
         }
         # Marker for bob-tray.exe CrashHook (one report per failure window). FR #7604 helper.
         if (-not $wroteFail) {
