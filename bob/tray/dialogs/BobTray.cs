@@ -1181,16 +1181,7 @@ namespace BobDialogs
             menu.Items.Add(miWorkers);
             Item("Weights", delegate { ShowWeights(); });
             Item("About", delegate { Acknowledge(); ShowAbout(); });
-            // FR #7669: show the live seat target. The value is bridge config.json; no tray restart.
-            ToolStripMenuItem miSeats = new ToolStripMenuItem("Seats: on");
-            miSeats.Enabled = false;
-            menu.Items.Add(miSeats);
-            MenuItems.Add("Seats: on");
-            menu.Opening += delegate
-            {
-                miSeats.Text = WorkerLauncher.SeatsOff() ? "Seats: off (seat target 0)" : "Seats: on";
-            };
-            Item("Open log", delegate { OpenLog(); });
+            // FR #9261 / BOB-TRAY-UI-01: no top-level Seats: or Open log (About Show logs opens the tray log).
             // FR #6309: TipForm masked OpenCode key set/select/remove.
             ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");
             MenuItems.Add("OpenCode keys");

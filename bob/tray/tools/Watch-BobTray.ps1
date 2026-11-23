@@ -3254,7 +3254,7 @@ function Show-BobTrayAbout {
         $logs.Location = New-Object System.Drawing.Point 350, 398
         $logs.Size = New-Object System.Drawing.Size 100, 23
         $logs.Add_Click({
-            # FR #8677 / BOB-09: same tray log as menu Open log
+            # FR #8677 / BOB-09 / FR #9261: tray watch log (top-level Open log removed)
             if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
         })
         $ok = New-Object System.Windows.Forms.Button
@@ -4694,7 +4694,7 @@ $miWorkers.Add_DropDownOpening({
     })
 $miWeights = $menu.Items.Add('Weights')
 $miAbout = $menu.Items.Add('About')
-$miLog = $menu.Items.Add('Open log')
+# FR #9261 / BOB-TRAY-UI-01: no top-level Open log (About Show logs opens the tray log).
 [void]$menu.Items.Add('-')
 $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
@@ -4883,7 +4883,6 @@ $miAbout.Add_Click({
         Clear-Attention
         Show-BobTrayAbout
     })
-$miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({
