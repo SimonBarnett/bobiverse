@@ -343,6 +343,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
 - FIX on CLI-exit classifier DIRTY tip: keep _stderr_is_seat_prompt_echo with grok_worker_spawn_connect_failure and unsigned_exit_stderr_is_noise; silent ORs prompt-echo and noise
 - gh_auth_blocks: Failed to log in / re-authenticate wins over Active account true even on exit 0; never invent GH_TOKEN
+- BOB-HOVER-XAI: Get-BobTrayHoverXaiPoolLabel maps SuperGrok to xAI never SG; hover remainPct uses digest xai_weekly remaining_pct including stale so it matches Format-BobTrayXaiWeeklyRow
 
 - Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
 - When an MRB PR carries label hold, GIVEUP reason=on-hold and do not merge.
