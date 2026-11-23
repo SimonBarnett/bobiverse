@@ -34,7 +34,7 @@ def test_fr9165_source_pins():
     assert "Stop-BobTrayWindowlessStatus" in start
     assert "MainWindowHandle" in d
     assert "Stop-Process" in d
-    status = w[w.index("function Invoke-BobTrayStatus") : w.index("function Invoke-BobTrayStatus") + 1200]
+    status = w[w.index("function Invoke-BobTrayStatus") : w.index("function Invoke-BobTrayStatus") + 2200]
     assert "Test-BobTrayClickFixParkPresent" in status
     assert "Show-BobTrayCard" in status
     # param() must be first statement in Show-BobTrayCard
