@@ -1,6 +1,8 @@
 #Requires -Version 5.1
 # FR #9208 / #8568: park-Watch-only TipForm must still observe seat drops (compiled bob-tray.exe
 # ObserveWorkerSeats is absent while clickfalse-park). Synthesize last-exit + GIVEUP; never restart seats.
+# FR #9226: always heal disappeared run dirs (even when seat count did not drop — tray restart
+# after OC console-close); classify console-closed vs external-kill from worker.log breadcrumbs.
 
 function Get-BobTrayLiveSeatProcessCount {
     param([string]$MachineId = '')
@@ -35,9 +37,44 @@ function Get-BobTrayAssignJobKeyFromText {
     return ($m.Groups[1].Value.ToUpperInvariant() + ' ' + $m.Groups[2].Value)
 }
 
+function Get-BobTrayDisappearedSeatReason {
+    # FR #9226: prefer console-closed when worker.log shows CTRL_CLOSE / 0xC000013A.
+    param([Parameter(Mandatory)][string]$RunDir)
+    $wl = Join-Path $RunDir 'worker.log'
+    if (-not (Test-Path -LiteralPath $wl)) { return @{ Reason = 'external-kill'; ExitCode = $null } }
+    $tail = ''
+    try {
+        $fs = [IO.File]::Open($wl, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $len = [int][Math]::Min($fs.Length, 65536)
+            if ($len -le 0) { return @{ Reason = 'external-kill'; ExitCode = $null } }
+            $null = $fs.Seek(-1 * $len, [IO.SeekOrigin]::End)
+            $buf = New-Object byte[] $len
+            $read = $fs.Read($buf, 0, $len)
+            $tail = [Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        } finally { $fs.Close() }
+    } catch {
+        try { $tail = Get-Content -LiteralPath $wl -Raw -ErrorAction Stop } catch { $tail = '' }
+    }
+    if (-not $tail) { return @{ Reason = 'external-kill'; ExitCode = $null } }
+    $exitCode = $null
+    if ($tail -match '(?i)console-closed|console-close exit|STATUS_CONTROL_C_EXIT|0xC000013A|\b3221225786\b') {
+        if ($tail -match '(?i)exit_code[=:\s]+(-?\d+)') {
+            try { $exitCode = [int64]$Matches[1] } catch { $exitCode = 3221225786 }
+        } elseif ($tail -match '(?i)\b3221225786\b') {
+            $exitCode = 3221225786
+        } else {
+            $exitCode = 3221225786
+        }
+        return @{ Reason = 'console-closed'; ExitCode = $exitCode }
+    }
+    return @{ Reason = 'external-kill'; ExitCode = $null }
+}
+
 function Invoke-BobTrayHandleDisappearedWorkerRuns {
-    # FR #8568 / #9208: dead worker-<mid>-<pid>-* run dirs without last-exit.json get synthetic
-    # external-kill + GIVEUP so digest doing clears. Never restarts seats.
+    # FR #8568 / #9208 / #9226: dead worker-<mid>-<pid>-* run dirs without last-exit.json get
+    # synthetic last-exit + GIVEUP (console-closed when log says so, else external-kill).
+    # Never restarts seats.
     param(
         [Parameter(Mandatory)][string]$MachineId,
         [string]$RunRoot = ''
@@ -82,26 +119,35 @@ function Invoke-BobTrayHandleDisappearedWorkerRuns {
             if (Test-Path -LiteralPath $lastFrom) {
                 try { $jobKey = Get-BobTrayAssignJobKeyFromText -Line ([IO.File]::ReadAllText($lastFrom)) } catch { $jobKey = '' }
             }
-            # Safer JSON via ConvertTo-Json
-
+            $cls = Get-BobTrayDisappearedSeatReason -RunDir $dir.FullName
+            $reason = [string]$cls.Reason
+            if (-not $reason) { $reason = 'external-kill' }
+            $exitCode = $cls.ExitCode
+            $nick = ($runMid + '-' + $seatPid)
             $obj = [ordered]@{
-                reason     = 'external-kill'
-                exit_code  = $null
-                raw_code   = $null
+                reason     = $reason
+                exit_code  = $exitCode
+                raw_code   = $exitCode
                 job_key    = $jobKey
                 machine    = $runMid
-                nick       = ($runMid + '-' + $seatPid)
+                nick       = $nick
                 kind       = ''
                 agent_pid  = $seatPid
                 synthetic  = $true
-                via        = 'fr-9208-watch-disappeared-seat'
+                via        = 'fr-9226-watch-disappeared-seat'
             }
             $json = ($obj | ConvertTo-Json -Compress)
             [IO.File]::WriteAllText($lastExit, $json + "`n", [Text.UTF8Encoding]::new($false))
             $handled++
             if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
                 Write-BobTrayLifecycleEvent -Event 'seat-disappeared' -Fields @{
-                    pid = $seatPid; run = $name; job = $(if ($jobKey) { $jobKey } else { '(none)' }); via = 'fr-9208-watch'
+                    pid = $seatPid
+                    nick = $nick
+                    run = $name
+                    job = $(if ($jobKey) { $jobKey } else { '(none)' })
+                    reason = $reason
+                    exit_code = $(if ($null -ne $exitCode) { [string]$exitCode } else { '' })
+                    via = 'fr-9226-watch'
                 }
             }
             if (-not $jobKey) { continue }
@@ -114,7 +160,8 @@ function Invoke-BobTrayHandleDisappearedWorkerRuns {
                 $existing -match [regex]::Escape('DONE ' + $jobKey) -or
                 $existing -match [regex]::Escape('NACK ' + $jobKey)) { continue }
             $channel = $runMid
-            $line = "PRIVMSG #$channel :GIVEUP $jobKey external-kill`r`n"
+            $why = $reason
+            $line = "PRIVMSG #$channel :GIVEUP $jobKey $why`r`n"
             [IO.File]::AppendAllText($outbox, $line, [Text.UTF8Encoding]::new($false))
             $giveups++
         } catch { }
@@ -123,7 +170,7 @@ function Invoke-BobTrayHandleDisappearedWorkerRuns {
 }
 
 function Invoke-BobTrayObserveWorkerSeats {
-    # FR #3180 / #8568 / #9208: log seat drop; synthesize GIVEUP; never launch seats.
+    # FR #3180 / #8568 / #9208 / #9226: log seat drop; always heal disappeared runs; never launch seats.
     param(
         [Parameter(Mandatory)][string]$MachineId,
         [string]$StatePath = ''
@@ -144,24 +191,23 @@ function Invoke-BobTrayObserveWorkerSeats {
     }
     $dir = Split-Path -Parent $StatePath
     if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    # FR #9226: heal orphan run dirs every poll (tray restart after OC death never saw a drop).
+    $r = Invoke-BobTrayHandleDisappearedWorkerRuns -MachineId $mid
+    $handled = [int]$r.Handled
+    $giveups = [int]$r.Giveups
     if ($last -lt 0) {
         @{ lastSeatCount = $n; ts = [datetime]::UtcNow.ToString('o'); machine = $mid } |
             ConvertTo-Json -Compress |
             Set-Content -LiteralPath $StatePath -Encoding utf8
-        return @{ Observed = $true; Was = $last; Now = $n; Dropped = $false; Handled = 0; Giveups = 0 }
+        return @{ Observed = $true; Was = $last; Now = $n; Dropped = $false; Handled = $handled; Giveups = $giveups }
     }
     $dropped = $n -lt $last
-    $handled = 0
-    $giveups = 0
     if ($dropped) {
         if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
             Write-BobTrayLifecycleEvent -Event 'seat-exit' -Fields @{
-                action = 'not restarted'; was = $last; now = $n; via = 'fr-9208-watch'
+                action = 'not restarted'; was = $last; now = $n; via = 'fr-9226-watch'; handled = $handled; giveups = $giveups
             }
         }
-        $r = Invoke-BobTrayHandleDisappearedWorkerRuns -MachineId $mid
-        $handled = [int]$r.Handled
-        $giveups = [int]$r.Giveups
     }
     @{ lastSeatCount = $n; ts = [datetime]::UtcNow.ToString('o'); machine = $mid } |
         ConvertTo-Json -Compress |

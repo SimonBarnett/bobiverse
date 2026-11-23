@@ -35,10 +35,11 @@ def test_fr9208_source_pins():
     assert "FR #9208" in obs
     assert "GIVEUP" in obs
     assert "external-kill" in obs
+    assert "fr-9226-watch-disappeared-seat" in obs or "fr-9208-watch-disappeared-seat" in obs
     watch = _txt(WATCH)
     assert "BobTrayObserveSeats.ps1" in watch
     assert "Invoke-BobTrayObserveWorkerSeats" in watch
-    assert "FR #9208" in watch
+    assert "FR #9208" in watch or "FR #9226" in watch
     oc = _txt(OC)
     assert "redqueen" in oc
     assert "def expect_seats" in oc
@@ -64,7 +65,7 @@ $r = Invoke-BobTrayHandleDisappearedWorkerRuns -MachineId 'redqueen' -RunRoot '{
 if ([int]$r.Handled -lt 1) {{ throw 'expected handled' }}
 if ([int]$r.Giveups -lt 1) {{ throw 'expected giveup' }}
 $exit = Get-Content -LiteralPath '{d / "last-exit.json"}' -Raw | ConvertFrom-Json
-if ($exit.via -ne 'fr-9208-watch-disappeared-seat') {{ throw 'bad via' }}
+if ($exit.via -notmatch 'fr-9(208|226)-watch-disappeared-seat') {{ throw ('bad via=' + $exit.via) }}
 $ob = Get-Content -LiteralPath '{d / "outbox.txt"}' -Raw
 if ($ob -notmatch 'GIVEUP FIX SimonBarnett/bobiverse#9105') {{ throw 'missing giveup' }}
 Write-Output 'ok'
