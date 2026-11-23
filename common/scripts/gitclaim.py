@@ -15378,6 +15378,96 @@ def _release_accepted_for_nick_unlocked(doc: dict, nick: str) -> list[dict]:
     return released
 
 
+def drop_ghost_seat_after_names_miss(
+    home: Path,
+    nick: str,
+    *,
+    reason: str = "",
+) -> dict:
+    """FR #9347: after NAMES miss / shop-presence refuse, drop nick from offer roster.
+
+    Ghost seats that stay on ``worker_list`` without JOIN/NAMES keep getting
+    auto-offers and ``!assign`` refuses. Remove the nick from the digest
+    worker_list (worker-remove), clear ``offered_to`` pins, and release any
+    ACC rows. Prefer live shop members on the next offer tick.
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    out = {
+        "removed": False,
+        "released_offers": 0,
+        "released_accepted": 0,
+        "nick": me,
+        "reason": str(reason or "").strip(),
+    }
+    if not me:
+        return out
+    me_l = me.lower()
+    seat = bobreport.parse_seat_nick(me)
+    mid = bobreport.fold_machine_id(seat[0]) if seat else ""
+    if mid:
+        try:
+            import chan_workers
+
+            tracker = chan_workers.WorkerTracker(home)
+            code = tracker.post(
+                chan_workers.payload_for("worker-remove", mid, me)
+            )
+            out["removed"] = int(code or 0) in (200, 204)
+        except Exception:
+            out["removed"] = False
+        if not out["removed"]:
+            # Fall back: edit digest directly when tracker gate rejects.
+            with contextlib.suppress(Exception):
+                doc = bobreport.load_digest(_root(home))
+                ent = (doc.get("machines") or {}).get(mid)
+                if isinstance(ent, dict):
+                    rows = list(ent.get("worker_list") or [])
+                    keep = [
+                        r
+                        for r in rows
+                        if str((r or {}).get("nick") or "").lower() != me_l
+                    ]
+                    if len(keep) != len(rows):
+                        ent["worker_list"] = bobreport._coerce_worker_list(keep)
+                        bobreport.save_digest(_root(home), doc)
+                        out["removed"] = True
+    # Clear offered_to pins so the row is free for a live seat immediately.
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                doc = None
+            if isinstance(doc, dict):
+                changed = False
+                for row in doc.get("unaccepted") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    to = str(row.get("offered_to") or "").strip()
+                    to_c = (canonical_worker_nick(to) or to).strip().lower()
+                    if not to_c or to_c != me_l:
+                        continue
+                    for k in (
+                        "offered_to",
+                        "offered_ts",
+                        "offered_channel",
+                        "offered_via",
+                    ):
+                        row.pop(k, None)
+                    out["released_offers"] += 1
+                    changed = True
+                if changed:
+                    with contextlib.suppress(OSError):
+                        _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        pass
+    released = release_accepted_for_departed_nick(home, me)
+    out["released_accepted"] = len(released or [])
+    with contextlib.suppress(Exception):
+        clear_idle_after_empty(home, me)
+    return out
+
+
 def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
     """FR #3400: seat left the shop — return its ACKed rows to unaccepted (prior ACK void).
 

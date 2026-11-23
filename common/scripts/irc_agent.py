@@ -4766,6 +4766,13 @@ class Client:
 
     def _finish_assign_result(self, src, wnick, repo, task, ident, status, res) -> None:
         if status != "ok" or not isinstance(res, dict):
+            why = str(res or "")
+            # FR #9347: presence refuse after NAMES also drops the ghost roster row.
+            if "not in the shop channel" in why.lower() or "names timeout" in why.lower():
+                with contextlib.suppress(Exception):
+                    gitclaim.drop_ghost_seat_after_names_miss(
+                        self.home, wnick, reason=why
+                    )
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
             info(
                 gitclaim.format_assign_refusal_log(
@@ -4813,6 +4820,12 @@ class Client:
             if now < float(job.get("deadline") or 0.0):
                 continue
             pend.pop(shop, None)
+            why = "NAMES timeout (seat still not in shop)"
+            # FR #9347: drop ghost from digest roster so auto-offer prefers live seats.
+            with contextlib.suppress(Exception):
+                gitclaim.drop_ghost_seat_after_names_miss(
+                    self.home, job["wnick"], reason=why
+                )
             self._finish_assign_result(
                 job["src"],
                 job["wnick"],
@@ -4820,7 +4833,7 @@ class Client:
                 job["task"],
                 job["ident"],
                 "refused",
-                "NAMES timeout (seat still not in shop)",
+                why,
             )
 
     def _maybe_cleargiveup(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
