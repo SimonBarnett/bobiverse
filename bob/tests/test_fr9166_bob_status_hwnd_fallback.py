@@ -32,22 +32,33 @@ def test_fr9166_start_dialog_probes_hwnd_and_falls_back():
     t = DIALOGS_PS1.read_text(encoding="utf-8-sig")
     assert "function Start-BobTrayDialog" in t
     fn = t[t.find("function Start-BobTrayDialog") : t.find("function Start-BobTrayDialog") + 2500]
-    assert "MainWindowHandle" in fn
-    assert "Stop-Process" in fn or "Kill" in fn
-    assert "PassThru" in fn
+    assert "MainWindowHandle" in t  # helpers or Start body
+    # Tip used PassThru probe; main (#9165) uses Stop-BobTrayWindowlessStatus + Test-BobTrayStatusWindowVisible.
+    assert (
+        "PassThru" in fn
+        or "Stop-BobTrayWindowlessStatus" in fn
+        or "Test-BobTrayStatusWindowVisible" in fn
+    )
+    assert "Stop-Process" in t or "Kill" in t or "Stop-BobTrayWindowlessStatus" in t
 
 
 def test_fr9166_invoke_status_park_skips_bob_status():
     t = WATCH.read_text(encoding="utf-8-sig")
     assert "function Invoke-BobTrayStatus" in t
     fn = t[t.find("function Invoke-BobTrayStatus") : t.find("function Invoke-BobTrayStatus") + 1800]
-    assert "clickfalse-park" in fn or "clicktrue-park" in fn
+    # Park skip: tip used clickfalse-park literals; main uses Test-BobTrayClickFixParkPresent (#9165).
+    assert (
+        "clickfalse-park" in fn
+        or "clicktrue-park" in fn
+        or "Test-BobTrayClickFixParkPresent" in fn
+    )
     assert "Show-BobTrayCard" in fn
 
 
 def test_fr9166_menustuck_never_cancels_appfocuschange():
     t = WATCH.read_text(encoding="utf-8-sig")
-    assert "MenuItemsArmed" in t or "350" in t
+    # FR #9170 timestamp arm superseded MenuItemsArmed Enabled=false; keep never-Cancel Closing.
+    assert "MenuItemsArmed" in t or "350" in t or "menuArmUntilUtc" in t or "menuArmMs" in t
     assert "MenuFlagCleared" in t or "bobTrayMenuOpen" in t
     # Must not productize the bad Cancel path for AppFocusChange.
     closing = ""
@@ -58,7 +69,7 @@ def test_fr9166_menustuck_never_cancels_appfocuschange():
     assert "e.Cancel = $true" not in closing or "AppFocusChange" not in closing
     # Explicit never-cancel note preferred
     assert "AppFocusChange" in t
-    assert "never Cancel" in t.lower() or "Never Cancel" in t or "do not Cancel" in t.lower() or "Cancel AppFocusChange" in t
+    assert "never Cancel" in t.lower() or "Never Cancel" in t or "do not Cancel" in t.lower() or "Cancel AppFocusChange" in t or "do not set $e.Cancel" in t
 
 
 def test_fr9166_show_bob_tray_card_param_first():

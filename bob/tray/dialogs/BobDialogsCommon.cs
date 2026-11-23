@@ -53,8 +53,17 @@ namespace BobDialogs
             return false;
         }
 
-        // FR #9166: drop the single-instance mutex when the dialog never got a visible HWND
-        // (otherwise left-click TipForm looks dead forever).
+        // FR #9165: drop the single-instance mutex when the dialog never got a visible HWND
+        // so a windowless zombie cannot block TipForm left-click Status forever.
+        public static void AbandonSingle()
+        {
+            if (keep == null) return;
+            try { keep.Close(); } catch { }
+            keep = null;
+        }
+
+        // FR #9166: ReleaseMutex + Dispose (stronger than Close alone) so TipForm left-click
+        // recovers when a windowless holder kept the mutex.
         public static void ReleaseSingle()
         {
             try

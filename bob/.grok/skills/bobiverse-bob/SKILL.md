@@ -102,6 +102,7 @@ FR #4136 / #4142 / #7508: `Watch-BobTray` writes `engine.alive` after each start
 
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
+- **FR #9178:** after explorer recycle, stale `iconRect` can park tip/menu off-screen (`tip show ok` but invisible). Drop iconRect outside WorkingArea (`cursor-stale-icon`); TipOnScreenCheck + TipRelocateCursor; MenuForceShowAtCursor; Write-BobTrayUiDiag on MouseDown / MenuOpened / after-tip-show.
 - Stale `working_on` after DONE with empty queue `accepted` can trip `seats_stuck_doing` (harvest #1712) — false busy; next digest POST clears it.
 - `Sync-BobTrayStatusWorkersFromDigest` — report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
 - Call sync **before** `Update-Hover` on each poll; keep a **non-UI** timer (~10s, `SynchronizingObject=$null`) so worker lines keep moving while hover is stuck.
