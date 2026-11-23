@@ -2074,6 +2074,8 @@ public static class ConsoleLauncher {
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     // FR #8568: break away from parent job objects (monitor/shell kill-on-close).
     const uint CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
+    // FR #9078: Access Denied when the parent job forbids breakaway (e.g. schtasks TipForm).
+    const int ERROR_ACCESS_DENIED = 5;
     public static int Start(string app, string commandLine, string cwd, string title, IDictionary overrides) {
         var env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (DictionaryEntry e in Environment.GetEnvironmentVariables()) { env[(string)e.Key] = (string)e.Value; }
@@ -2089,14 +2091,28 @@ public static class ConsoleLauncher {
         IntPtr block = Marshal.StringToHGlobalUni(sb.ToString());
         sb.Clear();
         try {
+            string cwdArg = string.IsNullOrEmpty(cwd) ? null : cwd;
             var si = new STARTUPINFO();
             si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
             si.lpTitle = string.IsNullOrEmpty(title) ? null : title;
             PROCESS_INFORMATION pi;
             if (!CreateProcessW(app, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
                     CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_BREAKAWAY_FROM_JOB, block,
-                    string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) {
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    cwdArg, ref si, out pi)) {
+                int err = Marshal.GetLastWin32Error();
+                if (err != ERROR_ACCESS_DENIED) {
+                    throw new System.ComponentModel.Win32Exception(err);
+                }
+                // FR #9078: retry without BREAKAWAY. Seat stays in the parent job and can die
+                // if that job closes with KILL_ON_JOB_CLOSE (weaker than FR #8568 breakaway).
+                si = new STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+                si.lpTitle = string.IsNullOrEmpty(title) ? null : title;
+                if (!CreateProcessW(app, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
+                        CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT, block,
+                        cwdArg, ref si, out pi)) {
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                }
             }
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
@@ -2332,7 +2348,12 @@ function Start-BobTrayWorkerExe {
         }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
         # FR #8679 / BOB-37: Agents > Jeeves cwd is J: (mapped to Ergo ai\jeeves).
-        if ($Trigger -eq 'jeeves-menu') { $wd = 'J:\' }
+        # FR #8682 / BOB-38: skill-dag MCP root on J:\.grok\skills.
+        if ($Trigger -eq 'jeeves-menu') {
+            $wd = 'J:\'
+            if (-not $restoreEnv) { $restoreEnv = @{} }
+            $restoreEnv['BOB_JEEVES_MCP_ROOT'] = 'J:\.grok\skills'
+        }
         $childPid = Get-BobTrayLaunchPidFromOutput -Output @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)
         $picked = if ($explicit) { $explicit } else { 'auto' }
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} agent={3} own visible console (NEW agent every click; explicit agent never substitutes)' -f $Mode, $childPid, $Mode, $picked)
@@ -4769,6 +4790,7 @@ $miJeeves.Add_Click({
             }
         }
         Write-TrayLog 'jeeves-dag lazy root=J:\.grok\skills'
+        Write-TrayLog 'jeeves-mcp path=J:\.grok\skills'
         Write-TrayLog 'cwd J:'
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
@@ -4810,13 +4832,7 @@ $notify.Add_MouseClick({
         try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
-            # FR #9186: BalloonTip proof that left-click reached NotifyIcon (hotpatch evidence).
-            try {
-                $notify.ShowBalloonTip(2500, 'Bob Systray', 'Left-click ok (FR #9186)', [System.Windows.Forms.ToolTipIcon]::Info)
-                Write-TrayLog 'BalloonTip left-click proof'
-            } catch {
-                Write-TrayLog ('BalloonTip left-click error: ' + $_.Exception.Message)
-            }
+            # FR #9195: left-click shows pool card/dialog (Invoke-BobTrayStatus -> Show-BobTrayCard); no BalloonTip proof.
             # FR #9170: dismiss stuck ContextMenuStrip then show TipForm (was StatusSkipped while Visible).
             if (($menu -and $menu.Visible) -or $script:menuOpenSticky) {
                 Write-TrayLog 'StatusMenuDismiss'
@@ -5113,9 +5129,11 @@ $script:trayHoverSub = Register-ObjectEvent -InputObject $script:trayHoverTimer 
 } -MessageData $script:trayHoverMsg
 $script:trayHoverTimer.Start()
 
-# FR #4142 / FR #5032 / FR #9150: ThreadPool digest heartbeat --- Write-BobIrcStatus off the
-# WinForms UI for TipForm and engine. Event Action re-dots helpers each tick.
+# FR #4142 / FR #5032 / FR #9150 / FR #9198: ThreadPool digest heartbeat --- Write-BobIrcStatus
+# off the WinForms UI for TipForm and engine. Event Action re-loads helpers each tick.
 # Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped; Write-BobIrcStatus lives in tray src.
+# FR #9198: Action runspace has no parent BobBridge --- Import-Module so Get-ThisMachineId
+# (and other Public helpers Write-BobIrcStatus needs) resolve; re-dot alone is not enough.
 $script:trayDigestTimer = New-Object System.Timers.Timer
 $script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
 $script:trayDigestTimer.AutoReset = $true
@@ -5126,6 +5144,7 @@ $script:trayDigestMsg = [pscustomobject]@{
     Common   = (Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1')
     IrcPs    = (Join-Path $RepoRoot 'src\Private\Get-BobIrc.ps1')
     StatusPs = (Join-Path $RepoRoot 'scripts\Write-BobIrcStatus.ps1')
+    Psd1     = (Join-Path $RepoRoot 'src\BobBridge.psd1')
 }
 $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTimer -EventName Elapsed -Action {
     try {
@@ -5134,6 +5153,14 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         # FR #5032: Action scope has no parent functions --- re-dot every tick.
         if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
             try { . $msg.Dialogs } catch { }
+        }
+        # FR #9198 / trayHoverTimer pattern: Import BobBridge when Public helpers missing.
+        # Dotting Get-BobIrc alone defines Write-BobIrcStatus but not Get-ThisMachineId.
+        if ($msg.Psd1 -and (Test-Path -LiteralPath $msg.Psd1)) {
+            if (-not (Get-Command Get-ThisMachineId -ErrorAction SilentlyContinue) -or
+                -not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
+                try { Import-Module $msg.Psd1 -Force } catch { }
+            }
         }
         # FR #9150: run for TipForm and engine (UI poll no longer posts digest).
         if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
@@ -5218,6 +5245,7 @@ $startWorkerTimer.Add_Tick({
                             -Log { param($m) Write-TrayLog $m })
                     # FR #8429: zero agent seats on an online tray, seats not off.
                     # One fill up to the hard cap, then a stamp so the next tick does not stack reqs.
+                    # FR #9142: honour empty-online.disabled; skip when grok=0 and no viable opencode free (#9023).
                     try {
                         if (-not (Test-BobTraySeatsOff)) {
                             $pending = @(Get-ChildItem -LiteralPath $script:startWorkerDir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue).Count
@@ -5237,13 +5265,24 @@ $startWorkerTimer.Add_Tick({
                                 $nage = ([datetime]::UtcNow - (Get-Item -LiteralPath $nudge).LastWriteTimeUtc).TotalSeconds
                                 if ($nage -ge 0 -and $nage -lt 120) { $cool = $false }
                             }
-                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
+                            # FR #9142 / #9195: honour empty-online.disabled.
+                            $emptyDisabled = $false
+                            if (Get-Command Test-BobTrayEmptyOnlineDisabled -ErrorAction SilentlyContinue) {
+                                try { $emptyDisabled = [bool](Test-BobTrayEmptyOnlineDisabled -Root $RepoRoot) } catch { $emptyDisabled = $false }
+                            }
+                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Disabled $emptyDisabled
+
                             if ($fill -gt 0) {
-                                # FR #9000: pin opencode free when grok remaining is known 0.
-                                $choice = [pscustomobject]@{ agent = ''; slot = '' }
+                                # FR #9000 / #9142: pin opencode free when grok remaining is known 0; else skip no-fuel.
+                                $choice = [pscustomobject]@{ agent = ''; slot = ''; skip = $false; reason = '' }
                                 if (Get-Command Get-BobTrayEmptyOnlineFillAgentChoice -ErrorAction SilentlyContinue) {
                                     try { $choice = Get-BobTrayEmptyOnlineFillAgentChoice -Root $RepoRoot } catch { }
                                 }
+                                if ($choice.skip) {
+                                    Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                    $why = if ($choice.reason) { [string]$choice.reason } else { 'no-fuel' }
+                                    Write-TrayLog ('empty-online skip: {0}' -f $why)
+                                } else {
                                 $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                 for ($i = 0; $i -lt $fill; $i++) {
                                     $rid = 'empty-{0}-{1}' -f $now, $i
@@ -5259,11 +5298,12 @@ $startWorkerTimer.Add_Tick({
                                 $agentLog = if ($choice.agent) { [string]$choice.agent } else { 'auto' }
                                 $slotLog = if ($choice.slot) { [string]$choice.slot } else { '-' }
                                 Write-TrayLog ('empty-online fill reqs={0} agent={1} slot={2}' -f $fill, $agentLog, $slotLog)
+                                }
                             }
                             # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
                             if ($fill -eq 0) {
                                 $offerable = [int](Get-BobTrayCachedOfferableCount)
-                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable
+                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable -Disabled $emptyDisabled
                                 if ($under -gt 0) {
                                     $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                     $rid = 'undercap-{0}' -f $now

@@ -601,8 +601,34 @@ if ($Product -eq 'bob') {
                 [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
             }
             Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe + bob-tray.exe'
+            # FR #9199: intentional clickfalse/clicktrue park => remove live bob-tray.exe (Watch-only).
+            try {
+                $lifeSync = Join-Path $InstallRoot 'tools\BobTrayLifecycle.ps1'
+                if (Test-Path -LiteralPath $lifeSync) {
+                    . $lifeSync
+                    if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                        $parked = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+                        if ($parked.Parked -and $parked.Removed) {
+                            Write-Host 'INFO sync FR #9199 removed live bob-tray.exe (intentional park present; Watch-only)'
+                        }
+                    }
+                }
+            } catch { Write-Host ("WARN sync FR #9199 park re-check: {0}" -f $_.Exception.Message) }
         }
     } catch { Write-Host ("WARN sync dialogs not compiled: {0}" -f $_.Exception.Message) }
+    # FR #9199: robocopy/stage may drop bob-tray.exe beside clickfalse-park even when compile skipped.
+    try {
+        $lifeSync2 = Join-Path $InstallRoot 'tools\BobTrayLifecycle.ps1'
+        if (($Product -eq 'bob') -and (Test-Path -LiteralPath $lifeSync2)) {
+            . $lifeSync2
+            if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                $parked2 = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+                if ($parked2.Parked -and $parked2.Removed) {
+                    Write-Host 'INFO sync FR #9199 removed live bob-tray.exe after tools refresh (intentional park)'
+                }
+            }
+        }
+    } catch { }
 }
 
 # FR #6924: always refresh deployed identity on bob Sync (script hotpatch without tray rebuild).
