@@ -165,7 +165,8 @@ function Stage-BobAgentFolders([string]$Stage) {
         throw 'BOB-49 / FR #9354: bob MSI stage missing plan\PlanAgent.exe'
     }
     $planMan = Join-Path $planDir 'PlanAgent.MANIFEST.json'
-    Write-BobiverseVendoredExeManifest -Path $planMan -Info $planVendor -Fr '9354' -Bob 'BOB-49'
+    # Capture void: helper must not pollute Stage-Product success stream (MRB #9358 / FR #6969).
+    $null = Write-BobiverseVendoredExeManifest -Path $planMan -Info $planVendor -Fr '9354' -Bob 'BOB-49'
     $marker = Join-Path $Stage 'plan\BOB-49-PLAN-IN-MSI.txt'
     $markerBody = @(
         'bob=BOB-49'
@@ -245,7 +246,7 @@ function Stage-BobAgentFolders([string]$Stage) {
         throw 'BOB-55: bob MSI stage missing priority\PriorityAgent.exe'
     }
     $priMan = Join-Path $priDir 'PriorityAgent.MANIFEST.json'
-    Write-BobiverseVendoredExeManifest -Path $priMan -Info $priVendor -Fr '9354' -Bob 'BOB-55'
+    $null = Write-BobiverseVendoredExeManifest -Path $priMan -Info $priVendor -Fr '9354' -Bob 'BOB-55'
     $priMarker = Join-Path $priDir 'BOB-55-PRIORITY-IN-MSI.txt'
     $priBody = @(
         'bob=BOB-55'

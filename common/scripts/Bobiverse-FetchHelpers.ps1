@@ -334,5 +334,6 @@ function Write-BobiverseVendoredExeManifest {
     }
     $utf8 = New-Object Text.UTF8Encoding $false
     [IO.File]::WriteAllText($Path, (($doc | ConvertTo-Json -Compress) + [Environment]::NewLine), $utf8)
-    return $Path
+    # Do not return $Path: Stage-Product ends with `return $stage` and any
+    # success-stream path concatenates into $Stage (MRB #9358 / FR #6969 heat).
 }

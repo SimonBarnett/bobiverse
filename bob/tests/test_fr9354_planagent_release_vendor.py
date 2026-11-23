@@ -96,3 +96,43 @@ Write-Output 'ok'
     assert doc["tag"] == "plan-v1.0.5"
     assert doc["repo"] == "SimonBarnett/skills-visionary"
     assert doc["asset"] == "PlanAgent.exe"
+
+
+def test_mrb9358_vendored_manifest_no_success_stream(tmp_path: Path):
+    """MRB #9358: MANIFEST writer must not return a path (FR #6969 heat pollution)."""
+    helpers = HELPERS.read_text(encoding="utf-8-sig")
+    # No success-stream `return $Path` statement in the vendored-manifest helper.
+    assert "function Write-BobiverseVendoredExeManifest" in helpers
+    fn = helpers.split("function Write-BobiverseVendoredExeManifest", 1)[1]
+    fn = fn.split("\nfunction ", 1)[0]
+    assert "\n    return $Path\n" not in fn.replace("\r\n", "\n")
+    pack = PACK.read_text(encoding="utf-8-sig")
+    assert "$null = Write-BobiverseVendoredExeManifest" in pack
+
+    man = tmp_path / "PlanAgent.MANIFEST.json"
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+. '{HELPERS}'
+$info = @{{
+  tag = 't'
+  sha256 = 'a'
+  bytes = 1
+  repo = 'r'
+  asset = 'PlanAgent.exe'
+  url = ''
+  path = 'x'
+}}
+$out = @(Write-BobiverseVendoredExeManifest -Path '{man}' -Info $info -Fr '9354' -Bob 'BOB-49')
+if ($out.Count -ne 0) {{ throw ("polluted=" + ($out -join '|')) }}
+if (-not (Test-Path -LiteralPath '{man}')) {{ throw 'manifest missing' }}
+Write-Output 'ok'
+"""
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "ok" in (r.stdout or "")
