@@ -322,6 +322,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Weights S1 is a modeless grid with columns Agent, CLI, Model, Context, Effort. Dump those headers with --dump-weights-columns before the tray UI starts.
 - Seed models-valid-combos from a shipped seed on BobCallback start: create if missing, append missing models, never rewrite a malformed store.
 - Workers > Cursor menu image is assets/menu-favicons/cursor.com.ico. Log worker-favicon with that path. Do not reuse the fuel badge.
+- BOB-54 Priority menu icon: pin PRI-07 priority.ico at vendor/priority/ next to PriorityAgent.exe (same path as BOB-50 StartPriorityExe); MSI priority\ layout is BOB-55 scope
 - A fresh Install-BobWebhooks.ps1 must write the same canonical web.config the second run would upsert, or site-kit CI fails with second install changed web.config bytes.
 - When neither home has queue.json, idle_seats uses one live /bob/v1/report estimate. A local queue never fetches. Unverified gates stay named and are not applied.
 - About Plan and Priority versions come from slice VERSION files or BOBIVERSE_PLAN_VERSION and BOBIVERSE_PRIORITY_VERSION, and fall back to the bob version so the fields are never blank.
@@ -338,7 +339,11 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unsigned exit 0xffffffff with only pager info/debug or TUI chrome is an external kill. Keep cli-failure when stderr contains failed, fatal, exception, or an error level.
 - When stall alerts are non-empty, call Get-BobStallFrIntake and log stall-fr with repo SimonBarnett/bobiverse.
 - Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
+- FR #9114: MRB on-hold uses the live linked FR hold label. Stale PR HOLD comments after the FR is unlabeled are not on-hold (#8748).
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
+- FIX on CLI-exit classifier DIRTY tip: keep _stderr_is_seat_prompt_echo with grok_worker_spawn_connect_failure and unsigned_exit_stderr_is_noise; silent ORs prompt-echo and noise
+- gh_auth_blocks: Failed to log in / re-authenticate wins over Active account true even on exit 0; never invent GH_TOKEN
+
 - Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
 - When an MRB PR carries label hold, GIVEUP reason=on-hold and do not merge.
 - Invoke-JeevesMonitorCheck: missing .py soft-skips exit 0 with skipped JSON so sparse/lagging installs do not EXIT:2 on ValidateSet-widened names; promote local J:\ hotfix via PR.
@@ -352,6 +357,9 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Empty-online fill: when grok weekly remaining is known 0 and an OpenCode free leaf resolves, write agent=opencode slot=free; unknown grok or free=0 keeps auto.
 - FR #9025: fuel-exhausted recycle while process still running is expected fuel quit --- skip seat-stopped-making-progress intake; leave hang recycles filing
 - A DIRTY tray-dialog FIX must keep both sides of the bob-tray.exe Srcs list (BobModelsClient.cs from main and PlanMcpConfig.cs from the PR) and compile before push.
+- Steady OK cycle: no intake when seats busy, pools fresh, held_prs=0.
+- FR #8811: wire row_fr_depends_blocked_reason beside every FR hold offer/purge/reconcile site (bob_d7_wire_hold); Depends-on OPEN skips offer but keeps the row
+
 - Ghost TipForm clicks with Clear toolbars=0: Clear-BobOrphanNotifyIcons -HealLadder (session explorer recycle + re-sweep) and MenuClosed Visible rebind before relaunching Watch.
 - TipForm park poll must never Wait-Job update-hover or Write-BobIrcStatus on STA: step-skip + trayHoverTimer snapshot + Update-Hover -FromSnapshot; trayDigestTimer posts for TipForm too.
 - FR #9180: bobiverse book harvest with real Lessons owes a lesson(book) PR patching .grok/skills/<book>/SKILL.md same-turn when gh is authenticated; receipt-without-skill-PR is fail-closed; -SkillFile lands at skill_book_path not harvest/<name>
@@ -360,3 +368,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Drain must recreate empty outbox.txt after atomic move.
 - WinPS 5.1: never assign $pid/$PID in tray helpers (read-only automatic); use $trayPid/$killPid; pin source forbids $pid = in Stop-BobTrayProcessesProtectingSeats (MRB #9206).
 - Flamingo idle+offerable monitor intakes: re-check live /report offer_outcomes before coding; disk NACK cooldown looks like idle starve but is FR #6240 ops, twin of #9073/#9103 / PR #8871.
+- FR docstring drift after route retire: rewrite bobcallback and models_catalog together; keep /bob/v1/models/validate substring for pin tests via handler comment or retired wording.
+- FR #9217: ruleset required-ci-3948 requires pytest-ascii-bom with conflict-markers; job name must stay pytest-ascii-bom.
+- FR #9220: Depends-on offer gate indexes open FRs by owner/repo#N; relative #N resolves against the FR repo (no cross-repo bare-number false skip).
+- FR #9229: after hold/on-hold are issues-only (#9082), fr9080 requeue hold-skip tests must use do-not-merge/wip on PR snapshots (not hold).
+- FR #9104: under local intake RateLimiter deny, bobcallback acks check_run/check_suite with 204 rate deferred (no retry storm); push/PR/issues stay 429; monitor github_rate_limit EXIT 1 under floor 500

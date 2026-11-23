@@ -223,15 +223,17 @@ SKIP_FR_LABELS_IN_TEXT = frozenset(
     not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
 )
 
-# FR #3928: PR hold labels — never offer MRB while present (intake/operator stamp).
+# FR #3928 / #9082: PR merge/offer holds. ``hold`` / ``on-hold`` are issues-only
+# (never stamp them on pull requests). PR gate uses do-not-merge / wip labels,
+# owner HOLD body stamps, and linked-issue hold (fr_hold_reason) instead.
 HOLD_MRB_LABELS = frozenset(
     {
-        "on-hold",
-        "hold",
         "do-not-merge",
         "wip",
     }
 )
+# FR #9082: forbidden on pull_request targets (intake must strip; monitor alarms).
+ISSUES_ONLY_HOLD_LABELS = frozenset({"hold", "on-hold"})
 # Title-only free hold cues (short titles). Not applied to PR bodies — lesson
 # prose such as "do not merge the thinner duplicate" must not count as a hold
 # (FR #4545; class of a-search#3627). Body uses line-anchored stamps below.
@@ -257,16 +259,41 @@ FR_HOLD_BODY_RE = re.compile(
 )
 
 
+def strip_issues_only_hold_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """FR #9082: drop ``hold`` / ``on-hold`` from a label list destined for a PR."""
+    out: list[str] = []
+    for x in labels or []:
+        s = str(x).strip()
+        if not s:
+            continue
+        if s.lower() in ISSUES_ONLY_HOLD_LABELS:
+            continue
+        out.append(s)
+    return out
+
+
+def pr_forbidden_hold_labels(
+    labels: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    """FR #9082: which issues-only hold labels are present on a PR (sorted)."""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    return sorted(labs & ISSUES_ONLY_HOLD_LABELS)
+
+
 def pr_hold_reason(
     *,
     title: str = "",
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> str | None:
-    """FR #3928 / #4545: why an open PR must not be offered/merged as MRB, else None.
+    """FR #3928 / #4545 / #9082: why an open PR must not be offered/merged as MRB.
 
-    Hold labels always count. Body hold text only matches an owner stamp line
-    (``On hold:`` / ``HOLD:``), not free prose. Title still scans short hold cues.
+    ``do-not-merge`` / ``wip`` labels still count. ``hold`` / ``on-hold`` on a PR
+    do **not** (issues-only; see ``pr_forbidden_hold_labels`` / monitor). Body
+    hold text only matches an owner stamp line (``On hold:`` / ``HOLD:``).
+    Title still scans short hold cues.
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = sorted(labs & HOLD_MRB_LABELS)
@@ -323,6 +350,10 @@ def row_fr_hold_reason(row: dict) -> str | None:
 _DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
 _BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
 _DEPENDS_ISSUE_REF_RE = re.compile(r"(?:#|/issues/)(\d+)\b")
+# FR #9220 / #8807: owner/repo#N (finditer + full-token match).
+_QUALIFIED_DEPENDS_ISSUE_RE = re.compile(
+    r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
+)
 _VISION_PACK_FILE_RE = re.compile(r"(feature-request-[\w.-]+\.md)", re.I)
 _BOB_TITLE_ID_RE = re.compile(r"^\s*BOB-(\d+)\b", re.I)
 
@@ -399,15 +430,29 @@ def _bob_docs_root() -> Path | None:
 
 
 def parse_depends_on_tokens(text: str) -> list[str]:
-    """Normalize Depends-on tokens to ``BOB-N`` and ``#N`` (stable order, unique)."""
+    """Normalize Depends-on tokens to ``BOB-N``, ``owner/repo#N``, and ``#N``.
+
+    FR #9220: keep qualified ``owner/repo#N`` (do not also emit bare ``#N`` for the
+    same span). Relative ``#N`` stays relative; callers resolve against the FR repo.
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for m in _BOB_BACKLOG_ID_RE.finditer(text or ""):
+    blob = text or ""
+    for m in _BOB_BACKLOG_ID_RE.finditer(blob):
         tok = f"BOB-{int(m.group(1))}"
         if tok not in seen:
             seen.add(tok)
             out.append(tok)
-    for m in _DEPENDS_ISSUE_REF_RE.finditer(text or ""):
+    qualified_spans: list[tuple[int, int]] = []
+    for m in _QUALIFIED_DEPENDS_ISSUE_RE.finditer(blob):
+        tok = f"{m.group(1)}#{int(m.group(2))}"
+        qualified_spans.append(m.span())
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    for m in _DEPENDS_ISSUE_REF_RE.finditer(blob):
+        if any(s <= m.start() < e for s, e in qualified_spans):
+            continue
         tok = f"#{int(m.group(1))}"
         if tok not in seen:
             seen.add(tok)
@@ -449,24 +494,30 @@ def fr_depends_on_tokens(
     return tokens
 
 
-def _open_fr_bob_and_id_index(doc: dict) -> tuple[dict[str, list[str]], set[str]]:
-    """Map ``BOB-N`` → open queue FR ids; set of open FR numeric ids (no hash)."""
-    bobs: dict[str, list[str]] = {}
-    ids: set[str] = set()
+def _open_fr_bob_and_id_index(
+    doc: dict,
+) -> tuple[dict[str, list[tuple[str, str]]], set[tuple[str, str]]]:
+    """Map ``BOB-N`` to open ``(repo_key, #id)``; set of open ``(repo_key, #id)``.
+
+    FR #9220: index by owner/repo so cross-repo bare ``#N`` collisions do not false-skip.
+    """
+    bobs: dict[str, list[tuple[str, str]]] = {}
+    keys: set[tuple[str, str]] = set()
     for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
         for row in bucket:
             if not isinstance(row, dict) or _canon_task(row) != "FR":
                 continue
+            repo = _repo_key(str(row.get("repo") or ""))
             rid = _norm_row_id(str(row.get("id") or ""))
-            if not rid:
+            if not repo or not rid:
                 continue
-            ids.add(rid)
+            keys.add((repo, rid))
             title = str(row.get("title") or "").strip()
             tm = _BOB_TITLE_ID_RE.match(title)
             if tm:
                 key = f"BOB-{int(tm.group(1))}"
-                bobs.setdefault(key, []).append(rid)
-    return bobs, ids
+                bobs.setdefault(key, []).append((repo, rid))
+    return bobs, keys
 
 
 def row_fr_depends_blocked_reason(
@@ -475,12 +526,14 @@ def row_fr_depends_blocked_reason(
     *,
     docs_root: Path | None = None,
 ) -> str | None:
-    """FR #8754 / BOB-D7 (FR #8811): why an FR must wait on open Depends-on, else None.
+    """FR #8754 / BOB-D7 (FR #8811) / FR #9220: why an FR must wait on open Depends-on.
 
     bob_d7_wire_hold: call this beside every ``fr_hold_reason`` / ``row_fr_hold_reason``
     offer, enqueue, purge, and reconcile site. Distinct from hold / HOLD: stamps.
 
-    Does not purge the row — when depends leave the queue, the FR becomes offerable.
+    FR #9220: relative ``#N`` resolves against the FR's own repo; qualified
+    ``owner/repo#N`` looks up that repo only. Does not purge the row - when depends
+    leave the queue, the FR becomes offerable.
     """
     if _canon_task(row) != "FR":
         return None
@@ -489,17 +542,40 @@ def row_fr_depends_blocked_reason(
     tokens = fr_depends_on_tokens(title=title, body=body, docs_root=docs_root)
     if not tokens:
         return None
+    home_repo = _repo_key(str(row.get("repo") or ""))
     self_id = _norm_row_id(str(row.get("id") or ""))
-    bobs, open_ids = _open_fr_bob_and_id_index(doc)
+    self_key = (home_repo, self_id) if home_repo and self_id else None
+    bobs, open_keys = _open_fr_bob_and_id_index(doc)
     for tok in tokens:
         if tok.startswith("BOB-"):
-            for oid in bobs.get(tok) or []:
-                if oid != self_id:
-                    # oid already includes leading # from _norm_row_id
-                    return f"depends-on open: {tok} ({oid if oid.startswith('#') else '#' + oid})"
-        elif tok.startswith("#"):
+            for repo, oid in bobs.get(tok) or []:
+                # Vision BOB-* backlog is repo-local for offer gating (FR #9220).
+                if home_repo and repo != home_repo:
+                    continue
+                if self_key is not None and (repo, oid) == self_key:
+                    continue
+                if (repo, oid) in open_keys:
+                    return (
+                        f"depends-on open: {tok} "
+                        f"({repo}{oid if oid.startswith('#') else '#' + oid})"
+                    )
+            continue
+        qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
+        if qm:
+            pair = (_repo_key(qm.group(1)), _norm_row_id(f"#{int(qm.group(2))}"))
+            if self_key is not None and pair == self_key:
+                continue
+            if pair in open_keys:
+                return f"depends-on open: {tok}"
+            continue
+        if tok.startswith("#"):
+            if not home_repo:
+                continue
             oid = _norm_row_id(tok)
-            if oid in open_ids and oid != self_id:
+            pair = (home_repo, oid)
+            if self_key is not None and pair == self_key:
+                continue
+            if pair in open_keys:
                 return f"depends-on open: {tok}"
     return None
 
@@ -508,9 +584,7 @@ def row_fr_depends_blocked_reason(
 # BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
 # private extractor so D3 ships with Depends-on: (none) before those land.
 DEPENDS_OPEN_REASON = "depends-open"
-_QUALIFIED_DEPENDS_ISSUE_RE = re.compile(
-    r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$"
-)
+# _QUALIFIED_DEPENDS_ISSUE_RE defined with FR #8754 Depends-on regexes above.
 _RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
 _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
 

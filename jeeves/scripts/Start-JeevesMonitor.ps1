@@ -104,6 +104,10 @@ if ($syncMon) {
         } else {
             & $syncMon -Product jeeves -InstallRoot $InstallRoot
         }
+        # FR #9100: warn when Sync fails; do not block monitor startup.
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-Warning ("FR #9100 sync-monitor exit={0}; tools/monitor may be stale" -f $LASTEXITCODE)
+        }
     } catch {
         Write-Warning ("FR #8860 sync-monitor: {0}" -f $_.Exception.Message)
     }

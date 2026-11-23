@@ -322,7 +322,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayClickedSeats.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'BobTrayObserveSeats.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayClickedSeats.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -4732,7 +4732,15 @@ $notify.Add_MouseUp({
     })
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-
+$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
+if (-not (Test-Path -LiteralPath $planGantt)) {
+    $planGantt = Join-Path $RepoRoot 'bob\tray\assets\plan-gantt.ico'
+}
+Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
+if (Test-Path -LiteralPath $planGantt) {
+    try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
+    catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
+}
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
         if ([string]::IsNullOrWhiteSpace($fuel)) {
@@ -4954,6 +4962,22 @@ $poll.Add_Tick({
                 # FR #7660: warm runspace, 45s budget. BobBridge is imported once, not per poll.
                 # FR #8518: do not call Get-BobTrayWarmEngineShell bare on the UI thread —
                 # Import-Module hang had no step timeout. First WarmEngineStep acquires the shell.
+                # FR #9208: park-Watch-only must observe seat drops (compiled ObserveWorkerSeats absent).
+                try {
+                    if (Get-Command Invoke-BobTrayObserveWorkerSeats -ErrorAction SilentlyContinue) {
+                        $midObs = $MachineId
+                        if (-not $midObs) { $midObs = $env:BOB_MACHINE_ID }
+                        if ($midObs) {
+                            $obs = Invoke-BobTrayObserveWorkerSeats -MachineId ([string]$midObs)
+                            # FR #9226: log drop OR healed orphans (always-scan after tray restart).
+                            if ($obs.Dropped -or [int]$obs.Handled -gt 0) {
+                                Write-TrayLog ('FR #9226 seat-observe was={0} now={1} dropped={2} handled={3} giveups={4}' -f $obs.Was, $obs.Now, $obs.Dropped, $obs.Handled, $obs.Giveups)
+                            }
+                        }
+                    }
+                } catch {
+                    Write-TrayLog ('FR #9208 observe seats: ' + $_.Exception.Message)
+                }
                 $sa = Invoke-BobTrayWarmEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
                     param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
                     $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
