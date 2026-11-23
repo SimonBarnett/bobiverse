@@ -3608,10 +3608,12 @@ def describe_agent_child_launch(
 def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
     """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
     install = str(Path(worker_dir).parent)
+    intake = str(resolve_bobiverse_intake_script(worker_dir))
     pairs = (
         ("@@WORKER_DIR@@", worker_dir),
         ("@@OUTBOX@@", str(outbox_path_for_run(home))),
         ("@@INSTALL@@", install),
+        ("@@INTAKE_SCRIPT@@", intake),
         ("@@NICK@@", nick),
         ("@@MACHINE@@", machine),
     )
@@ -3694,7 +3696,7 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append DONE: "
         f"FR = 'DONE FR owner/repo#N <pr-url>' (no PASS/FAIL — FR #2419); "
         f"MRB/UAT = 'DONE <MRB|UAT> owner/repo#N PASS|FAIL <url>' "
-        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {resolve_bobiverse_intake_script(worker_dir)} "
         f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). "
         f"HARVEST REPO (FR #3189): ALWAYS pass the job's repo explicitly: "
         f"`..\\scripts\\Invoke-BobiverseHarvest.ps1 -Repo <owner/repo from the job id> -Summary ... -Lesson ...` "
@@ -3731,7 +3733,7 @@ def plan_prompt(plan_dir: str) -> str:
         f"You are a NEW Bobiverse plan agent (fresh session - never resume or continue an older plan). Your working folder is {plan_dir}. "
         f"FIRST read the skills in {plan_dir}\\.grok\\skills and {plan_dir}\\AGENTS.md (start with visionary). "
         f"Plan-mode only: no IRC, no builds. Create this plan's output in a NEW subfolder {plan_dir}\\work\\plan-<yyyyMMdd-HHmmss> and never touch earlier plans. "
-        f"CAST IRON: harvest skills and file every issue/FR/bug with {Path(plan_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"CAST IRON: harvest skills and file every issue/FR/bug with {resolve_bobiverse_intake_script(install_root=Path(plan_dir).parent)} in the same turn. "
         f"HARVEST HOW-TO-PLAN ONLY: a harvest lesson is a reusable lesson about HOW to plan (process, pitfalls, repo-setup steps) and goes to -Repo SimonBarnett/skills-visionary. "
         f"NEVER harvest the plan itself (requirements, designs, architecture or product decisions, FR/issue lists): that content stays in the plan subfolder and the product repo docs/FRs, never in a skill book. "
         f"Never print or store secrets."
@@ -5611,21 +5613,58 @@ def skill_dag_down_giveup_line(
 
 
 def opencode_fleet_script_roots(worker_cwd: str) -> list[Path]:
-    """Install script dirs the seat skills tell OpenCode to read (FR #8064).
+    """Install script dirs the seat skills tell OpenCode to read (FR #8064 / #9214).
 
     ``worker_cwd`` is ``<ai root>\\bob\\worker``. The fleet copies live beside
-    that, not inside the job worktree: ``bob\\scripts`` and ``common\\scripts``.
+    that, not inside the job worktree: ``bob\\scripts``, ``common\\scripts``, and
+    flat ``scripts`` (composed installs often only have the intake helper there).
     """
     install = Path(worker_cwd).resolve().parent
-    return [install / "bob" / "scripts", install / "common" / "scripts"]
+    return [
+        install / "bob" / "scripts",
+        install / "common" / "scripts",
+        install / "scripts",
+    ]
+
+
+def resolve_bobiverse_intake_script(
+    worker_cwd: str | Path | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> Path:
+    """Prefer an install intake script path OpenCode is allowed to read (FR #9214).
+
+    Order: ``common\\scripts`` (allowed since FR #8064), flat ``scripts`` (FR #9214),
+    then ``bob\\scripts``. Falls back to the ``common\\scripts`` path even when the
+    file is missing so CAST IRON prompts stay on an allowlisted root.
+    """
+    if install_root is not None:
+        install = Path(install_root).resolve()
+    elif worker_cwd is not None:
+        install = Path(worker_cwd).resolve().parent
+    else:
+        install = Path.cwd().resolve()
+    name = "Report-BobiverseIntakeIssue.ps1"
+    candidates = [
+        install / "common" / "scripts" / name,
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand.resolve()
+        except OSError:
+            continue
+    return candidates[0].resolve()
 
 
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill roots and fleet scripts.
 
-    FR #7196 / #7909: skill-dag roots. FR #8064: ``bob\\scripts`` and
-    ``common\\scripts`` so harvest/intake reads are not auto-rejected. Edit
-    stays deny. ``C:\\passwords`` stays deny and is never an allow.
+    FR #7196 / #7909: skill-dag roots. FR #8064 / #9214: ``bob\\scripts``,
+    ``common\\scripts``, and flat ``scripts`` so harvest/intake reads are not
+    auto-rejected. Edit stays deny. ``C:\\passwords`` stays deny and is never an allow.
     """
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
@@ -9997,18 +10036,41 @@ def opencode_external_dir_corrective_steps(
     worktree: str | Path,
     outbox: str | Path,
     scratch: str | Path,
+    reject_path: str | Path | None = None,
+    intake_script: str | Path | None = None,
 ) -> str:
-    """FR #8247: short corrective after an ``external_directory`` rejection (names allowed scratch)."""
+    """FR #8247 / #9214: short corrective after an ``external_directory`` rejection.
+
+    Names allowed scratch. When the reject is under install ``scripts`` (or an
+    intake_script is provided), point harvest at the allowlisted intake helper.
+    """
     key = (job_key or "job").strip() or "job"
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
     sc = str(scratch or "").strip()
+    intake = str(intake_script or "").strip()
+    rejected = str(reject_path or "").strip()
+    harvest_hint = ""
+    if intake:
+        harvest_hint = (
+            " For harvest/intake use the allowed script "
+            + intake
+            + " (common\\scripts or flat scripts under the install). "
+        )
+    else:
+        norm = rejected.replace("/", "\\").lower()
+        if "\\scripts\\" in norm or norm.endswith("\\scripts"):
+            harvest_hint = (
+                " For harvest/intake prefer common\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+                "(allowed) over a denied install path. "
+            )
     return (
         f"CORRECTIVE {key}: OpenCode rejected external_directory (path outside the job tree). "
         f"Use only the allowed scratch directory {sc} (worktree .bob\\tmp). "
         f"TEMP/TMP/TMPDIR already point there for this seat. "
         f"Do not request external_directory and never use %TEMP% or the user Temp folder. "
         f"Keep all scratch and tool paths inside {wt}. "
+        f"{harvest_hint}"
         f"Finish remaining work. {opencode_typed_delivery(key, outbox=ob)} "
         "The turn is not over until DONE is written."
     )
@@ -19721,11 +19783,24 @@ class Supervisor:
                         st["corrective_pending"] = False
                 if use_corrective:
                     scratch = ensure_opencode_job_scratch(wt)
+                    _intake = None
+                    try:
+                        _cwd = str(
+                            getattr(self, "worker_dir", "")
+                            or getattr(self, "cwd", "")
+                            or ""
+                        )
+                        if not _cwd:
+                            _cwd = str(Path(__file__).resolve().parent.parent / "worker")
+                        _intake = resolve_bobiverse_intake_script(_cwd)
+                    except Exception:
+                        _intake = None
                     body = opencode_external_dir_corrective_steps(
                         job_key=job_key,
                         worktree=wt,
                         outbox=outbox,
                         scratch=scratch,
+                        intake_script=_intake,
                     )
                     from_line = format_from(
                         "bob-worker", shop, body, outbox=outbox
