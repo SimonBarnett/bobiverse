@@ -6484,7 +6484,9 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
         include_listens=prior_irc.is_bob_builder_nick(nick),
     )
     if not result.scanned:
-        info("INFO prior-clean aborted connect")
+        # FR #9236: include attempt count so a restart-loop scan failure is diagnosable.
+        attempts = getattr(result, "scan_attempts", 0) or 0
+        info(f"INFO prior-clean aborted connect attempts={attempts}")
         raise SystemExit(1)
 
 
