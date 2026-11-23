@@ -1,0 +1,7 @@
+{
+  "agents": [
+    {"agent": "Opencode", "cli": "Opencode", "model": "opencode-go/deepseek-v4-pro", "context": "", "effort": ""},
+    {"agent": "Opencode-Free", "cli": "Opencode", "model": "opencode/deepseek-v4.1-flash-free", "context": "", "effort": ""},
+    {"agent": "Grok", "cli": "Grok", "model": "grok-4", "context": "", "effort": ""}
+  ]
+}

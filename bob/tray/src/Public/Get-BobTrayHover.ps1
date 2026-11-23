@@ -2402,10 +2402,12 @@ function Update-BobTrayDigestPools {
                 if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
                     throw 'Invoke-BobDigestHttpGet missing'
                 }
-                $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
-                # FR #8049: one immediate retry on transient 503 before failing the poll.
-                if ($got -and [int]$got.StatusCode -eq 503) {
-                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
+                # FR #8988: 12s budget plus one retry on GetResponse/503 (not only 503).
+                if (Get-Command Invoke-BobDigestHttpGetWithRetry -ErrorAction SilentlyContinue) {
+                    $got = Invoke-BobDigestHttpGetWithRetry -Uri $u -TimeoutSec 12
+                }
+                else {
+                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 12
                 }
                 if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
                     $code = $(if ($got) { $got.StatusCode } else { 'null' })
@@ -2599,6 +2601,13 @@ function Update-BobTrayDigestPools {
             try { $opencodeWindows = $prev.opencode_windows } catch { }
             try { $opencodeWindowLines = @($prev.opencode_window_lines) } catch { $opencodeWindowLines = @() }
             try { $opencodeBars = @($prev.opencode_bars) } catch { $opencodeBars = @() }
+            try {
+                if ($null -ne $prev.ts -and [string]$prev.ts -ne '') {
+                    $age = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$prev.ts
+                    if ($age -lt 0) { $age = 0 }
+                    $note = (($note + ' last-good age=' + $age + 's').Trim())
+                }
+            } catch { }
         }
         # Marker for bob-tray.exe CrashHook (one report per failure window). FR #7604 helper.
         if (-not $wroteFail) {
@@ -5208,6 +5217,47 @@ function ConvertTo-BobTrayRect {
     }
 }
 
+function Test-BobTrayRectIntersectsAny {
+    <#
+      FR #9178: true when $Rect overlaps any area in $Areas (WorkingArea rects).
+      Pure geometry for tip/menu on-screen checks (stale iconRect after explorer recycle).
+    #>
+    param(
+        $Rect,
+        $Areas
+    )
+    $r = ConvertTo-BobTrayRect $Rect
+    if (-not $r) { return $false }
+    foreach ($a in @($Areas)) {
+        $area = ConvertTo-BobTrayRect $a
+        if (-not $area) { continue }
+        if ($r.Right -le $area.X) { continue }
+        if ($r.X -ge $area.Right) { continue }
+        if ($r.Bottom -le $area.Y) { continue }
+        if ($r.Y -ge $area.Bottom) { continue }
+        return $true
+    }
+    return $false
+}
+
+function Get-BobTrayCursorTipPlacement {
+    <#
+      FR #9178: place tip near cursor then clamp to WorkArea (TipRelocateCursor).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$TipWidth,
+        [Parameter(Mandatory = $true)][int]$TipHeight,
+        $Cursor,
+        $WorkArea,
+        [int]$Gap = 12,
+        [int]$Margin = 8
+    )
+    return Get-BobTrayTipPlacement -TipWidth $TipWidth -TipHeight $TipHeight `
+        -IconRect $null -Cursor $Cursor -WorkArea $WorkArea -AlreadyVisible $false `
+        -Gap $Gap -Margin $Margin
+}
+
 function Get-BobTrayTipPlacement {
     [CmdletBinding()]
     param(
@@ -5220,7 +5270,9 @@ function Get-BobTrayTipPlacement {
         [int]$CurrentX = 0,
         [int]$CurrentY = 0,
         [int]$Gap = 12,
-        [int]$Margin = 8
+        [int]$Margin = 8,
+        # Optional extra WorkingArea rects (all screens). Stale iconRect outside these is ignored.
+        $ScreenAreas = $null
     )
     if ($AlreadyVisible) {
         return [pscustomobject]@{
@@ -5238,6 +5290,22 @@ function Get-BobTrayTipPlacement {
     $source = 'cursor'
     $x = $cx - $TipWidth
     $y = $cy - $TipHeight - $Gap
+
+    # FR #9178: after explorer recycle, Shell may return a stale iconRect off every
+    # WorkingArea. Prefer cursor placement so tip/menu are not parked off-screen.
+    if ($icon) {
+        $areas = @()
+        if ($work) { $areas += $work }
+        foreach ($a in @($ScreenAreas)) {
+            $ar = ConvertTo-BobTrayRect $a
+            if ($ar) { $areas += $ar }
+        }
+        if ($areas.Count -gt 0 -and -not (Test-BobTrayRectIntersectsAny -Rect $icon -Areas $areas)) {
+            Write-Verbose 'FR #9178 TipPlace: stale iconRect outside WorkingArea; using cursor'
+            $icon = $null
+            $source = 'cursor-stale-icon'
+        }
+    }
 
     if ($icon) {
         $source = 'icon'
