@@ -4479,21 +4479,31 @@ function Update-BobTrayWorkerAgentsMenu {
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
         if ($id -eq 'opencode') {
-            # FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
+            # FR #8728 / BOB-31 + FR #9267: install assets\ then bob\tray\assets\.
             $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
+            if (-not (Test-Path -LiteralPath $ocIcon)) {
+                $ocIcon = Join-Path $RepoRoot 'bob\tray\assets\opencode-favicon.ico'
+            }
             Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
             if (Test-Path -LiteralPath $ocIcon) {
                 try { $item.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
                 catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
+            } else {
+                Write-TrayLog ('menu-icon MISSING file=opencode-favicon.ico path=' + $ocIcon)
             }
         }
         if ($id -eq 'grok') {
-            # FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon.
+            # FR #8723 / BOB-19 + FR #9267: install assets\ then bob\tray\assets\.
             $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
+            if (-not (Test-Path -LiteralPath $grokIcon)) {
+                $grokIcon = Join-Path $RepoRoot 'bob\tray\assets\grok-favicon.ico'
+            }
             Write-TrayLog ('Workers Grok: favicon ' + $grokIcon)
             if (Test-Path -LiteralPath $grokIcon) {
                 try { $item.Image = (New-Object System.Drawing.Icon($grokIcon)).ToBitmap() }
                 catch { Write-TrayLog ('Workers Grok favicon failed: ' + $_.Exception.Message) }
+            } else {
+                Write-TrayLog ('menu-icon MISSING file=grok-favicon.ico path=' + $grokIcon)
             }
         }
         $available = $false
@@ -4654,29 +4664,45 @@ $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
-# FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+# FR #8694 / BOB-54 + FR #9267: vendor\priority\priority.ico else assets\priority.ico.
 $priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
+if (-not (Test-Path -LiteralPath $priorityIco)) {
+    $priorityIco = Join-Path $RepoRoot 'assets\priority.ico'
+}
+if (-not (Test-Path -LiteralPath $priorityIco)) {
+    $priorityIco = Join-Path $RepoRoot 'bob\tray\assets\priority.ico'
+}
 if (Test-Path -LiteralPath $priorityIco) {
     try {
         $priorityIcon = New-Object System.Drawing.Icon $priorityIco
         $miPriority.Image = $priorityIcon.ToBitmap()
         $priorityIcon.Dispose()
-        Write-TrayLog 'priority-icon path=vendor/priority/priority.ico'
+        Write-TrayLog ('priority-icon path=' + $priorityIco)
     }
     catch {
         Write-TrayLog ('priority-icon failed: ' + $_.Exception.Message)
     }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=priority.ico path=' + $priorityIco)
 }
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
-# BOB-40: Agents > Jeeves uses the existing butler icon.
+# BOB-40 + FR #9267: jeeves\assets, sibling install, then assets\jeeves-butler.ico.
 $butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
 if (-not (Test-Path -LiteralPath $butler)) {
     $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
 }
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path $RepoRoot 'assets\jeeves-butler.ico'
+}
+if (-not (Test-Path -LiteralPath $butler)) {
+    $butler = Join-Path $RepoRoot 'bob\tray\assets\jeeves-butler.ico'
+}
 if (Test-Path -LiteralPath $butler) {
     $ico = New-Object System.Drawing.Icon $butler
     $miJeeves.Image = $ico.ToBitmap()
-    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+    Write-TrayLog ('jeeves-icon path=' + $butler)
+} else {
+    Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + $butler)
 }
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
@@ -4797,6 +4823,8 @@ Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
 if (Test-Path -LiteralPath $planGantt) {
     try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
     catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
 }
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
