@@ -1627,6 +1627,58 @@ function Show-BobTrayMarchHareCursorGateDialog {
     catch { }
 }
 
+# FR #8733 / BOB-28: Workers > Open Code — dialog + quit when free and paid are both exhausted.
+# Null / missing free or go (paid) does not gate. Fixture free=0 paid/go=0 trips the gate.
+function Test-BobTrayOpenCodePaidExhausted {
+    param(
+        [string]$InstallRoot = '',
+        [string]$FuelPath = ''
+    )
+    $path = ([string]$FuelPath).Trim()
+    if (-not $path) { $path = ([string]$env:BOB_OPENCODE_FUEL_FILE).Trim() }
+    if (-not $path) { $path = ([string]$env:BOB_OPENCODE_FUEL_CACHE_FILE).Trim() }
+    if (-not $path) {
+        $root = ([string]$InstallRoot).Trim()
+        if (-not $root) { $root = ([string]$script:RepoRoot).Trim() }
+        if ($root) { $path = Join-Path $root 'run\opencode-fuel.json' }
+    }
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $doc = $raw | ConvertFrom-Json
+    }
+    catch { return $false }
+    if (-not $doc) { return $false }
+    $free = $null
+    $paid = $null
+    try {
+        if ($null -ne $doc.free -and [string]$doc.free -ne '') { $free = [int]$doc.free }
+        elseif ($null -ne $doc.'opencode-free' -and [string]$doc.'opencode-free' -ne '') { $free = [int]$doc.'opencode-free' }
+    }
+    catch { $free = $null }
+    try {
+        if ($null -ne $doc.go -and [string]$doc.go -ne '') { $paid = [int]$doc.go }
+        elseif ($null -ne $doc.paid -and [string]$doc.paid -ne '') { $paid = [int]$doc.paid }
+        elseif ($null -ne $doc.'opencode-go' -and [string]$doc.'opencode-go' -ne '') { $paid = [int]$doc.'opencode-go' }
+    }
+    catch { $paid = $null }
+    if ($null -eq $free -or $null -eq $paid) { return $false }
+    return ($free -le 0 -and $paid -le 0)
+}
+
+function Show-BobTrayOpenCodePaidExhaustedDialog {
+    Write-TrayLog 'Workers Open Code: paid exhausted dialog + quit (FR #8733 / BOB-28)'
+    try {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            'OpenCode free and paid fuel are exhausted. Not starting an OpenCode seat.',
+            'Bobiverse - Open Code',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+    catch { }
+}
+
 function Show-BobTraySessionApiKeyDialog {
     param(
         [string]$Title = 'Session API key',
@@ -1722,6 +1774,11 @@ function Start-BobTrayAgentWatch {
     # FR #8719 / BOB-23: MarchHare fleet meter before any local Cursor fuel / BYOK prompt.
     if ($kind -eq 'cursor' -and (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot)) {
         Show-BobTrayMarchHareCursorGateDialog
+        return
+    }
+    # FR #8733 / BOB-28: Open Code free+paid exhausted → dialog + quit.
+    if ($kind -eq 'opencode' -and (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot)) {
+        Show-BobTrayOpenCodePaidExhaustedDialog
         return
     }
     if ($kind -eq 'grok') {
@@ -2702,8 +2759,48 @@ function Set-Attention([string[]]$alerts) {
 }
 
 function Update-Hover {
-    param([switch]$SkipUi)
+    param(
+        [switch]$SkipUi,
+        # FR #9150 / #9149: paint TipForm/NotifyIcon from run\tray-status.json only (no Get-BobTrayHover).
+        [switch]$FromSnapshot
+    )
     try {
+        if ($FromSnapshot) {
+            $path = Join-Path $RepoRoot 'run\tray-status.json'
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+            $raw = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false))
+            $model = $raw | ConvertFrom-Json
+            if (-not $model) { return }
+            $script:hoverTitle = [string]$model.title
+            if (-not $script:hoverTitle) { $script:hoverTitle = Get-BobTrayTitle -MachineId $env:BOB_MACHINE_ID }
+            $script:hoverBody = [string]$model.body
+            $pct = $null
+            try {
+                if ($model.remaining_pct -ne $null -and [string]$model.remaining_pct -ne '') {
+                    $pct = [int]$model.remaining_pct
+                }
+            } catch { $pct = $null }
+            $script:remainingPct = $pct
+            $paint = Get-BobTrayBarPaint -RemainingPct $script:remainingPct -BarWidth 392
+            $script:alertKind = Get-BobTrayAlertKind -Alerts $script:lastAlerts -RemainingPct $script:remainingPct
+            $short = [string]$model.short
+            if (-not $short) { $short = [string]$script:hoverTitle }
+            if ($script:attention) { $short = '! ' + $short }
+            if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
+            $script:notifyTipText = $short
+            if ($SkipUi) { return }
+            Clear-BobNativeTip
+            if ($script:titleLabel) {
+                $script:titleLabel.Text = $script:hoverTitle
+                if ($script:alertLabel) {
+                    $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
+                }
+                if (-not $script:attention -and -not $paint.pulse -and $notify.Icon -ne $iconIdle) {
+                    $notify.Icon = $iconIdle
+                }
+            }
+            return
+        }
         $h = Get-BobTrayHover
         $script:hoverBody = [string]$h.body
         # FR #345: list each watch seat separately (nick + slot) on tooltip body
@@ -2838,11 +2935,85 @@ function Hide-BobTrayCard {
     Clear-BobNativeTip
 }
 
+function Close-BobTrayStatusWindows {
+    # FR #9154 / #9163: drop a focus-stealing bob-status before the context menu opens.
+    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+        try { [void]$pr.CloseMainWindow() } catch { }
+    }
+}
+
+function Set-BobTrayMenuItemsEnabled {
+    # FR #9163: delay-enable items after Opening so a focus-steal close does not fire ItemClicked.
+    param(
+        $Menu,
+        [bool]$Enabled
+    )
+    if (-not $Menu) { return }
+    foreach ($it in @($Menu.Items)) {
+        if (-not $it) { continue }
+        if ($it -is [System.Windows.Forms.ToolStripSeparator]) { continue }
+        try { $it.Enabled = $Enabled } catch { }
+    }
+}
+
+function Clear-BobTrayMenuOpenIfHidden {
+    <#
+    FR #9163: Cancel AppFocusChange left Closed unfired and sticky bobTrayMenuOpen=true
+    with an invisible strip (StatusSkipped / icon no click). Clear the flag when the
+    menu is not Visible. Returns $true when the sticky flag was cleared.
+    #>
+    param($Menu)
+    if (-not $script:bobTrayMenuOpen) { return $false }
+    $vis = $false
+    try {
+        if ($Menu -and $Menu.PSObject.Properties.Name -contains 'Visible') {
+            $vis = [bool]$Menu.Visible
+        }
+    } catch { $vis = $false }
+    if ($vis) { return $false }
+    $script:bobTrayMenuOpen = $false
+    Write-TrayLog 'click-diag MenuFlagCleared'
+    return $true
+}
+
+function Get-BobTrayForegroundProcessLog {
+    # FR #9154 / #9163: optional diag on MenuClosing (hwnd / pid / name). Best-effort.
+    try {
+        Add-Type -Namespace BobTrayFg -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+'@ -ErrorAction SilentlyContinue | Out-Null
+        $h = [BobTrayFg.Native]::GetForegroundWindow()
+        if ($h -eq [IntPtr]::Zero) { return 'fg=none' }
+        $fgPid = [uint32]0
+        [void][BobTrayFg.Native]::GetWindowThreadProcessId($h, [ref]$fgPid)
+        $n = '?'
+        try { $n = (Get-Process -Id ([int]$fgPid) -ErrorAction Stop).ProcessName } catch { }
+        return ('fg hwnd={0} pid={1} name={2}' -f $h, $fgPid, $n)
+    } catch {
+        return ('fg error={0}' -f $_.Exception.Message)
+    }
+}
+
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
+    # FR #9163: clear sticky menu-open when the strip is already gone; then gate if still open.
+    try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+    if ($script:bobTrayMenuOpen) {
+        Write-TrayLog 'status skipped: menu open (FR #9163)'
+        return
+    }
+    # FR #9165: while bob-tray.exe is clickfix-parked, TipForm owns Status (skip windowless bob-status risk).
+    if ((Get-Command Test-BobTrayClickFixParkPresent -ErrorAction SilentlyContinue) -and (Test-BobTrayClickFixParkPresent -Root $RepoRoot)) {
+        Write-TrayLog 'status: park present; TipForm card (FR #9165)'
+        Update-Hover
+        Show-BobTrayCard -Reason 'click'
+        return
+    }
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
-    # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
+    # when tools\bob-status.exe is not installed or (FR #9165) stays windowless. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
     if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
+    Write-TrayLog 'status: TipForm card fallback (FR #9165)'
     Update-Hover
     Show-BobTrayCard -Reason 'click'
 }
@@ -3870,6 +4041,12 @@ function Show-BobTrayCard {
     try {
         # Click / Status only. No hover events. Stay parked until X.
         if ($Reason -ne 'click') { return }
+        # FR #9163: tip ShowParkedAt TOPMOST must not run while the menu is open.
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+        if ($script:bobTrayMenuOpen) {
+            Write-TrayLog 'tip skipped: menu open (FR #9163)'
+            return
+        }
         $script:cardClosed = $false
         if (-not (Test-BobTrayTipAlive)) {
             Initialize-BobTrayTipForm
@@ -4151,6 +4328,11 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
                 elseif ($picked -eq 'opencode') {
+                    # FR #8733 / BOB-28: free+paid exhausted -> dialog + quit (no start).
+                    if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                        Show-BobTrayOpenCodePaidExhaustedDialog
+                        return
+                    }
                     # FR #8730 / BOB-27: free first; paid when free fuel is 0 and paid is above 0.
                     $ocSlot = 'free'
                     $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
@@ -4169,6 +4351,7 @@ function Update-BobTrayWorkerAgentsMenu {
                     if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
                     # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
                     Write-TrayLog ('workers-opencode model=' + $ocModel)
+
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
                     # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
@@ -4293,6 +4476,72 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
+# FR #9163: never Cancel AppFocusChange Closing (that stuck bobTrayMenuOpen).
+# Delay-arm items; clear sticky flag when menu !Visible. Keep Opening tip/status cleanup.
+$script:bobTrayMenuOpen = $false
+$script:bobTrayContextMenu = $menu
+$script:bobTrayMenuArmTimer = $null
+$menu.Add_Opening({
+        $script:bobTrayMenuOpen = $true
+        Write-TrayLog 'click-diag MenuOpening'
+        try { Hide-BobTrayCard } catch { }
+        try { Close-BobTrayStatusWindows } catch { }
+        try { Set-BobTrayMenuItemsEnabled -Menu $menu -Enabled $false } catch { }
+        try {
+            if ($script:bobTrayMenuArmTimer) {
+                $script:bobTrayMenuArmTimer.Stop()
+                $script:bobTrayMenuArmTimer.Dispose()
+            }
+        } catch { }
+        $script:bobTrayMenuArmTimer = New-Object System.Windows.Forms.Timer
+        $script:bobTrayMenuArmTimer.Interval = 350
+        $script:bobTrayMenuArmTimer.Add_Tick({
+                try { $script:bobTrayMenuArmTimer.Stop() } catch { }
+                try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
+                Write-TrayLog 'click-diag MenuItemsArmed'
+            })
+        $script:bobTrayMenuArmTimer.Start()
+    })
+$menu.Add_Opened({ Write-TrayLog 'click-diag MenuOpened' })
+$menu.Add_Closing({
+        param($s, $e)
+        $reason = $e.CloseReason
+        $fg = ''
+        try { $fg = Get-BobTrayForegroundProcessLog } catch { $fg = '' }
+        Write-TrayLog ('click-diag MenuClosing reason={0} {1}' -f $reason, $fg)
+        # CAST IRON FR #9163: do not set $e.Cancel for AppFocusChange (or any reason).
+    })
+$menu.Add_Closed({
+        $script:bobTrayMenuOpen = $false
+        try {
+            if ($script:bobTrayMenuArmTimer) {
+                $script:bobTrayMenuArmTimer.Stop()
+                $script:bobTrayMenuArmTimer.Dispose()
+                $script:bobTrayMenuArmTimer = $null
+            }
+        } catch { }
+        try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
+        Write-TrayLog 'click-diag MenuClosed'
+        # FR #9169: soft rebind Shell_NotifyIcon after MenuClosed so a dead/ghost
+        # registration recovers without needing an explorer recycle first.
+        try {
+            if ($notify -and -not $notify.IsDisposed) {
+                $notify.Visible = $false
+                $notify.Visible = $true
+                Write-TrayLog 'click-diag NotifyIconRebound'
+            }
+        } catch { }
+    })
+$notify.Add_MouseDown({
+        param($s, $e)
+        Write-TrayLog ('click-diag MouseDown {0}' -f $e.Button)
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+    })
+$notify.Add_MouseUp({
+        param($s, $e)
+        Write-TrayLog ('click-diag MouseUp {0}' -f $e.Button)
+    })
+
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
@@ -4350,6 +4599,7 @@ $miJeeves.Add_Click({
                 Write-TrayLog ("jeeves-models webhook model=$model context=$context effort=$effort")
             }
         }
+        Write-TrayLog 'jeeves-dag lazy root=J:\.grok\skills'
         Write-TrayLog 'cwd J:'
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
@@ -4369,9 +4619,21 @@ $miAbout.Add_Click({
 $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
-$miExit.Add_Click({ Invoke-BobTrayExit })
+$miExit.Add_Click({
+        # FR #9163: confirm Exit so an accidental ItemClicked after focus-steal does not kill Watch.
+        $ans = [System.Windows.Forms.MessageBox]::Show(
+            'Exit TipForm Watch? ircBob stays running.',
+            'Bobiverse - Exit',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Invoke-BobTrayExit
+        }
+    })
 $notify.Add_MouseClick({
         param($s, $e)
+        Write-TrayLog ('click-diag MouseClick {0}' -f $e.Button)
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
             Invoke-BobTrayStatus
@@ -4501,6 +4763,11 @@ $poll.Add_Tick({
                 if ($alerts.Count -gt 0) {
                     $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
                     Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
+                    # BOB-43: intervene so offerable work can move (nudge under-cap fill cooldown).
+                    if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
+                        $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
+                        if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
+                    }
                 }
                 if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
                 elseif ($alerts.Count -gt 0 -and $engine) {
@@ -4508,35 +4775,15 @@ $poll.Add_Tick({
                     $script:lastAlerts = $alerts
                     Write-TrayLog ('engine stall alerts: ' + ($alerts -join ' | '))
                 }
-                # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
-                # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
+                # FR #1553 / #4142: ThreadPool owns worker-sync + digest. TipForm (#9011 park)
+                # must not Wait-Job Get-BobTrayHover on the WinForms STA (FR #9150 / #9149).
                 if (-not $engine) {
                     # FR #9046: exe timer is absent while bob-tray.exe is parked.
                     try { Update-BobTrayWatchDigestPools } catch { }
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
-                    $swW = [System.Diagnostics.Stopwatch]::StartNew()
-                    try {
-                        if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
-                            [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
-                        }
-                    } catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
-                    $swW.Stop()
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=worker-sync sec={0:n2}' -f $swW.Elapsed.TotalSeconds)
-                    # FR #7579: Update-Hover (incl. Get-BobTrayHover) under timeout so a hang cannot freeze the UI thread.
-                    [void](Invoke-BobTrayEngineStep -Name 'update-hover' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
-                        param($Root, $Tools)
-                        $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
-                        if (Test-Path -LiteralPath $dialogs) { . $dialogs }
-                        $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
-                        $h = Get-BobTrayHover
-                        if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
-                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
-                            [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
-                        }
-                    })
-                    # TipForm paint on UI thread after snapshot job (best-effort; alive already stamped).
-                    try { Update-Hover } catch { Write-TrayLog ('update-hover paint: ' + $_.Exception.Message) }
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=worker-sync reason=tipform-ui-threadpool'
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=update-hover reason=tipform-ui-snapshot'
+                    # Off-thread snapshot refresh (trayHoverTimer); UI only paints last snapshot.
+                    try { Update-Hover -FromSnapshot } catch { Write-TrayLog ('update-hover-ui: ' + $_.Exception.Message) }
                 }
                 else {
                     # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
@@ -4568,18 +4815,10 @@ $poll.Add_Tick({
                     }
                 }
                 # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
-                # FR #4142: in engine mode Write-BobIrcStatus runs on trayDigestTimer (non-UI).
-                if (-not $engine -and (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
-                    try { Write-BobIrcStatus | Out-Null } catch {
-                        if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { return }
-                        Write-TrayLog ('digest Write-BobIrcStatus: ' + $_.Exception.Message)
-                        try {
-                            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
-                                Report-BobDeterministicException -Site 'Watch-BobTray.Write-BobIrcStatus' -Exception $_.Exception -ScriptPath $PSCommandPath | Out-Null
-                            }
-                        }
-                        catch { }
-                    }
+                # FR #4142 / #9150 / #9149: TipForm and engine both use trayDigestTimer (non-UI).
+                # Never Write-BobIrcStatus on the WinForms poll — it freezes ContextMenuStrip.
+                if (-not $engine) {
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=digest-status reason=tipform-ui-threadpool'
                 }
                 Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'cycle-end name=poll'
             }
@@ -4635,10 +4874,61 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
 } -MessageData $script:trayWorkerSyncMsg
 $script:trayWorkerSyncTimer.Start()
 
-# FR #4142 / FR #5032: ThreadPool digest heartbeat --- Write-BobIrcStatus off the WinForms UI
-# thread in engine mode. Event Action runs in its own runspace: re-dot helpers each tick
-# (same pattern as trayWorkerSyncTimer). Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped;
-# Write-BobIrcStatus lives in tray src (via Bobiverse-Common / Get-BobIrc.ps1).
+# FR #9150 / #9149: TipForm hover snapshot refresh off the WinForms STA (no Wait-Job).
+# Engine mode keeps update-hover-engine on the poll warm step; this timer is TipForm-only.
+$script:trayHoverTimer = New-Object System.Timers.Timer
+$script:trayHoverTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
+$script:trayHoverTimer.AutoReset = $true
+$script:trayHoverTimer.SynchronizingObject = $null
+$script:trayHoverBusy = $false
+$script:trayHoverMsg = [pscustomobject]@{
+    Root    = $RepoRoot
+    Dialogs = (Join-Path $RepoRoot 'tools\BobTrayDialogs.ps1')
+    Tools   = $PSScriptRoot
+    Psd1    = (Join-Path $RepoRoot 'src\BobBridge.psd1')
+    Engine  = [bool](Test-BobTrayEngineMode)
+}
+$script:trayHoverSub = Register-ObjectEvent -InputObject $script:trayHoverTimer -EventName Elapsed -Action {
+    if ($script:trayHoverBusy) { return }
+    $script:trayHoverBusy = $true
+    try {
+        $msg = $Event.MessageData
+        if (-not $msg -or -not $msg.Root) { return }
+        if ($msg.Engine) { return }
+        if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
+            try { . $msg.Dialogs } catch { }
+        }
+        if ($msg.Psd1 -and (Test-Path -LiteralPath $msg.Psd1)) {
+            try { Import-Module $msg.Psd1 -Force } catch { }
+        }
+        if (-not (Get-Command Get-BobTrayHover -ErrorAction SilentlyContinue)) { return }
+        $h = Get-BobTrayHover
+        if ($h -and (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) -and (Get-Command New-BobTrayStatusModel -ErrorAction SilentlyContinue)) {
+            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' `
+                -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) `
+                -Attention $false -AttentionSeq 0 -Pulse $false
+            [void](Write-BobTrayStatusSnapshot -Root ([string]$msg.Root) -Model $model)
+        }
+    }
+    catch {
+        try {
+            $root = if ($Event.MessageData) { [string]$Event.MessageData.Root } else { '' }
+            $hf = Join-Path $root 'src\Private\Invoke-BobMustReportFailure.ps1'
+            if ($root -and (Test-Path -LiteralPath $hf)) { . $hf }
+            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                Invoke-BobMustReportFailure -Component 'tray' -Site 'trayHoverTimer' -Exception $_.Exception
+            }
+        } catch { }
+    }
+    finally {
+        $script:trayHoverBusy = $false
+    }
+} -MessageData $script:trayHoverMsg
+$script:trayHoverTimer.Start()
+
+# FR #4142 / FR #5032 / FR #9150: ThreadPool digest heartbeat --- Write-BobIrcStatus off the
+# WinForms UI for TipForm and engine. Event Action re-dots helpers each tick.
+# Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped; Write-BobIrcStatus lives in tray src.
 $script:trayDigestTimer = New-Object System.Timers.Timer
 $script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
 $script:trayDigestTimer.AutoReset = $true
@@ -4658,8 +4948,7 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
             try { . $msg.Dialogs } catch { }
         }
-        if (-not (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue)) { return }
-        if (-not (Test-BobTrayEngineMode)) { return }
+        # FR #9150: run for TipForm and engine (UI poll no longer posts digest).
         if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
             if ($msg.StatusPs -and (Test-Path -LiteralPath $msg.StatusPs)) {
                 try { . $msg.StatusPs } catch { }
@@ -4754,6 +5043,12 @@ $startWorkerTimer.Add_Tick({
                             if (Test-Path -LiteralPath $stamp) {
                                 $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $stamp).LastWriteTimeUtc).TotalSeconds
                                 if ($age -ge 0 -and $age -lt 60) { $cool = $true }
+                            }
+                            # BOB-43: fresh queue-intervene.nudge clears under-cap cooldown.
+                            $nudge = Join-Path $script:startWorkerDir 'queue-intervene.nudge'
+                            if (Test-Path -LiteralPath $nudge) {
+                                $nage = ([datetime]::UtcNow - (Get-Item -LiteralPath $nudge).LastWriteTimeUtc).TotalSeconds
+                                if ($nage -ge 0 -and $nage -lt 120) { $cool = $false }
                             }
                             $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
                             if ($fill -gt 0) {
@@ -4962,6 +5257,11 @@ catch { }
 try {
     if ($script:trayWorkerSyncTimer) { $script:trayWorkerSyncTimer.Stop(); $script:trayWorkerSyncTimer.Dispose() }
     if ($script:trayWorkerSyncSub) { Unregister-Event -SourceIdentifier $script:trayWorkerSyncSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayWorkerSyncSub -Force -ErrorAction SilentlyContinue }
+}
+catch { }
+try {
+    if ($script:trayHoverTimer) { $script:trayHoverTimer.Stop(); $script:trayHoverTimer.Dispose() }
+    if ($script:trayHoverSub) { Unregister-Event -SourceIdentifier $script:trayHoverSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayHoverSub -Force -ErrorAction SilentlyContinue }
 }
 catch { }
 try {
