@@ -577,12 +577,16 @@ def _open_fr_bob_and_id_index(
     """Map ``BOB-N`` to open ``(repo_key, #id)``; set of open ``(repo_key, #id)``.
 
     FR #9220: index by owner/repo so cross-repo bare ``#N`` collisions do not false-skip.
+    BOB-D4 / FR #8808: skip ``state=closed`` rows (same as ``open_fr_issue_keys``) so a
+    depend that closed while still ACC/unaccepted no longer blocks offer.
     """
     bobs: dict[str, list[tuple[str, str]]] = {}
     keys: set[tuple[str, str]] = set()
     for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
         for row in bucket:
             if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if str(row.get("state") or "").strip().lower() == "closed":
                 continue
             repo = _repo_key(str(row.get("repo") or ""))
             rid = _norm_row_id(str(row.get("id") or ""))
@@ -686,9 +690,9 @@ def row_fr_depends_blocked_reason(
 
     FR #9220: relative ``#N`` resolves against the FR's own repo; qualified
     ``owner/repo#N`` looks up that repo only. Does not purge the row - when depends
-    leave the queue, the FR becomes offerable.
+    leave the queue (or stamp ``state=closed``, BOB-D4 / FR #8808), the FR becomes offerable.
 
-    BOB-G1: hold on depend -> ``depends-held``; unheld ``fr-digest`` OK while OPEN.
+    BOB-G1: hold on depend -> ``depends-held``; unheld digest/fr-digest OK while OPEN.
     """
     if _canon_task(row) != "FR":
         return None
@@ -750,7 +754,12 @@ def row_fr_depends_blocked_reason(
     return None
 
 
-# BOB-D3 / FR #8807: private extractor (D1/D2 own public parse).
+# BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
+# BOB-D5 / FR #8809: fail closed on malformed tokens / lookup Unknown.
+# BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
+# private extractor so D3 ships with Depends-on: (none) before those land.
+# DEPENDS_OPEN_REASON / DEPENDS_HELD_REASON defined with BOB-G1 block above.
+DEPENDS_UNRESOLVED_REASON = "depends-unresolved"
 # _QUALIFIED_DEPENDS_ISSUE_RE defined with FR #8754 Depends-on regexes above.
 _RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
 _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
@@ -802,6 +811,46 @@ def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
     return out
 
 
+def _row_depends_on_has_bad_ref(row: dict) -> bool:
+    """BOB-D5: True when a Depends-on line has a token that is not ``#N`` / ``owner/repo#N``.
+
+    ``(none)`` (whole value) and empty lines are fine. Relative ``#N`` without a
+    home ``row["repo"]`` counts as unresolved. Self-references are ignored (not bad).
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return False
+    home_repo = _repo_key(str(row.get("repo") or ""))
+    self_num_raw = str(row.get("id") or "").strip().lstrip("#")
+    try:
+        self_num = int(self_num_raw) if self_num_raw else None
+    except ValueError:
+        self_num = None
+    blob = f"{str(row.get('title') or '')}\n{str(row.get('body') or '')}"
+    for m in _DEPENDS_ON_LINE_RE.finditer(blob):
+        value = (m.group(1) or "").strip()
+        if not value or _NONE_DEPENDS_VALUE_RE.match(value):
+            continue
+        for raw in re.split(r"[,;\s]+", value):
+            tok = raw.strip().strip("`*")
+            if not tok:
+                continue
+            qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
+            if qm:
+                pair = (_repo_key(qm.group(1)), int(qm.group(2)))
+                if self_num is not None and pair[0] == home_repo and pair[1] == self_num:
+                    continue
+                continue
+            rm = _RELATIVE_DEPENDS_ISSUE_RE.match(tok)
+            if rm:
+                if not home_repo:
+                    return True
+                if self_num is not None and int(rm.group(1)) == self_num:
+                    continue
+                continue
+            return True
+    return False
+
+
 def open_fr_issue_keys(doc: dict) -> set[tuple[str, int]]:
     """Open FR ``(lower repo, number)`` keys from unaccepted + accepted (not done)."""
     keys: set[tuple[str, int]] = set()
@@ -834,18 +883,21 @@ def row_depends_open_reason(
     issue_open=None,
     doc: dict | None = None,
 ) -> str | None:
-    """BOB-D3 / FR #8807 + BOB-G1 / FR #8837 digest go-gate.
+    """BOB-D3 / BOB-D5 + BOB-G1 digest go-gate.
 
-    For each Depends-on ref (architecture: hold -> fr-digest ok -> OPEN skip):
-
-    * depend has ``hold`` -> ``depends-held`` (bob_g1_skip_held_digest)
-    * else ``fr-digest`` without hold -> OK while OPEN
-    * else OPEN (queue key / ``issue_open``) -> ``depends-open``
-
-    Unknown / missing stamp / ``(none)`` do not block (D5).
+    - `depends-held` (FR #8837): depend has ``hold`` / ``on-hold``.
+    - unheld digest/fr-digest (BOB-G1/G3): OK while OPEN (`ok-fr-digest`).
+    - `depends-open` (FR #8807): any ordinary Depends-on issue is positively OPEN.
+    - `depends-unresolved` (FR #8809): malformed Depends-on token, or
+      `issue_open` raises (`GitHubLookupUnknown` / budget / network).
+    - Empty stamp / `(none)` / absent ref with no checker: do not block.
+    - BOB-D4 / FR #8808: when every depend is CLOSED (absent from `open_keys` and
+      `issue_open` False / unset), returns None so the FR is offerable again.
     """
     if _canon_task(row) != "FR":
         return None
+    if _row_depends_on_has_bad_ref(row):
+        return DEPENDS_UNRESOLVED_REASON
     refs = _row_depends_on_issue_refs(row)
     if not refs:
         return None
@@ -867,8 +919,8 @@ def row_depends_open_reason(
             if bool(issue_open(repo, str(num))):
                 return DEPENDS_OPEN_REASON
         except Exception:
-            # Unknown / budget / network: fail open (D5 owns unresolved).
-            continue
+            # Unknown / budget / network: fail closed (BOB-D5 / FR #8809).
+            return DEPENDS_UNRESOLVED_REASON
     return None
 
 
@@ -8621,7 +8673,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if me and to_c and to_c != me_l:
                     _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
-            # BOB-D3 / FR #8807 + BOB-G1 / FR #8837: local depends-open / depends-held.
+            # BOB-D3 / BOB-D5 + BOB-G1: depends-open / depends-unresolved / depends-held.
             if _canon_task(cand) == "FR":
                 dep_why = row_depends_open_reason(
                     cand, open_dep_keys_summary, doc=raw if isinstance(raw, dict) else None
@@ -11971,6 +12023,7 @@ def offer_focus_top(
     pr_exists=None,
     is_pull=None,
     issue_open=None,
+    fetch_issue=None,
     offered_via: str | None = None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
@@ -11982,6 +12035,8 @@ def offer_focus_top(
     another seat can take a dead pin after ``OFFER_STICKY_MAX`` no-ACK attempts.
     ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
     ``issue_open`` (optional) purges/skips FR rows whose issue is CLOSED (FR #2340).
+    ``fetch_issue`` (optional) BOB-D6 / FR #8810: hydrate empty FR ``body`` before Depends-on
+    (test seam; default ``fetch_github_issue_dict`` via ``ensure_fr_queue_body``).
 
     FR #3188: bulk purge uses stamped/structural checks only (no per-row GitHub fan-out
     on the IRC ``!bored`` path). Live checkers are budgeted to at most one call while
@@ -12168,6 +12223,13 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
                         purged = True
                     return None
+                # BOB-D6 / FR #8810: empty queue body → fetch issue body before Depends-on parse
+                # (fail-when: silent offer with empty body). Persist stamp when filled.
+                if _canon_task(cand) == "FR":
+                    _body_before = str(cand.get("body") or "")
+                    ensure_fr_queue_body(cand, fetch_issue=fetch_issue)
+                    if str(cand.get("body") or "") != _body_before:
+                        purged = True
                 # FR #8754: Depends-on backlog still open in queue — skip offer; keep row.
                 if row_fr_depends_blocked_reason(cand, doc):
                     return None
@@ -15260,6 +15322,61 @@ def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
             return released
     except (TimeoutError, OSError):
         return []
+
+
+# BOB-D6 / FR #8810: short TTL for empty-body hydrate (vision UNKNOWN picked 60s).
+FR_BODY_FETCH_CACHE_TTL_S = 60.0
+FR_BODY_FETCH_SHARED_CACHE = TTLCache(FR_BODY_FETCH_CACHE_TTL_S)
+
+
+def ensure_fr_queue_body(
+    row: dict,
+    *,
+    fetch_issue=None,
+    cache: dict | None = None,
+) -> str:
+    """BOB-D6 / FR #8810: fetch GitHub issue body when the queue row body is empty.
+
+    Stamps ``row["body"]`` via ``_body_for_queue`` so Depends-on parse sees the stamp.
+    Non-FR rows and rows that already have a non-blank body are unchanged (no fetch).
+    ``fetch_issue(repo, num)`` is the test seam; default uses ``fetch_github_issue_dict``.
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return str((row or {}).get("body") or "") if isinstance(row, dict) else ""
+    existing = str(row.get("body") or "")
+    if existing.strip():
+        return existing
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return existing
+    store: dict = cache if cache is not None else FR_BODY_FETCH_SHARED_CACHE
+    key = f"fr_body:{repo}#{num}"
+    hit = store.get(key, _CACHE_MISS) if hasattr(store, "get") else _CACHE_MISS
+    if hit is not _CACHE_MISS:
+        body_hit = str(hit or "")
+        if body_hit.strip():
+            row["body"] = _body_for_queue(body_hit)
+            return str(row.get("body") or "")
+        return existing
+    getter = fetch_issue or (lambda r, n: fetch_github_issue_dict(r, n))
+    issue = None
+    try:
+        issue = getter(repo, num)
+    except Exception:
+        issue = None
+    fetched = ""
+    if isinstance(issue, dict):
+        fetched = str(issue.get("body") or "")
+    try:
+        store[key] = fetched
+    except Exception:
+        if isinstance(store, dict):
+            store[key] = fetched
+    if fetched.strip():
+        row["body"] = _body_for_queue(fetched)
+        return str(row.get("body") or "")
+    return existing
 
 
 def fetch_github_issue_dict(repo: str, num: str, *, token: str = "") -> dict | None:

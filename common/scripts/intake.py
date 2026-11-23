@@ -1514,6 +1514,64 @@ def merge_lesson_pr_files(
     return out
 
 
+# Product-root skill books (skills-visionary layout). Bobiverse uses bob/common prefixes.
+_PRODUCT_GROK_SKILL_RE = re.compile(
+    r"^\.grok/skills/([^/]+)/SKILL\.md$",
+    re.IGNORECASE,
+)
+_SKILLS_VISIONARY_REPO = "simonbarnett/skills-visionary"
+
+
+def mcp_catalog_mirror_path(skill_path: str) -> str | None:
+    """Map ``.grok/skills/<id>/SKILL.md`` -> ``apps/mcp-catalog/catalog/<id>/SKILL.md``.
+
+    FR #9303 / SV #198: skills-visionary tip filing must keep the mcp-catalog
+    mirror byte-equal to the skill book (intake has no tip worktree for
+    ``tools/build-skill-dag.py``). Returns None for bob/common/jeeves/airc trees.
+    """
+    p = _norm_repo_rel_path(skill_path)
+    m = _PRODUCT_GROK_SKILL_RE.fullmatch(p)
+    if not m:
+        return None
+    book_id = m.group(1)
+    if not book_id or ".." in book_id:
+        return None
+    return f"apps/mcp-catalog/catalog/{book_id}/SKILL.md"
+
+
+def with_mcp_catalog_mirror(
+    repo: str,
+    skill_path: str,
+    files: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Append mcp-catalog SKILL.md mirror for skills-visionary harvest tips (FR #9303).
+
+    Idempotent: existing catalog path is updated to match the skill-book content.
+    Other repos are returned unchanged.
+    """
+    out: list[dict[str, str]] = [
+        {"path": _norm_repo_rel_path(str(item.get("path") or "")), "content": str(item.get("content") or "")}
+        for item in (files or [])
+        if _norm_repo_rel_path(str(item.get("path") or ""))
+    ]
+    if (repo or "").strip().lower() != _SKILLS_VISIONARY_REPO:
+        return out
+    mirror = mcp_catalog_mirror_path(skill_path)
+    if not mirror:
+        return out
+    want = _norm_repo_rel_path(skill_path)
+    content = ""
+    for item in out:
+        if item["path"] == want:
+            content = item["content"]
+            break
+    if not content:
+        return out
+    kept = [item for item in out if item["path"] != mirror]
+    kept.append({"path": mirror, "content": content})
+    return kept
+
+
 def _filer_get_file(filer: Any, repo: str, path: str) -> str:
     getter = getattr(filer, "get_file_content", None)
     if not callable(getter):
@@ -2781,7 +2839,9 @@ def file_submission(
                     existing_md, new_lessons, covered_md=covered_md
                 )
                 # FR #9180: SkillFile companions under .grok/skills join the tip files[].
+                # FR #9303 / SV #198: skills-visionary tips also mirror apps/mcp-catalog.
                 lesson_files = merge_lesson_pr_files(skill_path, new_md, files)
+                lesson_files = with_mcp_catalog_mirror(repo, skill_path, lesson_files)
                 lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
                     book=book,
