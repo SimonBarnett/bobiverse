@@ -93,8 +93,9 @@ def test_offer_skips_when_depend_open_on_github_not_in_queue(home: Path):
     fi.handle_focus_cmd(home, REPO)
 
     def issue_open(repo: str, num: str) -> bool:
+        # Depend #99 OPEN; child rows also OPEN (FR #9411 unbudgeted closed check).
         assert repo.lower() == REPO.lower()
-        return str(num).lstrip("#") == "99"
+        return True
 
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare", issue_open=issue_open)
     assert st == "ok" and job is not None
@@ -120,7 +121,9 @@ def test_assign_refuses_when_depend_open_on_github_not_in_queue(home: Path):
     )
 
     def issue_open(repo: str, num: str) -> bool:
-        return str(num).lstrip("#") == "99"
+        # Child #10 OPEN; depend #99 OPEN.
+        n = str(num).lstrip("#")
+        return n in {"10", "99"}
 
     st, why = gitclaim.assign_row(
         home, me, REPO, "FR", "10", issue_open=issue_open
@@ -145,7 +148,8 @@ def test_offer_allows_when_depend_closed_on_github(home: Path):
     fi.handle_focus_cmd(home, REPO)
 
     def issue_open(repo: str, num: str) -> bool:
-        return False  # CLOSED / not open
+        # Depend #99 CLOSED; child #10 must stay OPEN (FR #9411 closed purge).
+        return str(num).lstrip("#") != "99"
 
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare", issue_open=issue_open)
     assert st == "ok" and job is not None
