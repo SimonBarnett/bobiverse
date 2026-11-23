@@ -9566,6 +9566,34 @@ def pid_is_alive(pid: int) -> bool:
         return False
 
 
+def classify_disappeared_seat_reason(run_dir: Path | str) -> tuple[str, int | None]:
+    """FR #9226: console-closed when worker.log shows CTRL_CLOSE / 0xC000013A, else external-kill."""
+    rd = Path(run_dir)
+    wl = rd / "worker.log"
+    if not wl.is_file():
+        return "external-kill", None
+    try:
+        data = wl.read_bytes()
+    except OSError:
+        return "external-kill", None
+    if len(data) > 65536:
+        data = data[-65536:]
+    try:
+        tail = data.decode("utf-8", errors="replace")
+    except Exception:
+        return "external-kill", None
+    low = tail.lower()
+    if (
+        "console-closed" in low
+        or "console-close exit" in low
+        or "0xc000013a" in low
+        or "3221225786" in tail
+        or "status_control_c_exit" in low
+    ):
+        return "console-closed", CONSOLE_CLOSE_EXIT
+    return "external-kill", None
+
+
 def write_disappeared_last_exit(
     run_dir: Path | str,
     *,
@@ -9575,22 +9603,25 @@ def write_disappeared_last_exit(
     machine: str = "",
     nick: str = "",
     kind: str = "",
+    exit_code: int | None = None,
+    via: str = "fr-8568-disappeared-seat",
 ) -> Path:
-    """FR #8568: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
+    """FR #8568 / #9226: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
     rd = Path(run_dir)
     rd.mkdir(parents=True, exist_ok=True)
     path = rd / "last-exit.json"
+    reason_s = (reason or "external-kill").strip() or "external-kill"
     payload = {
-        "reason": (reason or "external-kill").strip() or "external-kill",
-        "exit_code": None,
-        "raw_code": None,
+        "reason": reason_s,
+        "exit_code": exit_code,
+        "raw_code": exit_code,
         "job_key": (job_key or "").strip(),
         "machine": (machine or "").strip(),
         "nick": (nick or "").strip(),
         "kind": (kind or "").strip(),
         "agent_pid": int(pid) if pid else None,
         "synthetic": True,
-        "via": "fr-8568-disappeared-seat",
+        "via": (via or "fr-8568-disappeared-seat").strip() or "fr-8568-disappeared-seat",
     }
     text = json.dumps(payload, sort_keys=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
@@ -9612,7 +9643,7 @@ def handle_disappeared_worker_run(
     """If ``run_dir`` is a dead worker seat with no last-exit and an open job, write exit + GIVEUP.
 
     Does **not** restart the seat (FR #3180 manual-only). Returns a summary dict, or None when
-    no action was taken.
+    no action was taken. FR #9226: classify console-closed from worker.log when present.
     """
     rd = Path(run_dir)
     if not rd.is_dir():
@@ -9632,10 +9663,21 @@ def handle_disappeared_worker_run(
     except OSError:
         last_from = ""
     job_key = assign_job_key(last_from) or ""
+    reason, exit_code = classify_disappeared_seat_reason(rd)
+    nick = f"{mid}-{pid}"
+    via = "fr-9226-disappeared-seat"
     if not job_key:
         # No accepted-job breadcrumb — still leave last-exit so the gap is visible.
-        write_disappeared_last_exit(rd, reason="external-kill", pid=pid, machine=mid)
-        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False}
+        write_disappeared_last_exit(
+            rd,
+            reason=reason,
+            pid=pid,
+            machine=mid,
+            nick=nick,
+            exit_code=exit_code,
+            via=via,
+        )
+        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False, "reason": reason}
     outbox = outbox_path_for_run(rd)
     try:
         existing = outbox.read_text(encoding="utf-8", errors="replace") if outbox.is_file() else ""
@@ -9643,14 +9685,39 @@ def handle_disappeared_worker_run(
         existing = ""
     if outbox_text_has_terminal(existing, job_key):
         write_disappeared_last_exit(
-            rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+            rd,
+            reason=reason,
+            job_key=job_key,
+            pid=pid,
+            machine=mid,
+            nick=nick,
+            exit_code=exit_code,
+            via=via,
         )
-        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "already_terminal": True}
+        return {
+            "run_dir": str(rd),
+            "pid": pid,
+            "job_key": job_key,
+            "giveup": False,
+            "already_terminal": True,
+            "reason": reason,
+        }
     write_disappeared_last_exit(
-        rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+        rd,
+        reason=reason,
+        job_key=job_key,
+        pid=pid,
+        machine=mid,
+        nick=nick,
+        exit_code=exit_code,
+        via=via,
     )
     channel = (shop or mid or "shop").strip().lstrip("#") or "shop"
-    line = f"PRIVMSG #{channel} :{external_kill_giveup_line(job_key)}"
+    if reason == "console-closed":
+        giveup = console_closed_giveup_line(job_key)
+    else:
+        giveup = external_kill_giveup_line(job_key)
+    line = f"PRIVMSG #{channel} :{giveup}"
     try:
         with outbox.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(line + "\n")
@@ -9660,8 +9727,22 @@ def handle_disappeared_worker_run(
             except OSError:
                 pass
     except OSError:
-        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "outbox_error": True}
-    return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": True, "line": line}
+        return {
+            "run_dir": str(rd),
+            "pid": pid,
+            "job_key": job_key,
+            "giveup": False,
+            "outbox_error": True,
+            "reason": reason,
+        }
+    return {
+        "run_dir": str(rd),
+        "pid": pid,
+        "job_key": job_key,
+        "giveup": True,
+        "line": line,
+        "reason": reason,
+    }
 
 
 def scan_disappeared_worker_runs(
