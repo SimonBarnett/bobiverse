@@ -25,11 +25,14 @@ def test_tray_and_docs_name_the_gantt_path_not_a_generic_icon():
     cs = TRAY.read_text(encoding="utf-8-sig")
     ps = WATCH.read_text(encoding="utf-8-sig")
     html = HTML.read_text(encoding="utf-8")
-    # Install path first (flat MSI/sync), then repo-style fallback.
-    assert '"assets", "plan-gantt.ico"' in cs
-    assert 'bob", "tray", "assets", "plan-gantt.ico"' in cs
-    assert '"gantt icon"' in cs
-    assert "SystemIcons" not in cs[cs.find("plan-gantt.ico") - 400 : cs.find("plan-gantt.ico") + 500]
+    # FR #9267: ResolveTrayMenuIconPath prefers install assets\ then bob\tray\assets\.
+    assert "plan-gantt.ico" in cs
+    assert "ResolveTrayMenuIconPath" in cs
+    assert 'TryApplyTrayMenuIcon(miPlan, root, "plan-gantt.ico"' in cs
+    assert 'Path.Combine(rootPath, "assets", name)' in cs
+    assert 'Path.Combine(rootPath, "bob", "tray", "assets", name)' in cs
+    idx = cs.find("plan-gantt.ico")
+    assert "SystemIcons" not in cs[max(0, idx - 400) : idx + 500]
     assert "assets\\plan-gantt.ico" in ps
     assert "bob\\tray\\assets\\plan-gantt.ico" in ps
     assert "Plan: GANTT icon" in ps
