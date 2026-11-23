@@ -760,7 +760,10 @@ def classify_queue_row(
             if not n:
                 continue
             if task == "MRB":
-                if gitclaim._mrb_idle_block_reason(row_eff, n, live_for_block, led):
+                # FR #9478: pass free= so soft machine-id matches !bored offer.
+                if gitclaim._mrb_idle_block_reason(
+                    row_eff, n, live_for_block, led, free=free_idle
+                ):
                     continue
             else:
                 if gitclaim.review_blocked_for_author(

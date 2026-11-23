@@ -57,6 +57,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
 | Walrus install gate | `walrus_jeeves_install_ready` | FR #9376 Depends-on / Plan-agent gate issues CLOSED before DryRun / `-SiYes` WinRM hotpatch (`Install-JeevesWalrusWinRm.ps1`). Fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE`. Does not open WinRM. |
 | Redqueen bob-tray install | `redqueen_bob_tray_install_ready` | FR #9419 live `bob-tray.exe` vs green `build-bob-tray.yml` / fixture drift before DryRun / `-Install` local hotpatch (`Install-BobTrayRedqueen.ps1`). Fixture `BOB_TRAY_REDQUEEN_INSTALL_FIXTURE`. Does not mutate the tray. |
+| MRB same-machine starve | `mrb_same_machine_starve` | FR #9478 idle same-machine siblings blocked from offerable MRBs with no free cross-machine reviewer (hard #9401 / free= omit). Prefer cross-machine `!assign`; tip soft free-other-machine; install waits on #9475/#9476. |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 

@@ -41,6 +41,7 @@ CHECKS = (
     "fr_digest",
     "github_rate_limit",
     "walrus_jeeves_install_ready",
+    "mrb_same_machine_starve",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
