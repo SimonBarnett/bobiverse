@@ -106,6 +106,7 @@ def main() -> None:
         "docs/webhooks/jira.html": "Jira webhook",
         "docs/webhooks/git.html": "GitHub git webhook",
         "docs/webhooks/models.html": "Models webhook",
+        "docs/webhooks/models-report.html": "Models CLI report (ear)",
         "docs/webhooks/builds.html": "Builds catalog",
         "docs/webhooks/digest-local.html": "Local digest alias",
         "docs/webhooks/health-local.html": "BobCallback health",

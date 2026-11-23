@@ -381,23 +381,54 @@ def _inbound() -> list[DocEntry]:
             method="POST",
             path=bobcallback.MODELS_PATH + "/refresh",
             direction="in",
-            purpose="Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).",
+            purpose=(
+                "Ask online Bob ears to re-report CLI model lists and return per-CLI "
+                "status from reporters (FR #9250). Chair does not shell out to grok/"
+                "agent/opencode."
+            ),
             callers="Operators / tray refresh.",
             auth="Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.",
             request_schema='Empty body or {"clis":["grok","cursor","opencode"]}.',
             response_schema=(
-                '200 JSON {"clis":{cli:{"models":[...],"refreshed_at"}},'
-                '"refresh":{cli:{"status":"refreshed|failed","added","removed","reason"}}}; '
-                'failed CLI keeps prior catalog; selections unchanged.'
+                '200 JSON {"clis":{cli:{"models":[...],"refreshed_at","machines"}},'
+                '"refresh":{cli:{"status":"ok|stale|no_reporter","machines","refreshed_at"}},'
+                '"wanted_at","mode":"ear_reporters"}; selections unchanged. '
+                "Hand-loaded models-valid-combos.json remains a valid override/fallback."
             ),
             example_request="POST https://bob.ntsa.uk/bob/v1/models/refresh",
-            status_codes="200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.",
-            retry_idempotency="Safe to retry; per-CLI fail-closed; second call inside 60s returns 429 with no change.",
+            status_codes="200; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.",
+            retry_idempotency="Safe to retry; second call inside 60s returns 429 with no change.",
             rate_limits="One attempt per CLI per 60s (in-memory; restart resets).",
             reachability="Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).",
-            source="common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8820",
+            source="common/scripts/models_refresh.py, common/scripts/models_ear_report.py, common/scripts/bobcallback.py",
+            fr="FR #9250 / FR #8820",
             html_rel="docs/webhooks/models.html",
+        ),
+        DocEntry(
+            slug="models-report",
+            title="Models CLI report (POST)",
+            method="POST",
+            path=bobcallback.MODELS_PATH + "/report",
+            direction="in",
+            purpose=(
+                "Bob ear on each fleet machine posts that host's grok/cursor/opencode "
+                "model lists. Chair unions reporters with TTL age-out (FR #9250)."
+            ),
+            callers="Fleet bob-ear (startup, hourly, refresh-wanted).",
+            auth="Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.",
+            request_schema=(
+                '{"machine":"<id>","refreshed_at":"<ISO>","clis":{'
+                '"grok":{"status":"ok|failed","models":[...],"reason"?}, ...}}'
+            ),
+            response_schema='200 JSON {"ok":true,"machine","clis"}. No tokens/keys.',
+            example_request="POST https://bob.ntsa.uk/bob/v1/models/report",
+            status_codes="200; 400; 403 peer; 503 catalog_unavailable/busy.",
+            retry_idempotency="Idempotent replace per machine+cli.",
+            rate_limits="Same as report peer rate.",
+            reachability="Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).",
+            source="common/scripts/models_ear_report.py, common/scripts/bobcallback.py",
+            fr="FR #9250",
+            html_rel="docs/webhooks/models-report.html",
         ),
 
         DocEntry(

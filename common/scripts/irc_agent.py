@@ -28,14 +28,15 @@ from pathlib import Path
 # opencode_fuel FR #6263, startworker FR #8613). Putting that directory on
 # sys.path also shadowed gitclaim and every other ear import with whatever old
 # file was still on disk (reader AttributeError on shop_line_resets_bored_clock).
-# Other modules stay in the frozen embed. startworker is NOT in
+# Other modules stay in the frozen embed. startworker / models_ear_report are NOT in
 # EAR_RUNTIME_DISK_SCRIPTS so tip hotpatch works without an ear rebuild.
-FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel", "startworker")
+FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel", "startworker", "models_ear_report")
 # FR #7548: these files ship in the ear artifact and must match provenance.
 EAR_RUNTIME_DISK_SCRIPTS = ("bobreport.py", "opencode_fuel.py")
 BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
 OPENCODE_FUEL_OVERLAY_MARKER = "GO_ZEN_USAGE_USER_AGENT"  # FR #6263
 STARTWORKER_OVERLAY_MARKER = "OPENCODE_SLOTS"  # FR #8613 / #8610 tip grammar
+MODELS_EAR_REPORT_OVERLAY_MARKER = "MODELS_REPORT_PATH"  # FR #9250
 
 # FR #6282: frozen/disk gitclaim must expose shop claim helpers. Fail at startup
 # when a build/hotpatch mismatch would otherwise AttributeError inside the reader.
@@ -103,6 +104,8 @@ class _InstallScriptOverlay:
         if fullname == "opencode_fuel" and OPENCODE_FUEL_OVERLAY_MARKER not in text:
             return None
         if fullname == "startworker" and STARTWORKER_OVERLAY_MARKER not in text:
+            return None
+        if fullname == "models_ear_report" and MODELS_EAR_REPORT_OVERLAY_MARKER not in text:
             return None
         import importlib.util
 
@@ -402,11 +405,6 @@ def note_overlong_console_privmsg_reject(
 
 # FR #68: cap each outbox tick so chair +o and ChanServ sync cannot starve.
 OUTBOX_LINES_PER_TICK = 8
-# FR #9239: never path.read_bytes() the whole outbox — a multi-MB backlog OOMs
-# the ear (MemoryError in outbox_loop). Bounded seek+read per call.
-OUTBOX_READ_MAX_BYTES = int(
-    os.environ.get("BOB_OUTBOX_READ_MAX_BYTES", str(1 << 20)) or str(1 << 20)
-)
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
 # Safe default for PRIVMSG *text* when LINELEN/prefix unknown (~400 bytes of UTF-8 text).
 DEFAULT_PRIVMSG_TEXT_MAX = 400
@@ -579,11 +577,7 @@ def is_cred_seal_outbox_line(norm: str) -> bool:
 
 
 def take_outbox_records(
-    path: Path,
-    last: int,
-    max_lines: int | None = None,
-    *,
-    max_bytes: int | None = None,
+    path: Path, last: int, max_lines: int | None = None
 ) -> tuple[list[tuple[str, int, int, bytes]], int]:
     """Complete newline-terminated outbox records from byte offset `last`.
 
@@ -595,45 +589,22 @@ def take_outbox_records(
     FR #226 / FR #68 / FR #5826: same BOM/CRLF/max_lines rules as
     ``take_outbox_lines``; spans are the original file bytes so CRED-SEAL
     scrubbing can blank in place without rewriting unrelated records.
-
-    FR #9239: seek + bounded read (default ``OUTBOX_READ_MAX_BYTES``). Never
-    ``Path.read_bytes()`` the whole file — a huge backlog raised MemoryError
-    in ``outbox_loop``. Soft-return ``([], last)`` on MemoryError.
     """
     try:
-        size = path.stat().st_size
+        data = path.read_bytes()
     except OSError:
         return [], last
-    if size <= 0:
-        return [], last
-    if last > size:
+    file_bom = 0
+    if data.startswith(_BOM_UTF8):
+        file_bom = len(_BOM_UTF8)
+    if last > len(data):
         last = 0
-    cap = OUTBOX_READ_MAX_BYTES if max_bytes is None else max(0, int(max_bytes))
-    if cap <= 0:
-        return [], last
-    try:
-        with path.open("rb") as fh:
-            file_bom = 0
-            head = fh.read(len(_BOM_UTF8))
-            if head.startswith(_BOM_UTF8):
-                file_bom = len(_BOM_UTF8)
-            if last < file_bom:
-                base = file_bom
-            else:
-                base = last
-            if base >= size:
-                return [], base
-            fh.seek(base)
-            to_read = min(cap, size - base)
-            buf = fh.read(to_read)
-    except MemoryError:
-        info(
-            f"ERROR outbox take_outbox_records MemoryError path={path.name} "
-            f"size={size} last={last} cap={cap}"
-        )
-        return [], last
-    except OSError:
-        return [], last
+    if last < file_bom:
+        buf = data[file_bom:]
+        base = file_bom
+    else:
+        buf = data[last:]
+        base = last
     records: list[tuple[str, int, int, bytes]] = []
     consumed = 0
     limit = None if max_lines is None else max(0, int(max_lines))
@@ -761,37 +732,26 @@ def sweep_cred_seal_prefix(path: Path, upto: int) -> bool:
     """Blank CRED-SEAL records in ``[0, upto)`` (legacy / failed scrub; FR #5826).
 
     Returns True when the sweep completed with no write failures.
-
-    FR #9239: walk the prefix in ``OUTBOX_READ_MAX_BYTES`` chunks — never load
-    the whole consumed prefix when ``upto`` is multi-MB.
     """
     if upto <= 0 or not path.exists():
         return True
-    spans: list[tuple[int, int, bytes]] = []
-    offset = 0
     try:
-        while offset < upto:
-            chunk_cap = min(OUTBOX_READ_MAX_BYTES, upto - offset)
-            records, new_off = take_outbox_records(
-                path, offset, max_lines=None, max_bytes=chunk_cap
-            )
-            for norm, start, end, raw in records:
-                if end > upto:
-                    break
-                if is_cred_seal_outbox_line(norm):
-                    # Only blank if payload still has non-space content.
-                    payload = raw.rstrip(b"\r\n")
-                    if payload.strip(b" "):
-                        spans.append((start, end, raw))
-            if new_off <= offset:
-                break
-            offset = new_off
+        records, _ = take_outbox_records(path, 0, max_lines=None)
     except OSError as exc:
         info(
             "WARN outbox CRED-SEAL sweep read failed "
             f"{type(exc).__name__} path={path.name}"
         )
         return False
+    spans: list[tuple[int, int, bytes]] = []
+    for norm, start, end, raw in records:
+        if end > upto:
+            break
+        if is_cred_seal_outbox_line(norm):
+            # Only blank if payload still has non-space content (already scrubbed stay).
+            payload = raw.rstrip(b"\r\n")
+            if payload.strip(b" "):
+                spans.append((start, end, raw))
     _blanked, failures = blank_cred_seal_spans(path, spans, batch_end=upto)
     return failures == 0
 
@@ -1281,6 +1241,9 @@ class Client:
         self._bobiverse_last_tray: dict[str, float] = {}
         self._bobiverse_pull_last = 0.0
         self._digest_fuel_last = 0.0  # FR #6141 ear fuel publish tick
+        self._models_cli_last = 0.0  # FR #9250 ear models CLI report tick
+        self._models_cli_worker = None
+        self._models_cli_force = True  # startup always reports once
         self._fuel_worker = None  # FR #7839 in-flight publish; a hang must not stop the loop
         self._fuel_worker_started = 0.0
         self._fuel_stall_reported = False
@@ -3745,6 +3708,69 @@ class Client:
         self._fuel_worker = threading.Thread(target=_run, name="digest-fuel", daemon=True)
         self._fuel_worker.start()
 
+    def _maybe_publish_models_cli(self) -> None:
+        """FR #9250: fleet bob-ear POSTs local grok/cursor/opencode model lists.
+
+        At most once per hour, plus startup and when chair stamps refresh-wanted.
+        Never runs on the chair nick. Never puts tokens in the payload.
+        """
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        mid = self._local_machine_id()
+        if not mid:
+            return
+        try:
+            import models_ear_report
+        except Exception:
+            return
+        interval = models_ear_report.ear_interval_s()
+        now = time.time()
+        force = bool(getattr(self, "_models_cli_force", False))
+        wanted = models_ear_report.load_refresh_wanted_at(self.home)
+        wanted_ts = None
+        if wanted:
+            try:
+                from datetime import datetime
+
+                w = wanted[:-1] + "+00:00" if wanted.endswith("Z") else wanted
+                wanted_ts = datetime.fromisoformat(w).timestamp()
+            except Exception:
+                wanted_ts = None
+        last = float(getattr(self, "_models_cli_last", 0.0) or 0.0)
+        if (
+            not force
+            and last > 0.0
+            and (now - last) < interval
+            and (wanted_ts is None or wanted_ts <= last)
+        ):
+            return
+        worker = getattr(self, "_models_cli_worker", None)
+        if worker is not None and worker.is_alive():
+            return
+        self._models_cli_last = now
+        self._models_cli_force = False
+
+        def _run() -> None:
+            try:
+                code = models_ear_report.publish_local_models_cli_report(self.home, mid)
+            except Exception as exc:  # noqa: BLE001
+                info(f"INFO models-cli publish skip: {type(exc).__name__}")
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report("bob-ear", exc, site="models-cli-publish")
+                except Exception:
+                    pass
+                return
+            info(f"INFO models-cli publish code={code}")
+
+        self._models_cli_worker = threading.Thread(
+            target=_run, name="models-cli", daemon=True
+        )
+        self._models_cli_worker.start()
+
     def _maybe_publish_grok_account(self) -> None:
         """FR #6143: fleet bob-ear POSTs grok_account label-only merge (no secrets)."""
         if getattr(self.args, "chair", False):
@@ -6143,6 +6169,7 @@ class Client:
             try:
                 self._maybe_bobiverse_pull()
                 self._maybe_publish_digest_fuel()  # FR #6141 ear owns fuel POST
+                self._maybe_publish_models_cli()  # FR #9250 ear owns CLI model lists
                 self._maybe_publish_grok_account()  # FR #6143 grok_account label
                 self._maybe_publish_cursor_account()  # FR #7907 cursor CLI email
                 # FR #68: establish chair/ChanServ privileges before draining backlog.
