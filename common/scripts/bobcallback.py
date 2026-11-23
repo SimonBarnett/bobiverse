@@ -68,6 +68,10 @@ DEFAULT_LISTENER_PROBE_S = 10.0
 LISTENER_PROBE_FAILS_ENV = "BOB_CALLBACK_LISTENER_PROBE_FAILS"
 DEFAULT_LISTENER_PROBE_FAILS = 2
 LISTENER_EXIT_CODE = 1
+# FR #9297: reserved ports used only by unit tests (never a live listener). Filing
+# intake for these was the #9297/#9298 storm after FR #7618 / #9236 self-probe tests.
+UNIT_TEST_LISTENER_PORTS = frozenset({9})
+ALLOW_TEST_INTAKE_ENV = "BOB_CALLBACK_ALLOW_TEST_INTAKE"
 # Public readers (IIS / browsers / UAT): use reportUrl. /bob/v1/digest is the same webhook and 301s here.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
@@ -1374,7 +1378,11 @@ def report_http_listener_fault(
     exc: BaseException | None = None,
     report_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """FR #7618: one intake/crash report for accept/serve or self-probe failure. No secrets."""
+    """FR #7618 / #9297: one intake/crash report for accept/serve or self-probe failure. No secrets.
+
+    Never files under PYTEST_CURRENT_TEST, and never files for UNIT_TEST_LISTENER_PORTS
+    (port 9) unless BOB_CALLBACK_ALLOW_TEST_INTAKE=1.
+    """
     if report_fn is not None:
         return report_fn(
             why=why,
@@ -1383,6 +1391,19 @@ def report_http_listener_fault(
             port=port,
             exc_type=type(exc).__name__ if exc else "",
         )
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    allow_test = (os.environ.get(ALLOW_TEST_INTAKE_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if int(port or 0) in UNIT_TEST_LISTENER_PORTS and not allow_test:
+        print(
+            f"INFO listener-fault skip unit-test-port={int(port)} (FR #9297)",
+            flush=True,
+        )
+        return {"ok": True, "skipped": True, "reason": "unit-test-port"}
     title = "bug: Jeeves HTTP listener fault (FR #7618)"
     exc_name = type(exc).__name__ if exc else ""
     body = (
@@ -1393,8 +1414,6 @@ def report_http_listener_fault(
         "Fix: inspect memory pressure / accept path; do not leave the port bound but dead.\n"
         "No secrets."
     )
-    if os.environ.get("PYTEST_CURRENT_TEST") and report_fn is None:
-        return {"ok": True, "skipped": True, "reason": "pytest"}
     try:
         import crash_report
 
@@ -1415,7 +1434,6 @@ def report_http_listener_fault(
         )
     except Exception:
         return {"ok": False, "why": why}
-
 
 def listener_self_probe_tick(
     *,

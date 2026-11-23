@@ -558,6 +558,10 @@ def _write_spool(payload: dict[str, Any]) -> Path:
 
 
 def _post_intake(title: str, body: str, *, repo: str, sig: str, exe: str) -> dict[str, Any]:
+    # FR #9297: never hit live intake from a pytest process (listener self-probe
+    # unit suite filed #9297/#9298 with port=9 fingerprints).
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
     policy = load_crash_report_policy()
     if not policy.send:
         raise RuntimeError("crash-report disabled")
