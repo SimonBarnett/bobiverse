@@ -271,11 +271,29 @@ if ($ForceNew -and $hits.Count -gt 0) {
     catch {
         Write-Warning ("ForceNew IRC departure announce failed: {0}" -f $_.Exception.Message)
     }
+    # FR #9205: do not kill tray/Watch PIDs that still parent TipForm OpenCode seats.
+    $lifeFn = Join-Path $RepoRoot 'tools\BobTrayLifecycle.ps1'
+    if ((Test-Path -LiteralPath $lifeFn) -and -not (Get-Command Test-BobTrayProcessHasSeatChildren -ErrorAction SilentlyContinue)) {
+        . $lifeFn
+    }
+    $keptForSeats = @()
     foreach ($h in $hits) {
-        try { Stop-Process -Id ([int]$h.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+        $killPid = 0
+        try { $killPid = [int]$h.ProcessId } catch { continue }
+        if ((Get-Command Test-BobTrayProcessHasSeatChildren -ErrorAction SilentlyContinue) -and
+            (Test-BobTrayProcessHasSeatChildren -ParentProcessId $killPid)) {
+            Write-Output ("FR #9205 skip ForceNew kill pid={0} (parents TipForm seats)" -f $killPid)
+            $keptForSeats += $h
+            continue
+        }
+        try { Stop-Process -Id $killPid -Force -ErrorAction SilentlyContinue } catch { }
     }
     Start-Sleep -Milliseconds 800
-    $hits = @()
+    if ($keptForSeats.Count -gt 0) {
+        $hits = @($keptForSeats)
+    } else {
+        $hits = @()
+    }
 }
 
 # Always tidy on start/restart (after ForceNew kill so dead tray is not "kept").
