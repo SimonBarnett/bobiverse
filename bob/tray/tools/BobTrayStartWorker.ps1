@@ -38,13 +38,100 @@ function Test-BobTraySeatsOff {
 
 function Test-BobTrayEmptyOnlineDisabled {
     <#
-    FR #9142: operator kill switch for empty-online fill without seat_target=0.
-    Presence of <root>\run\startworker\empty-online.disabled skips auto fill;
-    TipForm Agents clicks still work.
+    FR #9142 / #9240: operator kill switch without seat_target=0.
+    Presence of <root>\run\startworker\empty-online.disabled skips every auto
+    seat-start path (empty-online fill, under-cap fill, startworker kind=auto,
+    recycle restore). TipForm Agents / Workers clicks and explicit !startworker
+    (non-auto req) still work.
     #>
     param([Parameter(Mandatory)][string]$Root)
     $dir = Get-BobTrayStartWorkerDir -Root $Root
     return (Test-Path -LiteralPath (Join-Path $dir 'empty-online.disabled') -PathType Leaf)
+}
+
+function Test-BobTraySeatStartTriggerIsAuto {
+    <#
+    FR #9240: triggers that are tray/chair auto paths (not Si TipForm clicks,
+    not explicit !startworker). Blocked when empty-online.disabled is present.
+    #>
+    param([string]$Trigger = '')
+    $t = ([string]$Trigger).Trim().ToLowerInvariant()
+    if (-not $t) { return $false }
+    if ($t -eq 'auto-start') { return $true }
+    if ($t -eq 'restore-after-recycle') { return $true }
+    if ($t -eq 'empty-online' -or $t -eq 'under-cap') { return $true }
+    return $false
+}
+
+function Test-BobTrayEmptyOnlineBlocksAutoStart {
+    <#
+    FR #9240: true when empty-online.disabled is present AND Trigger is auto.
+    Manual TipForm triggers (menu, workers-*, jeeves-menu) and explicit
+    startworker stay false (allowed).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Trigger = ''
+    )
+    if (-not (Test-BobTrayEmptyOnlineDisabled -Root $Root)) { return $false }
+    return [bool](Test-BobTraySeatStartTriggerIsAuto -Trigger $Trigger)
+}
+
+function Write-BobTrayUnrequestedSeatStartIntake {
+    <#
+    FR #9240: deduped intake when an auto seat start is attempted (or refused)
+    while empty-online.disabled is present. Stamp
+    run/startworker/unrequested-start.intake — one filing per 6h per machine.
+    Returns $true when a filing was attempted, $false when skipped (dedup / error).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Trigger = 'auto-start',
+        [string]$Site = 'Start-BobTrayWorkerExe'
+    )
+    try {
+        $dir = Get-BobTrayStartWorkerDir -Root $Root
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        }
+        $stamp = Join-Path $dir 'unrequested-start.intake'
+        if (Test-Path -LiteralPath $stamp) {
+            $ageH = ([datetime]::UtcNow - (Get-Item -LiteralPath $stamp).LastWriteTimeUtc).TotalHours
+            if ($ageH -ge 0 -and $ageH -lt 6) { return $false }
+        }
+        $trig = ([string]$Trigger -replace '[^A-Za-z0-9._-]', '')
+        if (-not $trig) { $trig = 'auto-start' }
+        $siteSafe = ([string]$Site -replace '[^A-Za-z0-9._-]', '')
+        if (-not $siteSafe) { $siteSafe = 'tray' }
+        $title = 'Tray auto seat start while empty-online.disabled (FR #9240)'
+        $body = @"
+Unrequested tray seat-start attempt while run/startworker/empty-online.disabled is present.
+
+trigger=$trig
+site=$siteSafe
+root=$Root
+
+Standing rule: seats start only from TipForm clicks (or explicit !startworker).
+Auto paths (empty-online fill, under-cap, kind=auto startworker, recycle restore) must refuse.
+"@
+        Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+        $report = $null
+        foreach ($rel in @(
+                'common\scripts\Report-BobiverseIntakeIssue.ps1',
+                'scripts\Report-BobiverseIntakeIssue.ps1'
+            )) {
+            $cand = Join-Path $Root $rel
+            if (Test-Path -LiteralPath $cand) { $report = $cand; break }
+        }
+        if ($report) {
+            try {
+                & $report -Repo 'SimonBarnett/bobiverse' -Kind issue -Title $title -Body $body | Out-Null
+            } catch { }
+        }
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 function Get-BobTrayEmptyOnlineFillCount {
@@ -375,7 +462,11 @@ function Get-BobTrayLaunchPidFromOutput {
 function Invoke-BobTrayStartWorkerQueue {
     <#
     .SYNOPSIS
-      One tick: heartbeat, then consume every req-*.json. -Launch is { param($mode) ... return pid } (Start-BobTrayWorkerExe in the tray).
+      One tick: heartbeat, then consume every req-*.json. -Launch is
+      { param($mode, $agent, $model, $trigger) ... return pid } (Start-BobTrayWorkerExe in the tray).
+      FR #9240: kind=auto / empty-* / undercap-* use trigger auto-start and are refused when
+      empty-online.disabled is present (reason empty-online-disabled + dedupe intake).
+      Explicit !startworker (no kind=auto) uses trigger startworker and still launches.
     .OUTPUTS
       One object per request: id, ok, reason, mode, pid.
     #>
@@ -383,9 +474,12 @@ function Invoke-BobTrayStartWorkerQueue {
         [Parameter(Mandatory)][string]$Dir,
         [Parameter(Mandatory)][scriptblock]$Launch,
         [scriptblock]$Log = { param($m) },
-        [datetime]$Now = [datetime]::UtcNow
+        [datetime]$Now = [datetime]::UtcNow,
+        [string]$Root = ''
     )
     [void](Write-BobTrayAlive -Dir $Dir)
+    $gateRoot = $Root
+    if (-not $gateRoot) { $gateRoot = [string]$script:RepoRoot }
     $reqs = @(Get-ChildItem -LiteralPath $Dir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)
     foreach ($f in $reqs) {
         $req = $null
@@ -406,13 +500,22 @@ function Invoke-BobTrayStartWorkerQueue {
             $slot = ''
             if ($req.PSObject.Properties.Name -contains 'slot') { $slot = ([string]$req.slot).Trim().ToLowerInvariant() }
             $model = ''
+            $resolveRoot = $gateRoot
+            if (-not $resolveRoot) { $resolveRoot = [string]$script:RepoRoot }
             if ($agent -eq 'opencode' -and $slot -in @('free', 'paid')) {
                 if (Get-Command Resolve-BobTrayOpencodeSlotModel -ErrorAction SilentlyContinue) {
-                    $model = [string](Resolve-BobTrayOpencodeSlotModel -Root $script:RepoRoot -Slot $slot)
+                    $model = [string](Resolve-BobTrayOpencodeSlotModel -Root $resolveRoot -Slot $slot)
                 }
                 elseif ((Get-Command Get-BobTrayClickedLaunchModel -ErrorAction SilentlyContinue) -and $slot -eq 'free') {
-                    $model = [string](Get-BobTrayClickedLaunchModel -Root $script:RepoRoot -Kind 'opencode')
+                    $model = [string](Get-BobTrayClickedLaunchModel -Root $resolveRoot -Kind 'opencode')
                 }
+            }
+            # FR #9240: auto fill reqs vs explicit !startworker.
+            $kind = ''
+            if ($req.PSObject.Properties.Name -contains 'kind') { $kind = ([string]$req.kind).Trim().ToLowerInvariant() }
+            $launchTrigger = 'startworker'
+            if ($kind -eq 'auto' -or $id -match '^(empty-|undercap-)') {
+                $launchTrigger = 'auto-start'
             }
             # FR #8517: never throw on expires; always leave a res-*.json reason.
             $expires = ConvertTo-BobTrayStartWorkerExpires -Raw $req.expires
@@ -423,14 +526,28 @@ function Invoke-BobTrayStartWorkerQueue {
             elseif ($slot -and $agent -ne 'opencode') { $reason = 'bad-slot' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
             elseif ($mode -eq 'agent' -and (Test-BobTraySeatsOff)) { $reason = 'seats-off' }
+            elseif (
+                $mode -eq 'agent' -and $gateRoot -and
+                (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue) -and
+                (Test-BobTrayEmptyOnlineBlocksAutoStart -Root $gateRoot -Trigger $launchTrigger)
+            ) {
+                # FR #9240: kill switch blocks kind=auto / empty-* / undercap-* launches.
+                $reason = 'empty-online-disabled'
+                try {
+                    if (Get-Command Write-BobTrayUnrequestedSeatStartIntake -ErrorAction SilentlyContinue) {
+                        [void](Write-BobTrayUnrequestedSeatStartIntake -Root $gateRoot -Trigger $launchTrigger -Site 'Invoke-BobTrayStartWorkerQueue')
+                    }
+                } catch { }
+                try { & $Log ('startworker {0}: refused empty-online.disabled trigger={1}' -f $id, $launchTrigger) } catch { }
+            }
             elseif ((Get-BobTrayWorkerCapRefusal -Mode $mode)) { $reason = 'cap' }
             else {
                 try {
                     if ($agent -and $agent -ne 'auto') {
-                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode $agent $model))
+                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode $agent $model $launchTrigger))
                     }
                     else {
-                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode '' ''))
+                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode '' '' $launchTrigger))
                     }
                     if ($pidOut -gt 0) { $ok = $true } else { $reason = 'launch-failed' }
                 }
