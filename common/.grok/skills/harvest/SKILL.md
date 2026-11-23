@@ -396,3 +396,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Composed J:\ Start/Invoke must prefer Bob tip Sync that contains sync-monitor-force over stale J:\scripts\Sync; else tools\monitor never force-copies (opencode_seats class of #9309)
 - MRB CI-G2: PASS when build-jeeves pull_request runs open_children_gate.py --pr with issues/pull-requests read; stack may Closes CI-G1+#G2 together; soft-ok without Closes parents
 - skill-dag resolve must not sum SKILL.md body sizes across depends_on when packing matched metadata; charge response metadata and skip only single bodies over max_bytes so MRB keeps job-irc (FR #9330 / PR #9334).
+- Fresh MRB re-offer after FIX: clear Relay _finished_refs on ACK; treat already-finished NACK as terminal only when done[] verdict SHA matches current head.
