@@ -56,7 +56,8 @@ function Stop-BobTrayWindowlessStatus {
 
 function Start-BobTrayDialog {
     # Returns $true when the exe was started and (for status) a visible HWND exists.
-    # FR #9165: windowless single-instance must not look like success — TipForm falls back.
+    # FR #9165 / #9166: windowless single-instance must not look like success - TipForm falls back
+    # (Stop-BobTrayWindowlessStatus + MainWindowHandle probe).
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][ValidateSet('about', 'status')][string]$Name)
     $exe = Get-BobTrayDialogExe -Root $Root -Name $Name
     if (-not $exe) { return $false }
@@ -284,11 +285,14 @@ function New-BobTrayStatusModel {
 
 function Update-BobTrayStatusHeartbeat {
     # FR #8971: refresh tray-status.json mtime before a slow digest/hover step.
+    # FR #9280: never refresh mtime while title/short is still the startup seed "starting"
+    # (that hid a dead status writer behind a fresh mtime and left the card on starting).
     param([Parameter(Mandatory)][string]$Root)
     try {
         $path = Join-Path $Root 'run\tray-status.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
         $raw = [IO.File]::ReadAllText($path)
+        if ($raw -match '(?i)"(?:title|short)"\s*:\s*"starting"') { return $null }
         $tmp = $path + '.hb.tmp'
         [IO.File]::WriteAllText($tmp, $raw, (New-Object System.Text.UTF8Encoding $false))
         [IO.File]::Replace($tmp, $path, [NullString]::Value)

@@ -109,6 +109,8 @@ namespace BobDialogs
         const int CreateNewConsole = 0x00000010;
         const int CreateUnicodeEnvironment = 0x00000400;
         const int CreateBreakawayFromJob = 0x01000000;
+        // FR #9097: Access Denied when the parent job forbids breakaway (compiled-menu path).
+        const int ErrorAccessDenied = 5;
 
         public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
@@ -418,6 +420,35 @@ namespace BobDialogs
             catch { return false; }
         }
 
+        // FR #9142 / #9240 / #9346: <root>\run\startworker\empty-online.disabled kill switch.
+        public static bool EmptyOnlineDisabled(string root)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(root)) return false;
+                string p = Path.Combine(root, "run", "startworker", "empty-online.disabled");
+                return File.Exists(p);
+            }
+            catch { return false; }
+        }
+
+        // FR #9346: TipForm click / explicit !startworker only. Fail-closed otherwise.
+        public static bool SeatStartTriggerIsManual(string trigger)
+        {
+            string t = (trigger ?? "").Trim().ToLowerInvariant();
+            if (t.Length == 0) return false;
+            if (t == "menu" || t == "jeeves-menu" || t == "startworker") return true;
+            if (t.StartsWith("workers-")) return true;
+            return false;
+        }
+
+        // FR #9240 / #9346: same contract as Test-BobTrayEmptyOnlineBlocksAutoStart (PS shared guard).
+        public static bool EmptyOnlineBlocksAutoStart(string root, string trigger)
+        {
+            if (!EmptyOnlineDisabled(root)) return false;
+            return !SeatStartTriggerIsManual(trigger);
+        }
+
         // Same contract as Start-BobTrayWorkerExe: fresh agent every click, run-copy of the exe so a seat never locks the install,
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
@@ -440,10 +471,21 @@ namespace BobDialogs
         // FR #8679 / BOB-37: cwdOverride (e.g. J:\ for Agents > Jeeves) wins over describe-launch cwd.
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride)
         {
+            return Launch(root, mode, machine, agent, childEnv, out error, cwdOverride, "menu");
+        }
+
+        // FR #9346: trigger shares the PS empty-online.disabled guard (TipForm clicks pass menu / workers-* / jeeves-menu).
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride, string trigger)
+        {
             error = "";
             if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
             {
                 error = "Seats are off on this machine (seat target 0).";
+                return 0;
+            }
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && EmptyOnlineBlocksAutoStart(root, trigger))
+            {
+                error = "empty-online.disabled blocks auto trigger=" + ((trigger ?? "").Trim().Length > 0 ? trigger.Trim() : "other");
                 return 0;
             }
             LaunchCalls++;
@@ -505,7 +547,8 @@ namespace BobDialogs
             si.lpTitle = title;
             PROCESS_INFORMATION pi;
             IntPtr envBlock = IntPtr.Zero;
-            // FR #8568: always break away from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            // FR #8568: prefer breakaway from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            // FR #9097: on Access Denied (5) retry without breakaway (seat stays in parent job / kill-on-close).
             int flags = CreateNewConsole | CreateBreakawayFromJob;
             try
             {
@@ -515,7 +558,26 @@ namespace BobDialogs
                     flags |= CreateUnicodeEnvironment;
                 }
                 if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, envBlock, wd, ref si, out pi))
-                { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    if (err != ErrorAccessDenied)
+                    {
+                        error = "start failed: " + new Win32Exception(err).Message;
+                        return 0;
+                    }
+                    // Fresh buffers: CreateProcessW can mutate the command line / STARTUPINFO.
+                    cmd = new StringBuilder(Quote(run));
+                    foreach (string a in argv) cmd.Append(' ').Append(Quote(a));
+                    si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
+                    si.lpTitle = title;
+                    int retryFlags = CreateNewConsole;
+                    if (envBlock != IntPtr.Zero) retryFlags |= CreateUnicodeEnvironment;
+                    if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, retryFlags, envBlock, wd, ref si, out pi))
+                    {
+                        error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                        return 0;
+                    }
+                }
             }
             finally
             {
@@ -987,6 +1049,8 @@ namespace BobDialogs
             ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
             MenuItems.Add("Agents");
             ToolStripMenuItem miPlan = new ToolStripMenuItem("Plan");
+            // FR #8689 / BOB-48 + FR #9267: Plan GANTT from install assets\ (repo bob\tray\assets\ fallback).
+            TryApplyTrayMenuIcon(miPlan, root, "plan-gantt.ico", "plan");
             miPlan.Click += delegate {
                 // FR #8692 / BOB-46: this box with no tokens shows a dialog and quits. It does not start Plan.
                 string fuel = PlanFuelPath();
@@ -1001,24 +1065,40 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
-            // FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
-            string priorityIco = Path.Combine(root, "vendor\\priority\\priority.ico");
+            // FR #8694 / BOB-54 + FR #9267: vendor\priority\priority.ico, else assets\priority.ico.
+            string priorityIco = Path.Combine(root, "vendor", "priority", "priority.ico");
+            if (!File.Exists(priorityIco))
+                priorityIco = ResolveTrayMenuIconPath(root, "priority.ico");
             if (File.Exists(priorityIco))
             {
                 try
                 {
                     using (Icon ico = new Icon(priorityIco)) { miPriority.Image = ico.ToBitmap(); }
-                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", "vendor/priority/priority.ico");
+                    TrayLifecycle.Write("priority", "action", "priority-icon", "path", priorityIco);
                 }
                 catch (Exception ex)
                 {
                     TrayLifecycle.Write("priority", "action", "priority-icon failed", "error", ex.Message);
                 }
             }
+            else
+            {
+                TrayLifecycle.Write("priority", "action", "menu-icon MISSING", "path", priorityIco, "file", "priority.ico");
+            }
             // FR #8699 / BOB-50 start stays the first child. FR #8695 / BOB-53 adds Configure MCP.
             MenuItems.Add("Priority");
             ToolStripMenuItem miPriorityStart = new ToolStripMenuItem("Start PriorityAgent");
-            miPriorityStart.Click += delegate { StartPriorityExe(); };
+            miPriorityStart.Click += delegate {
+                // FR #8698 / BOB-52: this box with no tokens shows a dialog and quits. It does not start Priority.
+                string fuel = PriorityFuelPath();
+                if (PriorityFuelEmpty(fuel))
+                {
+                    TrayLifecycle.Write("priority", "action", "no tokens", "quit", "1", "path", fuel);
+                    MessageBox.Show("Priority: this box has no tokens. PriorityAgent will quit instead of starting without fuel.", "Priority - no tokens", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                StartPriorityExe();
+            };
             miPriority.DropDownItems.Add(miPriorityStart);
             MenuItems.Add("Start PriorityAgent");
             ToolStripMenuItem miPriorityMcp = new ToolStripMenuItem("Configure MCP (mcp.ntsa.uk)");
@@ -1027,7 +1107,7 @@ namespace BobDialogs
             MenuItems.Add("Configure MCP (mcp.ntsa.uk)");
             miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            // BOB-40: Agents > Jeeves uses the existing butler icon.
+            // BOB-40 + FR #9267: jeeves\assets, sibling jeeves install, then assets\jeeves-butler.ico.
             string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
             if (!File.Exists(butler))
             {
@@ -1035,11 +1115,17 @@ namespace BobDialogs
                 if (parent != null)
                     butler = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
             }
+            if (!File.Exists(butler))
+                butler = ResolveTrayMenuIconPath(root, "jeeves-butler.ico");
             if (File.Exists(butler))
             {
                 using (Icon ico = new Icon(butler))
                     miJeeves.Image = ico.ToBitmap();
-                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico");
+                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico", "path", butler);
+            }
+            else
+            {
+                TrayLifecycle.Write("jeeves", "action", "menu-icon MISSING", "path", butler, "file", "jeeves-butler.ico");
             }
             miJeeves.Click += delegate {
                 // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
@@ -1075,10 +1161,14 @@ namespace BobDialogs
 
                 // FR #8683 / BOB-39: lazy skill DAG on J: skills (resolve/get_skill; not eager full load).
                 TrayLifecycle.Write("jeeves-dag", "lazy", JeevesLazyDag.DryRunLine());
+                // FR #8682 / BOB-38: skill-dag MCP root is J:\.grok\skills (config/log shows J: path).
+                TrayLifecycle.Write("jeeves-mcp", "path", JeevesJMcp.DryRunLine());
                 // FR #8679 / BOB-37: cwd is J: (mapped to Ergo ai\jeeves). Dry-run prints cwd J:.
                 TrayLifecycle.Write("jeeves", "cwd", "cwd J:");
+                System.Collections.Hashtable jeevesEnv = new System.Collections.Hashtable();
+                jeevesEnv[JeevesJMcp.EnvName] = JeevesJMcp.SkillsRoot;
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok", null, "", @"J:\");
+                StartWorker("agent", "grok", jeevesEnv, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
@@ -1090,16 +1180,7 @@ namespace BobDialogs
             menu.Items.Add(miWorkers);
             Item("Weights", delegate { ShowWeights(); });
             Item("About", delegate { Acknowledge(); ShowAbout(); });
-            // FR #7669: show the live seat target. The value is bridge config.json; no tray restart.
-            ToolStripMenuItem miSeats = new ToolStripMenuItem("Seats: on");
-            miSeats.Enabled = false;
-            menu.Items.Add(miSeats);
-            MenuItems.Add("Seats: on");
-            menu.Opening += delegate
-            {
-                miSeats.Text = WorkerLauncher.SeatsOff() ? "Seats: off (seat target 0)" : "Seats: on";
-            };
-            Item("Open log", delegate { OpenLog(); });
+            // FR #9261 / BOB-TRAY-UI-01: no top-level Seats: or Open log (About Show logs opens the tray log).
             // FR #6309: TipForm masked OpenCode key set/select/remove.
             ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");
             MenuItems.Add("OpenCode keys");
@@ -1322,7 +1403,12 @@ namespace BobDialogs
             {
                 stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
             }
-            bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
+            // FR #9280: compare tray-status.json vs tray.alive; detect indefinite "starting".
+            // Never starts/stops/retargets worker seats — only the PS status-writer engine.
+            string writerReason = TrayStatusWriterWatch.EvaluateReason(
+                snapFile, aliveFile, engineStartedUtc, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
+            bool statusStale = writerReason.Length > 0
+                || TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
             if (!exited && !stale && !statusStale)
             {
                 if (engineFailureArmed)
@@ -1335,6 +1421,10 @@ namespace BobDialogs
             }
             if (exited)
                 TrayEngineFailure.Report(root, "dead", machine, snapFile, lastEngineExitCode, "engine process exited");
+            else if (writerReason == "starting-stuck")
+                TrayEngineFailure.Report(root, "starting-stuck", machine, snapFile, lastEngineExitCode, "status card stuck on starting");
+            else if (writerReason == "status-vs-alive")
+                TrayEngineFailure.Report(root, "status-vs-alive", machine, snapFile, lastEngineExitCode, "tray-status.json stale while tray.alive fresh");
             else if (statusStale)
                 TrayEngineFailure.Report(root, "status-stale", machine, snapFile, lastEngineExitCode, "tray-status.json stale >= 120s");
             else
@@ -1358,6 +1448,21 @@ namespace BobDialogs
                                     "engine-restart-storm age=" + ageS.ToString("0.0")
                                     + " max=" + EngineAliveStamp.MaxAgeSeconds.ToString("0")
                                     + " pid=" + SafeEnginePid()));
+                        }
+                        catch { }
+                        // FR #9471: one forced ReloadEngine after storm trip so !startworker can
+                        // recover (engine.alive ticks again). Write engine.storm for TipForm/Watch.
+                        try
+                        {
+                            string stormPath = Path.Combine(aliveDir, "engine.storm");
+                            File.WriteAllText(stormPath, DateTime.UtcNow.ToString("o") + " pid=" + SafeEnginePid());
+                            TrayLifecycle.Write("engine-storm", "path", stormPath, "via", "bob-tray-watchdog");
+                        }
+                        catch { }
+                        try
+                        {
+                            TrayLifecycle.Write("engine-relaunch", "result", "storm-forced-reload", "via", "FR#9471");
+                            ReloadEngine();
                         }
                         catch { }
                     }
@@ -1415,10 +1520,11 @@ namespace BobDialogs
 
         // FR #3180: seats are manual only (Agent/Plan click, !startworker, or human bob-worker).
         // Watchdog may log a seat drop; it must never call WorkerLauncher.Launch.
-        // FR #8568: on a drop, synthesize last-exit + GIVEUP external-kill for vanished runs (still no restart).
+        // FR #8568 / #9226: always heal vanished runs (console-closed vs external-kill); log seat-exit on drop.
         void ObserveWorkerSeats()
         {
             int n = WorkerLauncher.Seats();
+            try { HandleDisappearedWorkerRuns(); } catch { }
             if (lastSeatCount < 0) { lastSeatCount = n; return; }
             if (n < lastSeatCount)
             {
@@ -1427,14 +1533,13 @@ namespace BobDialogs
                     "action", "not restarted",
                     "was", lastSeatCount.ToString(),
                     "now", n.ToString(),
-                    "via", "bob-tray-watchdog");
-                try { HandleDisappearedWorkerRuns(); } catch { }
+                    "via", "bob-tray-watchdog-fr9226");
             }
             lastSeatCount = n;
         }
 
-        // FR #8568: dead worker-<mid>-<pid>-* run dirs with no last-exit.json get a synthetic exit
-        // and GIVEUP external-kill when last-from.txt still names an open job. Never restarts seats.
+        // FR #8568 / #9226: dead worker-<mid>-<pid>-* run dirs with no last-exit.json get a synthetic
+        // exit + GIVEUP (console-closed when worker.log says so). Never restarts seats.
         void HandleDisappearedWorkerRuns()
         {
             string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
@@ -1477,18 +1582,45 @@ namespace BobDialogs
                         string lf = File.ReadAllText(lastFromPath);
                         jobKey = ExtractAssignJobKey(lf);
                     }
-                    string payload = "{\"reason\":\"external-kill\",\"exit_code\":null,\"raw_code\":null,\"job_key\":"
+                    string reason = "external-kill";
+                    string exitCodeJson = "null";
+                    string exitCodeField = "";
+                    try
+                    {
+                        string wl = Path.Combine(dir, "worker.log");
+                        if (File.Exists(wl))
+                        {
+                            string tail = ReadWorkerLogTail(wl, 65536);
+                            if (!string.IsNullOrEmpty(tail) &&
+                                (tail.IndexOf("console-closed", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || tail.IndexOf("console-close exit", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || tail.IndexOf("0xC000013A", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || tail.IndexOf("3221225786", StringComparison.OrdinalIgnoreCase) >= 0))
+                            {
+                                reason = "console-closed";
+                                exitCodeJson = "3221225786";
+                                exitCodeField = "3221225786";
+                            }
+                        }
+                    }
+                    catch { }
+                    string nick = runMid + "-" + pid;
+                    string payload = "{\"reason\":" + JsonString(reason) + ",\"exit_code\":" + exitCodeJson
+                        + ",\"raw_code\":" + exitCodeJson + ",\"job_key\":"
                         + JsonString(jobKey) + ",\"machine\":" + JsonString(runMid)
-                        + ",\"nick\":" + JsonString(runMid + "-" + pid)
+                        + ",\"nick\":" + JsonString(nick)
                         + ",\"kind\":\"\",\"agent_pid\":" + pid
-                        + ",\"synthetic\":true,\"via\":\"fr-8568-disappeared-seat\"}\n";
+                        + ",\"synthetic\":true,\"via\":\"fr-9226-disappeared-seat\"}\n";
                     File.WriteAllText(lastExit, payload, new UTF8Encoding(false));
                     TrayLifecycle.Write(
                         "seat-disappeared",
                         "pid", pid.ToString(),
+                        "nick", nick,
                         "run", name,
                         "job", string.IsNullOrEmpty(jobKey) ? "(none)" : jobKey,
-                        "via", "bob-tray-watchdog");
+                        "reason", reason,
+                        "exit_code", exitCodeField,
+                        "via", "bob-tray-watchdog-fr9226");
                     if (string.IsNullOrEmpty(jobKey)) continue;
                     string outbox = Path.Combine(dir, "outbox.txt");
                     string existing = File.Exists(outbox) ? File.ReadAllText(outbox) : "";
@@ -1497,10 +1629,24 @@ namespace BobDialogs
                         || existing.IndexOf("NACK " + jobKey, StringComparison.OrdinalIgnoreCase) >= 0)
                         continue;
                     string channel = runMid.Length > 0 ? runMid : "shop";
-                    string line = "PRIVMSG #" + channel + " :GIVEUP " + jobKey + " external-kill\r\n";
+                    string line = "PRIVMSG #" + channel + " :GIVEUP " + jobKey + " " + reason + "\r\n";
                     File.AppendAllText(outbox, line, new UTF8Encoding(false));
                 }
                 catch { }
+            }
+        }
+
+        static string ReadWorkerLogTail(string path, int maxBytes)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                long len = fs.Length;
+                if (len <= 0) return "";
+                int take = (int)Math.Min(len, maxBytes);
+                fs.Seek(-take, SeekOrigin.End);
+                byte[] buf = new byte[take];
+                int read = fs.Read(buf, 0, take);
+                return Encoding.UTF8.GetString(buf, 0, read);
             }
         }
 
@@ -1579,6 +1725,16 @@ namespace BobDialogs
                                 state = new TrayState();
                                 state.Short = "Bob: engine down";
                             }
+                        }
+                    }
+                    // FR #9280: never leave the card on startup seed "starting" indefinitely.
+                    else if (TrayStatusAge.IsStartingSeed(state.Short) && engineStartedUtc != DateTime.MinValue)
+                    {
+                        double sinceStart = (DateTime.UtcNow - engineStartedUtc).TotalSeconds;
+                        if (sinceStart >= TrayStatusWriterWatch.StartingStuckSeconds
+                            && state.Short != "Bob: status stalled")
+                        {
+                            state.Short = "Bob: status stalled";
                         }
                     }
                 }
@@ -1672,7 +1828,7 @@ namespace BobDialogs
             parent.DropDownItems.Clear();
             // FR #6301: start entries carry no fuel/quota state text.
             // FR #6429: OpenCode is a free/paid model submenu (replaces the FR #6301 flat OpenCode row).
-            AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
+            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/Open Code only.
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
             AddOpencodeModelSubmenu(parent, true, record);
@@ -1683,6 +1839,46 @@ namespace BobDialogs
         {
             if (!string.Equals(id ?? "", "cursor", StringComparison.OrdinalIgnoreCase)) return "";
             return Path.Combine(installRoot ?? "", "assets", "menu-favicons", "cursor.com.ico");
+        }
+
+        // FR #9267 / BOB-TRAY-UI-07: install sync lays tray glyphs at <install>\assets\;
+        // repo checkout keeps bob\tray\assets\. Prefer install path (same as Plan / Watch-BobTray).
+        internal static string ResolveTrayMenuIconPath(string installRoot, string fileName)
+        {
+            string name = (fileName ?? "").Trim();
+            if (name.Length == 0) return "";
+            string rootPath = installRoot ?? "";
+            string install = Path.Combine(rootPath, "assets", name);
+            if (File.Exists(install)) return install;
+            string repo = Path.Combine(rootPath, "bob", "tray", "assets", name);
+            if (File.Exists(repo)) return repo;
+            return install;
+        }
+
+        internal static bool TryApplyTrayMenuIcon(ToolStripMenuItem mi, string installRoot, string fileName, string logKey)
+        {
+            if (mi == null) return false;
+            string p = ResolveTrayMenuIconPath(installRoot, fileName);
+            bool ok = false;
+            try
+            {
+                if (p.Length > 0 && File.Exists(p))
+                {
+                    using (Icon ico = new Icon(p, 16, 16))
+                        mi.Image = ico.ToBitmap();
+                    ok = mi.Image != null;
+                }
+            }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write(logKey, "action", "menu-icon failed", "path", p, "error", ex.Message);
+                ok = false;
+            }
+            if (ok)
+                TrayLifecycle.Write(logKey, "action", "menu-icon", "path", p, "ok", "1");
+            else
+                TrayLifecycle.Write(logKey, "action", "menu-icon MISSING", "path", p, "file", fileName ?? "", "ok", "0");
+            return ok;
         }
 
         void ApplyWorkerFavicon(ToolStripMenuItem mi, string id)
@@ -1710,17 +1906,9 @@ namespace BobDialogs
             mi.Enabled = enabled;
             if (string.Equals(id, "grok", StringComparison.OrdinalIgnoreCase))
             {
-                // FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon, not a generic icon.
-                string grokIcon = Path.Combine(root, "bob", "tray", "assets", "grok-favicon.ico");
-                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "path", grokIcon, "source", "https://grok.com/images/favicon.ico");
-                try
-                {
-                    if (File.Exists(grokIcon)) mi.Image = new Icon(grokIcon, 16, 16).ToBitmap();
-                }
-                catch (Exception ex)
-                {
-                    TrayLifecycle.Write("workers-grok", "action", "grok favicon failed", "error", ex.Message);
-                }
+                // FR #8723 / BOB-19 + FR #9267: grok.com favicon from install assets\.
+                TrayLifecycle.Write("workers-grok", "action", "grok favicon", "source", "https://grok.com/images/favicon.ico");
+                TryApplyTrayMenuIcon(mi, root, "grok-favicon.ico", "workers-grok");
             }
             mi.Click += OnAgentChoiceClick;
             ApplyWorkerFavicon(mi, id);
@@ -1730,32 +1918,40 @@ namespace BobDialogs
 
         void AddOpencodeModelSubmenu(ToolStripMenuItem parent, bool enabled, bool record)
         {
-            // FR #6429: Agents > OpenCode > Start free/paid model (child-only BOB_OPENCODE_MODEL).
+            // FR #6429 / FR #9263: Workers > Open Code > Free|Paid only (child-only BOB_OPENCODE_MODEL).
             // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
             ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
-            // FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
-            string ocIcon = Path.Combine(root, "bob", "tray", "assets", "opencode-favicon.ico");
-            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "path", ocIcon, "source", "https://opencode.ai/favicon-v3.ico");
-            try
-            {
-                if (File.Exists(ocIcon)) oc.Image = new Icon(ocIcon, 16, 16).ToBitmap();
-            }
-            catch (Exception ex)
-            {
-                TrayLifecycle.Write("workers-opencode", "action", "opencode favicon failed", "error", ex.Message);
-            }
+            // FR #8728 / BOB-31 + FR #9267: opencode.ai favicon from install assets\.
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "source", "https://opencode.ai/favicon-v3.ico");
+            TryApplyTrayMenuIcon(oc, root, "opencode-favicon.ico", "workers-opencode");
+            // FR #9263 / BOB-TRAY-UI-03: submenu is Free and Paid only (no model picker).
+            // Model id comes from Weights/models webhook at click (OpencodeWebhookModel); tip label stays Free|Paid.
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
+            string catalog = ModelsCatalogPath();
+            string whFree = OpencodeWebhookModel(catalog, "Opencode-Free");
+            string whPaid = OpencodeWebhookModel(catalog, "Opencode");
+            if (whFree.Length > 0) freeModel = whFree;
+            if (whPaid.Length > 0) paidModel = whPaid;
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
             string paidRun; bool paidAlive = WorkerLauncher.OpencodeSlotRunning("paid", out paidRun);
-            string freeText = "Start free model (" + freeModel + ")";
+            string freeText = "Free";
             if (freeAlive) freeText += " [running]";
-            freeText += " [default]";
-            string paidText = "Start paid model (" + paidModel + ")";
+            string paidText = "Paid";
             if (paidAlive) paidText += " [running]";
             AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
             AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
+            try
+            {
+                if (oc.DropDownItems.Count >= 2)
+                {
+                    oc.DropDownItems[0].ToolTipText = freeModel;
+                    oc.DropDownItems[1].ToolTipText = paidModel;
+                }
+            }
+            catch { }
+            TrayLifecycle.Write("workers-opencode", "action", "submenu Free|Paid", "free", freeModel, "paid", paidModel);
             parent.DropDownItems.Add(oc);
             if (record) MenuItems.Add("Open Code");
         }
@@ -1943,7 +2139,7 @@ namespace BobDialogs
             {
                 parent.DropDownItems.Clear();
                 // FR #7189: timeout/error keeps rows enabled. Only Unsupported / missing exe greys.
-                AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
+                // FR #9262 / BOB-TRAY-UI-02: no Automatic/auto fallback row.
                 bool grey = (err ?? "").IndexOf("no --list-agents", StringComparison.OrdinalIgnoreCase) >= 0
                     || (err ?? "").IndexOf("bob-worker.exe not found", StringComparison.OrdinalIgnoreCase) >= 0
                     || (err ?? "") == WorkerLauncher.RebuildListReason
@@ -1964,6 +2160,8 @@ namespace BobDialogs
                 string reason = Common.Str(row, "reason");
                 if (!available && reason.Length > 0 && id != "auto") label = label + " - " + reason;
                 if (id.Length == 0) continue;
+                // FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu skips it.
+                if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
                 {
                     AddOpencodeModelSubmenu(parent, available, false);
@@ -2065,6 +2263,37 @@ namespace BobDialogs
             return false;
         }
 
+        // FR #8698 / BOB-52: fuel file for this box. BOB_PRIORITY_FUEL_FILE overrides the local default.
+        // Missing / unreadable file = unknown fuel = allow start (PriorityAgent applies its own check).
+        string PriorityFuelPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_PRIORITY_FUEL_FILE");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(local, "Bobiverse", "priority-fuel.json");
+        }
+
+        bool PriorityFuelEmpty(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))); }
+            catch { return false; }
+            if (doc == null) return false;
+            if (doc.ContainsKey("status") && doc["status"] != null)
+            {
+                string st = ("" + doc["status"]).Trim().ToLowerInvariant();
+                if (st == "empty" || st == "exhausted" || st == "out-of-fuel" || st == "out_of_fuel") return true;
+            }
+            foreach (string key in new string[] { "remaining_pct", "remaining", "tokens_remaining" })
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null || ("" + doc[key]).Trim().Length == 0) continue;
+                int n;
+                if (int.TryParse(("" + doc[key]).Trim(), out n)) return n <= 0;
+            }
+            return false;
+        }
+
         // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
         void StartPlanExe()
         {
@@ -2102,15 +2331,38 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
-            StartWorker(mode, agent, null, "", "");
+            StartWorker(mode, agent, null, "", "", "menu");
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
         {
-            StartWorker(mode, agent, childEnv, opencodeSlot, "");
+            StartWorker(mode, agent, childEnv, opencodeSlot, "", TipFormSeatTrigger(agent, opencodeSlot));
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride)
+        {
+            StartWorker(mode, agent, childEnv, opencodeSlot, cwdOverride, TipFormSeatTrigger(agent, opencodeSlot, cwdOverride));
+        }
+
+        // FR #9346: TipForm click triggers stay on the manual allowlist of the shared empty-online guard.
+        static string TipFormSeatTrigger(string agent, string opencodeSlot)
+        {
+            return TipFormSeatTrigger(agent, opencodeSlot, "");
+        }
+
+        static string TipFormSeatTrigger(string agent, string opencodeSlot, string cwdOverride)
+        {
+            if (!string.IsNullOrEmpty(cwdOverride) && string.Equals(cwdOverride, @"J:\", StringComparison.OrdinalIgnoreCase))
+                return "jeeves-menu";
+            string a = (agent ?? "").Trim().ToLowerInvariant();
+            if (a == "grok") return "workers-grok";
+            if (a == "cursor") return "workers-cursor";
+            if (a == "opencode" || opencodeSlot == "free" || opencodeSlot == "paid") return "workers-opencode";
+            if (a.Length == 0 || a == "auto") return "menu";
+            return "menu";
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride, string trigger)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
@@ -2149,7 +2401,8 @@ namespace BobDialogs
                 return;
             }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
+            // FR #9346: TipForm clicks pass a manual trigger so empty-online.disabled does not block Si.
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "", trigger ?? "menu");
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;
@@ -2635,7 +2888,26 @@ namespace BobDialogs
                 else Console.Write(body);
                 return statusStale ? 2 : 0;
             }
-                        if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
+            // FR #9280: headless status-writer watchdog eval (starting-stuck / status-vs-alive).
+            // Local name writerEvalReason avoids CS0136 with Main's process-exit `reason` below.
+            if (Common.Flag(args, "--status-writer-eval"))
+            {
+                string snap = Path.Combine(root, "run", "tray-status.json");
+                string alive = Path.Combine(root, "run", "startworker", "tray.alive");
+                DateTime started = DateTime.UtcNow;
+                string startedArg = Common.Arg(args, "--engine-started-ago-s");
+                double ago;
+                if (startedArg.Length > 0 && double.TryParse(startedArg, out ago))
+                    started = DateTime.UtcNow.AddSeconds(-ago);
+                string writerEvalReason = TrayStatusWriterWatch.EvaluateReason(
+                    snap, alive, started, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "reason=" + (writerEvalReason.Length > 0 ? writerEvalReason : "ok") + "\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return writerEvalReason.Length > 0 ? 2 : 0;
+            }
+            if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
             string ticksArg = Common.Arg(args, "--watchdog-ticks");
             if (ticksArg.Length > 0)
@@ -2704,6 +2976,13 @@ namespace BobDialogs
             if (dumpWeightsCols.Length > 0)
             {
                 File.WriteAllText(dumpWeightsCols, WeightsForm.DumpColumnHeaders(), new UTF8Encoding(false));
+                return 0;
+            }
+            // FR #9266 / BOB-TRAY-UI-06: exit-before-UI Refresh models control evidence.
+            string dumpWeightsRefresh = Common.Arg(args, "--dump-weights-refresh");
+            if (dumpWeightsRefresh.Length > 0)
+            {
+                File.WriteAllText(dumpWeightsRefresh, WeightsForm.DumpRefreshButton(), new UTF8Encoding(false));
                 return 0;
             }
             // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
@@ -3034,6 +3313,75 @@ namespace BobDialogs
                 return age >= staleSeconds;
             }
             catch { return false; }
+        }
+
+        // FR #9280: read short/title from tray-status.json (startup seed uses short=starting).
+        public static string ReadShortOrTitle(string snapFile)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(snapFile) || !File.Exists(snapFile)) return "";
+                string json;
+                using (FileStream fs = new FileStream(snapFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true)) json = sr.ReadToEnd();
+                Dictionary<string, object> d = Common.Dict(Common.ParseJson(json));
+                if (d == null) return "";
+                string shortText = Common.Str(d, "short");
+                if (!string.IsNullOrEmpty(shortText)) return shortText;
+                return Common.Str(d, "title");
+            }
+            catch { return ""; }
+        }
+
+        public static bool IsStartingSeed(string shortOrTitle)
+        {
+            return string.Equals((shortOrTitle ?? "").Trim(), "starting", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    // FR #9280: status writer health vs tray.alive (never touches worker seats).
+    internal static class TrayStatusWriterWatch
+    {
+        public const double AliveFreshSeconds = 30;
+        public const double StartingStuckSeconds = 180;
+        public const double StatusWriteIntervalSeconds = 15;
+        public const double StatusStaleMultiples = 8; // 8 * 15s = 120s
+
+        public static bool AliveIsFresh(string aliveFile, DateTime utcNow, double freshSeconds)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(aliveFile) || !File.Exists(aliveFile)) return false;
+                double age = (utcNow - File.GetLastWriteTimeUtc(aliveFile)).TotalSeconds;
+                return age >= 0 && age <= freshSeconds;
+            }
+            catch { return false; }
+        }
+
+        // Returns empty, "starting-stuck", "status-vs-alive", or "status-stale".
+        public static string EvaluateReason(
+            string snapFile,
+            string aliveFile,
+            DateTime engineStartedUtc,
+            DateTime utcNow,
+            double statusStaleSeconds)
+        {
+            try
+            {
+                if (engineStartedUtc == DateTime.MinValue) return "";
+                double sinceStart = (utcNow - engineStartedUtc).TotalSeconds;
+                if (sinceStart < 0) sinceStart = 0;
+                string label = TrayStatusAge.ReadShortOrTitle(snapFile);
+                if (TrayStatusAge.IsStartingSeed(label) && sinceStart >= StartingStuckSeconds)
+                    return "starting-stuck";
+                double staleAfter = Math.Max(statusStaleSeconds, StatusWriteIntervalSeconds * StatusStaleMultiples);
+                bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, staleAfter);
+                if (!statusStale) return "";
+                if (AliveIsFresh(aliveFile, utcNow, AliveFreshSeconds))
+                    return "status-vs-alive";
+                return "status-stale";
+            }
+            catch { return ""; }
         }
     }
 

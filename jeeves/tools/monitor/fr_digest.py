@@ -23,6 +23,7 @@ from typing import Any
 from _common import (
     EXIT_FINDING,
     EXIT_OK,
+    is_digest_row,
     queue_bucket_rows,
     resolve_homes,
     resolve_queue_path,
@@ -57,7 +58,8 @@ def product_on_tip() -> bool:
         text = gitclaim.read_text(encoding="utf-8")
     except OSError:
         return False
-    return "bob_g1_skip_held_digest" in text
+    # FR #8837 + FR #9455 shared gate markers mean BOB-G1 is on tip.
+    return "bob_g1_skip_held_digest" in text or "bob_g1_shared_gate" in text
 
 
 def _row_repo(row: dict) -> str:
@@ -111,8 +113,11 @@ def _labels(row: dict) -> set[str]:
 
 
 def held_digest(row: dict) -> bool:
+    """Held digest: Digest flag (BOB-G3) plus ``hold`` (BOB-G1)."""
     names = _labels(row)
-    return "fr-digest" in names and "hold" in names
+    if "hold" not in names and "on-hold" not in names:
+        return False
+    return is_digest_row(row) or "fr-digest" in names or "digest" in names
 
 
 def _offered_or_accepted(row: dict, bucket: str) -> bool:

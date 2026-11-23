@@ -74,10 +74,10 @@ def test_infer_require_machine_dedicated_pin_line_and_needs_label_still_pin():
 def test_ghost_legacy_workers_do_not_block_same_machine_uat_sibling(
     tmp_path, monkeypatch
 ):
-    """Empty worker_list + stale pid workers on another machine must not UAT sibling-block.
+    """Empty worker_list + stale pid workers on another machine must not sibling-block.
 
-    MRB self-exclusion is exact-seat only (FR #2604); UAT still uses the sibling rule
-    (FR #227 / #1407). Ghosts must not count as the viable other-machine seat.
+    Ghosts must not count as the other-machine seat for MRB (FR #9401) or UAT
+    (FR #227 / #1407). Sole real live machine keeps same-machine siblings offerable.
     """
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     monkeypatch.setenv("BOB_MACHINE_ID", "marchhare")

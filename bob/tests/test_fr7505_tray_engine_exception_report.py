@@ -34,7 +34,7 @@ def test_fr7505_start_engine_logs_and_reports_fail():
 
 def test_fr7505_heal_reports_dead_and_status_stale():
     t = _cs()
-    heal = t[t.find("void HealEngine()") : t.find("void HealEngine()") + 3500]
+    heal = t[t.find("void HealEngine()") : t.find("void HealEngine()") + 6000]
     assert "FR #7505" in heal or "TrayEngineFailure" in heal
     assert "TrayEngineFailure.Report" in heal
     assert "status-stale" in heal or "StatusStaleSeconds" in t

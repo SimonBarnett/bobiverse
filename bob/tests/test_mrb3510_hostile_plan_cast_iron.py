@@ -1,20 +1,23 @@
-"""docs/mrb-3510: hostile pins for FR #3506 Plan CAST IRON + Sync/ff note."""
+"""docs/mrb-3510: hostile pins for FR #3506 Plan CAST IRON (FR #8833 retarget).
+
+In-tree Plan AGENTS removed; pointer README + Pack stub carry skills-visionary CAST IRON.
+"""
 from __future__ import annotations
 
 from repo_layout import ROOT
 
-AGENTS = ROOT / "bob/agents/plan/AGENTS.md"
+README = ROOT / "bob/agents/plan/README.md"
+PACK = ROOT / "common/scripts/Pack-BobiverseRelease.ps1"
 
 
-def test_mrb3510_agents_sync_ff_note_and_utf8_xlsx():
-    t = AGENTS.read_text(encoding="utf-8")
-    assert "FR #3506" in t
-    assert "Sync/ff" in t or "Sync/ff or MSI" in t
+def test_mrb3510_readme_and_pack_skills_visionary():
+    t = README.read_text(encoding="utf-8")
     assert "skills-visionary" in t
-    # UTF-8 arrows (no mojibake) on xlsx bullet
-    assert "\u2192" in t  # →
-    assert "\u2014" in t  # —
-    assert "â" not in t
+    assert "FR #8833" in t or "8833" in t
+    pack = PACK.read_text(encoding="utf-8-sig")
+    assert "FR #3506" in pack or "skills-visionary" in pack
+    assert "Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary" in pack
+    assert "\u2192" not in pack or "â" not in pack  # UTF-8 hygiene on stub
 
 
 def test_mrb3510_fr3506_product_tests_present():

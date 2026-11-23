@@ -24,7 +24,7 @@
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, **workers_last_good_orphan** (local digest last-good ghosts), **online_zero_workers** (online shop with workers=[] while offerable_count>0; TipForm Agents, no auto-start), GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**, **walrus_jeeves_install_ready**), report delays via intake only, then loop on a schedule.
 
 Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` â€” deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
@@ -47,6 +47,8 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
 | Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
+| Orphan last-good workers | `scripts\Test-JeevesMonitorWorkersLastGoodOrphan.ps1` | `tools\monitor\workers_last_good_orphan.py` (FR #9145; token-free; local digest only) |
+| Online zero workers | `scripts\Test-JeevesMonitorOnlineZeroWorkers.ps1` | `tools\monitor\online_zero_workers.py` (FR #9462; local digest or live `/report`; fingerprint `stall:online-zero-workers:<machine>`; TipForm Agents only — no silent auto-start #3180) |
 | GIVEUP loops | `scripts\Test-JeevesMonitorGiveupLoops.ps1` | `tools\monitor\giveup_loops.py` (FR #1622: active unaccepted/accepted only; ignore `done[]`; skip require_machine pins with zero live seats) |
 | Stuck accepted rows | `scripts\Test-JeevesMonitorStuckAccepted.ps1` | `tools\monitor\stuck_accepted.py` |
 | Auto-feed | `scripts\Test-JeevesMonitorAutoFeed.ps1` | `tools\monitor\auto_feed.py` |
@@ -58,6 +60,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Github resync focus starve | `scripts\Test-JeevesMonitorGithubResyncFocus.ps1` | `tools\monitor\github_resync_focus.py` (FR #3146) |
 | Depends-on still OPEN | `scripts\Test-JeevesMonitorDependsOn.ps1` | `tools\monitor\depends_on.py` (FR #8848; soft-ok until BOB-D is on tip) |
 | FR digest still held | `scripts\Test-JeevesMonitorFrDigest.ps1` | `tools\monitor\fr_digest.py` (FR #8849; after depends_on; soft-ok until BOB-G is on tip) |
+| Walrus install gate | `scripts\Test-JeevesMonitorWalrusJeevesInstallReady.ps1` | `tools\monitor\walrus_jeeves_install_ready.py` (FR #9376; gate CLOSED before `-SiYes` WinRM; `Install-JeevesWalrusWinRm.ps1`) |
 | Open PR non-default base | `scripts\Test-JeevesMonitorOpenPrStaleBase.ps1` | `tools\monitor\open_pr_stale_base.py` (FR #8333; fixture `JEEVES_OPEN_PR_STALE_BASE_FIXTURE`) |
 | Open PR missing MRB/FIX row | `scripts\Test-JeevesMonitorOpenPrMrbMissing.ps1` | `tools\monitor\open_pr_mrb_missing.py` (FR #8377; fixture `JEEVES_OPEN_PR_MRB_MISSING_FIXTURE`) |
 | Ticket closure (new closes) | `scripts\Test-JeevesMonitorTicketClosure.ps1` | `tools\monitor\ticket_closure.py` (FR #6063) |

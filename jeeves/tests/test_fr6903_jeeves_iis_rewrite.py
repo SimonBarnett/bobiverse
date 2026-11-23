@@ -35,6 +35,8 @@ def _run_install(physical: Path, *, what_if: bool = False, backend: str = "http:
         str(physical),
         "-Backend",
         backend,
+        # FR #9246: unit runs must not wait on a live BobCallback.
+        "-SkipBackendProbe",
     ]
     if what_if:
         args.append("-WhatIf")

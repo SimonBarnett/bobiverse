@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -11,6 +12,47 @@ from typing import Any, Callable, Optional
 EXIT_OK = 0
 EXIT_FINDING = 1
 EXIT_ERROR = 2
+
+# BOB-G3 / FR #9108: Digest flag recognition (mirrors gitclaim.digest_issue_reason).
+_DIGEST_LABELS = frozenset({"digest", "fr-digest"})
+_DIGEST_KIND_RE = re.compile(
+    r"(?im)^[^\S\n]*(?:\*{0,2}|`{0,2})Kind(?:\*{0,2}|`{0,2})"
+    r"[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?"
+    r"[^\S\n]*(fr-digest|digest)\b"
+)
+
+
+def is_digest_row(row: dict) -> bool:
+    """True for issue FR digests via ``digest``/``fr-digest`` label or Kind: stamp.
+
+    Issues-only. Ignores title. MRB / pull_request-shaped rows are never digests.
+    """
+    if not isinstance(row, dict):
+        return False
+    task = str(row.get("task") or "").strip().upper()
+    if task and task != "FR":
+        return False
+    event = str(row.get("event") or "").strip().lower()
+    if event == "pull_request":
+        return False
+    url = str(row.get("url") or "")
+    if "/pull/" in url.replace("\\", "/").lower():
+        return False
+    raw = row.get("labels") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    names: set[str] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                names.add(item.strip().lower())
+            elif isinstance(item, dict):
+                names.add(str(item.get("name") or "").strip().lower())
+    if names & _DIGEST_LABELS:
+        return True
+    body = str(row.get("body") or "")
+    return _DIGEST_KIND_RE.search(body) is not None
 
 
 def _is_ephemeral_test_home(path: Path) -> bool:
@@ -268,7 +310,7 @@ def row_has_pull_url(row: dict) -> bool:
     return bool(str(row.get("pr_id") or row.get("pr") or "").strip())
 # --- FR #8579: non-chair monitor overlay (live /bob/v1/report) -----------------
 
-DEFAULT_LIVE_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_LIVE_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 LIVE_REPORT_USER_AGENT = "Bobiverse-jeeves-monitor/1.0"
 LIVE_REPORT_MAX_AGE_SEC = 900  # align with stale_digest default
 

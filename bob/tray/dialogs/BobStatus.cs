@@ -622,23 +622,39 @@ namespace BobDialogs
             try
             {
                 f = new StatusForm(root);
-                // FR #9165: force HWND; abandon mutex and exit if the window never appears.
+                Common.TimingHook(f, args);
+                // FR #9165 / #9166: force HWND; abandon/release mutex if windowless so TipForm recovers.
                 IntPtr h = f.Handle;
-                if (h == IntPtr.Zero)
+                if (h == IntPtr.Zero || !f.IsHandleCreated)
                 {
-                    Common.AbandonSingle();
                     try { f.Dispose(); } catch { }
+                    Common.ReleaseSingle();
+                    Common.AbandonSingle();
                     return 2;
                 }
-                Common.TimingHook(f, args);
+                f.Show();
+                if (!f.Visible)
+                {
+                    try { f.Dispose(); } catch { }
+                    Common.ReleaseSingle();
+                    Common.AbandonSingle();
+                    return 2;
+                }
                 Application.Run(f);
                 return 0;
             }
             catch
             {
-                Common.AbandonSingle();
                 try { if (f != null) f.Dispose(); } catch { }
+                Common.ReleaseSingle();
+                Common.AbandonSingle();
                 throw;
+            }
+            finally
+            {
+                // Process exit also drops the mutex; release after Run so a clean Close frees TipForm sooner.
+                Common.ReleaseSingle();
+                Common.AbandonSingle();
             }
         }
     }

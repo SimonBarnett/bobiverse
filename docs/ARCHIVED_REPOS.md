@@ -74,7 +74,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `.grok/skills/start-bob-copilot/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/start-bob-copilot/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/start-bob-cursor/SKILL.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/.grok/skills/start-bob-cursor/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/unstick-grok-bot/SKILL.md` | `12f8758` | 2026-09-20 | `docs/archive/agentic_build/.grok/skills/unstick-grok-bot/SKILL.archived.md` | no live counterpart |
-| `.grok/skills/visionary/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/visionary/SKILL.archived.md` | live counterpart `bob/agents/plan/.grok/skills/visionary/SKILL.md`. |
+| `.grok/skills/visionary/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/visionary/SKILL.archived.md` | live counterpart https://github.com/SimonBarnett/skills-visionary (FR #8833). |
 | `.grok/skills/watch-agent-health/SKILL.md` | `12f8758` | 2026-09-23 | `docs/archive/agentic_build/.grok/skills/watch-agent-health/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/wix-msi-pack/SKILL.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/.grok/skills/wix-msi-pack/SKILL.archived.md` | no live counterpart |
 | `README.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/README.md` | merged into `README.md` by FR #806 / PR #825 |
@@ -214,7 +214,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `docs/screenshots/bob-fleet-tray-single-bar-bogus-unreachable-2026-09-20.png` | `12f8758` | 2026-09-20 | `docs/archive/agentic_build/docs/screenshots/bob-fleet-tray-single-bar-bogus-unreachable-2026-09-20.png` | no live counterpart |
 | `docs/skill-harvest-log.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/docs/skill-harvest-log.md` | merged into `common/docs/skill-harvest-log.md` by FR #806 / PR #825 |
 | `docs/smoke-systray-session-api-key-and-plan-2026-09-24.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/docs/smoke-systray-session-api-key-and-plan-2026-09-24.md` | no live counterpart |
-| `docs/templates/vision.md` | `12f8758` | 2026-09-23 | `bob/agents/plan/docs/templates/vision.md` (already present) | identical copy already in bobiverse |
+| `docs/templates/vision.md` | `12f8758` | 2026-09-23 | `docs/archive/agentic_build/docs/templates/vision.md` | live templates in skills-visionary (FR #8833) |
 | `docs/test-pack-no-live-irc-fr329.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/docs/test-pack-no-live-irc-fr329.md` | no live counterpart |
 | `docs/uat-bob-fleet-tray-weekly-machine-tiles-2026-09-19.md` | `12f8758` | 2026-09-19 | `docs/archive/agentic_build/docs/uat-bob-fleet-tray-weekly-machine-tiles-2026-09-19.md` | no live counterpart |
 | `docs/utf8-no-bom.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/docs/utf8-no-bom.md` | no live counterpart |

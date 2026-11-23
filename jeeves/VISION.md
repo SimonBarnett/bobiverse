@@ -54,7 +54,7 @@ ircJeeves (chair)
   │    ├─ focus / ignore / require_machine
   │    ├─ exact-seat giveup_seats + cooldown (FR #5088)
   │    ├─ needs_human global auto-offer block (FR #4336); !assign may still hand out
-  │    ├─ MRB self-exclusion exact seat (FR #2604 / #4606)
+  │    ├─ MRB self-exclusion machine-id when other machine live (FR #9401; multi-machine author_seats exact-seat only FR #9480; sole-box keeps FR #2604 / #4606)
   │    └─ UAT dead-author inherit still uses nick_inherits_dead_seat (FR #4336)
   ├─ !register / !recycle / !resync / !status / !assign (ops matrix)
   └─ never touch Ergo config as hotpatch of ircJeeves alone

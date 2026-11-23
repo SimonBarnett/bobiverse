@@ -206,9 +206,13 @@ def test_fr3205_skips_seat_relative(home: Path):
 
 
 def test_fr3205_cant_mrb_gets_next_fr(home: Path):
-    """Own PR as MRB #40 (self-review blocked) → !bored returns FR #8, never empty."""
+    """Own PR as MRB #40 (self-review blocked) → !bored returns FR #8, never empty.
+
+    FR #9401: other-machine seat (flamingo) takes the MRB; same-machine sibling
+    would also be blocked while flamingo is live.
+    """
     repo = "SimonBarnett/bobiverse"
-    me, other = "marchhare-35600", "marchhare-35601"
+    me, other = "marchhare-35600", "flamingo-9"
     mrb = _row(repo, "MRB", 40, seq=1)
     mrb["author_seat"] = me
     mrb["implementer_seat"] = me
@@ -217,7 +221,7 @@ def test_fr3205_cant_mrb_gets_next_fr(home: Path):
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok", st
     assert job is not None and job["id"] == "#8" and job["task"] == "FR"
-    st2, job2 = gitclaim.offer_focus_top(home, other, "#marchhare")
+    st2, job2 = gitclaim.offer_focus_top(home, other, "#flamingo")
     assert st2 == "ok" and job2["id"] == "#40"
 
 
@@ -256,17 +260,26 @@ def test_fr3205_fallback_obeys_kind_and_number(home: Path, monkeypatch: pytest.M
 
 
 def test_fr3205_precompute_bored_zero_github(home: Path):
-    """Fresh precompute → !bored makes zero GitHub calls."""
+    """Fresh precompute → !bored makes zero *budgeted* GitHub calls.
+
+    FR #9411: CLOSED FR live check is unbudgeted (like Depends-on FR #8754), so
+    ``issue_open`` may still run once per FR candidate; ``pr_exists`` / ``is_pull``
+    must stay at zero when precompute is fresh.
+    """
     repo = "SimonBarnett/a-search"
     rows = [_row(repo, "FR", i, seq=i + 50) for i in (9, 3, 7)]
     _queue(home, rows)
     fi.handle_focus_cmd(home, repo)
     gitclaim.rebuild_offer_precompute(home)
-    calls = {"n": 0}
+    calls = {"budgeted": 0, "issue_open": 0}
 
     def boom(*_a, **_k):
-        calls["n"] += 1
-        raise AssertionError("GitHub must not be called on !bored with fresh precompute")
+        calls["budgeted"] += 1
+        raise AssertionError("budgeted GitHub must not run on !bored with fresh precompute")
+
+    def issue_open_ok(*_a, **_k):
+        calls["issue_open"] += 1
+        return True
 
     st, job = gitclaim.offer_focus_top(
         home,
@@ -274,8 +287,9 @@ def test_fr3205_precompute_bored_zero_github(home: Path):
         "#marchhare",
         pr_exists=boom,
         is_pull=boom,
-        issue_open=boom,
+        issue_open=issue_open_ok,
     )
     assert st == "ok" and job is not None
     assert job["id"] == "#3"
-    assert calls["n"] == 0
+    assert calls["budgeted"] == 0
+    assert calls["issue_open"] >= 1

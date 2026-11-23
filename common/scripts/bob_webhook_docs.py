@@ -34,7 +34,7 @@ class DocEntry:
     source: str
     fr: str
     html_rel: str
-    # FR #8835: "coming" = documented but not served yet (PUT/PATCH/refresh).
+    # FR #8835: "coming" = documented but not served yet (PATCH remains; PUT live FR #9273).
     status: str = "live"  # live | coming
 
 
@@ -308,47 +308,74 @@ def _inbound() -> list[DocEntry]:
             method="GET",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Fleet Weights agent rows plus CLI options catalog for the tray/forms.",
+            purpose=(
+                "Fleet Weights agent rows plus CLI options catalog for the tray/forms. "
+                "FR #9258: context (256|500) and effort (high|medium|low) are Grok-only; "
+                "Cursor/OpenCode catalog rows may have empty contexts/efforts."
+            ),
             callers="Tray Weights form, Agents/Workers settings, operators.",
             auth="None.",
             request_schema="No body. HEAD returns empty body.",
             response_schema=(
-                'JSON {"agents":[{"agent","cli","model","context","effort"}, ...]} '
-                "(BOB-01 / FR #8820). Includes clis catalog; stale:true when selection model absent."
+                'JSON {"clis":{CLI:{models:{model:{contexts:{context:{efforts:[...]}}}}}},'
+                '"agents":[{"agent","cli","model","context","effort"}, ...]}' 
+                "(BOB-01 / FR #8819 / FR #8820 / FR #9258). clis from digest-home "
+                "models-valid-combos.json; Grok contexts 256|500 and efforts "
+                "high|medium|low; Cursor/OpenCode may have empty contexts; "
+                "stale:true when selection model absent."
             ),
-            example_request="GET https://bob.ntsa.uk/bob/v1/models",
+            example_request=(
+                "GET https://bob.ntsa.uk/bob/v1/models\n"
+                "Accept: application/json\n\n"
+                "200 OK\n"
+                '{"clis":{'
+                '"Grok":{"models":{"grok-4.7":{"contexts":{"256":{"efforts":["high","medium","low"]},'
+                '"500":{"efforts":["high","medium","low"]}}}},'
+                '"Cursor":{"models":{"gpt-5":{"contexts":{"default":{"efforts":[]}}}},'
+                '"Opencode":{"models":{"opencode-go/deepseek-v4-pro":{"contexts":{"default":{"efforts":[]}}}}'
+                '},'
+                '"agents":[{"agent":"Plan","cli":"Grok","model":"grok-4.7","context":"256","effort":"high"}]}'
+            ),
             status_codes="200 JSON; never invents secret fields.",
             retry_idempotency="Safe GET.",
             rate_limits="Proxy only.",
-            reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
+            reachability=(
+                "Public Cloudflare via BobModelsWebhook (GET|HEAD|POST|PUT; FR #9273)."
+            ),
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05",
+            fr="FR #8707 / BOB-01 · FR #8819 · FR #8835 / BOB-05 · FR #9122 · FR #9258 · FR #9273",
             html_rel="docs/webhooks/models.html",
         ),
         DocEntry(
             slug="models-put",
-            title="Models catalog (PUT) — coming",
+            title="Models catalog (PUT)",
             method="PUT",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Persist Weights selections (BOB-02). Not served until #8708 lands.",
-            callers="Tray Weights form.",
-            auth="None once live (schema + rate).",
-            request_schema="JSON agents rows (cli read-only per #8819).",
-            response_schema="JSON ack or 4xx.",
+            purpose=(
+                "Persist Weights full replace (BOB-02 / FR #8708 / FR #8819). "
+                "IIS BobModelsWebhook forwards PUT with GET|HEAD|POST (FR #9273). Agent cli is read-only."
+            ),
+            callers="Tray Weights form Save (public Cloudflare / allowlisted peer).",
+            auth="Peer allow-list (BOB_REPORT_ALLOW); empty/invalid body → 400; foreign peer → 403.",
+            request_schema="JSON agents rows; changing cli for a known agent returns 400 (FR #8819).",
+            response_schema="204 when changed; 200 when unchanged; 4xx on schema/cli mutation.",
             example_request=(
-                "PUT https://bob.ntsa.uk/bob/v1/models\n"
+                "PUT http://127.0.0.1:7700/bob/v1/models\n"
                 "Content-Type: application/json\n\n"
                 '{"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}'
             ),
-            status_codes="Coming — 404 today.",
-            retry_idempotency="Idempotent replace when live.",
-            rate_limits="TBD with #8708.",
-            reachability="Not served yet.",
-            source="common/scripts/models_catalog.py (planned)",
-            fr="FR #8708 / BOB-02",
+            status_codes="204 / 200 / 400 / 403; public IIS rewrites GET|HEAD|POST|PUT (FR #9273); never IIS HTML 404 when rule deployed.",
+            retry_idempotency="Idempotent full replace.",
+            rate_limits="Peer allowlist; public proxy GET|HEAD|POST|PUT (FR #9273).",
+            reachability=(
+                "Public Cloudflare via BobModelsWebhook — forwards GET, HEAD, POST, and PUT "
+                "(FR #9273). PATCH stays blocked at IIS."
+            ),
+            source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
+            fr="FR #8708 / BOB-02 · FR #8819 · FR #9122 · FR #9273",
             html_rel="docs/webhooks/models.html",
-            status="coming",
+            status="live",
         ),
         DocEntry(
             slug="models-patch",
@@ -381,22 +408,38 @@ def _inbound() -> list[DocEntry]:
             method="POST",
             path=bobcallback.MODELS_PATH + "/refresh",
             direction="in",
-            purpose="Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).",
-            callers="Operators / tray refresh.",
+            purpose=(
+                "Rebuild per-CLI options catalog from chair CLI listings (FR #8820) "
+                "or from a Weights client-supplied catalog (FR #9266)."
+            ),
+            callers="Weights Refresh models (fleet seats); operators (chair listing).",
             auth="Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.",
-            request_schema='Empty body or {"clis":["grok","cursor","opencode"]}.',
+            request_schema=(
+                'Empty body or {"clis":["grok","cursor","opencode"]} (chair listing); '
+                'or {"source":"weights-client","clis":{"grok":["id",...],...}} (client catalog).'
+            ),
             response_schema=(
                 '200 JSON {"clis":{cli:{"models":[...],"refreshed_at"}},'
-                '"refresh":{cli:{"status":"refreshed|failed","added","removed","reason"}}}; '
+                '"refresh":{cli:{"status":"refreshed|failed","added","removed","reason"}},'
+                '"source":"weights-client"?}; '
                 'failed CLI keeps prior catalog; selections unchanged.'
             ),
-            example_request="POST https://bob.ntsa.uk/bob/v1/models/refresh",
+            example_request=(
+                "POST https://bob.ntsa.uk/bob/v1/models/refresh\n"
+                "Content-Type: application/json\n\n"
+                '{"source":"weights-client","clis":{"grok":["grok-4.7"]}}\n\n'
+                "200 OK\n"
+                '{"source":"weights-client","clis":{"grok":{"models":[{"model":"grok-4.7","contexts":[],"efforts":[]}],'
+                '"refreshed_at":"2026-11-23T05:00:00Z"}},'
+                '"refresh":{"grok":{"status":"refreshed","refreshed_at":"2026-11-23T05:00:00Z",'
+                '"added":["grok-4.7"],"removed":[]}}}'
+            ),
             status_codes="200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.",
             retry_idempotency="Safe to retry; per-CLI fail-closed; second call inside 60s returns 429 with no change.",
             rate_limits="One attempt per CLI per 60s (in-memory; restart resets).",
             reachability="Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).",
             source="common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8820",
+            fr="FR #8820 / FR #9266",
             html_rel="docs/webhooks/models.html",
         ),
 

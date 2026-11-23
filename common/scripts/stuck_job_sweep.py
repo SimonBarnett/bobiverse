@@ -13,8 +13,10 @@ never merge or close):
 * silent or dead-holder ``accepted`` → release (prior ACK void) and re-offer
   (FR #8195: digest ``last_progress`` within ``SILENT_ACCEPTED_S`` counts as
   activity so a live seat mid-tool is not released)
+* FR #9402: unaccepted ``offered_to`` ghost — held/skip row, or idle seat past
+  ``OFFER_TIMEOUT_S`` with no ACK → clear pin (drop held rows); ``released_offers``
 * ``untracked`` offerable → enqueue
-* held past its window → report only
+* held past its window → report only (unless an offered_to pin remains — then clear)
 * FR #5581: digest ``doing`` tile for an MRB PR that already has a PASS/FAIL
   verdict (done[] or merge-on-green park), with no ``updated`` for
   ``VERDICTED_DOING_S`` (15 min) → ``clear_seat_doing`` (bookkeeping; still
@@ -592,22 +594,87 @@ def classify_queue_row(
     if gitclaim.row_needs_human(row, ""):
         base["state"] = "held"
         base["rule"] = "needs_human"
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
     mid = str(gitclaim.row_require_machine(row) or "").strip()
     if mid:
         base["state"] = "held"
         base["rule"] = f"require_machine:{mid}"
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
     skip = gitclaim.row_skip_fr_reason(row) if task == "FR" else None
     if skip:
         base["state"] = "held"
         base["rule"] = f"skip:{skip}"
+        # FR #9402: skip/ops-tracker row with offered_to is a ghost pin — act.
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
     hold = gitclaim.row_fr_hold_reason(row) if task == "FR" else None
     if hold:
         base["state"] = "held"
         base["rule"] = f"hold:{hold}"
+        # FR #9402: held row that still has offered_to is a ghost pin — act.
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
+    # FR #9374: same Depends-on / digest gates as offer — do not mark
+    # unaccepted_starved (or fire idle-with-work) for blocked FRs.
+    if task == "FR":
+        digest_why = gitclaim.digest_issue_reason(row)
+        if digest_why:
+            base["state"] = "held"
+            base["rule"] = "digest"
+            return base
+        doc: dict = {}
+        open_keys: set = set()
+        issue_open = None
+        issue_fetch = None
+        if home is not None:
+            try:
+                doc = gitclaim.load_queue(home) or {}
+            except Exception:
+                doc = {}
+            if not isinstance(doc, dict):
+                doc = {}
+            try:
+                open_keys = gitclaim.open_fr_issue_keys(doc)
+            except Exception:
+                open_keys = set()
+            with contextlib.suppress(Exception):
+                issue_open = gitclaim.depends_issue_open_checker()
+            # FR #9434 / #9418: G1 needs issue dict when digests are absent from
+            # the local queue; issue_open alone still yields depends_on_open.
+            with contextlib.suppress(Exception):
+                issue_fetch = gitclaim.depends_issue_fetch_checker()
+        # FR #9455: same depends_gate_reason as offer/!assign (no path fork).
+        dep_why = gitclaim.depends_gate_reason(
+            row,
+            doc or None,
+            open_keys=open_keys,
+            issue_open=issue_open,
+            issue_fetch=issue_fetch,
+        )
+        if dep_why:
+            base["state"] = "held"
+            # Digest / !stuck surface: depends_on_open (acceptance FR #9374).
+            if dep_why == gitclaim.DEPENDS_HELD_REASON:
+                base["rule"] = "depends_held"
+            elif dep_why == gitclaim.DEPENDS_UNRESOLVED_REASON:
+                base["rule"] = "depends_unresolved"
+            else:
+                base["rule"] = "depends_on_open"
+            return base
     if task == "MRB" and home is not None:
         awaiting = ""
         line = str(row.get("line") or "")
@@ -640,6 +707,34 @@ def classify_queue_row(
     # no_eligible_reviewer (already returned above) or a quiet author seat.
     age = _row_age_s(row, now)
     offered_to = str(row.get("offered_to") or "").strip()
+    # FR #9402: aged offered_to on an idle (or gone) seat with no ACK → ghost pin.
+    if offered_to:
+        base["holder"] = offered_to
+        offer_age = age
+        with contextlib.suppress(Exception):
+            offer_age = float(gitclaim._offer_age_s(row, now))
+        timeout = float(gitclaim.offer_timeout_s(row))
+        idle_l = {
+            (gitclaim.canonical_worker_nick(n) or n or "").strip().lower()
+            for n in (idle or set())
+            if str(n).strip()
+        }
+        live_l = {
+            (gitclaim.canonical_worker_nick(n) or n or "").strip().lower()
+            for n in (live or set())
+            if str(n).strip()
+        }
+        to_c = (
+            gitclaim.canonical_worker_nick(offered_to) or offered_to
+        ).strip().lower()
+        seat_idle = bool(to_c) and to_c in idle_l
+        seat_gone = bool(to_c) and bool(live_l) and to_c not in live_l
+        if offer_age >= timeout and (seat_idle or seat_gone):
+            base["stuck"] = True
+            base["stuck_reason"] = (
+                "offered_holder_gone" if seat_gone else "offered_idle_no_ack"
+            )
+            return base
     if not offered_to and age >= UNACCEPTED_STARVE_S and idle:
         led = ledger if ledger is not None else (gitclaim.ledger_load(home) if home else {})
         live_for_block = set(live or set()) | set(idle or set())
@@ -1131,6 +1226,89 @@ def settle_copilot_fr_with_open_prs(
     return {"settled": settled, "enqueued": enqueued}
 
 
+def release_ghost_offers(
+    home: Path,
+    *,
+    now: float,
+    live: set[str],
+    idle: set[str],
+    log: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """FR #9402: clear stuck unaccepted offered_to pins; drop held/skip rows.
+
+    Returns the classified infos that were acted on.
+    """
+    import gitclaim
+
+    acted: list[dict] = []
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            kept: list[dict] = []
+            dirty = False
+            for row in list(doc.get("unaccepted") or []):
+                if not isinstance(row, dict):
+                    continue
+                info = classify_queue_row(
+                    row,
+                    bucket="unaccepted",
+                    now=now,
+                    live=live,
+                    idle=idle,
+                    home=home,
+                )
+                reason = str(info.get("stuck_reason") or "")
+                if reason not in (
+                    "offered_on_held",
+                    "offered_idle_no_ack",
+                    "offered_holder_gone",
+                ):
+                    kept.append(row)
+                    continue
+                offered = str(row.get("offered_to") or "").strip()
+                with contextlib.suppress(Exception):
+                    gitclaim._clear_job_seat_holds_unlocked(
+                        home,
+                        str(row.get("repo") or ""),
+                        str(row.get("task") or ""),
+                        str(row.get("id") or ""),
+                    )
+                for k in (
+                    "offered_to",
+                    "offered_ts",
+                    "offered_channel",
+                    "offered_via",
+                ):
+                    row.pop(k, None)
+                dirty = True
+                if reason == "offered_on_held":
+                    # Drop held/skip/ops-tracker rows so they cannot re-pin.
+                    if log:
+                        log(
+                            f"stuck-sweep release_offer drop {row.get('repo')}"
+                            f"{_norm_id(row.get('id'))} holder={offered} "
+                            f"reason={reason}"
+                        )
+                    acted.append(info)
+                    continue
+                kept.append(row)
+                if log:
+                    log(
+                        f"stuck-sweep release_offer clear {row.get('repo')}"
+                        f"{_norm_id(row.get('id'))} holder={offered} "
+                        f"reason={reason}"
+                    )
+                acted.append(info)
+            if dirty:
+                doc["unaccepted"] = kept
+                gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return []
+    with contextlib_suppress():
+        gitclaim.rebuild_offer_precompute(home)
+    return acted
+
+
 def release_silent_accepted(
     home: Path,
     *,
@@ -1349,6 +1527,7 @@ def run_stuck_sweep(
 
     actions = {
         "released": 0,
+        "released_offers": 0,
         "enqueued": 0,
         "cleared_doing": 0,
         "copilot_settled": 0,
@@ -1372,6 +1551,15 @@ def run_stuck_sweep(
             open_items=catalog,
         )
         actions["released"] = len(released)
+        # FR #9402: clear ghost offered_to on held rows / idle no-ACK seats.
+        ghost = release_ghost_offers(
+            home,
+            now=now_f,
+            live=live_set,
+            idle=idle_set,
+            log=log,
+        )
+        actions["released_offers"] = len(ghost)
         enq = enqueue_untracked(home, untracked_infos, log=log)
         actions["enqueued"] = int(actions["enqueued"]) + len(enq)
         # FR #5581: clear stale digest doing tiles for already-verdicted MRBs.

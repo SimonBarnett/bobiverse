@@ -988,7 +988,7 @@ $namedBook = $null
 foreach ($candidate in @(
         'bobiverse-bob-job-irc', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-fr',
         'bobiverse-bob-job-uat', 'bobiverse-bob-worker', 'bobiverse-bob-commands',
-        'bobiverse-bob-troubleshooting', 'bobiverse-bob-plan', 'bobiverse-worker-seat',
+        'bobiverse-bob-troubleshooting', 'bobiverse-worker-seat',
         'bobiverse-fleet-ops', 'bobiverse-bob', 'bobiverse-jeeves-commands',
         'bobiverse-jeeves-monitor', 'bobiverse-jeeves-troubleshooting', 'bobiverse-jeeves',
         'bobiverse-airc-commands', 'bobiverse-airc-troubleshooting', 'bobiverse-airc',
@@ -1066,6 +1066,10 @@ switch -Regex ($bookName) {
             $skillBookPath = '.grok/skills/harvest-agent-skills/SKILL.md'
         }
     }
+    # FR #9303 / #9329 / SV #198: tip open is intake-side; intake.py mirrors
+    # apps/mcp-catalog/catalog/<book>/{SKILL.md,meta.json} and patches
+    # docs/skill-sources/skills-visionary/_dag when dag.json is readable (no tip
+    # worktree for a full tools/build-skill-dag.py rebuild).
     '^harvest-skills-visionary$' { $skillBookPath = '.grok/skills/harvest-skills-visionary/SKILL.md' }
     '^dayworks-launcher$' { $skillBookPath = 'dayworks/.grok/skills/dayworks-launcher/SKILL.md' }
     '^harvest$' { $skillBookPath = 'common/.grok/skills/harvest/SKILL.md' }

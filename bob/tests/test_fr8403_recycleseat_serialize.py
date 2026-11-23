@@ -162,7 +162,8 @@ def test_fr8403_source_contract():
     watch = WATCH.read_text(encoding="utf-8")
     # restore launch bypasses the cap
     i = watch.index("function Start-BobTrayWorkerExe")
-    body = watch[i : i + 3000]
+    # FR #9346: empty-online gate comments sit above the -Restore cap skip; keep a wide window.
+    body = watch[i : i + 4500]
     assert "[switch]$Restore" in body
     assert "if (-not $Restore)" in body
     # the recycleseat Launch passes -Restore

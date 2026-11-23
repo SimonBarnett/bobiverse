@@ -18,21 +18,21 @@ FIXTURE = {
         "grok": [
             {
                 "model": "fixture-grok-a",
-                "contexts": ["128k", "256k"],
+                "contexts": ["256", "500"],
                 "efforts": ["low", "medium", "high"],
             }
         ],
         "cursor": [
             {
                 "model": "fixture-cursor-a",
-                "contexts": ["200k"],
+                "contexts": [],
                 "efforts": [],
             }
         ],
         "opencode": [
             {
                 "model": "fixture-oc-a",
-                "contexts": ["default"],
+                "contexts": [],
                 "efforts": [],
             }
         ],
@@ -75,9 +75,12 @@ def test_get_models_includes_clis_allow_list(tmp_path: Path):
     # FR #8819 nested Si shape (DisplayCli keys + models/contexts/efforts).
     assert set(doc["clis"]) == {"Grok", "Cursor", "Opencode"}
     assert "fixture-grok-a" in doc["clis"]["Grok"]["models"]
-    assert "128k" in doc["clis"]["Grok"]["models"]["fixture-grok-a"]["contexts"]
+    assert "256" in doc["clis"]["Grok"]["models"]["fixture-grok-a"]["contexts"]
+    assert "500" in doc["clis"]["Grok"]["models"]["fixture-grok-a"]["contexts"]
+    # FR #9258: Cursor/OpenCode models present with empty contexts (no offer).
+    assert doc["clis"]["Cursor"]["models"]["fixture-cursor-a"]["contexts"] == {}
     blob = json.dumps(doc["clis"])
-    assert '"256"' not in blob
+    assert '"128k"' not in blob
     assert '"med"' not in blob
 
 
@@ -90,7 +93,7 @@ def test_valid_combos_public_doc_shape():
                 "grok": [
                     mc.ModelComboRow(
                         model="fixture-grok-a",
-                        contexts=["128k", "256k"],
+                        contexts=["256", "500"],
                         efforts=["low", "medium", "high"],
                     )
                 ]
@@ -99,5 +102,5 @@ def test_valid_combos_public_doc_shape():
     )
     assert "grok" in cat
     assert cat["grok"][0]["model"] == "fixture-grok-a"
-    assert "128k" in cat["grok"][0]["contexts"]
+    assert "256" in cat["grok"][0]["contexts"]
     assert "high" in cat["grok"][0]["efforts"]
