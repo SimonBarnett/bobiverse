@@ -102,3 +102,72 @@ def test_fr9144_validateset_includes_ircbob_ear():
 
 def test_fr9144_monitor_py_shipped():
     assert MONITOR.is_file()
+
+
+def _import_ircbob_ear():
+    sys.path.insert(0, str(MONITOR.parent))
+    import ircbob_ear as mod  # noqa: WPS433
+
+    return mod
+
+
+def test_fr9144_heal_starts_stopped_local_service(tmp_path: Path, monkeypatch):
+    """Owner: monitor auto-heal Start-Service when ear Stopped."""
+    now = datetime.now(timezone.utc)
+    digest = {
+        "ts": now.isoformat().replace("+00:00", "Z"),
+        "machines": {
+            "flamingo": {
+                "online": True,
+                "status": "I am online",
+                "lastSeen": (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+            }
+        },
+    }
+    (tmp_path / "digest.json").write_text(json.dumps(digest), encoding="utf-8")
+    mod = _import_ircbob_ear()
+    states = iter(["Stopped", "Running"])
+
+    monkeypatch.setattr(mod, "_service_state", lambda _n: next(states))
+    monkeypatch.setattr(mod, "_start_service", lambda _n: (True, "Running"))
+
+    class Args:
+        chair_home = str(tmp_path / "jeeves-home")
+        digest_home = str(tmp_path)
+
+    (tmp_path / "jeeves-home").mkdir(parents=True, exist_ok=True)
+    payload, code = mod.check(Args())
+    assert code == 0, payload
+    assert payload["ok"] is True
+    assert payload["heal"] == "started"
+    assert payload["service_status"].lower() == "running"
+    assert any("healed Start-Service" in n for n in payload["notes"])
+
+
+def test_fr9144_heal_failure_keeps_finding(tmp_path: Path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    digest = {
+        "ts": now.isoformat().replace("+00:00", "Z"),
+        "machines": {
+            "flamingo": {
+                "online": True,
+                "status": "I am online",
+                "lastSeen": (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+            }
+        },
+    }
+    (tmp_path / "digest.json").write_text(json.dumps(digest), encoding="utf-8")
+    mod = _import_ircbob_ear()
+    monkeypatch.setattr(mod, "_service_state", lambda _n: "Stopped")
+    monkeypatch.setattr(mod, "_start_service", lambda _n: (False, "Access denied"))
+
+    class Args:
+        chair_home = str(tmp_path / "jeeves-home")
+        digest_home = str(tmp_path)
+
+    (tmp_path / "jeeves-home").mkdir(parents=True, exist_ok=True)
+    payload, code = mod.check(Args())
+    assert code == 1, payload
+    assert payload["ok"] is False
+    assert payload["heal"] == "failed"
+    assert any("heal failed" in f for f in payload["findings"])

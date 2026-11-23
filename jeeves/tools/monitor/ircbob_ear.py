@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""FR #9144: token-free ircBob ear / digest offline check.
+"""FR #9144: token-free ircBob ear / digest offline check + local auto-heal.
 
 Chair path: digest machines with online=false, status \"I am offline\", or stale
-lastSeen. Local path (win32): Get-Service ircBob Stopped/missing when the service
-exists on this host.
+lastSeen. Local path (win32): Get-Service ircBob; when Stopped, Start-Service
+once and re-check (monitor auto-heal). TipForm wording for ear-offline vs
+unreachable lives in Get-BobTrayHover.ps1.
 """
 from __future__ import annotations
 
@@ -65,6 +66,33 @@ def _service_state(name: str) -> str:
         return f"error:{type(e).__name__}"
 
 
+def _start_service(name: str) -> tuple[bool, str]:
+    """Local Start-Service heal. Returns (ok, detail). Never touches Ergo/BobIrcd."""
+    if sys.platform != "win32":
+        return False, "skipped"
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Start-Service -Name '{name}' -ErrorAction Stop; "
+                f"(Get-Service -Name '{name}').Status",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        if r.returncode == 0 and out.lower() == "running":
+            return True, out
+        detail = out or err or f"exit={r.returncode}"
+        return False, detail[:240]
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def _machine_ear_offline(ent: dict) -> bool:
     if not isinstance(ent, dict):
         return False
@@ -76,6 +104,31 @@ def _machine_ear_offline(ent: dict) -> bool:
     return False
 
 
+def _heal_local_ear(svc: str, findings: list[str], notes: list[str]) -> tuple[str, str | None]:
+    """If local ircBob is installed and not Running, Start-Service once.
+
+    Returns (status_after, heal_result) where heal_result is
+    'started'|'failed'|None (None = no heal attempted).
+    """
+    if svc in ("skipped", "missing"):
+        return svc, None
+    if svc.lower() == "running":
+        return svc, None
+    ok, detail = _start_service(SERVICE_NAME)
+    after = _service_state(SERVICE_NAME)
+    if ok and after.lower() == "running":
+        notes.append(
+            f"local {SERVICE_NAME} healed Start-Service "
+            f"(was Status={svc}; now Running)"
+        )
+        return after, "started"
+    findings.append(
+        f"local {SERVICE_NAME} Status={after or svc} after Start-Service "
+        f"heal failed detail={detail!r} (want Running)"
+    )
+    return after or svc, "failed"
+
+
 def check(args):
     chair, digest = resolve_homes(args)
     path = digest / "digest.json"
@@ -85,11 +138,11 @@ def check(args):
     max_age = DEFAULT_MAX_AGE_SEC
 
     svc = _service_state(SERVICE_NAME)
-    if svc not in ("skipped", "missing"):
-        if svc.lower() != "running":
-            findings.append(f"local {SERVICE_NAME} Status={svc} (want Running)")
-    elif svc == "missing" and sys.platform == "win32":
+    heal_result: str | None = None
+    if svc == "missing" and sys.platform == "win32":
         notes.append(f"local {SERVICE_NAME} service not installed on this host")
+    else:
+        svc, heal_result = _heal_local_ear(svc, findings, notes)
 
     machines_checked = 0
     if path.is_file():
@@ -122,26 +175,25 @@ def check(args):
         findings.append(f"digest.json missing: {path}")
 
     ok = not findings
-    return (
-        {
-            "ok": ok,
-            "path": str(path),
-            "service": SERVICE_NAME,
-            "service_status": svc,
-            "machines_checked": machines_checked,
-            "max_age_sec": max_age,
-            "findings": findings,
-            "notes": notes,
-            "chair_home": str(chair),
-        },
-        EXIT_OK if ok else EXIT_FINDING,
-    )
+    payload = {
+        "ok": ok,
+        "path": str(path),
+        "service": SERVICE_NAME,
+        "service_status": svc,
+        "heal": heal_result,
+        "machines_checked": machines_checked,
+        "max_age_sec": max_age,
+        "findings": findings,
+        "notes": notes,
+        "chair_home": str(chair),
+    }
+    return (payload, EXIT_OK if ok else EXIT_FINDING)
 
 
 def main(argv=None) -> int:
     return run_check(
         "ircbob_ear",
-        "ircBob Running + digest lastSeen / ear-offline (FR #9144)",
+        "ircBob Running + digest lastSeen / ear-offline + local Start-Service heal (FR #9144)",
         check,
         argv,
     )
