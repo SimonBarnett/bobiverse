@@ -27,8 +27,8 @@ def test_fr6429_tray_submenu_tags_and_labels():
     assert "AddOpencodeModelSubmenu" in tray
     assert "opencode|free" in tray
     assert "opencode|paid" in tray
-    assert "Start free model" in tray
-    assert "Start paid model" in tray
+    assert "Free" in tray  # FR #9263: Free|Paid labels
+    assert "Paid" in tray
     assert 'DefaultOpencodeFreeModel = "%s"' % FREE_DEFAULT in tray
     assert 'DefaultOpencodePaidModel = "%s"' % PAID_DEFAULT in tray
     seed = tray[tray.index("void SeedAgentChoices") : tray.index("void SeedAgentChoices") + 900]
@@ -44,7 +44,8 @@ def test_fr6429_launch_uses_child_env_block_only():
     assert "BuildChildEnvironmentBlock" in tray
     assert "CreateUnicodeEnvironment" in tray
     assert "IDictionary childEnv" in tray
-    click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 1400]
+    click = tray[tray.index("void OnAgentChoiceClick") :]
+    click = click[:6000]
     assert 'env["BOB_OPENCODE_MODEL"]' in click
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in click
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in tray

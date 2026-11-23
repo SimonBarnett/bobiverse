@@ -1868,7 +1868,7 @@ namespace BobDialogs
 
         void AddOpencodeModelSubmenu(ToolStripMenuItem parent, bool enabled, bool record)
         {
-            // FR #6429: Agents > OpenCode > Start free/paid model (child-only BOB_OPENCODE_MODEL).
+            // FR #6429 / FR #9263: Workers > Open Code > Free|Paid only (child-only BOB_OPENCODE_MODEL).
             // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
             ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
             oc.Enabled = enabled;
@@ -1883,17 +1883,33 @@ namespace BobDialogs
             {
                 TrayLifecycle.Write("workers-opencode", "action", "opencode favicon failed", "error", ex.Message);
             }
+            // FR #9263 / BOB-TRAY-UI-03: submenu is Free and Paid only (no model picker).
+            // Model id comes from Weights/models webhook at click (OpencodeWebhookModel); tip label stays Free|Paid.
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
+            string catalog = ModelsCatalogPath();
+            string whFree = OpencodeWebhookModel(catalog, "Opencode-Free");
+            string whPaid = OpencodeWebhookModel(catalog, "Opencode");
+            if (whFree.Length > 0) freeModel = whFree;
+            if (whPaid.Length > 0) paidModel = whPaid;
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
             string paidRun; bool paidAlive = WorkerLauncher.OpencodeSlotRunning("paid", out paidRun);
-            string freeText = "Start free model (" + freeModel + ")";
+            string freeText = "Free";
             if (freeAlive) freeText += " [running]";
-            freeText += " [default]";
-            string paidText = "Start paid model (" + paidModel + ")";
+            string paidText = "Paid";
             if (paidAlive) paidText += " [running]";
             AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
             AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
+            try
+            {
+                if (oc.DropDownItems.Count >= 2)
+                {
+                    oc.DropDownItems[0].ToolTipText = freeModel;
+                    oc.DropDownItems[1].ToolTipText = paidModel;
+                }
+            }
+            catch { }
+            TrayLifecycle.Write("workers-opencode", "action", "submenu Free|Paid", "free", freeModel, "paid", paidModel);
             parent.DropDownItems.Add(oc);
             if (record) MenuItems.Add("Open Code");
         }
