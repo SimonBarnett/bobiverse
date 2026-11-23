@@ -9031,21 +9031,42 @@ class GrokTurnWatcher:
                 pass
 
     def run(self) -> None:
+        missing_logged = False
+        none_logged = False
         while not self._stop.is_set():
             path = self._resolve()
             if path is None:
+                # FR #9364 diagnosis: session dir not resolved yet (sid / grok-home lag).
+                if self._log and not none_logged:
+                    none_logged = True
+                    try:
+                        self._log(
+                            "bored: turn watcher waiting for session events path "
+                            "(no events.jsonl yet)"
+                        )
+                    except Exception:
+                        pass
                 self._stop.wait(self.poll_s)
                 continue
             try:
                 if self._cur != path:
                     self._cur = path
                     self._offset = 0
+                    missing_logged = False
                     if self._log:
                         try:
                             self._log(f"bored: turn watcher following {path}")
                         except Exception:
                             pass
                 if not path.is_file():
+                    if self._log and not missing_logged:
+                        missing_logged = True
+                        try:
+                            self._log(
+                                f"bored: turn watcher path missing (waiting): {path}"
+                            )
+                        except Exception:
+                            pass
                     self._stop.wait(self.poll_s)
                     continue
                 size = path.stat().st_size
@@ -15195,10 +15216,12 @@ class BoredEmitter:
     """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
-        * FR #2802 / #6157 / #7265: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
+        * FR #2802 / #6157 / #7265 / #9364: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
         Cursor chat-store, or Aider process-idle ``turn_ended`` releases (or skips) the harvest
-        hold; idle turn end -> reason ``turn``. ``harvest_hold_s`` is fallback only when
-        turn end cannot be seen (log ``bored: fallback timer, no turn_ended seen``);
+        hold; idle turn end -> reason ``turn``. DONE/NACK/GIVEUP with **no open turn** skips
+        ``harvest_hold_s`` immediately (and flushes parked assigns). ``harvest_hold_s`` is
+        fallback only while a turn is still open and ``turn_ended`` is missing (log
+        ``bored: fallback timer, no turn_ended seen``);
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
@@ -16043,10 +16066,12 @@ class BoredEmitter:
             self._hb_notify_all()
 
     def _begin_harvest_hold(self, now: float) -> None:
-        """FR #1611 / #7265: after DONE/NACK/GIVEUP, hold !bored only while a turn is still open.
+        """FR #1611 / #7265 / #9364: after DONE/NACK/GIVEUP, hold !bored only while a turn is open.
 
-        Harvest belongs inside the agent turn. If the watcher already saw ``turn_ended``,
-        skip the clock. ``harvest_hold_s`` remains the fallback when no turn end is seen.
+        Harvest belongs inside the agent turn. When no turn is live (watcher already saw
+        ``turn_ended``, or never saw ``turn_started``), skip the clock and flush any
+        parked assigns immediately. ``harvest_hold_s`` remains the fallback only while
+        a turn is still open and ``turn_ended`` has not arrived yet.
         """
         self._inject_pending = False
         self._inject_at = None
@@ -16057,18 +16082,24 @@ class BoredEmitter:
         self._turn_hold_cap_logged = False
         self._harvest_saw_turn_ended = False
         self._harvest_used_fallback = False
-        skip_clock = (
-            bored_on_turn_end_enabled()
-            and self._turn_watcher_armed
-            and (not self._turn_live())
-            and self._turn_gen > 0
-        )
+        # FR #9364: do not require _turn_watcher_armed / _turn_gen > 0. A GrokTurnWatcher
+        # miss (no turn_started / turn_ended ever) used to force the full harvest_hold_s
+        # wait (~90s+) before the next assign could inject.
+        skip_clock = bored_on_turn_end_enabled() and (not self._turn_live())
         if skip_clock:
             self._harvest_until = None
             self._idle_since = now
             self._release_gen = self._turn_gen
             self._harvest_saw_turn_ended = True
-            self.log("bored: skip harvest hold (turn already ended)")
+            why = (
+                "turn already ended"
+                if (self._turn_watcher_armed and self._turn_gen > 0)
+                else "no open turn"
+            )
+            self.log(f"bored: skip harvest hold ({why})")
+            # FR #9364: release assigns already parked (ACK-on-receipt) without waiting
+            # for harvest_hold_s / fallback timer.
+            self._flush_held_on_harvest_expiry(now, why=f"skip harvest hold ({why})")
             return
         if self.harvest_hold_s > 0:
             self._harvest_until = now + self.harvest_hold_s
