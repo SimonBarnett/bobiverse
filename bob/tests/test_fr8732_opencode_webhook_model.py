@@ -17,8 +17,9 @@ def test_opencode_click_cites_webhook_rows():
     assert '"webhook model"' in cs
     assert "BOB_OPENCODE_MODEL" in cs
     assert "Workers Open Code: webhook model" in ps
-    assert "-AgentName 'Opencode-Free'" in ps
-    assert "-Model $model" in ps
+    assert "'Opencode-Free'" in ps
+    assert "Get-BobTrayOpencodeWebhookModel" in ps
+    assert "-Model $model" in ps or "-Model $ocModel" in ps
 
 
 def test_fixture_returns_opencode_rows_not_grok():
