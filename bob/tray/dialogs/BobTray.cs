@@ -420,6 +420,35 @@ namespace BobDialogs
             catch { return false; }
         }
 
+        // FR #9142 / #9240 / #9346: <root>\run\startworker\empty-online.disabled kill switch.
+        public static bool EmptyOnlineDisabled(string root)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(root)) return false;
+                string p = Path.Combine(root, "run", "startworker", "empty-online.disabled");
+                return File.Exists(p);
+            }
+            catch { return false; }
+        }
+
+        // FR #9346: TipForm click / explicit !startworker only. Fail-closed otherwise.
+        public static bool SeatStartTriggerIsManual(string trigger)
+        {
+            string t = (trigger ?? "").Trim().ToLowerInvariant();
+            if (t.Length == 0) return false;
+            if (t == "menu" || t == "jeeves-menu" || t == "startworker") return true;
+            if (t.StartsWith("workers-")) return true;
+            return false;
+        }
+
+        // FR #9240 / #9346: same contract as Test-BobTrayEmptyOnlineBlocksAutoStart (PS shared guard).
+        public static bool EmptyOnlineBlocksAutoStart(string root, string trigger)
+        {
+            if (!EmptyOnlineDisabled(root)) return false;
+            return !SeatStartTriggerIsManual(trigger);
+        }
+
         // Same contract as Start-BobTrayWorkerExe: fresh agent every click, run-copy of the exe so a seat never locks the install,
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
@@ -442,10 +471,21 @@ namespace BobDialogs
         // FR #8679 / BOB-37: cwdOverride (e.g. J:\ for Agents > Jeeves) wins over describe-launch cwd.
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride)
         {
+            return Launch(root, mode, machine, agent, childEnv, out error, cwdOverride, "menu");
+        }
+
+        // FR #9346: trigger shares the PS empty-online.disabled guard (TipForm clicks pass menu / workers-* / jeeves-menu).
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error, string cwdOverride, string trigger)
+        {
             error = "";
             if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
             {
                 error = "Seats are off on this machine (seat target 0).";
+                return 0;
+            }
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && EmptyOnlineBlocksAutoStart(root, trigger))
+            {
+                error = "empty-online.disabled blocks auto trigger=" + ((trigger ?? "").Trim().Length > 0 ? trigger.Trim() : "other");
                 return 0;
             }
             LaunchCalls++;
@@ -1055,7 +1095,17 @@ namespace BobDialogs
             // FR #8699 / BOB-50 start stays the first child. FR #8695 / BOB-53 adds Configure MCP.
             MenuItems.Add("Priority");
             ToolStripMenuItem miPriorityStart = new ToolStripMenuItem("Start PriorityAgent");
-            miPriorityStart.Click += delegate { StartPriorityExe(); };
+            miPriorityStart.Click += delegate {
+                // FR #8698 / BOB-52: this box with no tokens shows a dialog and quits. It does not start Priority.
+                string fuel = PriorityFuelPath();
+                if (PriorityFuelEmpty(fuel))
+                {
+                    TrayLifecycle.Write("priority", "action", "no tokens", "quit", "1", "path", fuel);
+                    MessageBox.Show("Priority: this box has no tokens. PriorityAgent will quit instead of starting without fuel.", "Priority - no tokens", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                StartPriorityExe();
+            };
             miPriority.DropDownItems.Add(miPriorityStart);
             MenuItems.Add("Start PriorityAgent");
             ToolStripMenuItem miPriorityMcp = new ToolStripMenuItem("Configure MCP (mcp.ntsa.uk)");
@@ -1350,7 +1400,12 @@ namespace BobDialogs
             {
                 stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
             }
-            bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
+            // FR #9280: compare tray-status.json vs tray.alive; detect indefinite "starting".
+            // Never starts/stops/retargets worker seats — only the PS status-writer engine.
+            string writerReason = TrayStatusWriterWatch.EvaluateReason(
+                snapFile, aliveFile, engineStartedUtc, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
+            bool statusStale = writerReason.Length > 0
+                || TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
             if (!exited && !stale && !statusStale)
             {
                 if (engineFailureArmed)
@@ -1363,6 +1418,10 @@ namespace BobDialogs
             }
             if (exited)
                 TrayEngineFailure.Report(root, "dead", machine, snapFile, lastEngineExitCode, "engine process exited");
+            else if (writerReason == "starting-stuck")
+                TrayEngineFailure.Report(root, "starting-stuck", machine, snapFile, lastEngineExitCode, "status card stuck on starting");
+            else if (writerReason == "status-vs-alive")
+                TrayEngineFailure.Report(root, "status-vs-alive", machine, snapFile, lastEngineExitCode, "tray-status.json stale while tray.alive fresh");
             else if (statusStale)
                 TrayEngineFailure.Report(root, "status-stale", machine, snapFile, lastEngineExitCode, "tray-status.json stale >= 120s");
             else
@@ -1648,6 +1707,16 @@ namespace BobDialogs
                                 state = new TrayState();
                                 state.Short = "Bob: engine down";
                             }
+                        }
+                    }
+                    // FR #9280: never leave the card on startup seed "starting" indefinitely.
+                    else if (TrayStatusAge.IsStartingSeed(state.Short) && engineStartedUtc != DateTime.MinValue)
+                    {
+                        double sinceStart = (DateTime.UtcNow - engineStartedUtc).TotalSeconds;
+                        if (sinceStart >= TrayStatusWriterWatch.StartingStuckSeconds
+                            && state.Short != "Bob: status stalled")
+                        {
+                            state.Short = "Bob: status stalled";
                         }
                     }
                 }
@@ -2134,6 +2203,37 @@ namespace BobDialogs
             return false;
         }
 
+        // FR #8698 / BOB-52: fuel file for this box. BOB_PRIORITY_FUEL_FILE overrides the local default.
+        // Missing / unreadable file = unknown fuel = allow start (PriorityAgent applies its own check).
+        string PriorityFuelPath()
+        {
+            string env = Environment.GetEnvironmentVariable("BOB_PRIORITY_FUEL_FILE");
+            if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(local, "Bobiverse", "priority-fuel.json");
+        }
+
+        bool PriorityFuelEmpty(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))); }
+            catch { return false; }
+            if (doc == null) return false;
+            if (doc.ContainsKey("status") && doc["status"] != null)
+            {
+                string st = ("" + doc["status"]).Trim().ToLowerInvariant();
+                if (st == "empty" || st == "exhausted" || st == "out-of-fuel" || st == "out_of_fuel") return true;
+            }
+            foreach (string key in new string[] { "remaining_pct", "remaining", "tokens_remaining" })
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null || ("" + doc[key]).Trim().Length == 0) continue;
+                int n;
+                if (int.TryParse(("" + doc[key]).Trim(), out n)) return n <= 0;
+            }
+            return false;
+        }
+
         // FR #8693 / BOB-44: Agents > Plan starts vendor\plan\bob-plan.exe, not bob-worker --mode plan.
         void StartPlanExe()
         {
@@ -2171,15 +2271,38 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
-            StartWorker(mode, agent, null, "", "");
+            StartWorker(mode, agent, null, "", "", "menu");
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
         {
-            StartWorker(mode, agent, childEnv, opencodeSlot, "");
+            StartWorker(mode, agent, childEnv, opencodeSlot, "", TipFormSeatTrigger(agent, opencodeSlot));
         }
 
         void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride)
+        {
+            StartWorker(mode, agent, childEnv, opencodeSlot, cwdOverride, TipFormSeatTrigger(agent, opencodeSlot, cwdOverride));
+        }
+
+        // FR #9346: TipForm click triggers stay on the manual allowlist of the shared empty-online guard.
+        static string TipFormSeatTrigger(string agent, string opencodeSlot)
+        {
+            return TipFormSeatTrigger(agent, opencodeSlot, "");
+        }
+
+        static string TipFormSeatTrigger(string agent, string opencodeSlot, string cwdOverride)
+        {
+            if (!string.IsNullOrEmpty(cwdOverride) && string.Equals(cwdOverride, @"J:\", StringComparison.OrdinalIgnoreCase))
+                return "jeeves-menu";
+            string a = (agent ?? "").Trim().ToLowerInvariant();
+            if (a == "grok") return "workers-grok";
+            if (a == "cursor") return "workers-cursor";
+            if (a == "opencode" || opencodeSlot == "free" || opencodeSlot == "paid") return "workers-opencode";
+            if (a.Length == 0 || a == "auto") return "menu";
+            return "menu";
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot, string cwdOverride, string trigger)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
@@ -2218,7 +2341,8 @@ namespace BobDialogs
                 return;
             }
             // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "");
+            // FR #9346: TipForm clicks pass a manual trigger so empty-online.disabled does not block Si.
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err, cwdOverride ?? "", trigger ?? "menu");
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;
@@ -2704,7 +2828,26 @@ namespace BobDialogs
                 else Console.Write(body);
                 return statusStale ? 2 : 0;
             }
-                        if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
+            // FR #9280: headless status-writer watchdog eval (starting-stuck / status-vs-alive).
+            // Local name writerEvalReason avoids CS0136 with Main's process-exit `reason` below.
+            if (Common.Flag(args, "--status-writer-eval"))
+            {
+                string snap = Path.Combine(root, "run", "tray-status.json");
+                string alive = Path.Combine(root, "run", "startworker", "tray.alive");
+                DateTime started = DateTime.UtcNow;
+                string startedArg = Common.Arg(args, "--engine-started-ago-s");
+                double ago;
+                if (startedArg.Length > 0 && double.TryParse(startedArg, out ago))
+                    started = DateTime.UtcNow.AddSeconds(-ago);
+                string writerEvalReason = TrayStatusWriterWatch.EvaluateReason(
+                    snap, alive, started, DateTime.UtcNow, TrayEngineFailure.StatusStaleSeconds);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "reason=" + (writerEvalReason.Length > 0 ? writerEvalReason : "ok") + "\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return writerEvalReason.Length > 0 ? 2 : 0;
+            }
+            if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
             string ticksArg = Common.Arg(args, "--watchdog-ticks");
             if (ticksArg.Length > 0)
@@ -3103,6 +3246,75 @@ namespace BobDialogs
                 return age >= staleSeconds;
             }
             catch { return false; }
+        }
+
+        // FR #9280: read short/title from tray-status.json (startup seed uses short=starting).
+        public static string ReadShortOrTitle(string snapFile)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(snapFile) || !File.Exists(snapFile)) return "";
+                string json;
+                using (FileStream fs = new FileStream(snapFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true)) json = sr.ReadToEnd();
+                Dictionary<string, object> d = Common.Dict(Common.ParseJson(json));
+                if (d == null) return "";
+                string shortText = Common.Str(d, "short");
+                if (!string.IsNullOrEmpty(shortText)) return shortText;
+                return Common.Str(d, "title");
+            }
+            catch { return ""; }
+        }
+
+        public static bool IsStartingSeed(string shortOrTitle)
+        {
+            return string.Equals((shortOrTitle ?? "").Trim(), "starting", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    // FR #9280: status writer health vs tray.alive (never touches worker seats).
+    internal static class TrayStatusWriterWatch
+    {
+        public const double AliveFreshSeconds = 30;
+        public const double StartingStuckSeconds = 180;
+        public const double StatusWriteIntervalSeconds = 15;
+        public const double StatusStaleMultiples = 8; // 8 * 15s = 120s
+
+        public static bool AliveIsFresh(string aliveFile, DateTime utcNow, double freshSeconds)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(aliveFile) || !File.Exists(aliveFile)) return false;
+                double age = (utcNow - File.GetLastWriteTimeUtc(aliveFile)).TotalSeconds;
+                return age >= 0 && age <= freshSeconds;
+            }
+            catch { return false; }
+        }
+
+        // Returns empty, "starting-stuck", "status-vs-alive", or "status-stale".
+        public static string EvaluateReason(
+            string snapFile,
+            string aliveFile,
+            DateTime engineStartedUtc,
+            DateTime utcNow,
+            double statusStaleSeconds)
+        {
+            try
+            {
+                if (engineStartedUtc == DateTime.MinValue) return "";
+                double sinceStart = (utcNow - engineStartedUtc).TotalSeconds;
+                if (sinceStart < 0) sinceStart = 0;
+                string label = TrayStatusAge.ReadShortOrTitle(snapFile);
+                if (TrayStatusAge.IsStartingSeed(label) && sinceStart >= StartingStuckSeconds)
+                    return "starting-stuck";
+                double staleAfter = Math.Max(statusStaleSeconds, StatusWriteIntervalSeconds * StatusStaleMultiples);
+                bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, staleAfter);
+                if (!statusStale) return "";
+                if (AliveIsFresh(aliveFile, utcNow, AliveFreshSeconds))
+                    return "status-vs-alive";
+                return "status-stale";
+            }
+            catch { return ""; }
         }
     }
 

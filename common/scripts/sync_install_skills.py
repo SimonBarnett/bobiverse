@@ -25,7 +25,6 @@ SKILL_TREES = (
 WORKER_BOOKS = (
     "bobiverse-bob",
     "bobiverse-bob-worker",
-    "bobiverse-bob-plan",
     "bobiverse-bob-job-irc",
     "bobiverse-bob-job-fr",
     "bobiverse-bob-job-mrb",

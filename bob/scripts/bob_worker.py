@@ -9031,21 +9031,42 @@ class GrokTurnWatcher:
                 pass
 
     def run(self) -> None:
+        missing_logged = False
+        none_logged = False
         while not self._stop.is_set():
             path = self._resolve()
             if path is None:
+                # FR #9364 diagnosis: session dir not resolved yet (sid / grok-home lag).
+                if self._log and not none_logged:
+                    none_logged = True
+                    try:
+                        self._log(
+                            "bored: turn watcher waiting for session events path "
+                            "(no events.jsonl yet)"
+                        )
+                    except Exception:
+                        pass
                 self._stop.wait(self.poll_s)
                 continue
             try:
                 if self._cur != path:
                     self._cur = path
                     self._offset = 0
+                    missing_logged = False
                     if self._log:
                         try:
                             self._log(f"bored: turn watcher following {path}")
                         except Exception:
                             pass
                 if not path.is_file():
+                    if self._log and not missing_logged:
+                        missing_logged = True
+                        try:
+                            self._log(
+                                f"bored: turn watcher path missing (waiting): {path}"
+                            )
+                        except Exception:
+                            pass
                     self._stop.wait(self.poll_s)
                     continue
                 size = path.stat().st_size
@@ -11890,8 +11911,17 @@ class Relay:
         except Exception:
             return False
 
+    def clear_finished_ref(self, line: str) -> None:
+        """FR #9339: drop typed finished mark so a re-offered MRB/FR is not NACKed already finished."""
+        key = assign_job_key(line)
+        if not key:
+            return
+        typed = key.lower()
+        with self._lock:
+            self._finished_refs.discard(typed)
+
     def _ack_offer_or_refuse(self, line: str) -> str:
-        """FR #8246 / #9056 / #9254: fresh offer clears the finished mark, then ACK.
+        """FR #8246 / #9056 / #9254 / #9339: fresh offer clears the finished mark, then ACK.
 
         Returns:
           ``"acked"`` — ACK written; caller may inject/hold.
@@ -11899,6 +11929,9 @@ class Relay:
           ``"busy_holding"`` — other job ACK open; ``NACK … busy, holding <first>``.
           ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
+        # FR #9339: clear Relay finished mark before prepare_offer / ACK so a FIX
+        # push re-offer of the same MRB number is reviewed, not NACKed already finished.
+        self.clear_finished_ref(line)
         if self.prepare_offer:
             try:
                 self.prepare_offer(line)
@@ -15183,10 +15216,12 @@ class BoredEmitter:
     """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
-        * FR #2802 / #6157 / #7265: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
+        * FR #2802 / #6157 / #7265 / #9364: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
         Cursor chat-store, or Aider process-idle ``turn_ended`` releases (or skips) the harvest
-        hold; idle turn end -> reason ``turn``. ``harvest_hold_s`` is fallback only when
-        turn end cannot be seen (log ``bored: fallback timer, no turn_ended seen``);
+        hold; idle turn end -> reason ``turn``. DONE/NACK/GIVEUP with **no open turn** skips
+        ``harvest_hold_s`` immediately (and flushes parked assigns). ``harvest_hold_s`` is
+        fallback only while a turn is still open and ``turn_ended`` is missing (log
+        ``bored: fallback timer, no turn_ended seen``);
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
@@ -15209,6 +15244,9 @@ class BoredEmitter:
         per incident so 3/3 is reachable; unknown fuel readings still do not count as exhausted (#3923);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
+      * FR #9365: after harvest clears, skip the first idle_s quiet (2s debounce) so the seat
+        !boreds again within seconds when no chained offer; harvest follow-up outbox must not
+        reset that first idle clock;
       * FR #5505: ACK-on-receipt for a still-parked assign must not clear harvest_hold; when harvest
         expires (or held-assign watchdog fires), always release_held_assigns even if free/done !bored
         is still pending, so an ACKed hold cannot sit idle forever;
@@ -15336,6 +15374,9 @@ class BoredEmitter:
         self._turn_hold_cap_logged = False
         self._harvest_saw_turn_ended = False
         self._harvest_used_fallback = False
+        # FR #9365: after harvest clears (DONE/GIVEUP/NACK or turn_ended release), skip the
+        # first idle_s quiet so the seat !boreds again within seconds when no chained offer.
+        self._post_harvest_skip_idle = False
         # FR #2811: assign parked in Relay during harvest — blocks !bored, not turn_ended release.
         self._held_assign = False
         # FR #2875: turn_ended with ACK open and no DONE/NACK/GIVEUP.
@@ -15672,6 +15713,12 @@ class BoredEmitter:
             return
         if now < float(self._done_miss_armed_at) + float(self.done_miss_grace_s):
             return
+        # FR #9277: activity stamped after arm means the turn_ended was stale while streaming.
+        active = self._agent_active_at
+        armed = self._done_miss_armed_at
+        if active is not None and armed is not None and float(active) > float(armed):
+            self._cancel_done_miss_for_progress(now, why="progress after arm before remind")
+            return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._done_miss_reminded = True
         self._done_miss_reply_until = now + float(self.done_miss_reply_s)
@@ -15936,11 +15983,30 @@ class BoredEmitter:
                 self._idle_since = now
             self._hb_notify_all()
 
+    def _cancel_done_miss_for_progress(self, now: float, *, why: str) -> bool:
+        """FR #9277: progress after a false turn_ended cancels armed (pre-remind) done-miss.
+
+        Caller holds ``_cv``. Returns True when an arm was cleared.
+        """
+        if not self._ack_open:
+            return False
+        if self._done_miss_armed_at is None or self._done_miss_reminded:
+            return False
+        key = self._done_miss_key or (self._ack_job_key or "job")
+        self._clear_done_miss()
+        self.log(f"done-miss: cancelled ({why}) key={key}")
+        return True
+
     def note_agent_active(self, at: float | None = None) -> None:
-        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s."""
+        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s.
+
+        FR #9277: progress / I/O on the same ACK also cancels an armed done-miss so a
+        false ``turn_ended`` while the seat is still streaming cannot remind/GIVEUP.
+        """
         with self._cv:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
+            self._cancel_done_miss_for_progress(now, why="agent still active / progress")
             self._hb_notify_all()
 
     def note_agent_active_nb(self, at: float | None = None, *, timeout: float = 0.05) -> bool:
@@ -15955,6 +16021,7 @@ class BoredEmitter:
         try:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
+            self._cancel_done_miss_for_progress(now, why="progress heartbeat")
             self._hb_notify_all()
             return True
         finally:
@@ -16031,10 +16098,12 @@ class BoredEmitter:
             self._hb_notify_all()
 
     def _begin_harvest_hold(self, now: float) -> None:
-        """FR #1611 / #7265: after DONE/NACK/GIVEUP, hold !bored only while a turn is still open.
+        """FR #1611 / #7265 / #9364: after DONE/NACK/GIVEUP, hold !bored only while a turn is open.
 
-        Harvest belongs inside the agent turn. If the watcher already saw ``turn_ended``,
-        skip the clock. ``harvest_hold_s`` remains the fallback when no turn end is seen.
+        Harvest belongs inside the agent turn. When no turn is live (watcher already saw
+        ``turn_ended``, or never saw ``turn_started``), skip the clock and flush any
+        parked assigns immediately. ``harvest_hold_s`` remains the fallback only while
+        a turn is still open and ``turn_ended`` has not arrived yet.
         """
         self._inject_pending = False
         self._inject_at = None
@@ -16045,18 +16114,26 @@ class BoredEmitter:
         self._turn_hold_cap_logged = False
         self._harvest_saw_turn_ended = False
         self._harvest_used_fallback = False
-        skip_clock = (
-            bored_on_turn_end_enabled()
-            and self._turn_watcher_armed
-            and (not self._turn_live())
-            and self._turn_gen > 0
-        )
+        # FR #9364: do not require _turn_watcher_armed / _turn_gen > 0. A GrokTurnWatcher
+        # miss (no turn_started / turn_ended ever) used to force the full harvest_hold_s
+        # wait (~90s+) before the next assign could inject.
+        skip_clock = bored_on_turn_end_enabled() and (not self._turn_live())
+        # FR #9365: arm fast first-idle whether we skip the clock or wait the fallback.
+        self._post_harvest_skip_idle = True
         if skip_clock:
             self._harvest_until = None
             self._idle_since = now
             self._release_gen = self._turn_gen
             self._harvest_saw_turn_ended = True
-            self.log("bored: skip harvest hold (turn already ended)")
+            why = (
+                "turn already ended"
+                if (self._turn_watcher_armed and self._turn_gen > 0)
+                else "no open turn"
+            )
+            self.log(f"bored: skip harvest hold ({why})")
+            # FR #9364: release assigns already parked (ACK-on-receipt) without waiting
+            # for harvest_hold_s / fallback timer.
+            self._flush_held_on_harvest_expiry(now, why=f"skip harvest hold ({why})")
             return
         if self.harvest_hold_s > 0:
             self._harvest_until = now + self.harvest_hold_s
@@ -16384,6 +16461,7 @@ class BoredEmitter:
                     self._idle_since = now
                     self._release_gen = self._turn_gen
                     self._harvest_saw_turn_ended = True
+                    self._post_harvest_skip_idle = True  # FR #9365
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
@@ -16401,6 +16479,7 @@ class BoredEmitter:
                     # Prior release was cancelled by turn_started; this end re-arms fire.
                     self._release_gen = self._turn_gen
                     self._idle_since = now
+                    self._post_harvest_skip_idle = True  # FR #9365
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
@@ -16412,6 +16491,7 @@ class BoredEmitter:
                     self._release_gen = self._turn_gen
                     self._arm_skip = True
                     self._hold_release_at = now
+                    self._post_harvest_skip_idle = True  # FR #9365
                     if self._idle_since is None:
                         self._idle_since = now
                 self._hb_notify_all()
@@ -16441,6 +16521,7 @@ class BoredEmitter:
                 else:
                     self._ack_open, self._ack_at, self._idle_since = True, now, None
                     self._ack_job_key = job
+                    self._post_harvest_skip_idle = False  # FR #9365: new job owns the seat
                     if job:
                         self._failed_turn_retries.pop(job, None)
                     # FR #3189: persist offered repo so Invoke-BobiverseHarvest targets the product.
@@ -16539,6 +16620,10 @@ class BoredEmitter:
             elif self._harvest_until is not None and now < self._harvest_until:
                 # Harvest / follow-up outbox (intake, comments) extends the hold.
                 self._harvest_until = now + self.harvest_hold_s
+            elif self._post_harvest_skip_idle:
+                # FR #9365: harvest follow-up lines must not push the first post-harvest
+                # idle !bored out by another full idle_s after DONE/GIVEUP.
+                pass
             else:
                 self._idle_since = now
             self._hb_notify_all()
@@ -16670,6 +16755,7 @@ class BoredEmitter:
         if self._harvest_until is not None and now >= self._harvest_until:
             pending = self._pending_harvest_fire()
             self._harvest_until = None
+            self._post_harvest_skip_idle = True  # FR #9365
             if (
                 pending
                 and bored_on_turn_end_enabled()
@@ -16753,6 +16839,13 @@ class BoredEmitter:
         if self._nak_due is not None and now >= self._nak_due:
             return "nak"
         since = (now - self._last_bored) if self._last_bored is not None else 1e12
+        # FR #9365: after harvest cleared, skip the first idle_s quiet (keep a short
+        # debounce so we do not double-fire in the same second as done/free).
+        if self._post_harvest_skip_idle:
+            debounce = 2.0
+            if since >= debounce:
+                return "idle"
+            return None
         thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
         if now - self._idle_since >= self.idle_s and since >= thr:
             return "idle"
@@ -16827,6 +16920,14 @@ class BoredEmitter:
                 or self._turn_idle_pending
             ):
                 return now
+        # FR #9365: wake soon for the first post-harvest idle (debounce after done/free).
+        if self._post_harvest_skip_idle:
+            due_fast = now
+            if self._last_bored is not None:
+                due_fast = max(due_fast, float(self._last_bored) + 2.0)
+            if self._nak_due is not None:
+                due_fast = min(due_fast, self._nak_due)
+            return due_fast
         base = self._idle_since if self._idle_since is not None else now
         thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
         due = base + self.idle_s
@@ -16887,6 +16988,7 @@ class BoredEmitter:
             self._retry_at = now + self.retry_s
             self.log(f"bored: not sent ({reason}) - retry in {self.retry_s:.0f}s")
             return
+        was_post_harvest = bool(self._post_harvest_skip_idle)
         self._last_dedupe, self._last_bored, self._last_reason, self._idle_since = key, now, reason, now
         self._nak_due = None  # any !bored satisfies a pending NAK timer
         if reason == "start":
@@ -16894,11 +16996,18 @@ class BoredEmitter:
         if reason == "done":
             self._last_done_key = self._done_key
             self._hold_started_at = None
+            # Keep skip-idle armed so a follow-up idle !bored is not delayed by idle_s.
+            self._post_harvest_skip_idle = True
         if reason == "free":
             self._last_free_key = self._free_key
             self._hold_started_at = None
+            self._post_harvest_skip_idle = True
         if reason == "turn":
             self._turn_idle_pending = False
+            self._post_harvest_skip_idle = True
+        if reason == "idle":
+            # FR #9365: first post-harvest idle consumed; later idles use idle_s / repeat_s.
+            self._post_harvest_skip_idle = False
         if reason == "done-miss":
             self._done_miss_release_pending = False
             self._clear_done_miss()
@@ -16911,6 +17020,8 @@ class BoredEmitter:
             trigger = "turn_ended"
         elif reason in ("done", "free") and self._harvest_used_fallback:
             trigger = "fallback-timer"
+        elif reason == "idle" and was_post_harvest:
+            trigger = "post-harvest"
         else:
             trigger = reason
         self.log(f"bored -> shop reason={reason} kind={kind} trigger={trigger}")
@@ -17542,8 +17653,18 @@ class Supervisor:
             return lost
         if kind == "opencode":
             lost = fuel_explicitly_exhausted(fuel, "opencode", start_model=start_model)
-            self.log(f"out-of-fuel: mid-job reading {snap}")
-            return lost
+            known = fuel_reading_known(fuel, "opencode", start_model=start_model)
+            # FR #9277: paid/go mid-job with unknown pool (go=None, free=0 noise) is not
+            # out-of-fuel. Do not spam ``out-of-fuel: mid-job reading`` every poll.
+            if lost or known:
+                self.log(f"out-of-fuel: mid-job reading {snap}")
+                self._last_midjob_fuel_snap = snap
+                return lost
+            prev = getattr(self, "_last_midjob_fuel_snap", None)
+            if prev != snap:
+                self.log(f"fuel: mid-job reading {snap} (unknown pool; not exhausted)")
+                self._last_midjob_fuel_snap = snap
+            return False
         return False
 
     def _clear_watchdogs_for_out_of_fuel(self) -> None:

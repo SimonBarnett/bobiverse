@@ -1,10 +1,11 @@
-"""MRB #2710 hostile: grok Plan shares --no-auto-update/--no-alt-screen (FR #2699)."""
+"""MRB #2710 hostile: grok Plan shares --no-auto-update/--no-alt-screen (FR #2699).
+
+FR #8833: bobiverse-bob-plan skill removed; pin lives in bob_worker build_launch.
+"""
 from __future__ import annotations
 
-from pathlib import Path
-
 import bob_worker as bw
-from repo_layout import ROOT, resolve
+from repo_layout import ROOT
 
 
 def test_mrb2710_plan_argv_order_prefix_then_permission_mode(tmp_path):
@@ -47,10 +48,10 @@ def test_mrb2710_maintenance_resume_keeps_shared_prefix(tmp_path):
     assert spec.argv[spec.argv.index("--resume") + 1] == sid
 
 
-def test_mrb2710_plan_skill_documents_no_auto_update():
-    skill = resolve("bob/.grok/skills/bobiverse-bob-plan/SKILL.md").read_text(encoding="utf-8")
-    assert "--no-auto-update" in skill
-    assert "FR #2699" in skill or "2699" in skill
+def test_mrb2710_bob_worker_documents_no_auto_update():
+    text = (ROOT / "bob/scripts/bob_worker.py").read_text(encoding="utf-8-sig")
+    assert "--no-auto-update" in text
+    assert "FR #2699" in text or "2699" in text
 
 
 def test_mrb2710_no_second_permission_mode_plan_argv_outside_build_launch():

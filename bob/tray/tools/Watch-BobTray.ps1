@@ -2182,6 +2182,23 @@ function Start-BobTrayPriorityExe {
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
 }
 
+function Test-BobTrayPriorityFuelEmpty {
+    # FR #8698 / BOB-52: true when this box's fuel file says remaining_pct <= 0 or status empty.
+    # Missing file = unknown = allow (do not block).
+    param([string]$FuelPath)
+    if ([string]::IsNullOrWhiteSpace($FuelPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $FuelPath)) { return $false }
+    try { $doc = Get-Content -Raw -LiteralPath $FuelPath | ConvertFrom-Json } catch { return $false }
+    $st = ([string]$doc.status).Trim().ToLowerInvariant()
+    if ($st -in @('empty', 'exhausted', 'out-of-fuel', 'out_of_fuel')) { return $true }
+    foreach ($k in @('remaining_pct', 'remaining', 'tokens_remaining')) {
+        $v = $doc.$k
+        if ($null -eq $v -or [string]$v -eq '') { continue }
+        return ([int]$v -le 0)
+    }
+    return $false
+}
+
 function Test-BobTrayPlanFuelEmpty {
     # FR #8692 / BOB-46: true when this box's fuel file says remaining_pct <= 0 or status empty.
     param([string]$FuelPath)
@@ -2244,6 +2261,7 @@ function Start-BobTrayWorkerExe {
         [ValidateSet('agent', 'plan')][string]$Mode,
         [ValidateSet('', 'auto', 'grok', 'cursor', 'opencode')][string]$Agent = '',
         [string]$SeatId = '',
+        # FR #9346: default 'other' is fail-closed (blocked when empty-online.disabled).
         [string]$Trigger = 'other',
         [string]$Model = '',
         [switch]$Quiet,
@@ -2264,8 +2282,9 @@ function Start-BobTrayWorkerExe {
             if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($offMsg, 'Bobiverse', 'OK', 'Information') } catch { } }
             return 0
         }
-        # FR #9240: empty-online.disabled blocks auto triggers (auto-start, restore-after-recycle).
-        # TipForm menu / workers-* / jeeves-menu and explicit !startworker stay allowed.
+        # FR #9240 / #9346: empty-online.disabled blocks every non-manual trigger (fail-closed:
+        # auto-start, restore-after-recycle, other, empty, unknown). TipForm menu / workers-* /
+        # jeeves-menu and explicit !startworker stay allowed.
         if ($Mode -eq 'agent' -and (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue)) {
             $blockAuto = $false
             try { $blockAuto = [bool](Test-BobTrayEmptyOnlineBlocksAutoStart -Root $RepoRoot -Trigger $Trigger) } catch { $blockAuto = $false }
@@ -3273,20 +3292,39 @@ function Close-BobTrayDialogs {
     $script:tip = $null
 }
 
-# t798u / FR #9034: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop.
+# t798u / FR #9034 / FR #9146: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop.
 # Never stop ircBob — the ear is a machine service, not a TipForm child (matches Restart -SkipServiceRestart).
+# Under #9011 park (bob-tray.exe.clickfix/false/true-park present): short suppress (5m, Exit-park) so Watch can recover TipForm.
 function Invoke-BobTrayExit {
     $script:trayExitReason = 'Exit'
-    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI (ircBob left running; FR #9034)'
-    # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch.
+    $parked = $false
     try {
-        if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
-            Set-BobTrayWatchdogSuppress -Reason 'Exit'
+        if (Get-Command Test-BobTrayExeParked -ErrorAction SilentlyContinue) {
+            $parked = [bool](Test-BobTrayExeParked -Root $RepoRoot)
         }
-        if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
-            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit'; ircBob = 'left-running' }
-        }
-    } catch { }
+    } catch { $parked = $false }
+    if ($parked) {
+        Write-TrayLog 'Exit: park TipForm close dialogs, dispose icon, exit UI (ircBob left running; suppress 5m; FR #9146)'
+        try {
+            if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
+                Set-BobTrayWatchdogSuppress -Reason 'Exit-park' -TtlMinutes 5
+            }
+            if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+                Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit-park'; ircBob = 'left-running'; park = $true }
+            }
+        } catch { }
+    } else {
+        Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI (ircBob left running; FR #9034)'
+        # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch (default 1440m).
+        try {
+            if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
+                Set-BobTrayWatchdogSuppress -Reason 'Exit'
+            }
+            if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+                Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit'; ircBob = 'left-running' }
+            }
+        } catch { }
+    }
     [void](Invoke-BobTrayExitSequence `
             -CloseDialogs { Close-BobTrayDialogs } `
             -DisposeIcon { $notify.Visible = $false; $notify.Dispose() } `
@@ -4772,8 +4810,23 @@ $miPlan.Add_Click({
         }
         Start-BobTrayPlanExe
     })
-# BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-$miPriority.Add_Click({ Start-BobTrayPriorityExe })
+# FR #8698 / BOB-52: Priority no-token gate before Start-BobTrayPriorityExe (mirror Plan BOB-46).
+$miPriority.Add_Click({
+        $fuel = [Environment]::GetEnvironmentVariable('BOB_PRIORITY_FUEL_FILE')
+        if ([string]::IsNullOrWhiteSpace($fuel)) {
+            $fuel = Join-Path $env:LOCALAPPDATA 'Bobiverse\priority-fuel.json'
+        }
+        if (Test-BobTrayPriorityFuelEmpty -FuelPath $fuel) {
+            Write-TrayLog ('Priority: no tokens; quit ' + $fuel)
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'Priority: this box has no tokens. PriorityAgent will quit instead of starting without fuel.',
+                'Priority - no tokens',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        Start-BobTrayPriorityExe
+    })
 $miJeeves.Add_Click({
         if (-not (Test-BobTrayJeevesDrive)) {
             Write-TrayLog 'Jeeves: J: map missing; quit'
@@ -5514,6 +5567,18 @@ $poll.Start()
 [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
+# FR #9280: leave the startup seed "starting" as soon as the engine message loop is up,
+# even when the first hover/digest step timed out. Card must not stay on starting forever.
+try {
+    if ((Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) -and (Get-Command New-BobTrayStatusModel -ErrorAction SilentlyContinue)) {
+        $mid = [string]$env:BOB_MACHINE_ID
+        $ver = ''
+        try { if (Get-Command Get-BobTrayProductVersionLabel -ErrorAction SilentlyContinue) { $ver = Get-BobTrayProductVersionLabel } } catch { }
+        $upModel = New-BobTrayStatusModel -Hover $null -AlertKind 'none' -Alerts @() -Version $ver `
+            -Machine $mid -Title 'Bob' -Short 'Bob: engine up' -Attention $false -AttentionSeq 0 -Pulse $false
+        [void](Write-BobTrayStatusSnapshot -Root $RepoRoot -Model $upModel)
+    }
+} catch { }
 try {
     if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
         Write-BobTrayLifecycleEvent -Event 'tray-up' -Fields @{ via = $(if (Test-BobTrayEngineMode) { 'engine' } else { 'Watch-BobTray' }) }
@@ -5550,7 +5615,7 @@ try {
     }
 } catch { }
 # Exit path (menu Exit/Restart already announced+logout). Idempotent; skip second announce.
-# t798u: Exit already stopped ircBob (detached); the slow logout/kill path is only for Restart and external stops.
+# t798u / FR #9034 / FR #9146: TipForm Exit leaves ircBob running; slow logout/kill is only for Restart and external stops.
 if ($script:trayExitReason -ne 'Exit') {
     try { Request-BobTrayIrcLogout -Reason Exit -SkipAnnounce } catch { Write-TrayLog ('final irc logout: ' + $_.Exception.Message) }
 }

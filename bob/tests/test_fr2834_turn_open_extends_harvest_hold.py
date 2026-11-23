@@ -45,18 +45,16 @@ def test_fr2834_turn_hold_max_releases_without_turn_ended():
     e.stop()
 
 
-def test_fr2834_no_turn_signal_keeps_harvest_hold_fallback():
-    """Watcher never saw turn_started: !bored still at harvest_hold_s."""
+def test_fr2834_no_turn_signal_skips_harvest_hold():
+    """FR #9364: watcher never saw turn_started → skip harvest_hold, !bored promptly."""
     clock = FakeClock(0.0)
-    e, sent, _ = _emitter(clock, harvest_hold_s=90.0, turn_hold_max_s=600.0)
+    e, sent, logs = _emitter(clock, harvest_hold_s=90.0, turn_hold_max_s=600.0)
     e.on_outbox("DONE FR o/r#2 https://example.com/p/2")
     n0 = len(sent)
-    clock.advance(89.0)
-    time.sleep(0.05)
-    assert len(sent) == n0
-    clock.advance(2.0)
-    assert _wait(lambda: len(sent) > n0, clock)
+    assert _wait(lambda: len(sent) > n0, clock, timeout=2.0)
     assert e.sent[-1][1] == "done"
+    assert e.sent[-1][0] < 10.0
+    assert any("skip harvest hold (no open turn)" in m for m in logs)
     e.stop()
 
 

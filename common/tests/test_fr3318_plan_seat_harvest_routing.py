@@ -12,18 +12,8 @@ import intake
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "common" / "scripts" / "Report-BobiverseIntakeIssue.ps1"
 HARVEST = ROOT / "common" / "scripts" / "Invoke-BobiverseHarvest.ps1"
-PLAN_AGENTS = ROOT / "bob" / "agents" / "plan" / "AGENTS.md"
-VISIONARY = ROOT / "bob" / "agents" / "plan" / ".grok" / "skills" / "visionary" / "SKILL.md"
-HSV = (
-    ROOT
-    / "bob"
-    / "agents"
-    / "plan"
-    / ".grok"
-    / "skills"
-    / "harvest-skills-visionary"
-    / "SKILL.md"
-)
+PLAN_README = ROOT / "bob" / "agents" / "plan" / "README.md"
+PACK = ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1"
 
 
 def test_fr3318_resolve_skills_visionary_never_bobiverse_harvest_path():
@@ -131,24 +121,15 @@ def test_fr3318_report_explicit_book_wins():
         assert (payload.get("source") or {}).get("skill_book") == "bobiverse-bob-job-mrb"
 
 
-def test_fr3318_plan_agents_names_skills_visionary_not_bobiverse_harvest():
-    text = PLAN_AGENTS.read_text(encoding="utf-8")
-    assert "FR #3318" in text
+def test_fr3318_plan_pointer_and_pack_stub_skills_visionary():
+    # FR #8833: in-tree Plan AGENTS/skills removed; README + Pack stub remain.
+    text = PLAN_README.read_text(encoding="utf-8")
     assert "SimonBarnett/skills-visionary" in text
-    assert "harvest-skills-visionary" in text or "skills-visionary" in text
-    # Must not instruct Plan seats to file *lessons* at bobiverse harvest.
-    cast = text.split("## Rules")[0]
-    assert "-Repo SimonBarnett/bobiverse" not in cast or "never" in cast.lower()
-    assert "never" in cast.lower() and "bobiverse" in cast.lower()
-
-
-def test_fr3318_visionary_and_hsv_cast_iron_point_at_skills_visionary():
-    for path in (VISIONARY, HSV):
-        text = path.read_text(encoding="utf-8")
-        assert "SimonBarnett/skills-visionary" in text
-        # CAST IRON example line should not default Report to bobiverse.
-        head = "\n".join(text.splitlines()[:30])
-        assert "Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary" in head
+    pack = PACK.read_text(encoding="utf-8-sig")
+    stub_start = pack.index("Plan lives in https://github.com/SimonBarnett/skills-visionary")
+    stub = pack[stub_start : stub_start + 900]
+    assert "Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary" in stub
+    assert "Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse" not in stub
 
 
 def test_fr3318_product_404_holds_not_bobiverse_harvest_pr(tmp_path: Path):

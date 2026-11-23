@@ -5624,9 +5624,22 @@ def _public_queue(home: Path) -> dict:
     doc = gitclaim.load_queue(home)
     unaccepted = [r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)]
     accepted = list(doc.get("accepted") or [])
+    # FR #9347: phase-gated MRB PASS tips live on merge-on-green skip_hold.
+    held_pass_n = 0
+    with contextlib.suppress(Exception):
+        import mrb_merge_on_green as _mog
+
+        led = _mog.load_ledger(home)
+        for row in led.get("pending") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "").strip().lower() == "skip_hold":
+                held_pass_n += 1
     # FR #8536: TipForm / monitor need fleet queue summary so healthy idle
     # (offerable empty / needs_human-only) is not mistaken for hung seats.
-    summary = summarize_public_queue(unaccepted, accepted)
+    summary = summarize_public_queue(
+        unaccepted, accepted, held_pass_count=held_pass_n
+    )
     summary["unaccepted"] = unaccepted
     summary["accepted"] = accepted
     return summary
@@ -5635,8 +5648,15 @@ def _public_queue(home: Path) -> dict:
 def summarize_public_queue(
     unaccepted: list | None,
     accepted: list | None = None,
+    *,
+    held_pass_count: int | None = None,
 ) -> dict:
-    """FR #8536: fleet queue counts for digest / TipForm (no I/O)."""
+    """FR #8536: fleet queue counts for digest / TipForm (no I/O).
+
+    FR #9347: ``needs_human_hint`` names the recycle path; ``held_pass_count``
+    (optional) surfaces phase-gated MRB PASS tips so ops do not chase them as
+    undispatched.
+    """
     import gitclaim
 
     rows = [r for r in (unaccepted or []) if isinstance(r, dict)]
@@ -5655,13 +5675,23 @@ def summarize_public_queue(
         offerable_n = int(stuck_job_sweep.ungated_unaccepted_count(rows))
     except Exception:
         offerable_n = max(0, len(rows) - needs_human_n)
-    return {
+    out = {
         "unaccepted_count": len(rows),
         "needs_human_count": needs_human_n,
         "offerable_count": offerable_n,
         "queue_needs_human_only": bool(rows) and needs_human_n == len(rows),
         "accepted_count": len([r for r in (accepted or []) if isinstance(r, dict)]),
+        # FR #9347: operator path when giveup_count walls block !bored.
+        "needs_human_hint": (
+            "!cleargiveup owner/repo#N [seat] or !recycle "
+            "(needs_human after giveup_count>=2; !bored will not take these)"
+            if needs_human_n
+            else ""
+        ),
     }
+    if held_pass_count is not None:
+        out["held_pass_count"] = int(held_pass_count)
+    return out
 
 
 def _digest_fleet_pools(doc: dict | None) -> dict:

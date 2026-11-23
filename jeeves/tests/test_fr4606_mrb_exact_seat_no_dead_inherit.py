@@ -1,4 +1,4 @@
-"""FR #4606: MRB exact-seat only — recycled sole seat may review; UAT still inherits."""
+"""FR #4606: MRB skips dead-seat inherit; FR #9401 machine-id when multi-machine."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,9 +22,11 @@ def test_gitclaim_source_skips_dead_inherit_for_mrb_only():
     # MRB branch continues before nick_inherits_dead_seat; UAT still calls it.
     assert "if task == \"MRB\":" in text
     assert "nick_inherits_dead_seat" in text
+    assert "FR #9401" in text
 
 
-def test_recycled_sole_seat_not_blocked_for_mrb(tmp_path, monkeypatch):
+def test_recycled_seat_blocked_when_other_machine_live(tmp_path, monkeypatch):
+    """FR #9401: same machine as dead author + other machine live => block; offer other."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     registered_machines.save_registered(home, {"flamingo", "marchhare"})
@@ -53,9 +55,44 @@ def test_recycled_sole_seat_not_blocked_for_mrb(tmp_path, monkeypatch):
     }
     live = {RECYCLED, OTHER}
     assert gitclaim.nick_inherits_dead_seat(RECYCLED, DEAD_AUTHOR, live) is True
-    assert gitclaim.review_blocked_for_author(row, RECYCLED, live) is False
-    assert gitclaim.review_blocked_for_author(row, DEAD_AUTHOR, live | {DEAD_AUTHOR}) is True
+    assert gitclaim.review_blocked_for_author(row, RECYCLED, live) is True
+    assert gitclaim.review_blocked_for_author(row, OTHER, live) is False
 
+    doc = {"v": 1, "unaccepted": [row], "accepted": [], "done": []}
+    gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    st, _ = gitclaim.offer_focus_top(home, RECYCLED, "#flamingo")
+    assert st == "empty"
+    st2, job = gitclaim.offer_focus_top(home, OTHER, "#marchhare")
+    assert st2 == "ok"
+    assert job is not None and str(job.get("id") or "") == PR
+
+
+def test_recycled_sole_machine_not_blocked_for_mrb(tmp_path, monkeypatch):
+    """Sole-box fleet: recycled successor may MRB (FR #4606 / #5900)."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    home = tmp_path
+    registered_machines.save_registered(home, {"flamingo"})
+    digest = bobreport.empty_digest()
+    digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
+    digest["machines"]["flamingo"]["worker_list"] = [
+        {"nick": RECYCLED, "state": "idle"},
+    ]
+    bobreport.save_digest(home, digest)
+
+    row = {
+        "repo": REPO,
+        "task": "MRB",
+        "id": PR,
+        "seq": 1,
+        "ts": "t",
+        "line": "x",
+        "url": URL,
+        "author_seat": DEAD_AUTHOR,
+        "event": "pull_request",
+        "action": "opened",
+    }
+    live = {RECYCLED}
+    assert gitclaim.review_blocked_for_author(row, RECYCLED, live) is False
     doc = {"v": 1, "unaccepted": [row], "accepted": [], "done": []}
     gitclaim._write_queue(gitclaim.queue_path(home), doc)
     st, job = gitclaim.offer_focus_top(home, RECYCLED, "#flamingo")
