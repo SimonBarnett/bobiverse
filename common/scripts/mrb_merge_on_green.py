@@ -1521,6 +1521,7 @@ def offer_dirty_conflict_fix(
     reason: str = "conflicting",
     pr_state: dict[str, Any] | None = None,
     exclude_nick: str = "",
+    issue_lookup=None,
 ) -> str:
     """Offer one conflict FIX for a DIRTY/CONFLICTING PR (FR #4669 / #4636 / #4679).
 
@@ -1545,6 +1546,7 @@ def offer_dirty_conflict_fix(
         reason=reason,
         pr_state=pr_state,
         exclude_nick=exclude_nick,
+        issue_lookup=issue_lookup,
     )
     if result != "duplicate":
         return result
@@ -1578,6 +1580,7 @@ def offer_dirty_conflict_fix(
         reason=reason,
         pr_state=pr_state,
         exclude_nick=exclude_nick,
+        issue_lookup=issue_lookup,
     )
     if result == "added":
         doc = load_ledger(home)
@@ -2175,6 +2178,37 @@ def conflict_blocked_pass_sha(doc: dict[str, Any], repo: str, pr: str) -> str:
     return str((rec or {}).get("pass_sha") or "") if isinstance(rec, dict) else ""
 
 
+
+def _default_issue_lookup(repo: str, ident: str, *, token: str | None = None):
+    """FR #9080: load issue title/body/labels for linked-hold checks."""
+    tok = _gh_token(token)
+    if not tok:
+        return None
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(ident or '').lstrip('#')
+    if not repo_c or not num.isdigit():
+        return None
+    try:
+        doc = _gh_json(f'https://api.github.com/repos/{repo_c}/issues/{num}', token=tok)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(doc, dict):
+        return None
+    # PRs share the issues API; skip pull_request blobs.
+    if doc.get('pull_request'):
+        return None
+    labels = []
+    for lab in doc.get('labels') or []:
+        if isinstance(lab, dict) and lab.get('name'):
+            labels.append(str(lab['name']))
+    return {
+        'title': str(doc.get('title') or ''),
+        'body': str(doc.get('body') or ''),
+        'labels': labels,
+        'state': str(doc.get('state') or ''),
+    }
+
+
 def enqueue_conflict_fix(
     home: Path,
     *,
@@ -2185,6 +2219,7 @@ def enqueue_conflict_fix(
     reason: str = "",
     pr_state: dict[str, Any] | None = None,
     exclude_nick: str = "",
+    issue_lookup=None,
 ) -> str:
     """Queue one FIX to merge main and resolve conflicts for this PR+SHA (FR #4636).
 
@@ -2219,6 +2254,26 @@ def enqueue_conflict_fix(
         comments=state.get("comments") if isinstance(state.get("comments"), list) else None,
     ):
         return "skipped"
+    # FR #9080: never offer dirty/conflict FIX while the PR (or linked issue) is held.
+    if isinstance(state, dict):
+        hold = gitclaim.pr_hold_reason(
+            title=str(state.get("title") or ""),
+            body=str(state.get("body") or ""),
+            labels=tuple(str(x) for x in (state.get("labels") or [])),
+        )
+        if hold:
+            return "skipped"
+        lookup = issue_lookup
+        if lookup is None:
+            lookup = lambda r, i: _default_issue_lookup(r, i)  # noqa: E731
+        linked = gitclaim.linked_issue_hold_reason(
+            repo_c,
+            body=str(state.get("body") or ""),
+            refs=tuple(str(x) for x in (state.get("refs") or [])),
+            issue_lookup=lookup,
+        )
+        if linked:
+            return "skipped"
     sig = f"conflict|{repo_c}|{num}|{sha}"
     doc = load_ledger(home)
     offered = doc.get(CONFLICT_FIX_KEY)

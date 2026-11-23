@@ -4012,16 +4012,25 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     """Vision skill packs for worker MCP (FR #6899). Seat, bob, harvest, user.
 
     Does not include a job worktree (that is ``--job-worktree`` only).
+    FR #8682 / BOB-38: ``BOB_JEEVES_MCP_ROOT`` (Agents > Jeeves) is prepended so the
+    skill-dag MCP ``--root`` list starts on the J: skills path.
     """
     cwd = Path(worker_cwd).resolve()
     install = cwd.parent
     user = Path(home) if home is not None else Path.home()
-    return [
+    roots: list[Path] = []
+    jeeves = (os.environ.get("BOB_JEEVES_MCP_ROOT") or "").strip()
+    if jeeves:
+        roots.append(Path(jeeves))
+    for cand in (
         cwd / ".grok" / "skills",
         install / "bob" / ".grok" / "skills",
         install / "common" / ".grok" / "skills",
         user / ".grok" / "skills",
-    ]
+    ):
+        if cand not in roots:
+            roots.append(cand)
+    return roots
 
 
 SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
@@ -6346,15 +6355,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $lastLen = $len",
             r"                $lastBeat = [datetime]::UtcNow",
             r"                $lastProgress = [datetime]::UtcNow",
+            # FR #9209: mirror each new capture slice live on the success stream.
+            # bob_worker tees wrapper stdout to the seat console with flush; keep redirects
+            # + seat-log tee (FR #8553 / #8069). Do not wait for process exit.
+            r"                $pyLog = $null",
             r"                if ($script:ocStdoutLog) {",
             r"                    $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                    if (-not $pyLog) { $pyLog = 'python.exe' }",
-            r"                    foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
-            r"                        $cap = Read-OpencodeCapture $pair[0]",
-            r"                        $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
-            r"                        if ($cap.Length -gt $pos) {",
-            r"                            $slice = $cap.Substring($pos)",
-            r"                            Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                }",
+            r"                foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"                    $cap = Read-OpencodeCapture $pair[0]",
+            r"                    $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"                    if ($cap.Length -gt $pos) {",
+            r"                        $slice = $cap.Substring($pos)",
+            r"                        Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                        try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                        if ($script:ocStdoutLog -and $pyLog -and $stdoutLogPy) {",
             r"                            $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"                            try {",
             r"                                [IO.File]::WriteAllText($sliceFile, $slice)",
@@ -6499,17 +6515,23 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"          }",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
+            r"        $pyLogEnd = $null",
             r"        if ($script:ocStdoutLog -and $stdoutLogPy) {",
-            r"            $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
-            r"            if (-not $pyLog) { $pyLog = 'python.exe' }",
-            r"            foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
-            r"                $cap = Read-OpencodeCapture $pair[0]",
-            r"                $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
-            r"                if ($cap.Length -gt $pos) {",
+            r"            $pyLogEnd = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"            if (-not $pyLogEnd) { $pyLogEnd = 'python.exe' }",
+            r"        }",
+            r"        foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"            $cap = Read-OpencodeCapture $pair[0]",
+            r"            $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"            if ($cap.Length -gt $pos) {",
+            r"                $slice = $cap.Substring($pos)",
+            r"                Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            # FR #9209: remainder once (live loop already mirrored prior slices).
+            r"                try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                if ($pyLogEnd) {",
             r"                    $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
-            r"                    try { [IO.File]::WriteAllText($sliceFile, $cap.Substring($pos)); & $pyLog $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
+            r"                    try { [IO.File]::WriteAllText($sliceFile, $slice); & $pyLogEnd $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
             r"                    finally { Remove-Item -LiteralPath $sliceFile -ErrorAction SilentlyContinue }",
-            r"                    Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
             r"                }",
             r"            }",
             r"        }",
@@ -6527,7 +6549,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
-            r"    Write-Output $outStr",
+            # FR #9209: fuel/scan uses $outStr from capture files. Live text already flushed to
+            # the success stream; do not dump the full blob again (operator hate).
+            r"    Write-Output ('opencode-capture-done exit=' + [string]$exitCode + ' bytes=' + [string]$outStr.Length)",
             r"    # Drop the prompt echo and markdown quotations before the fuel match.",
             r"    # The seat prompt documents `402 Payment Required`; that is not a provider 402.",
             r"    $scan = $outStr",
