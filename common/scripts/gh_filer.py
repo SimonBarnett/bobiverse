@@ -251,6 +251,21 @@ class GhCliFiler:
             err = (proc.stderr or proc.stdout or "gh issue comment failed").strip()
             raise GitHubDown(err[:500])
 
+    def edit_issue_body(self, repo: str, number: int, body: str) -> None:
+        """FR #9469: PATCH issue body via ``gh api`` (plain Depends-on stamp)."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        repo_s = str(repo or "").strip()
+        num = int(number)
+        if not repo_s or "/" not in repo_s or num < 1:
+            raise GitHubDown("edit_issue_body: bad repo/number")
+        self._api(
+            "PATCH",
+            f"repos/{repo_s}/issues/{num}",
+            {"body": str(body or "")},
+        )
+
     def reopen_issue(self, repo: str, number: int) -> None:
         """FR #4963: ``gh issue reopen``."""
         ensure_gh_token_env()
