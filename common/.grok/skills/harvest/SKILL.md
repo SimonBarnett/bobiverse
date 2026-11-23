@@ -413,3 +413,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - gh pr comment --body with multiline here-string can fail accepts-at-most-1-arg; use --body-file for MRB boards
 - Monitor unit tests that expect EXIT_FINDING must monkeypatch non_chair_overlay to None; fresh live /bob/v1/report + missing queue.json soft-passes findings on CI/worker (FR #8579)
 - PR_HOLD_TITLE_RE: bare mid-title on hold is product prose (Create fr-digest on hold); only leading On hold or on hold: counts
+- Idle+offerable is not starve when the only offerable row is cast-iron-blocked UAT; do not !assign customer/non-release UAT; #9402 twin covered by in-flight MRB skips duplicate FR assign.
