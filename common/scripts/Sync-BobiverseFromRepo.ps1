@@ -563,17 +563,27 @@ foreach ($m in $mirror) {
 # stale after #8585 because jeeves tools\ robocopy keeps /XO (MRB #6162) and git
 # mtimes are older than the flat copy. Force-copy monitor scripts from tip.
 # The rest of tools\ stays /XO.
+# FR #9100: skip when source == destination (repo-tree install / flat compose).
 if ($Product -eq 'jeeves') {
     $monFrom = Get-BobiverseRepoPath -Root $clone -Rel 'tools\monitor'
     $monDst = Join-Path $InstallRoot 'tools\monitor'
     if (Test-Path -LiteralPath $monFrom -PathType Container) {
-        New-Item -ItemType Directory -Force -Path $monDst | Out-Null
-        $nMon = 0
-        foreach ($mf in @(Get-ChildItem -LiteralPath $monFrom -File)) {
-            Copy-Item -LiteralPath $mf.FullName -Destination (Join-Path $monDst $mf.Name) -Force
-            $nMon++
+        $monFromFull = [string](Resolve-Path -LiteralPath $monFrom).Path
+        $monDstFull = $monDst
+        if (Test-Path -LiteralPath $monDst -PathType Container) {
+            $monDstFull = [string](Resolve-Path -LiteralPath $monDst).Path
         }
-        Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
+        if ([string]::Equals($monFromFull, $monDstFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host 'INFO sync-monitor-force: skipped (source == destination)'
+        } else {
+            New-Item -ItemType Directory -Force -Path $monDst | Out-Null
+            $nMon = 0
+            foreach ($mf in @(Get-ChildItem -LiteralPath $monFrom -File)) {
+                Copy-Item -LiteralPath $mf.FullName -Destination (Join-Path $monDst $mf.Name) -Force
+                $nMon++
+            }
+            Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
+        }
     }
 }
 
