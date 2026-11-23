@@ -206,9 +206,13 @@ def test_fr3205_skips_seat_relative(home: Path):
 
 
 def test_fr3205_cant_mrb_gets_next_fr(home: Path):
-    """Own PR as MRB #40 (self-review blocked) → !bored returns FR #8, never empty."""
+    """Own PR as MRB #40 (self-review blocked) → !bored returns FR #8, never empty.
+
+    FR #9401: other-machine seat (flamingo) takes the MRB; same-machine sibling
+    would also be blocked while flamingo is live.
+    """
     repo = "SimonBarnett/bobiverse"
-    me, other = "marchhare-35600", "marchhare-35601"
+    me, other = "marchhare-35600", "flamingo-9"
     mrb = _row(repo, "MRB", 40, seq=1)
     mrb["author_seat"] = me
     mrb["implementer_seat"] = me
@@ -217,7 +221,7 @@ def test_fr3205_cant_mrb_gets_next_fr(home: Path):
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok", st
     assert job is not None and job["id"] == "#8" and job["task"] == "FR"
-    st2, job2 = gitclaim.offer_focus_top(home, other, "#marchhare")
+    st2, job2 = gitclaim.offer_focus_top(home, other, "#flamingo")
     assert st2 == "ok" and job2["id"] == "#40"
 
 
