@@ -158,7 +158,10 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "opencode.exe" in script or OP in script
     assert "'run', '-m', $model" in script
     assert "--continue" not in script
-    assert "Write-Output $outStr" in script
+    # FR #9209: live console mirror via Console.Out; end marker instead of full $outStr dump.
+    assert "[Console]::Out.Write($slice)" in script or "Write-Host -NoNewline" in script
+    assert "opencode-capture-done" in script
+    assert "Write-Output $outStr" not in script
     # FR #6156: idle/output heartbeat, not absolute WaitForExit($watchdogMs).
     assert "$proc.WaitForExit($watchdogMs)" not in script
     assert "RedirectStandardOutput" in script
