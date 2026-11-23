@@ -74,6 +74,7 @@ def test_fr7414_install_copies_downloads_css_and_commands(tmp_path: Path):
         str(site),
         "-Backend",
         "http://127.0.0.1:7700",
+        "-SkipBackendProbe",
         "-WwwSource",
         str(www),
         "-PublishWww",
