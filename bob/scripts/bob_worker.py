@@ -11890,8 +11890,17 @@ class Relay:
         except Exception:
             return False
 
+    def clear_finished_ref(self, line: str) -> None:
+        """FR #9339: drop typed finished mark so a re-offered MRB/FR is not NACKed already finished."""
+        key = assign_job_key(line)
+        if not key:
+            return
+        typed = key.lower()
+        with self._lock:
+            self._finished_refs.discard(typed)
+
     def _ack_offer_or_refuse(self, line: str) -> str:
-        """FR #8246 / #9056 / #9254: fresh offer clears the finished mark, then ACK.
+        """FR #8246 / #9056 / #9254 / #9339: fresh offer clears the finished mark, then ACK.
 
         Returns:
           ``"acked"`` — ACK written; caller may inject/hold.
@@ -11899,6 +11908,9 @@ class Relay:
           ``"busy_holding"`` — other job ACK open; ``NACK … busy, holding <first>``.
           ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
+        # FR #9339: clear Relay finished mark before prepare_offer / ACK so a FIX
+        # push re-offer of the same MRB number is reviewed, not NACKed already finished.
+        self.clear_finished_ref(line)
         if self.prepare_offer:
             try:
                 self.prepare_offer(line)
