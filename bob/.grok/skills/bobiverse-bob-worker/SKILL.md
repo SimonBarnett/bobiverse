@@ -19,6 +19,7 @@ description: >
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 >
+> **Workers > OpenCode harvest (FR #8731):** tray, worker, and OpenCode-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 > **Workers > Grok harvest (FR #8724):** tray, worker, and Grok-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 
 Everything about starting and running a **worker agent** from the bob install (`<ai root>\bob`). The worker is one compiled program,
@@ -323,3 +324,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #8663:** Plan hosted console: agent ended code=4294967295 means grok child exited -1 with no session_end; check %USERPROFILE%\.grok\sessions\...\bob\plan\<sid>\events.jsonl and bob-worker-plan.log. `run_plan` must return non-zero (`EXIT_PLAN_CHILD`) on any non-zero child exit; a second hard exit within 10 minutes logs a heal tip. Do not tee grok stderr off the hosted console (FR #7916). Do not park this playbook under `harvest/SKILL.md` (MOVED from tip #8666).
 - **FR #8667:** Keep FR #7326 public digest cursor-free; write private `fleet-cursor-private.json` from `tick_fleet_pools` and let `explicit_cursor_si_decision` prefer that meter for fresh remaining=0 refuse. Unknown/stale still starts. Strip credman/token/key from the private source field. Do not park this playbook under `harvest/SKILL.md` (MOVED from tip #8674).
 - Recurring under-cap: bob-worker tree can outlive IRC marker; heal = stop unmarked trees then Start-Process hashed exe to refill 2/2
+- VIS-01 S1 is met by a build-output PlanAgent.exe that refuses --bob-worker with exit 2; do not FAIL the slice for a later release-asset step or for an unchanged index doc already tracked as a validate FR.

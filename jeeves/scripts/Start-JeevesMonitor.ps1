@@ -69,11 +69,35 @@ if (-not $BobInstallRoot) {
     }
 }
 $BobInstallRoot = Normalize-JeevesRoot $BobInstallRoot
-# FR #8860: non-chair composed installs (drive-root J:\) never run Start-Jeeves,
-# so tools\monitor lagged main after #8585. Refresh from tip when the flat
-# Sync script is beside this file. A repo tree without that sibling is a no-op.
-$syncMon = Join-Path $PSScriptRoot 'Sync-BobiverseFromRepo.ps1'
-if (Test-Path -LiteralPath $syncMon) {
+# FR #8860 / #9007: non-chair installs never run Start-Jeeves, so tools\monitor
+# can lag main. Refresh via Sync-BobiverseFromRepo when we can find it.
+# Composed flat roots keep Sync beside this script; repo trees such as
+# C:\ai\bob keep it under common\scripts or flat scripts\ (FR #9007).
+function Resolve-SyncBobiverseFromRepoPath {
+    param(
+        [string]$ScriptRoot,
+        [string]$JeevesInstallRoot,
+        [string]$BobRoot
+    )
+    $name = 'Sync-BobiverseFromRepo.ps1'
+    $cands = @(
+        (Join-Path $ScriptRoot $name),
+        (Join-Path $JeevesInstallRoot ('scripts\' + $name)),
+        (Join-Path $BobRoot ('common\scripts\' + $name)),
+        (Join-Path $BobRoot ('scripts\' + $name))
+    )
+    $parent = Split-Path -Parent $JeevesInstallRoot
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and $parent -ne $JeevesInstallRoot) {
+        $cands += (Join-Path $parent ('common\scripts\' + $name))
+        $cands += (Join-Path $parent ('scripts\' + $name))
+    }
+    foreach ($c in $cands) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return ''
+}
+$syncMon = Resolve-SyncBobiverseFromRepoPath -ScriptRoot $PSScriptRoot -JeevesInstallRoot $InstallRoot -BobRoot $BobInstallRoot
+if ($syncMon) {
     try {
         if ($DryRun) {
             & $syncMon -Product jeeves -InstallRoot $InstallRoot -DryRun
@@ -87,6 +111,8 @@ if (Test-Path -LiteralPath $syncMon) {
     } catch {
         Write-Warning ("FR #8860 sync-monitor: {0}" -f $_.Exception.Message)
     }
+} else {
+    Write-Warning "FR #9007: Sync-BobiverseFromRepo.ps1 not found beside Start-JeevesMonitor or under BobInstallRoot common/scripts|scripts; tools\monitor may stay stale on this host."
 }
 $exe = Join-Path $BobInstallRoot 'worker\bob-worker.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
