@@ -92,6 +92,8 @@ On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md 
 
 After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest - do not keep private notes. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
 
+**CAST IRON (FR #9180):** monitor/maintenance harvest of a new TipForm/fleet/chair playbook **owes a skill PR** on `SimonBarnett/bobiverse` whose diff touches `.grok/skills/<book>/SKILL.md` (or cites the covering open `lesson(<book>):` / `harvest/…` tip). Receipt-only intake without that PR leaves the next Sync/MSI build without the lesson — fail-closed. Prefer same-turn `gh` via `Ensure-BobiverseHarvestSkillPr` when authenticated; never push `main` / never auto-merge.
+
 ## Architecture (chair is deterministic)
 
 Install root `<ai root>\jeeves`. Chair home `~\.jeeves` (queue, focus, ignore, cmd-trace). Digest home `~\.bobiverse` (`digest.json`, `chair-outbox.txt`). Webhooks: BobCallback `:7700` + IIS `/bob/v1/*`. Ergo is separate under `<ai root>\ergo` - never edit it from here. Details: `bobiverse-jeeves`.

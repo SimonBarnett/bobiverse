@@ -5,9 +5,7 @@ Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /j
 login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
 with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
 rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows (BOB-01 / FR #8707). POST **/bob/v1/models/validate**
-checks a ``(cli, model, context, effort)`` tuple against the fail-closed
-``models-valid-combos.json`` allow-list (BOB-03 / FR #8710); it never persists.
+returns fleet agent Weights rows + clis catalog (BOB-01 / FR #8707 / #8820). POST **/bob/v1/models/refresh** rebuilds clis from CLI listings (FR #8820). POST **/bob/v1/models/validate** is not served (form-only validation).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -39,6 +37,7 @@ import builds_catalog
 import intake
 import jira_webhook
 import models_catalog
+import models_refresh
 import webhook_queue
 
 REPORT_PATH = "/bob/v1/report"
@@ -50,6 +49,7 @@ HOURS_PATH = bobhours.HOURS_PATH
 BUILDS_PATH = builds_catalog.BUILDS_PATH
 MODELS_PATH = models_catalog.MODELS_PATH
 MODELS_VALIDATE_PATH = models_catalog.MODELS_VALIDATE_PATH
+MODELS_REFRESH_PATH = models_refresh.MODELS_REFRESH_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -67,7 +67,7 @@ PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
     "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
     "front-door GET is /bob/v1/report|/jeeves (/bob/v1/digest 301s to /bob/v1/report); "
-    "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; GET|POST /bob/v1/hours"
+    "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; POST /bob/v1/models/refresh; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
@@ -76,7 +76,7 @@ DIGEST_REDIRECT_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS})
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({REPORT_PATH})
 POST_ROUTES = frozenset(
-    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH}
+    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_REFRESH_PATH}
 )
 PUT_ROUTES = frozenset({MODELS_PATH})  # BOB-02 / FR #8708
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
@@ -972,6 +972,7 @@ def handle_request(
     filer: intake.GitHubFiler | None = None,
     intake_rate: intake.RateLimiter | None = None,
     report_rate: intake.RateLimiter | None = None,
+    models_refresh_ctl: "models_refresh.ModelsRefreshController | None" = None,
 ) -> tuple[int, bytes]:
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     stash_response_headers([])
@@ -1086,9 +1087,22 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # FR #9053: POST /bob/v1/models/validate is not served (form-only validation).
+    # Answer before the POST_ROUTES gate so the body is JSON, not an empty 404.
+    if verb == "POST" and route == MODELS_VALIDATE_PATH:
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return 404, b'{"error":"no_models_validate","hint":"use GET /bob/v1/models catalog; Weights form validates"}'
     gate = _check_post_route(verb, route, peer_ip, allow_ips)
     if gate[0] != 0:
         return gate[0], gate[1]
+    # FR #8820: rebuild per-CLI models catalog from CLI listings.
+    if route == MODELS_REFRESH_PATH:
+        ctl = models_refresh_ctl
+        if ctl is None:
+            ctl = models_refresh.ModelsRefreshController(home)
+        code, payload = ctl.handle(body)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
     if bobhours.is_hours_post_route(route):
         hours_rate = report_rate or intake.RateLimiter(per_min=bobhours.hours_rate_per_min())
         code, payload, _ctype = bobhours.handle_hours_request(
@@ -1101,10 +1115,6 @@ def handle_request(
         return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
         return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
-    # No POST /bob/v1/models/validate — Weights form dropdowns are the validation (Si 2026-11-22).
-    if route == MODELS_VALIDATE_PATH:
-        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
-        return 404, b'{"error":"no_models_validate","hint":"use GET /bob/v1/models catalog; Weights form validates"}'
     return handle_report_post(headers, body, home, briefer_nick, filer=filer, rate=report_rate)
 
 
@@ -1205,11 +1215,13 @@ def make_handler(
     filer: intake.GitHubFiler | None = None,
     intake_rate: intake.RateLimiter | None = None,
     report_rate: intake.RateLimiter | None = None,
+    models_refresh_ctl: "models_refresh.ModelsRefreshController | None" = None,
 ):
     from http.server import BaseHTTPRequestHandler
 
     rate = intake_rate or intake.RateLimiter()
     rrate = report_rate or intake.RateLimiter(per_min=report_rate_per_min())
+    refresh_ctl = models_refresh_ctl or models_refresh.ModelsRefreshController(home)
 
     class _Handler(BaseHTTPRequestHandler):
         def _run(self, method: str) -> None:
@@ -1245,6 +1257,7 @@ def make_handler(
                 filer=filer,
                 intake_rate=rate,
                 report_rate=rrate,
+                models_refresh_ctl=refresh_ctl,
             )
             self._reply(code, payload, method)
 
@@ -1585,6 +1598,7 @@ def serve(
     allow_ips: set[str] | None = None,
     briefer_nick: str = "",
     filer: intake.GitHubFiler | None = None,
+    models_refresh_ctl: "models_refresh.ModelsRefreshController | None" = None,
 ):
     """Blocking listener: public GET digest + validated, secret-free POST report/git/intake/jira."""
     from http.server import ThreadingHTTPServer
@@ -1613,7 +1627,7 @@ def serve(
             use_filer = None
     # Heal before accept: empty/stale/foreign digest.lock must not wedge the first requests.
     bobreport.break_stale_digest_lock(home)
-    handler = make_handler(home, allow, briefer_nick, filer=use_filer)
+    handler = make_handler(home, allow, briefer_nick, filer=use_filer, models_refresh_ctl=models_refresh_ctl)
     # FR #1388: bind :7700 BEFORE drain_pending. drain (webhook replay / intake outbox /
     # GitHub) can block for seconds while chair holds digest.lock — historically left
     # bobcallback.py alive with no LISTEN (SYN_SENT clients).
@@ -1689,9 +1703,8 @@ def main() -> None:
     host, port = httpd.server_address[:2]
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
-        f"PUT {MODELS_PATH} "
-        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
-        f"POST {MODELS_VALIDATE_PATH}",
+        f"PUT {MODELS_PATH} POST {MODELS_REFRESH_PATH} "
+        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
         flush=True,
     )
     try:

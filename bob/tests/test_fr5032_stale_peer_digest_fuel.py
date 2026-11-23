@@ -27,10 +27,13 @@ def test_fr5032_tray_digest_timer_redots_dialogs_and_logs_failures():
     assert "trayDigestTimer" in w
     assert "FR #5032" in w
     start = w.index("$script:trayDigestTimer = New-Object System.Timers.Timer")
-    block = w[start : start + 4500]
+    block = w[start : start + 6500]
     assert "BobTrayDialogs.ps1" in block
     assert ". $msg.Dialogs" in block
-    assert "Test-BobTrayEngineMode" in block
+    # FR #9150: digest runs for TipForm and engine — no EngineMode skip in this Action.
+    # FR #9198: Import BobBridge so Get-ThisMachineId resolves in the Action runspace.
+    assert "Import-Module" in block
+    assert "Get-ThisMachineId" in block or "BobBridge.psd1" in block or "Psd1" in block
     assert "Write-BobIrcStatus" in block
     assert "tray-lifecycle.log" in block
     assert "WARN trayDigestTimer" in block
