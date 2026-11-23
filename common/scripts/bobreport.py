@@ -1790,24 +1790,41 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
 
 
 def _snapshot_workers_last_good(ent: dict) -> None:
-    """FR #8513: remember live worker_list before an offline wipe."""
+    """FR #8513: remember live worker_list before an offline wipe.
+
+    FR #9145: when the machine is already ``workers_stale``, keep the original
+    ``workers_last_good_at`` so a re-snapshot does not restamp an old ghost.
+    """
     if not isinstance(ent, dict):
         return
     rows = _coerce_worker_list(ent.get("worker_list"))
     if not rows:
         return
+    already_stale = bool(ent.get("workers_stale"))
+    prior_at = ent.get("workers_last_good_at")
     ent["workers_last_good"] = [dict(r) for r in rows]
-    ent["workers_last_good_at"] = _utc_now_iso()
+    if already_stale and prior_at:
+        ent["workers_last_good_at"] = prior_at
+    else:
+        ent["workers_last_good_at"] = _utc_now_iso()
 
 
 def _restore_workers_last_good_if_empty(ent: dict) -> bool:
-    """FR #8513: after ear churn, put last-good seats back until fresh upserts arrive."""
+    """FR #8513: after ear churn, put last-good seats back until fresh upserts arrive.
+
+    FR #9145: drop expired / unknown-age snapshots instead of restoring them.
+    """
     if not isinstance(ent, dict):
         return False
     if _coerce_worker_list(ent.get("worker_list")):
         return False
     last = ent.get("workers_last_good")
     if not isinstance(last, list) or not last:
+        return False
+    if _workers_last_good_expired(ent):
+        ent.pop("workers_last_good", None)
+        ent.pop("workers_last_good_at", None)
+        ent.pop("workers_stale", None)
         return False
     rows = _coerce_worker_list(last)
     if not rows:
@@ -1854,6 +1871,68 @@ def _drop_nick_from_worker_snapshots(ent: dict, nick: str) -> bool:
     return dropped
 
 
+def _drop_machine_pid_from_worker_snapshots(ent: dict, machine_id: str, pid: int | str) -> bool:
+    """FR #9145: delete-worker drops last-good rows that parse to machine+pid.
+
+    Uses ``parse_seat_nick`` (full ``<machine>-<pid>`` and legacy ``w-<short>-<pid>``).
+    Unparseable nicks and other machines stay. Does not match by PID suffix alone.
+    """
+    if not isinstance(ent, dict):
+        return False
+    mid = fold_machine_id(machine_id)
+    if not mid:
+        return False
+    try:
+        pid_s = str(int(str(pid)))
+    except (TypeError, ValueError):
+        return False
+    dropped = False
+    last = ent.get("workers_last_good")
+    if isinstance(last, list):
+        kept = []
+        for row in last:
+            if not isinstance(row, dict):
+                kept.append(row)
+                continue
+            nick = str(row.get("nick") or "").strip()
+            parsed = parse_seat_nick(nick) if nick else None
+            if parsed is None:
+                kept.append(row)
+                continue
+            p_mid, p_pid = parsed
+            try:
+                p_pid_s = str(int(str(p_pid)))
+            except (TypeError, ValueError):
+                kept.append(row)
+                continue
+            if fold_machine_id(p_mid) == mid and p_pid_s == pid_s:
+                dropped = True
+                continue
+            kept.append(row)
+        if dropped:
+            if kept:
+                ent["workers_last_good"] = kept
+            else:
+                ent.pop("workers_last_good", None)
+                ent.pop("workers_last_good_at", None)
+    return dropped
+
+
+def _clear_workers_stale_if_empty(ent: dict) -> None:
+    """FR #9145: clear workers_stale when live list, map, and last-good are all empty."""
+    if not isinstance(ent, dict):
+        return
+    if _coerce_worker_list(ent.get("worker_list")):
+        return
+    workers = ent.get("workers")
+    if isinstance(workers, dict) and any(workers.values()):
+        return
+    last = ent.get("workers_last_good")
+    if isinstance(last, list) and last:
+        return
+    ent.pop("workers_stale", None)
+
+
 def _refresh_workers_last_good_from_live(ent: dict) -> None:
     """FR #8513: a successful live upsert refreshes last-good and clears stale."""
     if not isinstance(ent, dict):
@@ -1874,13 +1953,40 @@ def _workers_stale_age_s(ent: dict, now: datetime | None = None) -> int | None:
     return max(0, int(age))
 
 
+def workers_last_good_max_s() -> float:
+    """FR #9145: max age for last-good snapshots (export + restore). Default 1800s."""
+    raw = (os.environ.get("BOB_DIGEST_LAST_GOOD_MAX_S") or "").strip()
+    if not raw:
+        return DEFAULT_DIGEST_LAST_GOOD_MAX_S
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return DEFAULT_DIGEST_LAST_GOOD_MAX_S
+
+
+def _workers_last_good_expired(ent: dict, now: datetime | None = None) -> bool:
+    """True when last-good age is unknown/malformed or strictly greater than the TTL."""
+    if not isinstance(ent, dict):
+        return True
+    age = _clock_age_s(ent.get("workers_last_good_at"), now)
+    if age is None:
+        return True
+    return float(age) > workers_last_good_max_s()
+
+
 def worker_list_for_export(ent: dict) -> list[dict]:
     rows = _coerce_worker_list(ent.get("worker_list"))
     if rows:
+        # FR #9145: a restored stale list whose snapshot TTL has expired must not export.
+        if ent.get("workers_stale") and _workers_last_good_expired(ent):
+            return []
         return sorted(rows, key=lambda r: r["nick"].lower())
     # FR #8513: online with an empty live list still paints last-good (stale),
     # so TipForm / monitor do not treat ear churn as "no seats".
+    # FR #9145: suppress expired / unknown-age fallback rows (read-only).
     if ent.get("online") and isinstance(ent.get("workers_last_good"), list):
+        if _workers_last_good_expired(ent):
+            return []
         last = _coerce_worker_list(ent.get("workers_last_good"))
         if last:
             return sorted(last, key=lambda r: r["nick"].lower())
@@ -3045,6 +3151,7 @@ class PresenceOutcome:
     shop_closed: bool = False
     deleted_pid: str | None = None
     machine_id: str | None = None
+    changed: bool = False
 
 
 @dataclass
@@ -3844,12 +3951,18 @@ def start_worker(
 
 @_digest_locked
 def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str = "", now: float | None = None) -> PresenceOutcome:
-    mid = normalize_machine_id(machine_id)
+    """Remove a pid from the legacy workers map and matching last-good rows (FR #9145).
+
+    Returns ``changed=True`` only when a digest row was removed. Dedupe is recorded
+    only after a successful save that changed the digest so a no-op delete does not
+    block a later real delete of the same pid.
+    """
+    mid = fold_machine_id(machine_id)
     if not mid:
         return PresenceOutcome(ok=False, err="bad machine")
     try:
         pid_s = str(int(str(pid)))
-    except ValueError:
+    except (TypeError, ValueError):
         return PresenceOutcome(ok=False, err="bad pid")
     import time
 
@@ -3857,8 +3970,7 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     key = (mid, pid_s)
     last = _DISCONNECT_DEDUPE.get(key, 0.0)
     if ts - last < DISCONNECT_DEDUPE_S:
-        return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
-    _DISCONNECT_DEDUPE[key] = ts
+        return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid, changed=False)
     doc = load_digest(home)
     if briefer_nick:
         doc["briefer"] = briefer_nick
@@ -3866,16 +3978,38 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     ent = _machine_entry(doc, mid)
     workers = ent.setdefault("workers", {})
     gone = workers.pop(pid_s, None)
+    snap_dropped = _drop_machine_pid_from_worker_snapshots(ent, mid, pid_s)
+    nick_from_gone = ""
+    if isinstance(gone, dict):
+        nick_from_gone = str(gone.get("nick") or "").strip()
+        if nick_from_gone:
+            parsed = parse_seat_nick(nick_from_gone)
+            if parsed is not None:
+                p_mid, p_pid = parsed
+                try:
+                    p_pid_s = str(int(str(p_pid)))
+                except (TypeError, ValueError):
+                    p_pid_s = ""
+                if fold_machine_id(p_mid) == mid and p_pid_s == pid_s:
+                    if _drop_nick_from_worker_snapshots(ent, nick_from_gone):
+                        snap_dropped = True
+    changed = gone is not None or snap_dropped
     _roll_working_on(ent)
-    if gone is not None:
+    if changed:
+        _clear_workers_stale_if_empty(ent)
         _note_event(doc, "worker-delete", machine=mid, pid=pid_s)
         save_digest(home, doc)
-        nick = str(gone.get("nick") or worker_nick(mid, pid_s))
+        _DISCONNECT_DEDUPE[key] = ts
+        try:
+            nick = nick_from_gone or worker_nick(mid, pid_s)
+        except ValueError:
+            nick = nick_from_gone or f"{mid}-{pid_s}"
         shop = ent.get("shop") or shop_channel(mid)
         action = f"sees {nick} drop from {shop} (pid {pid_s})"
-        return PresenceOutcome(ok=True, actions=[action], deleted_pid=pid_s, machine_id=mid)
-    save_digest(home, doc)
-    return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
+        return PresenceOutcome(
+            ok=True, actions=[action], deleted_pid=pid_s, machine_id=mid, changed=True
+        )
+    return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid, changed=False)
 
 
 def _work_is_placeholder(work: object) -> bool:
@@ -3972,6 +4106,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         if idx < 0:
             if not _drop_nick_from_worker_snapshots(ent, nick):
                 return CallbackOutcome(ok=True, changed=False)
+            _clear_workers_stale_if_empty(ent)
             if briefer_nick:
                 doc["briefer"] = briefer_nick
             doc["ts"] = now_iso
@@ -3991,6 +4126,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         ent["worker_list"] = after_rows
         _refresh_machine_activity_from_worker_list(ent)
         _mirror_worker_list_to_legacy_workers(ent, mid, nick)
+        _clear_workers_stale_if_empty(ent)
         if briefer_nick:
             doc["briefer"] = briefer_nick
         doc["ts"] = now_iso
@@ -4291,7 +4427,8 @@ def _apply_callback_digest(
         if out.ok and out.actions:
             actions.extend(out.actions)
         if out.ok:
-            return CallbackOutcome(ok=True, actions=actions)
+            # FR #9145: 200 when unchanged, 204 when a row was removed (bobcallback).
+            return CallbackOutcome(ok=True, actions=actions, changed=bool(out.changed))
         return CallbackOutcome(ok=False, err=out.err or "bad delete")
     if op == "shop-down":
         if not mid:
@@ -5162,6 +5299,7 @@ def _merge_pcent_lesser(existing: object, incoming: dict, *, replace: bool = Fal
 
 POOL_STALE_AFTER_S = 6 * 3600.0     # #80: a machine not heard from for this long no longer speaks for the pool
 DEFAULT_DIGEST_STALE_S = 900.0      # FR #6100: public digest ts / lastSeen older than this is stale
+DEFAULT_DIGEST_LAST_GOOD_MAX_S = 1800.0  # FR #9145: last-good snapshot TTL (export + restore)
 EAR_PUBLISH_STALE_S = 120.0         # FR #7839: ear lastSeen / pool fetched_at older than this is not fresh
 
 

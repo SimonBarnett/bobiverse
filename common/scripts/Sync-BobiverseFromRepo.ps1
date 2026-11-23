@@ -28,8 +28,10 @@
   worktree tip is OK (or -ComposeOnly), still compose flat scripts and keep MSI VERSION; only
   full-skip robocopy when the tip is stale (FR #1018 older-clone rollback guard).
   FR #8863: sync-skip-diverged (FR #7301) still overlays allowlisted runtime scripts
-  (bob/scripts/bob_worker.py, bob/scripts/skill_dag_mcp.py) plus flat scripts\ copies.
+  (bob/scripts/bob_worker.py, bob/scripts/skill_dag_{mcp,index,bound}.py) plus flat scripts\ copies.
   That does not replace a frozen bob-worker.exe; the onefile still needs an MSI rebuild.
+  FR #9136: Ensure-BobiverseSkillDagScripts + Write-BobiverseInstallSkillDagMcp so jeeves
+  InstallRoot\scripts and .cursor\mcp.json do not borrow C:\ai\bob.
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
@@ -563,17 +565,27 @@ foreach ($m in $mirror) {
 # stale after #8585 because jeeves tools\ robocopy keeps /XO (MRB #6162) and git
 # mtimes are older than the flat copy. Force-copy monitor scripts from tip.
 # The rest of tools\ stays /XO.
+# FR #9100: skip when source == destination (repo-tree install / flat compose).
 if ($Product -eq 'jeeves') {
     $monFrom = Get-BobiverseRepoPath -Root $clone -Rel 'tools\monitor'
     $monDst = Join-Path $InstallRoot 'tools\monitor'
     if (Test-Path -LiteralPath $monFrom -PathType Container) {
-        New-Item -ItemType Directory -Force -Path $monDst | Out-Null
-        $nMon = 0
-        foreach ($mf in @(Get-ChildItem -LiteralPath $monFrom -File)) {
-            Copy-Item -LiteralPath $mf.FullName -Destination (Join-Path $monDst $mf.Name) -Force
-            $nMon++
+        $monFromFull = [string](Resolve-Path -LiteralPath $monFrom).Path
+        $monDstFull = $monDst
+        if (Test-Path -LiteralPath $monDst -PathType Container) {
+            $monDstFull = [string](Resolve-Path -LiteralPath $monDst).Path
         }
-        Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
+        if ([string]::Equals($monFromFull, $monDstFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host 'INFO sync-monitor-force: skipped (source == destination)'
+        } else {
+            New-Item -ItemType Directory -Force -Path $monDst | Out-Null
+            $nMon = 0
+            foreach ($mf in @(Get-ChildItem -LiteralPath $monFrom -File)) {
+                Copy-Item -LiteralPath $mf.FullName -Destination (Join-Path $monDst $mf.Name) -Force
+                $nMon++
+            }
+            Write-Host ("INFO sync-monitor-force FR #8860 files={0}" -f $nMon)
+        }
     }
 }
 
@@ -601,8 +613,34 @@ if ($Product -eq 'bob') {
                 [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
             }
             Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe + bob-tray.exe'
+            # FR #9199: intentional clickfalse/clicktrue park => remove live bob-tray.exe (Watch-only).
+            try {
+                $lifeSync = Join-Path $InstallRoot 'tools\BobTrayLifecycle.ps1'
+                if (Test-Path -LiteralPath $lifeSync) {
+                    . $lifeSync
+                    if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                        $parked = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+                        if ($parked.Parked -and $parked.Removed) {
+                            Write-Host 'INFO sync FR #9199 removed live bob-tray.exe (intentional park present; Watch-only)'
+                        }
+                    }
+                }
+            } catch { Write-Host ("WARN sync FR #9199 park re-check: {0}" -f $_.Exception.Message) }
         }
     } catch { Write-Host ("WARN sync dialogs not compiled: {0}" -f $_.Exception.Message) }
+    # FR #9199: robocopy/stage may drop bob-tray.exe beside clickfalse-park even when compile skipped.
+    try {
+        $lifeSync2 = Join-Path $InstallRoot 'tools\BobTrayLifecycle.ps1'
+        if (($Product -eq 'bob') -and (Test-Path -LiteralPath $lifeSync2)) {
+            . $lifeSync2
+            if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                $parked2 = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+                if ($parked2.Parked -and $parked2.Removed) {
+                    Write-Host 'INFO sync FR #9199 removed live bob-tray.exe after tools refresh (intentional park)'
+                }
+            }
+        }
+    } catch { }
 }
 
 # FR #6924: always refresh deployed identity on bob Sync (script hotpatch without tray rebuild).
@@ -686,6 +724,27 @@ if ($Product) {
     }
 }
 } # end -not $skipStaleCompose (mirror/skills/agent)
+
+# FR #9136: force skill-dag MCP trio onto flat scripts\ even when skipStaleCompose
+# (old MSI / no-.git drive-root J: cannot tip-heal; tip allowlist needs InstallRoot .git).
+if (-not $DryRun -and $clone -and ($Product -eq 'jeeves' -or $Product -eq 'bob')) {
+    try {
+        $dag = Ensure-BobiverseSkillDagScripts -InstallRoot $InstallRoot -SourceRoot $clone
+        if ($dag.Ok) {
+            Write-Host ("INFO sync-skill-dag FR #9136: {0}" -f $dag.Reason)
+        } else {
+            Write-Host ("WARN sync-skill-dag FR #9136: {0}" -f $dag.Reason)
+        }
+        $mcp = Write-BobiverseInstallSkillDagMcp -InstallRoot $InstallRoot
+        if ($mcp.Ok) {
+            Write-Host ("INFO sync-skill-dag-mcp FR #9136: {0}" -f $mcp.Path)
+        } else {
+            Write-Host ("WARN sync-skill-dag-mcp FR #9136: {0}" -f $mcp.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-skill-dag FR #9136 error: {0}" -f $_.Exception.Message)
+    }
+}
 
 if (Test-Path -LiteralPath $verSrc) {
     if ($script:BobiverseSkipVersionCopyFromClone) {
