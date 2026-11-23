@@ -414,3 +414,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Monitor unit tests that expect EXIT_FINDING must monkeypatch non_chair_overlay to None; fresh live /bob/v1/report + missing queue.json soft-passes findings on CI/worker (FR #8579)
 - PR_HOLD_TITLE_RE: bare mid-title on hold is product prose (Create fr-digest on hold); only leading On hold or on hold: counts
 - After sticky-offer MRB lands, feed idle seats with ungated tray FRs (!assign); never assign hold-labeled #9403 or cast-iron UAT.
+- When an open FR PR is hundreds of commits behind and misses the live click surface (compiled BobTray StartPriorityExe), supersede it with a fresh origin/main tip that gates the real Start path; mirror the nearest sibling gate (Plan BOB-46 fuel file) for Priority.
