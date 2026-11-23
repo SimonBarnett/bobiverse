@@ -4559,6 +4559,7 @@ $miJeeves.Add_Click({
                 Write-TrayLog ("jeeves-models webhook model=$model context=$context effort=$effort")
             }
         }
+        Write-TrayLog 'jeeves-dag lazy root=J:\.grok\skills'
         Write-TrayLog 'cwd J:'
         Write-TrayLog 'Jeeves: grok start'
         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
