@@ -1075,10 +1075,14 @@ namespace BobDialogs
 
                 // FR #8683 / BOB-39: lazy skill DAG on J: skills (resolve/get_skill; not eager full load).
                 TrayLifecycle.Write("jeeves-dag", "lazy", JeevesLazyDag.DryRunLine());
+                // FR #8682 / BOB-38: skill-dag MCP root is J:\.grok\skills (config/log shows J: path).
+                TrayLifecycle.Write("jeeves-mcp", "path", JeevesJMcp.DryRunLine());
                 // FR #8679 / BOB-37: cwd is J: (mapped to Ergo ai\jeeves). Dry-run prints cwd J:.
                 TrayLifecycle.Write("jeeves", "cwd", "cwd J:");
+                System.Collections.Hashtable jeevesEnv = new System.Collections.Hashtable();
+                jeevesEnv[JeevesJMcp.EnvName] = JeevesJMcp.SkillsRoot;
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok", null, "", @"J:\");
+                StartWorker("agent", "grok", jeevesEnv, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");

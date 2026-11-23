@@ -4012,16 +4012,25 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     """Vision skill packs for worker MCP (FR #6899). Seat, bob, harvest, user.
 
     Does not include a job worktree (that is ``--job-worktree`` only).
+    FR #8682 / BOB-38: ``BOB_JEEVES_MCP_ROOT`` (Agents > Jeeves) is prepended so the
+    skill-dag MCP ``--root`` list starts on the J: skills path.
     """
     cwd = Path(worker_cwd).resolve()
     install = cwd.parent
     user = Path(home) if home is not None else Path.home()
-    return [
+    roots: list[Path] = []
+    jeeves = (os.environ.get("BOB_JEEVES_MCP_ROOT") or "").strip()
+    if jeeves:
+        roots.append(Path(jeeves))
+    for cand in (
         cwd / ".grok" / "skills",
         install / "bob" / ".grok" / "skills",
         install / "common" / ".grok" / "skills",
         user / ".grok" / "skills",
-    ]
+    ):
+        if cand not in roots:
+            roots.append(cand)
+    return roots
 
 
 SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
