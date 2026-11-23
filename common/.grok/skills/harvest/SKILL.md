@@ -381,3 +381,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - workers_last_good orphans: delete_worker/worker-remove must clear last-good + workers_stale; TTL BOB_DIGEST_LAST_GOOD_MAX_S; monitor workers_last_good_orphan.
 - Never Path.read_bytes() the whole outbox in take_outbox_records --- seek to .pos offset and cap the read (OUTBOX_READ_MAX_BYTES) or the ear OOMs (FR #9239).
 - After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.
+- OpenCode: one park-worktree at a time per seat; NACK busy, holding <first> for a second job; accept_offered refuses twin when nick already accepted (FR #9254).
