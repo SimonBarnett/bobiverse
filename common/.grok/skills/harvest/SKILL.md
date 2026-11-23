@@ -400,3 +400,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - skill-dag resolve must not sum SKILL.md body sizes across depends_on when packing matched metadata; charge response metadata and skip only single bodies over max_bytes so MRB keeps job-irc (FR #9330 / PR #9334).
 - Fresh MRB re-offer after FIX: clear Relay _finished_refs on ACK; treat already-finished NACK as terminal only when done[] verdict SHA matches current head.
 - BOB-G3 digests must remain offerable and hold-purge exempt --- skip only in offer/assign via digest_issue_reason, or purge paths drop the gate row.
+- FIX stacked tip CONFLICTING after base PR merged: gh pr edit --base main then merge origin/main into tip; take main on unrelated fleet/webhooks conflicts; push tip; do not merge
