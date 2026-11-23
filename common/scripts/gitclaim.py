@@ -237,11 +237,20 @@ OPS_MONITOR_TRACKER_BODY_RE = re.compile(
 # would false-positive. ``owner-missing`` is also labels-only (FR #3661 / class of
 # #987): remediation PRs that *mention* the hold-label name must stay offerable as
 # MRB; real holds are gated by HARVEST_OWNER_MISSING_HOLD_TITLE_RE + the label itself.
+# FR #9424: never match ``fr-digest`` via title text — only real labels +
+# line-anchored ``Kind: fr-digest`` (product FR/MRB titles often name the feature).
 SKIP_FR_LABELS_IN_TEXT = frozenset(
     lab
     for lab in SKIP_FR_LABELS
     if lab
-    not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
+    not in {
+        "mrb",
+        "needs-human",
+        "blocked",
+        "release-gate",
+        "owner-missing",
+        "fr-digest",  # FR #9424: title feature names must not label_text-skip
+    }
 )
 
 # FR #3928 / #9082: PR merge/offer holds. ``hold`` / ``on-hold`` are issues-only
@@ -2130,8 +2139,14 @@ def issue_skip_fr_reason(
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
     state: str = "",
+    scan_label_text: bool = True,
 ) -> str | None:
-    """FR #180 / #258: why an issue must not become (or stay) an assignable FR row; None = ok."""
+    """FR #180 / #258: why an issue must not become (or stay) an assignable FR row; None = ok.
+
+    ``scan_label_text`` (default True): when labels are empty, scan the title for
+    legacy board-label tokens. FR #9424: callers pass False for MRB/FIX PR rows so
+    titles that mention ``fr-digest`` (feature names) are not ``label_text`` skips.
+    """
     if (state or "").strip().lower() == "closed":
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
@@ -2181,7 +2196,7 @@ def issue_skip_fr_reason(
     # title/line text (empty labels). Never run this scan when GitHub/labels are present
     # (false-positive on titles like "skip for stale mrb-home rows" / bodies saying
     # "evergreen"). Title/line only ΓÇö never the body.
-    if not labs:
+    if not labs and scan_label_text:
         title_l = title_s.lower()
         text_hits = []
         for lab in sorted(SKIP_FR_LABELS_IN_TEXT, key=len, reverse=True):
@@ -2219,11 +2234,16 @@ def row_skip_fr_reason(row: dict) -> str | None:
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
     # mrb-home / harvest title skips still fire when ``title`` was never stamped.
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    task = _canon_task(row)
+    # FR #9424: MRB/FIX (and PR-shaped) rows often have labels=[]; never treat a
+    # title that mentions fr-digest / board tokens as skip_fr.
+    scan_label_text = task == "FR" and not _row_is_pr_shaped_issue(row)
     return issue_skip_fr_reason(
         title=title,
         body=str(row.get("body") or ""),
         labels=tuple(str(x) for x in labels),
         state=str(row.get("state") or ""),
+        scan_label_text=scan_label_text,
     )
 
 
