@@ -34,7 +34,7 @@ class DocEntry:
     source: str
     fr: str
     html_rel: str
-    # FR #8835: "coming" = documented but not served yet (PUT/PATCH/refresh).
+    # FR #8835: "coming" = documented but not served yet (PATCH remains; PUT live FR #9273).
     status: str = "live"  # live | coming
 
 
@@ -320,35 +320,42 @@ def _inbound() -> list[DocEntry]:
             status_codes="200 JSON; never invents secret fields.",
             retry_idempotency="Safe GET.",
             rate_limits="Proxy only.",
-            reachability="Public Cloudflare via BobModelsWebhook rewrite when deployed.",
+            reachability=(
+                "Public Cloudflare via BobModelsWebhook (GET|HEAD|POST|PUT; FR #9273)."
+            ),
             source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
-            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05",
+            fr="FR #8707 / BOB-01 · FR #8835 / BOB-05 · FR #9273",
             html_rel="docs/webhooks/models.html",
         ),
         DocEntry(
             slug="models-put",
-            title="Models catalog (PUT) — coming",
+            title="Models catalog (PUT)",
             method="PUT",
             path=bobcallback.MODELS_PATH,
             direction="in",
-            purpose="Persist Weights selections (BOB-02). Not served until #8708 lands.",
-            callers="Tray Weights form.",
-            auth="None once live (schema + rate).",
+            purpose=(
+                "Persist Weights selections (BOB-02 / FR #8708). "
+                "IIS BobModelsWebhook forwards PUT with GET|HEAD|POST (FR #9273)."
+            ),
+            callers="Tray Weights form Save.",
+            auth="Peer allow-list (BOB_REPORT_ALLOW); empty/invalid body → 400; foreign peer → 403.",
             request_schema="JSON agents rows (cli read-only per #8819).",
-            response_schema="JSON ack or 4xx.",
+            response_schema="204 when changed, 200 when unchanged, or 4xx JSON.",
             example_request=(
                 "PUT https://bob.ntsa.uk/bob/v1/models\n"
                 "Content-Type: application/json\n\n"
                 '{"agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}'
             ),
-            status_codes="Coming — 404 today.",
-            retry_idempotency="Idempotent replace when live.",
-            rate_limits="TBD with #8708.",
-            reachability="Not served yet.",
-            source="common/scripts/models_catalog.py (planned)",
-            fr="FR #8708 / BOB-02",
+            status_codes="200/204; 400 bad body; 403 peer; never IIS HTML 404 when rule deployed.",
+            retry_idempotency="Idempotent full replace.",
+            rate_limits="Same peer gate as other writes.",
+            reachability=(
+                "Public Cloudflare via BobModelsWebhook — forwards GET, HEAD, POST, and PUT "
+                "(FR #9273). PATCH stays blocked at IIS."
+            ),
+            source="common/scripts/models_catalog.py, common/scripts/bobcallback.py",
+            fr="FR #8708 / BOB-02 · FR #9273",
             html_rel="docs/webhooks/models.html",
-            status="coming",
         ),
         DocEntry(
             slug="models-patch",

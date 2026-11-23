@@ -41,24 +41,24 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <p><strong>Status codes:</strong> 200 JSON; never invents secret fields.</p>
 <p><strong>Retry / idempotency:</strong> Safe GET.</p>
 <p><strong>Rate limits:</strong> Proxy only.</p>
-<p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook rewrite when deployed.</p>
-<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8835 / BOB-05</p>
+<p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook (GET|HEAD|POST|PUT; FR #9273).</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8707 / BOB-01 · FR #8835 / BOB-05 · FR #9273</p>
 <p><strong>Redacted example</strong></p>
 <pre>GET https://bob.ntsa.uk/bob/v1/models</pre>
 </section>
 
 <section id="models-put">
-<h2>Models catalog (PUT) — coming <span class="badge">PUT /bob/v1/models</span> <span class="badge">Coming — not served</span></h2>
-<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Persist Weights selections (BOB-02). Not served until #8708 lands.</p>
-<p><strong>Who calls it:</strong> Tray Weights form.</p>
-<p><strong>Auth (named only):</strong> None once live (schema + rate).</p>
+<h2>Models catalog (PUT) <span class="badge">PUT /bob/v1/models</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Persist Weights selections (BOB-02 / FR #8708). IIS BobModelsWebhook forwards PUT with GET|HEAD|POST (FR #9273).</p>
+<p><strong>Who calls it:</strong> Tray Weights form Save.</p>
+<p><strong>Auth (named only):</strong> Peer allow-list (BOB_REPORT_ALLOW); empty/invalid body → 400; foreign peer → 403.</p>
 <p><strong>Request schema:</strong> JSON agents rows (cli read-only per #8819).</p>
-<p><strong>Response schema:</strong> JSON ack or 4xx.</p>
-<p><strong>Status codes:</strong> Coming — 404 today.</p>
-<p><strong>Retry / idempotency:</strong> Idempotent replace when live.</p>
-<p><strong>Rate limits:</strong> TBD with #8708.</p>
-<p><strong>Reachability:</strong> Not served yet.</p>
-<p><strong>Source:</strong> <code>common/scripts/models_catalog.py (planned)</code> · <strong>Related:</strong> FR #8708 / BOB-02</p>
+<p><strong>Response schema:</strong> 204 when changed, 200 when unchanged, or 4xx JSON.</p>
+<p><strong>Status codes:</strong> 200/204; 400 bad body; 403 peer; never IIS HTML 404 when rule deployed.</p>
+<p><strong>Retry / idempotency:</strong> Idempotent full replace.</p>
+<p><strong>Rate limits:</strong> Same peer gate as other writes.</p>
+<p><strong>Reachability:</strong> Public Cloudflare via BobModelsWebhook — forwards GET, HEAD, POST, and PUT (FR #9273). PATCH stays blocked at IIS.</p>
+<p><strong>Source:</strong> <code>common/scripts/models_catalog.py, common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #8708 / BOB-02 · FR #9273</p>
 <p><strong>Redacted example</strong></p>
 <pre>PUT https://bob.ntsa.uk/bob/v1/models
 Content-Type: application/json

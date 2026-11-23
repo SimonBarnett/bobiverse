@@ -197,7 +197,7 @@ def test_loopback_listener_put_get_persists(tmp_path: Path, monkeypatch):
         t.join(timeout=5)
 
 
-def test_install_models_rule_get_head_only():
+def test_install_models_rule_forwards_put():
     from repo_layout import ROOT
 
     text = (ROOT / "jeeves" / "scripts" / "Install-BobWebhooks.ps1").read_text(
@@ -205,5 +205,6 @@ def test_install_models_rule_get_head_only():
     )
     assert "BobModelsWebhook" in text
     assert "bob/v1/models" in text
-    # Public IIS must not rewrite PUT (BOB-02).
-    assert "REQUEST_METHOD" in text or "GET,HEAD" in text or "GET|HEAD" in text
+    # FR #9273: public IIS rewrites PUT so Weights Save reaches bobcallback.
+    assert 'pattern="^(GET|HEAD|POST|PUT)$"' in text
+    assert "REQUEST_METHOD" in text
