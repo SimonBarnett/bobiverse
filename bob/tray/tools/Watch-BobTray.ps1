@@ -4816,13 +4816,7 @@ $notify.Add_MouseClick({
         try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
-            # FR #9186: BalloonTip proof that left-click reached NotifyIcon (hotpatch evidence).
-            try {
-                $notify.ShowBalloonTip(2500, 'Bob Systray', 'Left-click ok (FR #9186)', [System.Windows.Forms.ToolTipIcon]::Info)
-                Write-TrayLog 'BalloonTip left-click proof'
-            } catch {
-                Write-TrayLog ('BalloonTip left-click error: ' + $_.Exception.Message)
-            }
+            # FR #9195: left-click shows pool card/dialog (Invoke-BobTrayStatus -> Show-BobTrayCard); no BalloonTip proof.
             # FR #9170: dismiss stuck ContextMenuStrip then show TipForm (was StatusSkipped while Visible).
             if (($menu -and $menu.Visible) -or $script:menuOpenSticky) {
                 Write-TrayLog 'StatusMenuDismiss'
@@ -5224,6 +5218,7 @@ $startWorkerTimer.Add_Tick({
                             -Log { param($m) Write-TrayLog $m })
                     # FR #8429: zero agent seats on an online tray, seats not off.
                     # One fill up to the hard cap, then a stamp so the next tick does not stack reqs.
+                    # FR #9142: honour empty-online.disabled; skip when grok=0 and no viable opencode free (#9023).
                     try {
                         if (-not (Test-BobTraySeatsOff)) {
                             $pending = @(Get-ChildItem -LiteralPath $script:startWorkerDir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue).Count
@@ -5243,13 +5238,24 @@ $startWorkerTimer.Add_Tick({
                                 $nage = ([datetime]::UtcNow - (Get-Item -LiteralPath $nudge).LastWriteTimeUtc).TotalSeconds
                                 if ($nage -ge 0 -and $nage -lt 120) { $cool = $false }
                             }
-                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
+                            # FR #9142 / #9195: honour empty-online.disabled.
+                            $emptyDisabled = $false
+                            if (Get-Command Test-BobTrayEmptyOnlineDisabled -ErrorAction SilentlyContinue) {
+                                try { $emptyDisabled = [bool](Test-BobTrayEmptyOnlineDisabled -Root $RepoRoot) } catch { $emptyDisabled = $false }
+                            }
+                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Disabled $emptyDisabled
+
                             if ($fill -gt 0) {
-                                # FR #9000: pin opencode free when grok remaining is known 0.
-                                $choice = [pscustomobject]@{ agent = ''; slot = '' }
+                                # FR #9000 / #9142: pin opencode free when grok remaining is known 0; else skip no-fuel.
+                                $choice = [pscustomobject]@{ agent = ''; slot = ''; skip = $false; reason = '' }
                                 if (Get-Command Get-BobTrayEmptyOnlineFillAgentChoice -ErrorAction SilentlyContinue) {
                                     try { $choice = Get-BobTrayEmptyOnlineFillAgentChoice -Root $RepoRoot } catch { }
                                 }
+                                if ($choice.skip) {
+                                    Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                    $why = if ($choice.reason) { [string]$choice.reason } else { 'no-fuel' }
+                                    Write-TrayLog ('empty-online skip: {0}' -f $why)
+                                } else {
                                 $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                 for ($i = 0; $i -lt $fill; $i++) {
                                     $rid = 'empty-{0}-{1}' -f $now, $i
@@ -5265,11 +5271,12 @@ $startWorkerTimer.Add_Tick({
                                 $agentLog = if ($choice.agent) { [string]$choice.agent } else { 'auto' }
                                 $slotLog = if ($choice.slot) { [string]$choice.slot } else { '-' }
                                 Write-TrayLog ('empty-online fill reqs={0} agent={1} slot={2}' -f $fill, $agentLog, $slotLog)
+                                }
                             }
                             # FR #8890: 1 of cap while offerable work remains. One req, same cooldown stamp.
                             if ($fill -eq 0) {
                                 $offerable = [int](Get-BobTrayCachedOfferableCount)
-                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable
+                                $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable -Disabled $emptyDisabled
                                 if ($under -gt 0) {
                                     $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                     $rid = 'undercap-{0}' -f $now
