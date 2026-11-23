@@ -125,3 +125,9 @@ Receipt complete, hash re-computed and matching, run green on the exact SHA, and
 - Red main for that component, hash mismatch, missing manifest, or SHA not on main: stop and report.
 - Never publish/promote a release, or send `!build`, without the operator's explicit go for that SHA/version.
 - Never paste tokens or PATs into commands shown in chat; rely on the host's existing gh auth.
+
+## After a green build-jeeves (walrus)
+
+If `build-jeeves` (or tip CI that gates the artifact) **fails**: file FRs for the failures and **do not install** on walrus. No `-SiYes`, no WinRM, no Slab until a green run produces a verified artifact.
+
+When Depends-on / Plan-agent gates are CLOSED and Si says yes, install with `jeeves/scripts/Install-JeevesWalrusWinRm.ps1 -SiYes` (FR #9376). See `bobiverse-jeeves-agent-install`. Gate readiness: monitor check `walrus_jeeves_install_ready`.
