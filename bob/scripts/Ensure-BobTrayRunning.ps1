@@ -123,6 +123,20 @@ if (-not $MachineId) {
     $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
 }
 
+# FR #9199: intentional clickfalse/clicktrue park => strip live bob-tray.exe; Watch-only is healthy.
+if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+    try {
+        $parkedEns = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+        if ($parkedEns.Parked -and $parkedEns.Removed) {
+            Write-Host 'INFO tray watchdog FR #9199 removed live bob-tray.exe (intentional park; Watch-only)'
+            Write-BobTrayLifecycleEvent -Event 'watchdog-park-strip-live' -Fields @{ installRoot = $InstallRoot }
+            # Stop a fighting live bob-tray process if still up.
+            try { Stop-BobTrayProcesses -Root $InstallRoot } catch { }
+            Start-Sleep -Milliseconds 500
+        }
+    } catch { }
+}
+
 $snapPath = Get-BobTrayStatusSnapPath -Root $InstallRoot
 $statusAge = Get-BobTrayStatusAgeSeconds -Root $InstallRoot
 $present = Test-BobTrayProcessPresent -InstallRoot $InstallRoot

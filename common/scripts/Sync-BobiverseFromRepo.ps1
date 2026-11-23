@@ -522,15 +522,26 @@ if ($Product -eq 'bob') {
 if ($Product -eq 'jeeves') { $mirror += @{ Rel = 'tools'; Dst = 'tools'; Xf = @() } }
 foreach ($m in $mirror) {
     $from = Get-BobiverseRepoPath -Root $clone -Rel $m.Rel
+    # FR #9035: copy bob\tray\src over a drifted third_party\bob-tray\src before the install mirror.
+    if ($Product -eq 'bob' -and $m.Rel -eq 'third_party\bob-tray\src') {
+        $traySync = Sync-BobiverseTraySrcFromCanonical -CloneRoot $clone
+        if ($traySync.Source -and (Test-Path -LiteralPath $traySync.Source -PathType Container)) {
+            $from = $traySync.Source
+        }
+    }
     if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
     # FR #6154 / FR #269: never /XO on *bob* tray tools\ only - git mtimes are often older than a
     # pre-#6120 flat Get-BobAgentFuel.ps1, so /XO left OpenCode fuel helpers stale after ff.
     # Jeeves tools\ keep /XO (CodeRabbit / MRB #6162): do not force-overwrite newer install tools
     # from an older external clone.
+    # FR #9035: src also skips /XO so a newer stripped install Invoke-BobFleet.ps1 cannot win.
     $dst = Join-Path $InstallRoot $m.Dst
     if ($Product -eq 'bob' -and $m.Dst -eq 'tools') {
         $roboArgs = @($from, $dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
         $xoNote = ' (tools-no-xo FR #6154)'
+    } elseif ($Product -eq 'bob' -and $m.Dst -eq 'src') {
+        $roboArgs = @($from, $dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        $xoNote = ' (src-no-xo FR #9035)'
     } else {
         $roboArgs = @($from, $dst, '/E', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
         $xoNote = ''
@@ -538,6 +549,15 @@ foreach ($m in $mirror) {
     if ($m.Xf.Count) { $roboArgs += @('/XF') + $m.Xf }
     & robocopy.exe @roboArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok{1}" -f $m.Dst, $xoNote) }
+    # FR #9035: Parser::ParseFile plus nameless param([string]) refuses the src promote.
+    if ($Product -eq 'bob' -and $m.Dst -eq 'src') {
+        $fleetGate = Assert-BobiverseInvokeBobFleetParses -InstallRoot $InstallRoot
+        if (-not $fleetGate.Ok) {
+            Write-Host ("ALERT sync-fleet-parse-gate FAIL: {0}" -f $fleetGate.Reason)
+            throw ("FR #9035 fleet parse gate: " + $fleetGate.Reason)
+        }
+        Write-Host ("INFO sync-fleet-parse-gate ok: {0}" -f $fleetGate.Reason)
+    }
 }
 # FR #8860: tools\monitor on a composed install (including drive-root J:\) stayed
 # stale after #8585 because jeeves tools\ robocopy keeps /XO (MRB #6162) and git
@@ -581,8 +601,34 @@ if ($Product -eq 'bob') {
                 [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
             }
             Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe + bob-tray.exe'
+            # FR #9199: intentional clickfalse/clicktrue park => remove live bob-tray.exe (Watch-only).
+            try {
+                $lifeSync = Join-Path $InstallRoot 'tools\BobTrayLifecycle.ps1'
+                if (Test-Path -LiteralPath $lifeSync) {
+                    . $lifeSync
+                    if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                        $parked = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+                        if ($parked.Parked -and $parked.Removed) {
+                            Write-Host 'INFO sync FR #9199 removed live bob-tray.exe (intentional park present; Watch-only)'
+                        }
+                    }
+                }
+            } catch { Write-Host ("WARN sync FR #9199 park re-check: {0}" -f $_.Exception.Message) }
         }
     } catch { Write-Host ("WARN sync dialogs not compiled: {0}" -f $_.Exception.Message) }
+    # FR #9199: robocopy/stage may drop bob-tray.exe beside clickfalse-park even when compile skipped.
+    try {
+        $lifeSync2 = Join-Path $InstallRoot 'tools\BobTrayLifecycle.ps1'
+        if (($Product -eq 'bob') -and (Test-Path -LiteralPath $lifeSync2)) {
+            . $lifeSync2
+            if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                $parked2 = Remove-BobTrayLiveExeWhileParked -Root $InstallRoot
+                if ($parked2.Parked -and $parked2.Removed) {
+                    Write-Host 'INFO sync FR #9199 removed live bob-tray.exe after tools refresh (intentional park)'
+                }
+            }
+        }
+    } catch { }
 }
 
 # FR #6924: always refresh deployed identity on bob Sync (script hotpatch without tray rebuild).

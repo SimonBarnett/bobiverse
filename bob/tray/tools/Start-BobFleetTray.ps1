@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # Bob Systray launcher (Start Menu / Desktop shortcut target).
 # t794u: the tray does NOT update anything. Updating is the ircBob service's job (Start-Bob -> Update-BobiverseService / work-tree
 # sync). Starting the tray RESTARTS the ircBob service (detached, never waited for), so a tray start also picks up a pending update.
@@ -81,9 +81,26 @@ function Ensure-BobSystraySeatWrapper {
 
 function Get-BobSystrayTrayExe {
     # t832u: the compiled tray (icon + menu + clicks). When present it IS the systray; the PowerShell tray script runs as its hidden engine.
+    # FR #9044: un-park bob-tray.exe.clickfix-park when the live exe is the only thing missing.
+    # FR #9199: intentional clickfalse/clicktrue park => Watch-only (never return/start live bob-tray.exe).
     param([string]$Root)
+    $life = Join-Path $Root 'tools\BobTrayLifecycle.ps1'
+    if (-not (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue)) {
+        if (Test-Path -LiteralPath $life) { . $life }
+    }
+    if (Get-Command Test-BobTrayIntentionalExeParkPresent -ErrorAction SilentlyContinue) {
+        if (Test-BobTrayIntentionalExeParkPresent -Root $Root) {
+            if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                [void](Remove-BobTrayLiveExeWhileParked -Root $Root)
+            }
+            return $null
+        }
+    }
+    if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
+        return Restore-BobTrayExeFromClickfixPark -Root $Root
+    }
     $p = Join-Path $Root 'tools\bob-tray.exe'
-    if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    if ([IO.File]::Exists($p)) { return $p }
     return $null
 }
 
@@ -147,7 +164,9 @@ function Invoke-BobSystrayTidy {
     if (Test-Path -LiteralPath $icons) {
         Write-Output 'tidy: Clear-BobOrphanNotifyIcons'
         try {
-            & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons 2>&1 | ForEach-Object { Write-Output $_ }
+            # FR #9169: HealLadder escalates to explorer recycle when toolbars=0.
+            $clearOut = & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder 2>&1
+            $clearOut | ForEach-Object { Write-Output $_ }
         }
         catch {
             Write-Warning ("tidy notify icons failed: {0}" -f $_.Exception.Message)
@@ -343,11 +362,12 @@ else {
 
 Start-Sleep -Seconds 2
 # Second icon sweep: Explorer drops ghosts from the ForceNew kill once the new tray is up.
+# FR #9169: HealLadder recycles explorer when the first pass still reports toolbars=0.
 if (-not $SkipTidy) {
     $icons = Join-Path $RepoRoot 'tools\Clear-BobOrphanNotifyIcons.ps1'
     if (Test-Path -LiteralPath $icons) {
         try {
-            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons | Out-Null
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder | Out-Null
         }
         catch { }
     }
