@@ -149,14 +149,62 @@ function Test-BobTrayWatchdogSuppressed {
     }
 }
 
+function Test-BobTrayIntentionalExeParkPresent {
+    # FR #9199: clickfalse/clicktrue park means TipForm Watch owns the UI.
+    # Sync/ForceNew/hotpatch must not leave a live tools\bob-tray.exe beside it.
+    # Distinct from bob-tray.exe.clickfix-park (FR #9044 restore-when-missing).
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $tools = Join-Path $Root 'tools'
+    foreach ($leaf in @('bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        if ([IO.File]::Exists((Join-Path $tools $leaf))) { return $true }
+    }
+    return $false
+}
+
+function Remove-BobTrayLiveExeWhileParked {
+    # FR #9199: if intentional park is present and live bob-tray.exe exists, remove the live exe.
+    # Keeps the park file. Safe no-op when not parked or live already absent.
+    param([string]$Root)
+    $out = [pscustomobject]@{ Parked = $false; Removed = $false; Live = $null; Park = $null }
+    if (-not $Root) { return $out }
+    $tools = Join-Path $Root 'tools'
+    $live = Join-Path $tools 'bob-tray.exe'
+    $out.Live = $live
+    if (-not (Test-BobTrayIntentionalExeParkPresent -Root $Root)) { return $out }
+    $out.Parked = $true
+    foreach ($leaf in @('bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        $p = Join-Path $tools $leaf
+        if ([IO.File]::Exists($p)) { $out.Park = $p; break }
+    }
+    if (-not [IO.File]::Exists($live)) { return $out }
+    try {
+        [IO.File]::Delete($live)
+        $out.Removed = -not [IO.File]::Exists($live)
+    } catch {
+        try {
+            Remove-Item -LiteralPath $live -Force -ErrorAction Stop
+            $out.Removed = -not [IO.File]::Exists($live)
+        } catch {
+            $out.Removed = $false
+        }
+    }
+    return $out
+}
+
 function Restore-BobTrayExeFromClickfixPark {
     # FR #9044: tools\bob-tray.exe missing while tools\bob-tray.exe.clickfix-park remains.
     # Test-Path is falsely False on that dotted name. File.Copy restores the live exe and keeps the park.
+    # FR #9199: never restore (or keep) live when clickfalse/clicktrue intentional park is present.
     param([string]$Root)
     if (-not $Root) { return $null }
     $tools = Join-Path $Root 'tools'
     $live = Join-Path $tools 'bob-tray.exe'
     $park = Join-Path $tools 'bob-tray.exe.clickfix-park'
+    if (Test-BobTrayIntentionalExeParkPresent -Root $Root) {
+        [void](Remove-BobTrayLiveExeWhileParked -Root $Root)
+        return $null
+    }
     if ([IO.File]::Exists($live)) { return $live }
     if (-not [IO.File]::Exists($park)) { return $null }
     try {
