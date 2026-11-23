@@ -1627,6 +1627,58 @@ function Show-BobTrayMarchHareCursorGateDialog {
     catch { }
 }
 
+# FR #8733 / BOB-28: Workers > Open Code — dialog + quit when free and paid are both exhausted.
+# Null / missing free or go (paid) does not gate. Fixture free=0 paid/go=0 trips the gate.
+function Test-BobTrayOpenCodePaidExhausted {
+    param(
+        [string]$InstallRoot = '',
+        [string]$FuelPath = ''
+    )
+    $path = ([string]$FuelPath).Trim()
+    if (-not $path) { $path = ([string]$env:BOB_OPENCODE_FUEL_FILE).Trim() }
+    if (-not $path) { $path = ([string]$env:BOB_OPENCODE_FUEL_CACHE_FILE).Trim() }
+    if (-not $path) {
+        $root = ([string]$InstallRoot).Trim()
+        if (-not $root) { $root = ([string]$script:RepoRoot).Trim() }
+        if ($root) { $path = Join-Path $root 'run\opencode-fuel.json' }
+    }
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $doc = $raw | ConvertFrom-Json
+    }
+    catch { return $false }
+    if (-not $doc) { return $false }
+    $free = $null
+    $paid = $null
+    try {
+        if ($null -ne $doc.free -and [string]$doc.free -ne '') { $free = [int]$doc.free }
+        elseif ($null -ne $doc.'opencode-free' -and [string]$doc.'opencode-free' -ne '') { $free = [int]$doc.'opencode-free' }
+    }
+    catch { $free = $null }
+    try {
+        if ($null -ne $doc.go -and [string]$doc.go -ne '') { $paid = [int]$doc.go }
+        elseif ($null -ne $doc.paid -and [string]$doc.paid -ne '') { $paid = [int]$doc.paid }
+        elseif ($null -ne $doc.'opencode-go' -and [string]$doc.'opencode-go' -ne '') { $paid = [int]$doc.'opencode-go' }
+    }
+    catch { $paid = $null }
+    if ($null -eq $free -or $null -eq $paid) { return $false }
+    return ($free -le 0 -and $paid -le 0)
+}
+
+function Show-BobTrayOpenCodePaidExhaustedDialog {
+    Write-TrayLog 'Workers Open Code: paid exhausted dialog + quit (FR #8733 / BOB-28)'
+    try {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            'OpenCode free and paid fuel are exhausted. Not starting an OpenCode seat.',
+            'Bobiverse - Open Code',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+    catch { }
+}
+
 function Show-BobTraySessionApiKeyDialog {
     param(
         [string]$Title = 'Session API key',
@@ -1722,6 +1774,11 @@ function Start-BobTrayAgentWatch {
     # FR #8719 / BOB-23: MarchHare fleet meter before any local Cursor fuel / BYOK prompt.
     if ($kind -eq 'cursor' -and (Test-BobTrayMarchHareCursorExhausted -InstallRoot $RepoRoot)) {
         Show-BobTrayMarchHareCursorGateDialog
+        return
+    }
+    # FR #8733 / BOB-28: Open Code free+paid exhausted → dialog + quit.
+    if ($kind -eq 'opencode' -and (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot)) {
+        Show-BobTrayOpenCodePaidExhaustedDialog
         return
     }
     if ($kind -eq 'grok') {
@@ -2838,11 +2895,85 @@ function Hide-BobTrayCard {
     Clear-BobNativeTip
 }
 
+function Close-BobTrayStatusWindows {
+    # FR #9154 / #9163: drop a focus-stealing bob-status before the context menu opens.
+    foreach ($pr in @(Get-Process -Name 'bob-status' -ErrorAction SilentlyContinue)) {
+        try { [void]$pr.CloseMainWindow() } catch { }
+    }
+}
+
+function Set-BobTrayMenuItemsEnabled {
+    # FR #9163: delay-enable items after Opening so a focus-steal close does not fire ItemClicked.
+    param(
+        $Menu,
+        [bool]$Enabled
+    )
+    if (-not $Menu) { return }
+    foreach ($it in @($Menu.Items)) {
+        if (-not $it) { continue }
+        if ($it -is [System.Windows.Forms.ToolStripSeparator]) { continue }
+        try { $it.Enabled = $Enabled } catch { }
+    }
+}
+
+function Clear-BobTrayMenuOpenIfHidden {
+    <#
+    FR #9163: Cancel AppFocusChange left Closed unfired and sticky bobTrayMenuOpen=true
+    with an invisible strip (StatusSkipped / icon no click). Clear the flag when the
+    menu is not Visible. Returns $true when the sticky flag was cleared.
+    #>
+    param($Menu)
+    if (-not $script:bobTrayMenuOpen) { return $false }
+    $vis = $false
+    try {
+        if ($Menu -and $Menu.PSObject.Properties.Name -contains 'Visible') {
+            $vis = [bool]$Menu.Visible
+        }
+    } catch { $vis = $false }
+    if ($vis) { return $false }
+    $script:bobTrayMenuOpen = $false
+    Write-TrayLog 'click-diag MenuFlagCleared'
+    return $true
+}
+
+function Get-BobTrayForegroundProcessLog {
+    # FR #9154 / #9163: optional diag on MenuClosing (hwnd / pid / name). Best-effort.
+    try {
+        Add-Type -Namespace BobTrayFg -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+'@ -ErrorAction SilentlyContinue | Out-Null
+        $h = [BobTrayFg.Native]::GetForegroundWindow()
+        if ($h -eq [IntPtr]::Zero) { return 'fg=none' }
+        $fgPid = [uint32]0
+        [void][BobTrayFg.Native]::GetWindowThreadProcessId($h, [ref]$fgPid)
+        $n = '?'
+        try { $n = (Get-Process -Id ([int]$fgPid) -ErrorAction Stop).ProcessName } catch { }
+        return ('fg hwnd={0} pid={1} name={2}' -f $h, $fgPid, $n)
+    } catch {
+        return ('fg error={0}' -f $_.Exception.Message)
+    }
+}
+
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
+    # FR #9163: clear sticky menu-open when the strip is already gone; then gate if still open.
+    try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+    if ($script:bobTrayMenuOpen) {
+        Write-TrayLog 'status skipped: menu open (FR #9163)'
+        return
+    }
+    # FR #9165: while bob-tray.exe is clickfix-parked, TipForm owns Status (skip windowless bob-status risk).
+    if ((Get-Command Test-BobTrayClickFixParkPresent -ErrorAction SilentlyContinue) -and (Test-BobTrayClickFixParkPresent -Root $RepoRoot)) {
+        Write-TrayLog 'status: park present; TipForm card (FR #9165)'
+        Update-Hover
+        Show-BobTrayCard -Reason 'click'
+        return
+    }
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
-    # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
+    # when tools\bob-status.exe is not installed or (FR #9165) stays windowless. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
     if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
+    Write-TrayLog 'status: TipForm card fallback (FR #9165)'
     Update-Hover
     Show-BobTrayCard -Reason 'click'
 }
@@ -3870,6 +4001,12 @@ function Show-BobTrayCard {
     try {
         # Click / Status only. No hover events. Stay parked until X.
         if ($Reason -ne 'click') { return }
+        # FR #9163: tip ShowParkedAt TOPMOST must not run while the menu is open.
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+        if ($script:bobTrayMenuOpen) {
+            Write-TrayLog 'tip skipped: menu open (FR #9163)'
+            return
+        }
         $script:cardClosed = $false
         if (-not (Test-BobTrayTipAlive)) {
             Initialize-BobTrayTipForm
@@ -4151,6 +4288,11 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
                 }
                 elseif ($picked -eq 'opencode') {
+                    # FR #8733 / BOB-28: free+paid exhausted -> dialog + quit (no start).
+                    if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                        Show-BobTrayOpenCodePaidExhaustedDialog
+                        return
+                    }
                     # FR #8730 / BOB-27: free first; paid when free fuel is 0 and paid is above 0.
                     $ocSlot = 'free'
                     $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
@@ -4169,6 +4311,7 @@ function Update-BobTrayWorkerAgentsMenu {
                     if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
                     # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
                     Write-TrayLog ('workers-opencode model=' + $ocModel)
+
                     # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
                     # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
@@ -4293,6 +4436,72 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
+# FR #9163: never Cancel AppFocusChange Closing (that stuck bobTrayMenuOpen).
+# Delay-arm items; clear sticky flag when menu !Visible. Keep Opening tip/status cleanup.
+$script:bobTrayMenuOpen = $false
+$script:bobTrayContextMenu = $menu
+$script:bobTrayMenuArmTimer = $null
+$menu.Add_Opening({
+        $script:bobTrayMenuOpen = $true
+        Write-TrayLog 'click-diag MenuOpening'
+        try { Hide-BobTrayCard } catch { }
+        try { Close-BobTrayStatusWindows } catch { }
+        try { Set-BobTrayMenuItemsEnabled -Menu $menu -Enabled $false } catch { }
+        try {
+            if ($script:bobTrayMenuArmTimer) {
+                $script:bobTrayMenuArmTimer.Stop()
+                $script:bobTrayMenuArmTimer.Dispose()
+            }
+        } catch { }
+        $script:bobTrayMenuArmTimer = New-Object System.Windows.Forms.Timer
+        $script:bobTrayMenuArmTimer.Interval = 350
+        $script:bobTrayMenuArmTimer.Add_Tick({
+                try { $script:bobTrayMenuArmTimer.Stop() } catch { }
+                try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
+                Write-TrayLog 'click-diag MenuItemsArmed'
+            })
+        $script:bobTrayMenuArmTimer.Start()
+    })
+$menu.Add_Opened({ Write-TrayLog 'click-diag MenuOpened' })
+$menu.Add_Closing({
+        param($s, $e)
+        $reason = $e.CloseReason
+        $fg = ''
+        try { $fg = Get-BobTrayForegroundProcessLog } catch { $fg = '' }
+        Write-TrayLog ('click-diag MenuClosing reason={0} {1}' -f $reason, $fg)
+        # CAST IRON FR #9163: do not set $e.Cancel for AppFocusChange (or any reason).
+    })
+$menu.Add_Closed({
+        $script:bobTrayMenuOpen = $false
+        try {
+            if ($script:bobTrayMenuArmTimer) {
+                $script:bobTrayMenuArmTimer.Stop()
+                $script:bobTrayMenuArmTimer.Dispose()
+                $script:bobTrayMenuArmTimer = $null
+            }
+        } catch { }
+        try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
+        Write-TrayLog 'click-diag MenuClosed'
+        # FR #9169: soft rebind Shell_NotifyIcon after MenuClosed so a dead/ghost
+        # registration recovers without needing an explorer recycle first.
+        try {
+            if ($notify -and -not $notify.IsDisposed) {
+                $notify.Visible = $false
+                $notify.Visible = $true
+                Write-TrayLog 'click-diag NotifyIconRebound'
+            }
+        } catch { }
+    })
+$notify.Add_MouseDown({
+        param($s, $e)
+        Write-TrayLog ('click-diag MouseDown {0}' -f $e.Button)
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
+    })
+$notify.Add_MouseUp({
+        param($s, $e)
+        Write-TrayLog ('click-diag MouseUp {0}' -f $e.Button)
+    })
+
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
@@ -4369,9 +4578,21 @@ $miAbout.Add_Click({
 $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
-$miExit.Add_Click({ Invoke-BobTrayExit })
+$miExit.Add_Click({
+        # FR #9163: confirm Exit so an accidental ItemClicked after focus-steal does not kill Watch.
+        $ans = [System.Windows.Forms.MessageBox]::Show(
+            'Exit TipForm Watch? ircBob stays running.',
+            'Bobiverse - Exit',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Invoke-BobTrayExit
+        }
+    })
 $notify.Add_MouseClick({
         param($s, $e)
+        Write-TrayLog ('click-diag MouseClick {0}' -f $e.Button)
+        try { [void](Clear-BobTrayMenuOpenIfHidden -Menu $script:bobTrayContextMenu) } catch { }
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
             Invoke-BobTrayStatus
