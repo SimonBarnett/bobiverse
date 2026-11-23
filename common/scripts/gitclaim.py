@@ -501,12 +501,16 @@ def _open_fr_bob_and_id_index(
     """Map ``BOB-N`` to open ``(repo_key, #id)``; set of open ``(repo_key, #id)``.
 
     FR #9220: index by owner/repo so cross-repo bare ``#N`` collisions do not false-skip.
+    BOB-D4 / FR #8808: skip ``state=closed`` rows (same as ``open_fr_issue_keys``) so a
+    depend that closed while still ACC/unaccepted no longer blocks offer.
     """
     bobs: dict[str, list[tuple[str, str]]] = {}
     keys: set[tuple[str, str]] = set()
     for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
         for row in bucket:
             if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if str(row.get("state") or "").strip().lower() == "closed":
                 continue
             repo = _repo_key(str(row.get("repo") or ""))
             rid = _norm_row_id(str(row.get("id") or ""))
@@ -534,7 +538,7 @@ def row_fr_depends_blocked_reason(
 
     FR #9220: relative ``#N`` resolves against the FR's own repo; qualified
     ``owner/repo#N`` looks up that repo only. Does not purge the row - when depends
-    leave the queue, the FR becomes offerable.
+    leave the queue (or stamp ``state=closed``, BOB-D4 / FR #8808), the FR becomes offerable.
     """
     if _canon_task(row) != "FR":
         return None
@@ -668,6 +672,9 @@ def row_depends_open_reason(
     issue_open=None,
 ) -> str | None:
     """BOB-D3 / FR #8807: ``depends-open`` when any Depends-on issue is OPEN, else None.
+
+    BOB-D4 / FR #8808: when every depend is CLOSED (absent from ``open_keys`` and
+    ``issue_open`` False / unset), returns None so the FR is offerable again.
 
     Blocks only on positive OPEN evidence (queue key set and/or ``issue_open`` True).
     Unknown / ``GitHubLookupUnknown`` / missing stamp / ``(none)`` do not block (D5).
