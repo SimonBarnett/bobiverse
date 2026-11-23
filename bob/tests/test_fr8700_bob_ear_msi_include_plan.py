@@ -12,6 +12,7 @@ def test_evidence_doc():
     assert "BOB-49" in text
     assert "plan" in text.lower()
     assert "heat" in text.lower()
+    assert "PlanAgent" in text or "9354" in text
 
 
 def test_pack_stage_bob_requires_plan_and_marker():
@@ -21,3 +22,7 @@ def test_pack_stage_bob_requires_plan_and_marker():
     assert "BOB-49" in text
     assert "BOB-49-PLAN-IN-MSI.txt" in text
     assert "bob MSI stage missing plan" in text
+    # FR #9354: PlanAgent.exe vendored from skills-visionary
+    assert "PlanAgent.exe" in text
+    assert "SkipPlanAgentExe" in text
+    assert "PlanAgent.MANIFEST.json" in text
