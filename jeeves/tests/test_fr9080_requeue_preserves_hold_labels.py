@@ -1,8 +1,12 @@
-"""FR #9080: done-fix / head-move MRB requeue must refresh labels; hold skips dirty-FIX.
+"""FR #9080 / #9229: done-fix / head-move MRB requeue must refresh labels; hold skips dirty-FIX.
 
 Class of bobiverse#8757: ensure_mrb_requeued_after_head_move stamped
 title=\"requeue after done-fix\" with labels=() so pr_hold_reason / mrb_row_offerable
-missed GitHub ``hold``. Dirty-FIX resync offered the held tip.
+missed GitHub hold labels. Dirty-FIX resync offered the held tip.
+
+FR #9082 / #9229: ``hold`` / ``on-hold`` are issues-only. PR snapshots in these
+tests use ``do-not-merge`` / ``wip`` (still in HOLD_MRB_LABELS). Linked-issue
+``hold`` is covered by test_linked_issue_hold_blocks_dirty_fix.
 """
 from __future__ import annotations
 
@@ -29,7 +33,8 @@ def test_ensure_mrb_requeue_skips_when_snapshot_has_hold_label(tmp_path: Path):
         pr_snapshot={
             "title": "lesson(harvest): BOB-05 models docs",
             "body": "Closes SimonBarnett/bobiverse#8702",
-            "labels": ["via-intake", "harvest-lesson", "hold"],
+            # FR #9082: PR hold is do-not-merge/wip (hold/on-hold are issues-only).
+            "labels": ["via-intake", "harvest-lesson", "do-not-merge"],
         },
         fetch_pr=False,
     )
@@ -77,7 +82,8 @@ def test_ensure_mrb_requeue_prior_hold_labels_purge(tmp_path: Path):
             "id": PR,
             "title": "lesson(harvest): held tip",
             "body": "",
-            "labels": ["hold", "harvest-lesson"],
+            # FR #9082 / #9229: do-not-merge is a real PR hold label.
+            "labels": ["do-not-merge", "harvest-lesson"],
             "url": URL,
             "line": URL,
         }
@@ -117,7 +123,7 @@ def test_append_unaccepted_mrb_hold_purges_existing(tmp_path: Path):
         line=URL,
         title="lesson tip",
         body="",
-        labels=("hold",),
+        labels=("do-not-merge",),
     )
     assert gitclaim._append_unaccepted(doc, claim, url=URL) == "skipped"
     assert doc["unaccepted"] == []
@@ -130,7 +136,7 @@ def test_offer_dirty_conflict_fix_skips_when_pr_held(tmp_path: Path, monkeypatch
         return {
             "title": "lesson(harvest): held dirty tip",
             "body": "Closes SimonBarnett/bobiverse#8702",
-            "labels": ["hold", "harvest-lesson"],
+            "labels": ["do-not-merge", "harvest-lesson"],
             "sha": "abc123",
             "closed": False,
             "merged": False,
@@ -153,6 +159,30 @@ def test_offer_dirty_conflict_fix_skips_when_pr_held(tmp_path: Path, monkeypatch
         if isinstance(r, dict) and str(r.get("task") or "").upper() == "FIX"
     ]
     assert fixes == []
+
+
+def test_ensure_mrb_requeue_issues_only_hold_label_does_not_skip(tmp_path: Path):
+    """FR #9082 / #9229: stale PR ``hold`` label alone must not skip requeue."""
+    doc = gitclaim._empty_queue()
+    st = gitclaim.ensure_mrb_requeued_after_head_move(
+        doc,
+        tmp_path,
+        repo=REPO,
+        pr=PR,
+        url=URL,
+        reason="done-fix",
+        pr_snapshot={
+            "title": "lesson(harvest): stale hold on PR",
+            "body": "Closes SimonBarnett/bobiverse#8702",
+            "labels": ["via-intake", "harvest-lesson", "hold"],
+        },
+        fetch_pr=False,
+    )
+    assert st == "added"
+    assert len(doc["unaccepted"]) == 1
+    labs = {str(x).lower() for x in (doc["unaccepted"][0].get("labels") or [])}
+    # Intake strip may drop issues-only labels from the row; either way offer proceeds.
+    assert "do-not-merge" not in labs
 
 
 def test_linked_issue_hold_blocks_dirty_fix(tmp_path: Path, monkeypatch):
