@@ -326,3 +326,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Recurring under-cap: bob-worker tree can outlive IRC marker; heal = stop unmarked trees then Start-Process hashed exe to refill 2/2
 - VIS-01 S1 is met by a build-output PlanAgent.exe that refuses --bob-worker with exit 2; do not FAIL the slice for a later release-asset step or for an unchanged index doc already tracked as a validate FR.
 - FR #9277: progress heartbeat / agent I/O after turn_ended cancels armed done-miss; paid OpenCode go unknown mid-job logs fuel: once not out-of-fuel spam
+- After harvest clears, BoredEmitter should skip the first idle_s (2s debounce) so !bored returns in seconds; harvest outbox chatter must not reset that clock
