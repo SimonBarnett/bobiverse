@@ -3407,11 +3407,57 @@ def fr_issue_key(repo: str, ident: str) -> str:
     return f"{r}{i}"
 
 
+def normalize_row_refs(raw) -> list[str]:
+    """FR #9475: always ``list[str]`` of ``#N``; heal comma-strings and char-split lists.
+
+    Synchronize / enqueue historically wrote ``extra["refs"]=",".join(...)`` then
+    ``row[k]=v``, leaving a string. ``tuple(str(x) for x in prior_refs)`` then
+    iterates characters (``"#9270"`` -> ``["#","9",...]``), poisoning ledger
+    link keys and false self-MRB / no_eligible_reviewer stamps.
+    """
+    if raw is None or raw == "":
+        return []
+    parts: list[str] = []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw if str(x).strip() != ""]
+        if items and all(len(x) == 1 for x in items):
+            joined = "".join(items)
+            parts = [p.strip() for p in re.split(r"[,\s;]+", joined) if p.strip()]
+        else:
+            parts = items
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        s = str(p or "").strip()
+        if not s:
+            continue
+        num = s[1:].strip() if s.startswith("#") else s
+        if not num.isdigit():
+            continue
+        tok = f"#{num}"
+        if tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
+def _refs_need_heal(raw) -> bool:
+    """True when stored refs are a comma-string or a char-split list (FR #9475)."""
+    if isinstance(raw, str):
+        return bool(raw.strip())
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw if str(x).strip() != ""]
+        return bool(items) and all(len(x) == 1 for x in items)
+    return False
+
+
 def _row_refs(row: dict) -> list[str]:
-    refs = row.get("refs") or []
-    if isinstance(refs, str):
-        return [x for x in refs.split(",") if x]
-    return [str(x) for x in refs]
+    return normalize_row_refs(row.get("refs") if isinstance(row, dict) else None)
 
 
 def fr_superseded_by_mrb(doc: dict, repo: str, ident: str) -> bool:
@@ -3654,9 +3700,10 @@ def ensure_mrb_requeued_after_head_move(
         if isinstance(pl, str):
             pl = [pl]
         labels_t = tuple(str(x) for x in pl if str(x).strip())
-    refs_t: tuple[str, ...] = tuple(str(x) for x in (refs or ()) if str(x).strip())
+    refs_t: tuple[str, ...] = tuple(normalize_row_refs(refs or ()))
     if not refs_t and prior is not None and prior.get("refs"):
-        refs_t = tuple(str(x) for x in (prior.get("refs") or []) if str(x).strip())
+        # FR #9475: never iterate a refs string by character.
+        refs_t = tuple(normalize_row_refs(prior.get("refs")))
     if not refs_t:
         refs_t = extract_closes_issue_ids(body_s, repo=repo_c)
     if not title_s:
@@ -4541,7 +4588,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                 row["event"] = claim.event
                 row["action"] = claim.action
                 if claim.refs:
-                    row["refs"] = list(claim.refs)
+                    row["refs"] = normalize_row_refs(claim.refs)
                 if claim.title:
                     row["title"] = claim.title
                 if claim.action in ("labeled", "unlabeled") or claim.labels:
@@ -4553,6 +4600,10 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                         continue
                     # FR #2623: keep the true implementer when a citing DONE refreshes the MRB.
                     if k in _IMPLEMENTER_KEEP_KEYS and str(row.get(k) or "").strip():
+                        continue
+                    # FR #9475: never persist refs as a comma-joined string.
+                    if k == "refs":
+                        row["refs"] = normalize_row_refs(v)
                         continue
                     row[k] = v
                 if claim.docs_mrb_orphan:
@@ -4579,7 +4630,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
         "seq": seq,
     }
     if claim.refs:
-        row["refs"] = list(claim.refs)
+        row["refs"] = normalize_row_refs(claim.refs)
     if claim.title:
         row["title"] = claim.title
     if claim.body:
@@ -4596,10 +4647,11 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     for k, v in extra.items():
         if not v:
             continue
-        if k == "refs" and isinstance(v, str):
-            row["refs"] = [x for x in v.split(",") if x]
-        else:
-            row[k] = v
+        # FR #9475: never persist refs as a comma-joined string (or raw split crumbs).
+        if k == "refs":
+            row["refs"] = normalize_row_refs(v)
+            continue
+        row[k] = v
     _stamp_require_machine(row, claim)
     doc["unaccepted"].append(row)
     return "added"
@@ -4912,11 +4964,15 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
                 if claim.body:
                     r["body"] = _body_for_queue(claim.body)
                 if claim.refs:
-                    r["refs"] = list(claim.refs)
+                    r["refs"] = normalize_row_refs(claim.refs)
                 for k, v in extra.items():
                     if not v:
                         continue
                     if k in _IMPLEMENTER_KEEP_KEYS and str(r.get(k) or "").strip():
+                        continue
+                    # FR #9475: never persist refs as a comma-joined string.
+                    if k == "refs":
+                        r["refs"] = normalize_row_refs(v)
                         continue
                     r[k] = v
                 if claim.harvest_lesson:
@@ -5721,21 +5777,25 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_counts:
             out["author_commit_counts"] = clean_counts
+    # FR #9475: heal poisoned refs before copying no_eligible_* stamps.
+    refs_raw = row.get("refs")
+    refs_healed = False
+    if refs_raw:
+        refs_healed = _refs_need_heal(refs_raw)
+        normalized = normalize_row_refs(refs_raw)
+        if normalized:
+            out["refs"] = normalized
     try:
         since = float(row.get("no_eligible_since") or 0)
     except (TypeError, ValueError):
         since = 0.0
-    if since > 0:
-        out["no_eligible_since"] = since
-    # FR #7574: one no_eligible_reviewer report must survive queue reload.
-    if row.get("no_eligible_reported"):
-        out["no_eligible_reported"] = True
-    if row.get("refs"):
-        refs = row.get("refs")
-        if isinstance(refs, list):
-            out["refs"] = [str(x) for x in refs]
-        else:
-            out["refs"] = str(refs)
+    # Clear no_eligible_* when refs heal so false self-MRB deadlocks can recover.
+    if not refs_healed:
+        if since > 0:
+            out["no_eligible_since"] = since
+        # FR #7574: one no_eligible_reviewer report must survive queue reload.
+        if row.get("no_eligible_reported"):
+            out["no_eligible_reported"] = True
     if row.get("labels"):
         labs = row.get("labels")
         if isinstance(labs, list):
@@ -10320,18 +10380,7 @@ MRB_PARENT_RE = re.compile(r"(?i)\bmrb-(\d+)\b")
 
 
 def _row_refs_list(row: dict) -> list[str]:
-    refs = row.get("refs") or []
-    if isinstance(refs, str):
-        refs = [p.strip() for p in refs.replace(";", ",").split(",") if p.strip()]
-    out: list[str] = []
-    for r in refs:
-        s = str(r).strip()
-        if not s:
-            continue
-        if not s.startswith("#"):
-            s = f"#{s}"
-        out.append(s)
-    return out
+    return normalize_row_refs(row.get("refs") if isinstance(row, dict) else None)
 
 
 def related_mrb_rows(doc: dict, uat_row: dict) -> list[dict]:
@@ -15489,13 +15538,10 @@ def heal_false_needs_human_for_infra_soft(home: Path) -> list[str]:
 
 def _row_link_keys(row: dict) -> list[str]:
     repo = str(row.get("repo") or "")
-    refs = row.get("refs") or []
-    if isinstance(refs, str):
-        refs = [x for x in re.split(r"[,\s]+", refs) if x]
+    refs = normalize_row_refs(row.get("refs") if isinstance(row, dict) else None)
     keys = [_lkey(repo, row.get("id"))]
     for r in refs:
-        if str(r).strip():
-            keys.append(_lkey(repo, r))
+        keys.append(_lkey(repo, r))
     sup = str(row.get("supersedes") or "").strip()
     if "#" in sup:
         keys.append(sup.lower())
