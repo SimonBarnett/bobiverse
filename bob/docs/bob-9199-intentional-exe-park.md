@@ -12,3 +12,5 @@ so live exe and Watch fight.
 - Sync, Install-BobTrayHotpatch, Ensure-BobTrayRunning strip live exe after refresh when parked
 
 `bob-tray.exe.clickfix-park` alone still restores via FR #9044 (accidental missing live).
+
+See also FR #9205: do not kill bob-tray/Watch that parents TipForm seats when stripping the live exe.

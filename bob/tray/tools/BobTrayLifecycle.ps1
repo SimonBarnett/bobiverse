@@ -192,6 +192,50 @@ function Remove-BobTrayLiveExeWhileParked {
     return $out
 }
 
+function Test-BobTrayProcessHasSeatChildren {
+    # FR #9205: true when ParentProcessId has a child whose CommandLine looks like a TipForm seat
+    # (bob-worker.exe / bob_worker.py / seat-wrapper). Killing that parent drops OpenCode seats.
+    param([Parameter(Mandatory)][int]$ParentProcessId)
+    if ($ParentProcessId -le 0) { return $false }
+    try {
+        $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                [int]$_.ParentProcessId -eq $ParentProcessId -and $_.CommandLine -and (
+                    $_.CommandLine -match '(?i)bob-worker\.exe' -or
+                    $_.CommandLine -match '(?i)bob_worker\.py' -or
+                    $_.CommandLine -match '(?i)seat-wrapper' -or
+                    $_.CommandLine -match '(?i)opencode.*seat' -or
+                    ($_.Name -match '(?i)^bob-worker')
+                )
+            })
+        return ($kids.Count -gt 0)
+    } catch {
+        return $false
+    }
+}
+
+function Stop-BobTrayProcessesProtectingSeats {
+    # FR #9205: stop bob-tray.exe processes only when they do not parent live TipForm seats.
+    # Prefer file-delete of staged exe (Remove-BobTrayLiveExeWhileParked) over kill while seats run.
+    param([string]$Root = '')
+    $out = [pscustomobject]@{ Killed = 0; SkippedForSeats = 0; Examined = 0 }
+    $procs = @()
+    try { $procs = @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue) } catch { $procs = @() }
+    foreach ($pr in $procs) {
+        $out.Examined++
+        $pid = 0
+        try { $pid = [int]$pr.Id } catch { continue }
+        if (Test-BobTrayProcessHasSeatChildren -ParentProcessId $pid) {
+            $out.SkippedForSeats++
+            continue
+        }
+        try {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+            $out.Killed++
+        } catch { }
+    }
+    return $out
+}
+
 function Restore-BobTrayExeFromClickfixPark {
     # FR #9044: tools\bob-tray.exe missing while tools\bob-tray.exe.clickfix-park remains.
     # Test-Path is falsely False on that dotted name. File.Copy restores the live exe and keeps the park.
