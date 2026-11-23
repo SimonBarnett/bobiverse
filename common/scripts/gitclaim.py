@@ -245,8 +245,10 @@ ISSUES_ONLY_HOLD_LABELS = frozenset({"hold", "on-hold"})
 # Title-only free hold cues (short titles). Not applied to PR bodies — lesson
 # prose such as "do not merge the thinner duplicate" must not count as a hold
 # (FR #4545; class of a-search#3627). Body uses line-anchored stamps below.
+# FR #9395: bare mid-title "on hold" (e.g. "Create fr-digest on hold before…")
+# is product prose, not a gate. Title "on hold" only when leading or "on hold:".
 PR_HOLD_TITLE_RE = re.compile(
-    r"(?i)(?:\bon\s+hold\b|\bmust\s+not\s+merge\b|\bdo\s+not\s+merge\b|"
+    r"(?i)(?:^\s*on\s+hold\b|\bon\s+hold\s*:|\bmust\s+not\s+merge\b|\bdo\s+not\s+merge\b|"
     r"\bhold(?:ing)?\s+(?:this\s+)?(?:pr|pull(?:\s+request)?)\b)"
 )
 # Owner body hold stamp (class of a-search#1334 "On hold (Simon …): must not merge…").
@@ -301,7 +303,8 @@ def pr_hold_reason(
     ``do-not-merge`` / ``wip`` labels still count. ``hold`` / ``on-hold`` on a PR
     do **not** (issues-only; see ``pr_forbidden_hold_labels`` / monitor). Body
     hold text only matches an owner stamp line (``On hold:`` / ``HOLD:``).
-    Title still scans short hold cues.
+    Title still scans short hold cues (leading ``On hold`` / ``on hold:``,
+    do-not-merge); mid-title prose ``on hold`` (VIS-G1) does not count (FR #9395).
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = sorted(labs & HOLD_MRB_LABELS)
@@ -5587,6 +5590,33 @@ def is_repo_uat(row: dict) -> bool:
     return True
 
 
+def repo_has_uat_release_to_build(repo: str, *, home: Path | None = None) -> bool:
+    """FR #9382: UAT #0 only for repos whose PASS path builds/publishes a release."""
+    try:
+        import uat_release
+
+        return bool(uat_release.repo_has_release_to_build(repo, home=home))
+    except Exception:
+        return False
+
+
+def uat_no_release_to_build_reason(row: dict, *, home: Path | None = None) -> str | None:
+    """Return ``no-release-to-build`` when this UAT row must not be offered/assigned."""
+    if _canon_task(row) != "UAT":
+        return None
+    if not is_repo_uat(row):
+        return None
+    repo = str(row.get("repo") or "").strip()
+    if repo_has_uat_release_to_build(repo, home=home):
+        return None
+    try:
+        import uat_release
+
+        return str(uat_release.NO_RELEASE_TO_BUILD)
+    except Exception:
+        return "no-release-to-build"
+
+
 def _mrb_fix_offer_stamped(row: dict) -> bool:
     """True when resync/webhook marked this fix(mrb-N) as an ordinary MRB (FR #8475)."""
     return str(row.get("mrb_fix_offer") or "").strip().lower() in ("1", "true", "yes")
@@ -10043,23 +10073,30 @@ def review_blocked_for_author(
     *,
     free: set[str] | None = None,
 ) -> bool:
-    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604).
+    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604 / #9401).
 
     Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat).
 
-    For **UAT** only: also blocks a sibling on the same machine while another machine
-    has a *viable* live seat (FR #1407 / #2487), and a recycled sole successor of a
-    dead author (FR #4336). For **MRB**, self-exclusion is exact-seat only
-    (FR #2604 / #4606) — same-machine siblings and recycled fresh seats may review.
+    For **MRB** (FR #9401): also blocks a sibling on the same *machine id* while
+    any other machine has a live seat — even when that other seat is busy. Exact
+    nick alone was not enough (flamingo-4120 accepted implementer flamingo-14096).
+    Sole-machine fleets still allow same-machine siblings (FR #2604 / #4606 /
+    #5900 throughput). MRB never inherits a dead author nick via
+    ``nick_inherits_dead_seat`` (FR #4606); machine-id covers live siblings.
 
-    Viable other-machine seats (FR #1407): not already in ``giveup_seats``, and for
-    repo-level UAT when ``ledger`` is provided, not themselves FR-implementer blocked
-    (``_ledger_blocks``). Giveup / fellow-implementer seats must not strand siblings
-    of the stamped author after self-UAT GIVEUP loops.
+    For **UAT**: also blocks a sibling on the same machine while another machine
+    has a *viable free* live seat (FR #1407 / #2487), and a recycled sole
+    successor of a dead author (FR #4336).
 
-    FR #2487: when ``free`` is provided, UAT sibling viability requires the other-machine
-    seat to be idle/free right now (in ``free``). When ``free`` is None, all
-    ``live`` seats are treated as free (unit-test / legacy default).
+    Viable other-machine seats for UAT (FR #1407): not already in ``giveup_seats``,
+    and for repo-level UAT when ``ledger`` is provided, not themselves
+    FR-implementer blocked (``_ledger_blocks``). Giveup / fellow-implementer seats
+    must not strand siblings of the stamped author after self-UAT GIVEUP loops.
+
+    FR #2487: when ``free`` is provided, UAT sibling viability requires the
+    other-machine seat to be idle/free right now (in ``free``). When ``free`` is
+    None, all ``live`` seats are treated as free (unit-test / legacy default).
+    MRB machine-id block ignores ``free`` (busy other-machine still blocks).
     """
     task = _canon_task(row)
     if task not in ("MRB", "UAT"):
@@ -10082,6 +10119,27 @@ def review_blocked_for_author(
                 return True
         return False
 
+    def _other_machine_live(author_mid: str) -> bool:
+        """True when any live seat is on a different machine than author_mid.
+
+        FR #2339 / #9401: seats pinned out of this row (require_machine) are not
+        viable other-machine evidence — they must not strand author-machine
+        siblings on a machine-pinned MRB.
+        """
+        if not author_mid:
+            return False
+        for n in live:
+            n_c = (canonical_worker_nick(n) or n or "").strip()
+            if not n_c:
+                continue
+            p = bobreport.parse_seat_nick(n_c)
+            if not p or bobreport.fold_machine_id(p[0]) == author_mid:
+                continue
+            if row_blocked_for_machine(row, n_c):
+                continue
+            return True
+        return False
+
     for author in authors:
         author_l = author.lower()
         # Exact author seat: never self-MRB / self-UAT (FR #628).
@@ -10090,19 +10148,24 @@ def review_blocked_for_author(
         # Escalate via maybe_escalate_repo_uat_all_self_uat instead.
         if author_l == me_l:
             return True
-        # FR #2604 / #4606: MRB self-exclusion is exact seat only. Do not inherit a
-        # dead author nick to a recycled same-machine successor — a fresh seat with
-        # no PR touch may review (Simon 2026-10-16). Giveup inheritance stays in
-        # nick_in_giveup_seats; FIX seats are blocked by exact nick stamp (FR #4604).
+        author_p = bobreport.parse_seat_nick(author)
+        author_mid = (
+            bobreport.fold_machine_id(author_p[0]) if author_p else ""
+        )
+        # FR #2604 / #4606 / #9401: MRB skips dead-seat inherit; machine-id
+        # blocks same-machine siblings when another machine is live. Sole-box
+        # fleets still allow siblings. Giveup inheritance stays in
+        # nick_in_giveup_seats; FIX seats use exact nick stamp (FR #4604).
         if task == "MRB":
+            if author_mid and me_mid and author_mid == me_mid:
+                if _other_machine_live(author_mid):
+                    return True
             continue
         # UAT (FR #4336): recycled sole successor inherits dead author exclusion.
         if nick_inherits_dead_seat(me, author, live):
             return True
-        author_p = bobreport.parse_seat_nick(author)
         # UAT sibling seat on the same machine: block when another machine has a viable live seat.
         if author_p and me_p:
-            author_mid = bobreport.fold_machine_id(author_p[0])
             if author_mid == me_mid:
                 free_set = live if free is None else free
                 free_l = {
@@ -12433,6 +12496,13 @@ def offer_focus_top(
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     return None
+                # FR #9382: CAST IRON — no UAT when the repo has no release to build.
+                if uat_no_release_to_build_reason(cand, home=home):
+                    if _drop_unaccepted_row(
+                        doc, cand, kind="uat-no-release", reason="no-release-to-build"
+                    ):
+                        purged = True
+                    return None
                 # FR #740 / MRB #3207: one shared lookup per MRB row; definitive not-open
                 # purges this row only; unknown (budget / 403 / 5xx) still offers.
                 if _canon_task(cand) == "MRB" and _live_verdict(pr_exists, cand) is False:
@@ -12853,6 +12923,15 @@ def offer_top(
                     continue  # FR #846 / #838 / #2340
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
+                    i += 1
+                    continue
+                # FR #9382: CAST IRON — no UAT when the repo has no release to build.
+                if uat_no_release_to_build_reason(row, home=home):
+                    if _drop_unaccepted_row(
+                        doc, row, kind="uat-no-release", reason="no-release-to-build"
+                    ):
+                        purged = True
+                        continue
                     i += 1
                     continue
                 # FR #740 / MRB #3207: definitive not-open MRB -> purge this row only.
@@ -16320,6 +16399,10 @@ def assign_row(
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
+            # FR #9382: CAST IRON — refuse UAT when the repo has no release to build.
+            no_rel = uat_no_release_to_build_reason(cand, home=home)
+            if no_rel:
+                return "refused", no_rel
             # FR #740 / #738 / #1585: refuse already-DONE MRB unless the pull is still open.
             if task_u == "MRB" and mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
@@ -17891,6 +17974,12 @@ def resync_from_github(
                     if not is_repo_uat(row):
                         dropped_detail.append(f"{_row_drop_label(row)} uat_not_repo_level")
                         continue
+                    # FR #9382: drop UAT when the repo has no release to build.
+                    if uat_no_release_to_build_reason(row, home=home):
+                        dropped_detail.append(
+                            f"{_row_drop_label(row)} uat_no_release_to_build"
+                        )
+                        continue
                     if (
                         _row_fetched(repo_s)
                         and not _repo_clear_for(repo_s)
@@ -18234,6 +18323,12 @@ def resync_from_github(
                             )
                             break
             for urepo, (merged, linked) in uat_plan.items():
+                # FR #9382: never enqueue UAT #0 for repos with no release to build.
+                if not repo_has_uat_release_to_build(urepo, home=home):
+                    _log_queue_purge(
+                        f"INFO git-claim skip uat {urepo} reason=no-release-to-build"
+                    )
+                    continue
                 if any(
                     str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
                     for r in doc["accepted"] + doc["unaccepted"]
