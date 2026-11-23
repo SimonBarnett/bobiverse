@@ -30,8 +30,10 @@ def test_fr8715_sources_pin_weights_grid_and_dump_flag():
     for h in EXPECTED:
         assert h in w
     assert "DataGridView" in w
-    assert "low" in w and "medium" in w and "high" in w
-    assert "256" in w and "512" in w
+    # FR #8716: Context/Effort items come from webhook ``clis`` (not hardcoded 256/512/med).
+    assert '"256"' not in w and '"512"' not in w
+    assert '"med"' not in w
+    assert "DumpValidOptions" in w or "EditingControlShowing" in w
     # BOB-13 replaces static placeholder rows with webhook data; column contract stays.
     assert "MessageBox.Show" not in t.split("void ShowWeights()")[1].split("void ApplyEngineEnv()")[0]
     assert "new WeightsForm(" in t
