@@ -113,3 +113,12 @@ def test_monitor_start_lists_check():
     assert "walrus_jeeves_install_ready" in (
         SCRIPTS / "Invoke-JeevesMonitorCheck.ps1"
     ).read_text(encoding="utf-8-sig")
+
+
+def test_install_script_is_bomless_ascii():
+    raw = (SCRIPTS / "Install-JeevesWalrusWinRm.ps1").read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("ascii")  # raises if non-ASCII
+    assert "FR the build failures" in text
+    assert "failed build-jeeves" in text
+
