@@ -4969,8 +4969,9 @@ $poll.Add_Tick({
                         if (-not $midObs) { $midObs = $env:BOB_MACHINE_ID }
                         if ($midObs) {
                             $obs = Invoke-BobTrayObserveWorkerSeats -MachineId ([string]$midObs)
-                            if ($obs.Dropped) {
-                                Write-TrayLog ('FR #9208 seat-exit was={0} now={1} handled={2} giveups={3}' -f $obs.Was, $obs.Now, $obs.Handled, $obs.Giveups)
+                            # FR #9226: log drop OR healed orphans (always-scan after tray restart).
+                            if ($obs.Dropped -or [int]$obs.Handled -gt 0) {
+                                Write-TrayLog ('FR #9226 seat-observe was={0} now={1} dropped={2} handled={3} giveups={4}' -f $obs.Was, $obs.Now, $obs.Dropped, $obs.Handled, $obs.Giveups)
                             }
                         }
                     }

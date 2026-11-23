@@ -1443,10 +1443,11 @@ namespace BobDialogs
 
         // FR #3180: seats are manual only (Agent/Plan click, !startworker, or human bob-worker).
         // Watchdog may log a seat drop; it must never call WorkerLauncher.Launch.
-        // FR #8568: on a drop, synthesize last-exit + GIVEUP external-kill for vanished runs (still no restart).
+        // FR #8568 / #9226: always heal vanished runs (console-closed vs external-kill); log seat-exit on drop.
         void ObserveWorkerSeats()
         {
             int n = WorkerLauncher.Seats();
+            try { HandleDisappearedWorkerRuns(); } catch { }
             if (lastSeatCount < 0) { lastSeatCount = n; return; }
             if (n < lastSeatCount)
             {
@@ -1455,14 +1456,13 @@ namespace BobDialogs
                     "action", "not restarted",
                     "was", lastSeatCount.ToString(),
                     "now", n.ToString(),
-                    "via", "bob-tray-watchdog");
-                try { HandleDisappearedWorkerRuns(); } catch { }
+                    "via", "bob-tray-watchdog-fr9226");
             }
             lastSeatCount = n;
         }
 
-        // FR #8568: dead worker-<mid>-<pid>-* run dirs with no last-exit.json get a synthetic exit
-        // and GIVEUP external-kill when last-from.txt still names an open job. Never restarts seats.
+        // FR #8568 / #9226: dead worker-<mid>-<pid>-* run dirs with no last-exit.json get a synthetic
+        // exit + GIVEUP (console-closed when worker.log says so). Never restarts seats.
         void HandleDisappearedWorkerRuns()
         {
             string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
@@ -1505,18 +1505,45 @@ namespace BobDialogs
                         string lf = File.ReadAllText(lastFromPath);
                         jobKey = ExtractAssignJobKey(lf);
                     }
-                    string payload = "{\"reason\":\"external-kill\",\"exit_code\":null,\"raw_code\":null,\"job_key\":"
+                    string reason = "external-kill";
+                    string exitCodeJson = "null";
+                    string exitCodeField = "";
+                    try
+                    {
+                        string wl = Path.Combine(dir, "worker.log");
+                        if (File.Exists(wl))
+                        {
+                            string tail = ReadWorkerLogTail(wl, 65536);
+                            if (!string.IsNullOrEmpty(tail) &&
+                                (tail.IndexOf("console-closed", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || tail.IndexOf("console-close exit", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || tail.IndexOf("0xC000013A", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || tail.IndexOf("3221225786", StringComparison.OrdinalIgnoreCase) >= 0))
+                            {
+                                reason = "console-closed";
+                                exitCodeJson = "3221225786";
+                                exitCodeField = "3221225786";
+                            }
+                        }
+                    }
+                    catch { }
+                    string nick = runMid + "-" + pid;
+                    string payload = "{\"reason\":" + JsonString(reason) + ",\"exit_code\":" + exitCodeJson
+                        + ",\"raw_code\":" + exitCodeJson + ",\"job_key\":"
                         + JsonString(jobKey) + ",\"machine\":" + JsonString(runMid)
-                        + ",\"nick\":" + JsonString(runMid + "-" + pid)
+                        + ",\"nick\":" + JsonString(nick)
                         + ",\"kind\":\"\",\"agent_pid\":" + pid
-                        + ",\"synthetic\":true,\"via\":\"fr-8568-disappeared-seat\"}\n";
+                        + ",\"synthetic\":true,\"via\":\"fr-9226-disappeared-seat\"}\n";
                     File.WriteAllText(lastExit, payload, new UTF8Encoding(false));
                     TrayLifecycle.Write(
                         "seat-disappeared",
                         "pid", pid.ToString(),
+                        "nick", nick,
                         "run", name,
                         "job", string.IsNullOrEmpty(jobKey) ? "(none)" : jobKey,
-                        "via", "bob-tray-watchdog");
+                        "reason", reason,
+                        "exit_code", exitCodeField,
+                        "via", "bob-tray-watchdog-fr9226");
                     if (string.IsNullOrEmpty(jobKey)) continue;
                     string outbox = Path.Combine(dir, "outbox.txt");
                     string existing = File.Exists(outbox) ? File.ReadAllText(outbox) : "";
@@ -1525,10 +1552,24 @@ namespace BobDialogs
                         || existing.IndexOf("NACK " + jobKey, StringComparison.OrdinalIgnoreCase) >= 0)
                         continue;
                     string channel = runMid.Length > 0 ? runMid : "shop";
-                    string line = "PRIVMSG #" + channel + " :GIVEUP " + jobKey + " external-kill\r\n";
+                    string line = "PRIVMSG #" + channel + " :GIVEUP " + jobKey + " " + reason + "\r\n";
                     File.AppendAllText(outbox, line, new UTF8Encoding(false));
                 }
                 catch { }
+            }
+        }
+
+        static string ReadWorkerLogTail(string path, int maxBytes)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                long len = fs.Length;
+                if (len <= 0) return "";
+                int take = (int)Math.Min(len, maxBytes);
+                fs.Seek(-take, SeekOrigin.End);
+                byte[] buf = new byte[take];
+                int read = fs.Read(buf, 0, take);
+                return Encoding.UTF8.GetString(buf, 0, read);
             }
         }
 
