@@ -3382,6 +3382,105 @@ def apply_require_machine_giveup_stamp(row: dict, reason: str) -> str:
     return mid
 
 
+# FR #9469: GIVEUP blocked:depends-on / blocked-on / depends_unresolved with a
+# parseable issue ref must stamp a plain Depends-on: line on the issue body.
+_BLOCKED_DEPENDS_CUE_RE = re.compile(
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+)
+_BLOCKED_DEPENDS_QUAL_RE = re.compile(
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"[^\n]*?\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
+)
+_BLOCKED_DEPENDS_REL_RE = re.compile(
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"[^\n]*?#(\d+)\b"
+)
+
+
+def parse_blocked_depends_giveup_refs(
+    reason: str,
+    *,
+    home_repo: str = "",
+) -> list[tuple[str, int]]:
+    """FR #9469: ``(repo, number)`` refs from a blocked Depends-on GIVEUP reason."""
+    text = str(reason or "").strip()
+    if not text or not _BLOCKED_DEPENDS_CUE_RE.search(text):
+        return []
+    home = str(home_repo or "").strip()
+    out: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for m in _BLOCKED_DEPENDS_QUAL_RE.finditer(text):
+        pair = (m.group(1), int(m.group(2)))
+        key = (pair[0].lower(), pair[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(pair)
+    if out:
+        return out
+    for m in _BLOCKED_DEPENDS_REL_RE.finditer(text):
+        pair = (home, int(m.group(1)))
+        key = (pair[0].lower(), pair[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(pair)
+    return out
+
+
+def apply_depends_on_giveup_stamp(
+    row: dict,
+    reason: str,
+    *,
+    patch_github: bool = True,
+    filer=None,
+) -> list[tuple[str, int]]:
+    """FR #9469: union Depends-on refs from a blocked GIVEUP into body + GitHub.
+
+    Updates ``row["body"]`` with a plain ``Depends-on:`` line (unions existing).
+    When ``patch_github`` is true, PATCHes the issue body via ``gh`` so BOB-D3
+    skips re-offer while any ref stays OPEN. Returns the refs that were stamped
+    from the reason (empty when the reason is not a blocked-depends cue).
+    """
+    if not isinstance(row, dict):
+        return []
+    home = str(row.get("repo") or "").strip()
+    refs = parse_blocked_depends_giveup_refs(reason, home_repo=home)
+    if not refs:
+        return []
+    try:
+        import depends_on as _dep
+    except Exception:
+        return []
+    body = str(row.get("body") or "")
+    new_body, changed = _dep.merge_depends_on_body(body, refs, repo=home)
+    if changed:
+        row["body"] = _body_for_queue(new_body) if new_body else new_body
+    if patch_github and home:
+        num = str(row.get("id") or "").strip().lstrip("#")
+        if num.isdigit():
+            try:
+                api = filer
+                if api is None:
+                    import gh_filer
+
+                    api = gh_filer.default_filer()
+                # Prefer live GitHub body so we union remote Depends-on too.
+                remote = ""
+                with contextlib.suppress(Exception):
+                    issue = fetch_github_issue_dict(home, num)
+                    if isinstance(issue, dict):
+                        remote = str(issue.get("body") or "")
+                base = remote if remote.strip() else str(row.get("body") or body)
+                patched, did = _dep.merge_depends_on_body(base, refs, repo=home)
+                if did or (patched and patched != remote):
+                    api.edit_issue_body(home, int(num), patched)
+                    row["body"] = _body_for_queue(patched)
+            except Exception:
+                pass
+    return refs
+
+
 def row_blocked_for_machine(row: dict, nick: str) -> bool:
     """True when this seat must not be offered the row (FR #587 require_machine)."""
     req = row_require_machine(row)
