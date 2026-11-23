@@ -4426,6 +4426,84 @@ function Assert-BobiversePlanCastIronSkillsVisionary {
     Write-Host ("WARN FR #3667 plan CAST IRON stale (want skills-visionary Report/Harvest examples; not bobiverse). Heal: Sync-BobiverseFromRepo / Sync-BobiverseAgentFolders / MSI past #3510. path={0}" -f $agentsPath)
 }
 
+
+function Copy-BobTrayVendorExes {
+    <#
+    .SYNOPSIS
+      FR #9468: mirror Plan/Priority MSI payloads into tray vendor\ paths.
+    .DESCRIPTION
+      TipForm Plan starts vendor\plan\bob-plan.exe; Priority starts vendor\priority\PriorityAgent.exe.
+      Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe (FR #9354). This helper copies those
+      into the vendor\ layout (plus MANIFEST sidecars documenting skills-visionary plan-* /
+      priority-mcp launcher-* tags). -Require throws when sources are missing (pack/MSI).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [switch]$Require
+    )
+    $Root = [string](Resolve-Path -LiteralPath $Root).Path
+    $planSrc = Join-Path $Root 'plan\PlanAgent.exe'
+    $priSrc = Join-Path $Root 'priority\PriorityAgent.exe'
+    $vendorPlan = Join-Path $Root 'vendor\plan'
+    $vendorPri = Join-Path $Root 'vendor\priority'
+    $missing = New-Object System.Collections.Generic.List[string]
+
+    # Self-contained sha (Sync loads Common only; Pack also has FetchHelpers Get-BobiverseFileSha256).
+    $shaOf = {
+        param([string]$Path)
+        if (Get-Command Get-BobiverseFileSha256 -ErrorAction SilentlyContinue) {
+            return [string](Get-BobiverseFileSha256 -Path $Path)
+        }
+        return ([string](Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToLowerInvariant()
+    }
+
+    if (Test-Path -LiteralPath $planSrc -PathType Leaf) {
+        New-Item -ItemType Directory -Force -Path $vendorPlan | Out-Null
+        Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'bob-plan.exe') -Force
+        Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'PlanAgent.exe') -Force
+        $planMan = Join-Path $Root 'plan\PlanAgent.MANIFEST.json'
+        if (Test-Path -LiteralPath $planMan -PathType Leaf) {
+            Copy-Item -LiteralPath $planMan -Destination (Join-Path $vendorPlan 'PlanAgent.MANIFEST.json') -Force
+            Copy-Item -LiteralPath $planMan -Destination (Join-Path $vendorPlan 'bob-plan.MANIFEST.json') -Force
+        }
+        $sha = & $shaOf (Join-Path $vendorPlan 'bob-plan.exe')
+        [IO.File]::WriteAllText(
+            (Join-Path $vendorPlan 'bob-plan.exe.sha256'),
+            ($sha + '  bob-plan.exe' + [Environment]::NewLine),
+            (New-Object System.Text.UTF8Encoding $false)
+        )
+        Write-Host ('INFO FR #9468 staged vendor\plan\bob-plan.exe sha256={0}' -f $sha)
+    } else {
+        [void]$missing.Add('plan\PlanAgent.exe')
+    }
+
+    if (Test-Path -LiteralPath $priSrc -PathType Leaf) {
+        New-Item -ItemType Directory -Force -Path $vendorPri | Out-Null
+        Copy-Item -LiteralPath $priSrc -Destination (Join-Path $vendorPri 'PriorityAgent.exe') -Force
+        $priMan = Join-Path $Root 'priority\PriorityAgent.MANIFEST.json'
+        if (Test-Path -LiteralPath $priMan -PathType Leaf) {
+            Copy-Item -LiteralPath $priMan -Destination (Join-Path $vendorPri 'PriorityAgent.MANIFEST.json') -Force
+        }
+        $sha = & $shaOf (Join-Path $vendorPri 'PriorityAgent.exe')
+        [IO.File]::WriteAllText(
+            (Join-Path $vendorPri 'PriorityAgent.exe.sha256'),
+            ($sha + '  PriorityAgent.exe' + [Environment]::NewLine),
+            (New-Object System.Text.UTF8Encoding $false)
+        )
+        Write-Host ('INFO FR #9468 staged vendor\priority\PriorityAgent.exe sha256={0}' -f $sha)
+    } else {
+        [void]$missing.Add('priority\PriorityAgent.exe')
+    }
+
+    if ($missing.Count -gt 0) {
+        $msg = 'FR #9468 vendor tray exes missing sources: ' + ($missing -join ', ')
+        if ($Require) { throw $msg }
+        Write-Host ('WARN ' + $msg)
+        return @{ ok = $false; missing = @($missing) }
+    }
+    return @{ ok = $true; missing = @() }
+}
+
 function Sync-BobiverseAgentFolders {
     <#
     .SYNOPSIS
