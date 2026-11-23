@@ -67,7 +67,7 @@ def _seed_live(home, machines: dict[str, list[str]]):
 
 
 def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
-    """MRB exact-seat (FR #2604) frees the sibling; needs-ionos pin excludes marchhare.
+    """Pinned-out marchhare does not trigger FR #9401; walrus sibling stays offerable.
 
     FR #4512: bobiverse rows need a supported pin cue (label), not a bare stamp.
     FR #8697: ionos pin folds to walrus — sibling seats are walrus-*, not win-mpre.
@@ -117,8 +117,8 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     assert job.get("offered_to") == "walrus-7764"
 
 
-def test_hostile_mrb_sibling_ok_when_other_machine_live(_home):
-    """FR #2604: MRB exact-seat only — same-machine sibling may take MRB while flamingo is live."""
+def test_hostile_mrb_sibling_blocked_when_other_machine_live(_home):
+    """FR #9401: same-machine sibling blocked while flamingo is live (unpinned)."""
     row = _row(
         "SimonBarnett/bobiverse",
         "MRB",
@@ -142,7 +142,7 @@ def test_hostile_mrb_sibling_ok_when_other_machine_live(_home):
     live = gitclaim.live_seat_nicks(_home)
     assert "flamingo-9" in {n.lower() for n in live}
     assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-1", live) is True
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-2", live) is False
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-2", live) is True
     status, job = gitclaim.offer_focus_top(
         _home,
         "win-mpre8vi4u6u-2",
@@ -151,6 +151,15 @@ def test_hostile_mrb_sibling_ok_when_other_machine_live(_home):
         is_pull=None,
         issue_open=None,
     )
-    assert status == "ok"
-    assert job is not None
-    assert job.get("offered_to") == "win-mpre8vi4u6u-2"
+    assert status == "empty"
+    status2, job2 = gitclaim.offer_focus_top(
+        _home,
+        "flamingo-9",
+        "#flamingo",
+        pr_exists=None,
+        is_pull=None,
+        issue_open=None,
+    )
+    assert status2 == "ok"
+    assert job2 is not None
+    assert job2.get("offered_to") == "flamingo-9"
