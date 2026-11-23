@@ -2,7 +2,7 @@
 
 ## Problem (redqueen 2026-11-23)
 After menustuck revert, TipForm left-click looked dead for two stacked reasons:
-1. Ghost NotifyIcon (prior Watch pid) — ops: Clear-BobOrphanNotifyIcons + relaunch.
+1. Ghost NotifyIcon (prior Watch pid) — ops: `Clear-BobOrphanNotifyIcons.ps1 -HealLadder` (FR #9169) + relaunch.
 2. **Windowless `bob-status.exe`** held the single-instance mutex with `MainWindowHandle=0`. `Start-BobTrayDialog` returned success; further left-clicks did nothing. Right-click menu still worked.
 
 ## Fix

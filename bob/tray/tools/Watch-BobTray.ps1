@@ -4419,6 +4419,15 @@ $menu.Add_Closed({
         } catch { }
         try { Set-BobTrayMenuItemsEnabled -Menu $script:bobTrayContextMenu -Enabled $true } catch { }
         Write-TrayLog 'click-diag MenuClosed'
+        # FR #9169: soft rebind Shell_NotifyIcon after MenuClosed so a dead/ghost
+        # registration recovers without needing an explorer recycle first.
+        try {
+            if ($notify -and -not $notify.IsDisposed) {
+                $notify.Visible = $false
+                $notify.Visible = $true
+                Write-TrayLog 'click-diag NotifyIconRebound'
+            }
+        } catch { }
     })
 $notify.Add_MouseDown({
         param($s, $e)

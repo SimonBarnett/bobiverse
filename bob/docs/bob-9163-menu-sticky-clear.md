@@ -13,7 +13,7 @@
 - Keep click-diag; BobStatus `ShowWithoutActivation` (FR #9154) still helps
 
 ## Operator
-Right-click the **newest** robot icon. If clicks stay dead: Clear-BobOrphanNotifyIcons, then explorer recycle in sess 3, then Clear + relaunch Watch. Park `bob-tray.exe.clickfix-park` and ircBob stay up.
+Right-click the **newest** robot icon. If clicks stay dead: prefer `Clear-BobOrphanNotifyIcons.ps1 -HealLadder` (FR #9169: explorer recycle when toolbars=0), then relaunch Watch. Park `bob-tray.exe.clickfix-park` and ircBob stay up.
 
 ## Related
-#9154 (Cancel approach superseded) · #9011 · #9149 · `Clear-BobOrphanNotifyIcons.ps1`
+#9154 (Cancel approach superseded) · #9169 ghost heal · #9011 · #9149 · `Clear-BobOrphanNotifyIcons.ps1`
