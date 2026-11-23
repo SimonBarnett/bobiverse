@@ -395,6 +395,26 @@ function Format-BobTrayOnlineZeroCaption {
     return ('online_zero_workers={0} offerable={1} - TipForm Agents (no auto-start)' -f (($ids | Select-Object -Unique) -join ','), $OfferableCount)
 }
 
+function Get-BobTrayEngineStormAlert {
+    <#
+    FR #9471: TipForm alert while HealEngine storm stamp run/startworker/engine.storm is fresh.
+    Operator: TipForm Reload engine / restart tray so !startworker can ACK again.
+    #>
+    param(
+        [string]$Root = '',
+        [double]$MaxAgeSeconds = 600
+    )
+    try {
+        if (-not $Root) { return $null }
+        $storm = Join-Path (Join-Path (Join-Path $Root 'run') 'startworker') 'engine.storm'
+        if (-not (Test-Path -LiteralPath $storm)) { return $null }
+        $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $storm).LastWriteTimeUtc).TotalSeconds
+        if ($age -lt 0) { $age = 0 }
+        if ($age -gt $MaxAgeSeconds) { return $null }
+        return ('engine_restart_storm age={0:0}s - TipForm Reload engine (FR #9471)' -f $age)
+    } catch { return $null }
+}
+
 function Get-BobTrayAgentSeatUnionCount {
     <#
     MRB #8445 / FR #3181 / FR #4458: same agent-seat union CapRefusal uses

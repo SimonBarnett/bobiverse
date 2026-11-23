@@ -176,3 +176,5 @@ Install the rebuilt `scripts\bob-ear.exe`, pinned `scripts\bobreport.py` (this h
 
 
 **FR #7147 (digest start_model on seat list).** TipForm/Status worker lines read digest workers[].kind, start_model, and model_mismatch (ear-owned; tray never invents model ids). Format: {nick}: [{kind}/{start_model}!] {idle|work} — bang only when mismatch. Missing fields keep the legacy {nick}: {idle|work} shape. No secrets. The route from that Status nick to the chosen OpenCode model is in `bob-worker.md` (FR #8734 / BOB-29). **Open log** opens `watch_bob_tray.log`, not `logs\seat-<nick>.log`.
+
+* **FR #9471 HealEngine storm:** after 3 relaunch attempts / 5 min, host writes `run/startworker/engine.storm`, CrashHook once, then one forced **Reload engine** so `!startworker` can leave `engine_stale` silence. TipForm shows `engine_restart_storm` while the stamp is fresh; operator may also use menu **Reload engine**.

@@ -93,6 +93,23 @@ def parse(body: str):
     return (mode, machine, agent, slot)
 
 
+def targets_local(body: str, local_machine: str, channel: str = '') -> bool:
+    """FR #9471: True when this ear must ACK/NACK (named machine is local, or shop chan implies local)."""
+    parsed = parse(body)
+    if parsed is None:
+        return False
+    local = (local_machine or '').strip().lower()
+    if not local:
+        return False
+    if parsed == 'usage':
+        return True
+    _mode, machine, _agent, _slot = parsed
+    if machine is None:
+        chan = (channel or '').strip().lower().lstrip('#')
+        return chan == local
+    return str(machine).strip().lower() == local
+
+
 def usage() -> str:
     return (
         "usage: !startworker [agent|plan|grok|cursor|opencode] [free|paid] [machine]   "
