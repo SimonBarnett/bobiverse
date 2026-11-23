@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # Bob Systray launcher (Start Menu / Desktop shortcut target).
 # t794u: the tray does NOT update anything. Updating is the ircBob service's job (Start-Bob -> Update-BobiverseService / work-tree
 # sync). Starting the tray RESTARTS the ircBob service (detached, never waited for), so a tray start also picks up a pending update.
@@ -82,10 +82,19 @@ function Ensure-BobSystraySeatWrapper {
 function Get-BobSystrayTrayExe {
     # t832u: the compiled tray (icon + menu + clicks). When present it IS the systray; the PowerShell tray script runs as its hidden engine.
     # FR #9044: un-park bob-tray.exe.clickfix-park when the live exe is the only thing missing.
+    # FR #9199: intentional clickfalse/clicktrue park => Watch-only (never return/start live bob-tray.exe).
     param([string]$Root)
     $life = Join-Path $Root 'tools\BobTrayLifecycle.ps1'
     if (-not (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue)) {
         if (Test-Path -LiteralPath $life) { . $life }
+    }
+    if (Get-Command Test-BobTrayIntentionalExeParkPresent -ErrorAction SilentlyContinue) {
+        if (Test-BobTrayIntentionalExeParkPresent -Root $Root) {
+            if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                [void](Remove-BobTrayLiveExeWhileParked -Root $Root)
+            }
+            return $null
+        }
     }
     if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
         return Restore-BobTrayExeFromClickfixPark -Root $Root
@@ -155,7 +164,9 @@ function Invoke-BobSystrayTidy {
     if (Test-Path -LiteralPath $icons) {
         Write-Output 'tidy: Clear-BobOrphanNotifyIcons'
         try {
-            & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons 2>&1 | ForEach-Object { Write-Output $_ }
+            # FR #9169: HealLadder escalates to explorer recycle when toolbars=0.
+            $clearOut = & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder 2>&1
+            $clearOut | ForEach-Object { Write-Output $_ }
         }
         catch {
             Write-Warning ("tidy notify icons failed: {0}" -f $_.Exception.Message)
@@ -260,11 +271,29 @@ if ($ForceNew -and $hits.Count -gt 0) {
     catch {
         Write-Warning ("ForceNew IRC departure announce failed: {0}" -f $_.Exception.Message)
     }
+    # FR #9205: do not kill tray/Watch PIDs that still parent TipForm OpenCode seats.
+    $lifeFn = Join-Path $RepoRoot 'tools\BobTrayLifecycle.ps1'
+    if ((Test-Path -LiteralPath $lifeFn) -and -not (Get-Command Test-BobTrayProcessHasSeatChildren -ErrorAction SilentlyContinue)) {
+        . $lifeFn
+    }
+    $keptForSeats = @()
     foreach ($h in $hits) {
-        try { Stop-Process -Id ([int]$h.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+        $killPid = 0
+        try { $killPid = [int]$h.ProcessId } catch { continue }
+        if ((Get-Command Test-BobTrayProcessHasSeatChildren -ErrorAction SilentlyContinue) -and
+            (Test-BobTrayProcessHasSeatChildren -ParentProcessId $killPid)) {
+            Write-Output ("FR #9205 skip ForceNew kill pid={0} (parents TipForm seats)" -f $killPid)
+            $keptForSeats += $h
+            continue
+        }
+        try { Stop-Process -Id $killPid -Force -ErrorAction SilentlyContinue } catch { }
     }
     Start-Sleep -Milliseconds 800
-    $hits = @()
+    if ($keptForSeats.Count -gt 0) {
+        $hits = @($keptForSeats)
+    } else {
+        $hits = @()
+    }
 }
 
 # Always tidy on start/restart (after ForceNew kill so dead tray is not "kept").
@@ -351,11 +380,12 @@ else {
 
 Start-Sleep -Seconds 2
 # Second icon sweep: Explorer drops ghosts from the ForceNew kill once the new tray is up.
+# FR #9169: HealLadder recycles explorer when the first pass still reports toolbars=0.
 if (-not $SkipTidy) {
     $icons = Join-Path $RepoRoot 'tools\Clear-BobOrphanNotifyIcons.ps1'
     if (Test-Path -LiteralPath $icons) {
         try {
-            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons | Out-Null
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder | Out-Null
         }
         catch { }
     }
