@@ -322,7 +322,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayClickedSeats.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'BobTrayObserveSeats.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayClickedSeats.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -4962,6 +4962,21 @@ $poll.Add_Tick({
                 # FR #7660: warm runspace, 45s budget. BobBridge is imported once, not per poll.
                 # FR #8518: do not call Get-BobTrayWarmEngineShell bare on the UI thread —
                 # Import-Module hang had no step timeout. First WarmEngineStep acquires the shell.
+                # FR #9208: park-Watch-only must observe seat drops (compiled ObserveWorkerSeats absent).
+                try {
+                    if (Get-Command Invoke-BobTrayObserveWorkerSeats -ErrorAction SilentlyContinue) {
+                        $midObs = $MachineId
+                        if (-not $midObs) { $midObs = $env:BOB_MACHINE_ID }
+                        if ($midObs) {
+                            $obs = Invoke-BobTrayObserveWorkerSeats -MachineId ([string]$midObs)
+                            if ($obs.Dropped) {
+                                Write-TrayLog ('FR #9208 seat-exit was={0} now={1} handled={2} giveups={3}' -f $obs.Was, $obs.Now, $obs.Handled, $obs.Giveups)
+                            }
+                        }
+                    }
+                } catch {
+                    Write-TrayLog ('FR #9208 observe seats: ' + $_.Exception.Message)
+                }
                 $sa = Invoke-BobTrayWarmEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
                     param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
                     $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
