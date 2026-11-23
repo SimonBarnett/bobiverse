@@ -59,6 +59,10 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 - FR #4725: install and chair start seed/merge `DEFAULT_RESYNC_REPOS` into chair + digest `resync-repos.txt` (includes `SimonBarnett/ce-priority`). Pack copy: `jeeves/defaults/resync-repos.txt`.
 - Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
 
+## workers_last_good_orphan (FR #9145)
+
+`Test-JeevesMonitorWorkersLastGoodOrphan.ps1` / `tools/monitor/workers_last_good_orphan.py` is **token-free** and reads only the local `digest.json`. It EXIT 1 when a machine has `workers_stale` true, empty live `workers` / `worker_list`, and a non-empty `workers_last_good` snapshot (ghost seats that still paint on GET `/bob/v1/report`). Missing digest is EXIT 0 (`digest_present=false`). Unreadable or wrong-shape JSON is EXIT 2. Remediation: `POST /bob/v1/report` `worker-remove` for each nick (or `delete-worker` by pid). Related product: last-good TTL `BOB_DIGEST_LAST_GOOD_MAX_S` (default 1800s) on export/restore.
+
 ## Composed drive-root monitor scripts (FR #8860 / #9007 / #9100)
 
 A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650 / #9007). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when it can resolve that script: beside itself (composed flat), or under `BobInstallRoot\common\scripts` / `BobInstallRoot\scripts` for a repo tree such as `C:\ai\bob` (FR #9007). Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime; FR #9100 skips when source equals destination and warns on a nonzero Sync exit without blocking monitor start. The rest of jeeves `tools\` stays `/XO` (MRB #6162).

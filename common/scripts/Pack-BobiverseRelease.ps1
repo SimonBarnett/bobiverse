@@ -198,6 +198,17 @@ function Assert-BobiverseStageHasOpencodeFuel([string]$Stage) {
     }
 }
 
+function Assert-BobiverseStageHasSkillDagMcp([string]$Stage) {
+    # FR #9136: chair/monitor seats resolve skills via install scripts\skill_dag_mcp.py
+    # (not a borrowed C:\ai\bob path). Fail pack when the union omitted the trio.
+    foreach ($name in @('skill_dag_mcp.py', 'skill_dag_index.py', 'skill_dag_bound.py')) {
+        $p = Join-Path $Stage ("scripts\$name")
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+            throw ("bobiverse pack missing scripts\{0} (bob\scripts union; FR #9136)" -f $name)
+        }
+    }
+}
+
 function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
     # FR #9224: BobCallback imports flat scripts\models_refresh.py for POST
     # /bob/v1/models/refresh. A stage without it installs a chair that 404s refresh.
@@ -207,6 +218,7 @@ function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
     }
 }
 
+
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -215,6 +227,8 @@ function Stage-Product([string]$Name) {
     Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts' -Dest (Join-Path $stage 'scripts')
     # Flat scripts\opencode_fuel.py comes from common\scripts (Get-BobOpencodeFuel import).
     Assert-BobiverseStageHasOpencodeFuel -Stage $stage
+    # FR #9136: skill-dag MCP trio from bob\scripts must land in every product stage scripts\.
+    Assert-BobiverseStageHasSkillDagMcp -Stage $stage
     # Flat scripts\models_refresh.py comes from common\scripts (BobCallback POST refresh).
     Assert-BobiverseStageHasModelsRefresh -Stage $stage
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
