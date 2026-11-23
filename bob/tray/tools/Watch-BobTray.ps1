@@ -355,6 +355,11 @@ function Invoke-BobTrayTimedTick {
 
 # --- FR #7579: engine cycle alive-first, step log, timed-out blocking steps ---
 $script:BobTrayEngineStepTimeoutSec = 45
+# FR #9149: TipForm poll skips STA Sync/irc-status when these ThreadPool timers started.
+$script:trayWorkerSyncArmed = $false
+$script:trayDigestArmed = $false
+$script:lastHoverObject = $null
+
 $script:BobTrayEngineCycleLogName = 'tray-engine-cycle.log'
 
 function Get-BobTrayEngineCycleLogPath {
@@ -2702,10 +2707,25 @@ function Set-Attention([string[]]$alerts) {
 }
 
 function Update-Hover {
-    param([switch]$SkipUi)
+    <#
+      FR #9149: optional -Hover skips Get-BobTrayHover (TipForm poll must not
+      double-fetch after a background snapshot job). -SkipUi skips TipForm paint.
+    #>
+    param(
+        [switch]$SkipUi,
+        $Hover = $null
+    )
     try {
-        $h = Get-BobTrayHover
+        $h = $Hover
+        if ($null -eq $h) {
+            $h = Get-BobTrayHover
+        }
+        if ($null -eq $h) {
+            Write-TrayLog 'hover error: null Hover (skip paint)'
+            return
+        }
         $script:hoverBody = [string]$h.body
+        $script:lastHoverObject = $h
         # FR #345: list each watch seat separately (nick + slot) on tooltip body
         try {
             $slotHelpers = Join-Path $RepoRoot 'tools\Bob-WatchSeatSlot.ps1'
@@ -2798,7 +2818,10 @@ function Clear-Attention {
     $script:attention = $false
     $script:flashOn = $false
     $notify.Icon = $iconIdle
-    Update-Hover
+    # FR #9149: repaint from last hover; do not Get-BobTrayHover on the STA click path.
+    if ($script:lastHoverObject) {
+        try { Update-Hover -Hover $script:lastHoverObject } catch { }
+    }
 }
 
 function Clear-BobNativeTip {
@@ -2838,13 +2861,48 @@ function Hide-BobTrayCard {
     Clear-BobNativeTip
 }
 
+function Update-BobTrayTipFromStatusSnapshot {
+    <#
+      FR #9149: TipForm paint from run\tray-status.json only (no Get-BobTrayHover / Wait-Job).
+      Best-effort title/jobs/alert refresh when the tip is already visible.
+    #>
+    try {
+        $path = Join-Path (Join-Path $RepoRoot 'run') 'tray-status.json'
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+        $raw = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false))
+        $model = $raw | ConvertFrom-Json
+        if (-not $model) { return $false }
+        if ($model.title) { $script:hoverTitle = [string]$model.title }
+        if ($model.short) { $script:notifyTipText = [string]$model.short }
+        if ($model.alert) { $script:alertKind = [string]$model.alert }
+        if (-not (Test-BobTrayTipVisible)) { return $true }
+        if ($script:titleLabel -and $model.title) { $script:titleLabel.Text = [string]$model.title }
+        if ($script:alertLabel -and $model.alert) {
+            $script:alertLabel.Text = ('alert: {0}' -f [string]$model.alert)
+        }
+        Update-BobTrayVersionLabelLayout
+        return $true
+    }
+    catch {
+        Write-TrayLog ('tip snapshot paint error: ' + $_.Exception.Message)
+        return $false
+    }
+}
+
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
     # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
-    # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
+    # when tools\bob-status.exe is not installed. FR #9149: TipForm paints from last snapshot first (no STA Get-BobTrayHover).
     if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
-    Update-Hover
+    try { [void](Update-BobTrayTipFromStatusSnapshot) } catch { }
+    if ($script:lastHoverObject) {
+        try { Update-Hover -Hover $script:lastHoverObject } catch { }
+    }
     Show-BobTrayCard -Reason 'click'
+    # Request a poll refresh when idle (do not fetch hover inline on the click STA path).
+    try {
+        if (-not $script:pollBusy -and $poll) { $poll.Stop(); $poll.Start() }
+    } catch { }
 }
 
 # t804u: the ntsa logo badge shown by Acknowledge is assets\ntsa-gut-logo.png (Simon's avatar: braided red/orange/blue/green lines over
@@ -4444,104 +4502,103 @@ $poll.Add_Tick({
                     $swS.Stop()
                     Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=clear-grok-session sec={0:n2}' -f $swS.Elapsed.TotalSeconds)
                 }
-                # FR #7594: jobs-watcher / stall-alerts under Invoke-BobTrayEngineStep (same timeout/report as update-hover).
-                $jw = Invoke-BobTrayEngineStep -Name 'jobs-watcher' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $watchJobs) -Body {
-                    param($Root, $WatchJobsPath)
-                    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                        Where-Object {
-                            $_.CommandLine -and
-                            $_.CommandLine -match 'Watch-BobJobs\.ps1' -and
-                            $_.CommandLine -notmatch '(?i)-Once\b'
-                        })
-                    if ($hits.Count -gt 0) {
-                        $keep = $hits[0]
-                        try {
-                            if ($hits.Count -gt 1) {
-                                for ($i = 1; $i -lt $hits.Count; $i++) {
-                                    try { Stop-Process -Id ([int]$hits[$i].ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+                $alerts = @()
+                if (-not $engine) {
+                    # FR #9149: TipForm STA must not Wait-Job. Cheap jobs-watcher; skip stall warm step.
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=jobs-watcher-waitjob reason=tipform-ui-no-waitjob'
+                    try { Start-JobsWatcher } catch { Write-TrayLog ('tipform jobs-watcher: ' + $_.Exception.Message) }
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=stall-alerts reason=tipform-ui-no-waitjob'
+                }
+                else {
+                    # FR #7594: jobs-watcher / stall-alerts under Invoke-BobTrayEngineStep (same timeout/report as update-hover).
+                    $jw = Invoke-BobTrayEngineStep -Name 'jobs-watcher' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $watchJobs) -Body {
+                        param($Root, $WatchJobsPath)
+                        $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                            Where-Object {
+                                $_.CommandLine -and
+                                $_.CommandLine -match 'Watch-BobJobs\.ps1' -and
+                                $_.CommandLine -notmatch '(?i)-Once\b'
+                            })
+                        if ($hits.Count -gt 0) {
+                            $keep = $hits[0]
+                            try {
+                                if ($hits.Count -gt 1) {
+                                    for ($i = 1; $i -lt $hits.Count; $i++) {
+                                        try { Stop-Process -Id ([int]$hits[$i].ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+                                    }
                                 }
+                            } catch { }
+                            return [pscustomobject]@{ pid = [int]$keep.ProcessId; owned = $false; action = 'existing' }
+                        }
+                        if (-not (Test-Path -LiteralPath $WatchJobsPath)) {
+                            return [pscustomobject]@{ pid = 0; owned = $false; action = 'missing' }
+                        }
+                        $p = Start-Process -FilePath (Get-Command powershell.exe).Source `
+                            -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $WatchJobsPath) `
+                            -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+                        return [pscustomobject]@{ pid = [int]$p.Id; owned = $true; action = 'started' }
+                    }
+                    if ($jw.ok -and $jw.output) {
+                        try {
+                            if ([int]$jw.output.pid -gt 0) { $script:jobsPid = [int]$jw.output.pid }
+                            $script:jobsOwned = [bool]$jw.output.owned
+                            if ([string]$jw.output.action -eq 'missing' -and -not $script:jobsMissingLogged) {
+                                Write-TrayLog ("Watch-BobJobs.ps1 not installed ($watchJobs); not starting it")
+                                $script:jobsMissingLogged = $true
+                            }
+                            elseif ([string]$jw.output.action -eq 'started') {
+                                Write-TrayLog ("started Watch-BobJobs pid=$($jw.output.pid)")
                             }
                         } catch { }
-                        return [pscustomobject]@{ pid = [int]$keep.ProcessId; owned = $false; action = 'existing' }
                     }
-                    if (-not (Test-Path -LiteralPath $WatchJobsPath)) {
-                        return [pscustomobject]@{ pid = 0; owned = $false; action = 'missing' }
+                    # FR #7660: warm runspace, 45s budget. BobBridge is imported once, not per poll.
+                    # FR #8518: do not call Get-BobTrayWarmEngineShell bare on the UI thread —
+                    # Import-Module hang had no step timeout. First WarmEngineStep acquires the shell.
+                    $sa = Invoke-BobTrayWarmEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
+                        param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
+                        $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
+                        return [pscustomobject]@{ Alerts = $list; Seen = $Seen }
                     }
-                    $p = Start-Process -FilePath (Get-Command powershell.exe).Source `
-                        -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $WatchJobsPath) `
-                        -WorkingDirectory $Root -WindowStyle Hidden -PassThru
-                    return [pscustomobject]@{ pid = [int]$p.Id; owned = $true; action = 'started' }
-                }
-                if ($jw.ok -and $jw.output) {
-                    try {
-                        if ([int]$jw.output.pid -gt 0) { $script:jobsPid = [int]$jw.output.pid }
-                        $script:jobsOwned = [bool]$jw.output.owned
-                        if ([string]$jw.output.action -eq 'missing' -and -not $script:jobsMissingLogged) {
-                            Write-TrayLog ("Watch-BobJobs.ps1 not installed ($watchJobs); not starting it")
-                            $script:jobsMissingLogged = $true
+                    if ($sa.ok -and $sa.output) {
+                        try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
+                        try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
+                    }
+                    if ($alerts.Count -gt 0) {
+                        $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
+                        Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
+                        if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
+                            $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
+                            if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
                         }
-                        elseif ([string]$jw.output.action -eq 'started') {
-                            Write-TrayLog ("started Watch-BobJobs pid=$($jw.output.pid)")
-                        }
-                    } catch { }
-                }
-                $alerts = @()
-                # FR #7660: warm runspace, 45s budget. BobBridge is imported once, not per poll.
-                # FR #8518: do not call Get-BobTrayWarmEngineShell bare on the UI thread —
-                # Import-Module hang had no step timeout. First WarmEngineStep acquires the shell.
-                $sa = Invoke-BobTrayWarmEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
-                    param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
-                    $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
-                    return [pscustomobject]@{ Alerts = $list; Seen = $Seen }
-                }
-                if ($sa.ok -and $sa.output) {
-                    try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
-                    try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
-                }
-                if ($alerts.Count -gt 0) {
-                    $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
-                    Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
-                    # BOB-43: intervene so offerable work can move (nudge under-cap fill cooldown).
-                    if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
-                        $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
-                        if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
+                        $script:lastAlerts = $alerts
+                        Write-TrayLog ('engine stall alerts: ' + ($alerts -join ' | '))
                     }
                 }
-                if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
-                elseif ($alerts.Count -gt 0 -and $engine) {
-                    # Exe owns the icon; still record alerts in log / lastAlerts without NotifyIcon flash.
-                    $script:lastAlerts = $alerts
-                    Write-TrayLog ('engine stall alerts: ' + ($alerts -join ' | '))
-                }
-                # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
-                # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
+                # FR #1553 / #9149: TipForm STA must not Wait-Job / Sync / Get-BobTrayHover /
+                # Write-BobIrcStatus on the poll tick (ContextMenuStrip freezes until Wait returns).
+                # ThreadPool trayWorkerSyncTimer + trayDigestTimer already cover sync/status;
+                # paint TipForm from run\tray-status.json only (no second Update-Hover fetch).
                 if (-not $engine) {
                     # FR #9046: exe timer is absent while bob-tray.exe is parked.
                     try { Update-BobTrayWatchDigestPools } catch { }
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
-                    $swW = [System.Diagnostics.Stopwatch]::StartNew()
-                    try {
-                        if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
-                            [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
-                        }
-                    } catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
-                    $swW.Stop()
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=worker-sync sec={0:n2}' -f $swW.Elapsed.TotalSeconds)
-                    # FR #7579: Update-Hover (incl. Get-BobTrayHover) under timeout so a hang cannot freeze the UI thread.
-                    [void](Invoke-BobTrayEngineStep -Name 'update-hover' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
-                        param($Root, $Tools)
-                        $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
-                        if (Test-Path -LiteralPath $dialogs) { . $dialogs }
-                        $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
-                        $h = Get-BobTrayHover
-                        if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
-                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
-                            [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
-                        }
-                    })
-                    # TipForm paint on UI thread after snapshot job (best-effort; alive already stamped).
-                    try { Update-Hover } catch { Write-TrayLog ('update-hover paint: ' + $_.Exception.Message) }
+                    if ($script:trayWorkerSyncArmed) {
+                        Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=worker-sync reason=tipform-ui-threadpool'
+                    }
+                    else {
+                        Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
+                        $swW = [System.Diagnostics.Stopwatch]::StartNew()
+                        try {
+                            if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
+                                [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
+                            }
+                        } catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
+                        $swW.Stop()
+                        Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=worker-sync sec={0:n2}' -f $swW.Elapsed.TotalSeconds)
+                    }
+                    # FR #9149: never Wait-Job update-hover on TipForm STA (even TimeoutSec 8 blocked 28s).
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=update-hover reason=tipform-ui-no-waitjob'
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=update-hover-ui reason=tipform-ui-no-waitjob'
+                    try { Update-BobTrayTipFromStatusSnapshot } catch { Write-TrayLog ('tip snapshot paint: ' + $_.Exception.Message) }
                 }
                 else {
                     # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
@@ -4573,17 +4630,23 @@ $poll.Add_Tick({
                     }
                 }
                 # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
-                # FR #4142: in engine mode Write-BobIrcStatus runs on trayDigestTimer (non-UI).
-                if (-not $engine -and (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
-                    try { Write-BobIrcStatus | Out-Null } catch {
-                        if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { return }
-                        Write-TrayLog ('digest Write-BobIrcStatus: ' + $_.Exception.Message)
-                        try {
-                            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
-                                Report-BobDeterministicException -Site 'Watch-BobTray.Write-BobIrcStatus' -Exception $_.Exception -ScriptPath $PSCommandPath | Out-Null
+                # FR #4142: engine mode uses trayDigestTimer (non-UI).
+                # FR #9149: TipForm also skips when trayDigestArmed (timer posts peer JSON off STA).
+                if (-not $engine) {
+                    if ($script:trayDigestArmed) {
+                        Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-skip name=irc-status reason=tipform-ui-threadpool'
+                    }
+                    elseif (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) {
+                        try { Write-BobIrcStatus | Out-Null } catch {
+                            if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { return }
+                            Write-TrayLog ('digest Write-BobIrcStatus: ' + $_.Exception.Message)
+                            try {
+                                if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
+                                    Report-BobDeterministicException -Site 'Watch-BobTray.Write-BobIrcStatus' -Exception $_.Exception -ScriptPath $PSCommandPath | Out-Null
+                                }
                             }
+                            catch { }
                         }
-                        catch { }
                     }
                 }
                 Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'cycle-end name=poll'
@@ -4638,12 +4701,18 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
         catch { Write-TrayLog ('FR #5052 worker-sync report: ' + $_.Exception.Message) }
     }
 } -MessageData $script:trayWorkerSyncMsg
-$script:trayWorkerSyncTimer.Start()
+$script:trayWorkerSyncArmed = $false
+try {
+    $script:trayWorkerSyncTimer.Start()
+    $script:trayWorkerSyncArmed = $true
+} catch {
+    $script:trayWorkerSyncArmed = $false
+    Write-TrayLog ('FR #9149 trayWorkerSyncTimer start failed: ' + $_.Exception.Message)
+}
 
-# FR #4142 / FR #5032: ThreadPool digest heartbeat --- Write-BobIrcStatus off the WinForms UI
-# thread in engine mode. Event Action runs in its own runspace: re-dot helpers each tick
-# (same pattern as trayWorkerSyncTimer). Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped;
-# Write-BobIrcStatus lives in tray src (via Bobiverse-Common / Get-BobIrc.ps1).
+# FR #4142 / FR #5032 / FR #9149: ThreadPool digest heartbeat --- Write-BobIrcStatus off the
+# WinForms UI thread (engine and TipForm). Event Action re-dots helpers each tick.
+# Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped; Write-BobIrcStatus lives in tray src.
 $script:trayDigestTimer = New-Object System.Timers.Timer
 $script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
 $script:trayDigestTimer.AutoReset = $true
@@ -4663,8 +4732,7 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
             try { . $msg.Dialogs } catch { }
         }
-        if (-not (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue)) { return }
-        if (-not (Test-BobTrayEngineMode)) { return }
+        # FR #9149: run for TipForm too (poll skips STA Write-BobIrcStatus when armed).
         if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
             if ($msg.StatusPs -and (Test-Path -LiteralPath $msg.StatusPs)) {
                 try { . $msg.StatusPs } catch { }
@@ -4719,7 +4787,14 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         } catch { }
     }
 } -MessageData $script:trayDigestMsg
-$script:trayDigestTimer.Start()
+$script:trayDigestArmed = $false
+try {
+    $script:trayDigestTimer.Start()
+    $script:trayDigestArmed = $true
+} catch {
+    $script:trayDigestArmed = $false
+    Write-TrayLog ('FR #9149 trayDigestTimer start failed: ' + $_.Exception.Message)
+}
 
 # t810u: remote "!startworker" - consume the ear's queued requests (the ear runs in session 0 and cannot open a window).
 # FR #2697: heartbeat is NOT on this WinForms timer — the 30s $poll tick blocks the UI thread for 7-11s and

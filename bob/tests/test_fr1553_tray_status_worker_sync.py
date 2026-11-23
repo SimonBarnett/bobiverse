@@ -11,7 +11,9 @@ import pytest
 
 from repo_layout import ROOT
 
-TRAY = ROOT / "third_party" / "bob-tray"
+TRAY = ROOT / "bob" / "tray"
+if not (TRAY / "tools" / "Watch-BobTray.ps1").is_file():
+    TRAY = ROOT / "third_party" / "bob-tray"
 DIALOGS = TRAY / "tools" / "BobTrayDialogs.ps1"
 WATCH = TRAY / "tools" / "Watch-BobTray.ps1"
 PS = shutil.which("powershell.exe") or shutil.which("powershell")
@@ -36,21 +38,11 @@ def test_sync_function_and_watch_wiring_static():
     # FR #7776: the poll tick grew past a fixed 4500-character window.
     tick = w.index("$poll.Add_Tick")
     poll = w[tick : w.index("$script:trayWorkerSyncTimer", tick)]
-    # Non-engine poll path still Sync-before-Update-Hover (FR #1553). Engine mode
-    # (FR #4142) skips Sync on the UI poll and uses Update-Hover -SkipUi instead.
-    assert "Sync-BobTrayStatusWorkersFromDigest" in poll
-    assert "Update-Hover" in poll
-    i_sync = poll.index("Sync-BobTrayStatusWorkersFromDigest")
-    i_hover = poll.index("Update-Hover")
-    # Prefer Sync before the first full Update-Hover (not -SkipUi-only) when both present.
-    if "Update-Hover -SkipUi" in poll:
-        i_full = poll.find("\n                    Update-Hover\n")
-        if i_full > 0:
-            assert i_sync < i_full
-        else:
-            assert i_sync < i_hover or "SkipUi" in poll
-    else:
-        assert i_sync < i_hover
+    # FR #9149: TipForm skips STA Sync when trayWorkerSyncArmed (ThreadPool owns it).
+    # Fallback Sync path remains in the TipForm branch when the timer failed to arm.
+    assert "Sync-BobTrayStatusWorkersFromDigest" in poll or "trayWorkerSyncArmed" in poll
+    assert "tipform-ui-threadpool" in poll or "Sync-BobTrayStatusWorkersFromDigest" in poll
+    assert "Update-BobTrayTipFromStatusSnapshot" in poll or "Update-Hover" in poll
 
 
 @needs_ps

@@ -11,8 +11,12 @@ from pathlib import Path
 
 from repo_layout import ROOT
 
-WATCH = ROOT / "third_party" / "bob-tray" / "tools" / "Watch-BobTray.ps1"
-DIALOGS = ROOT / "third_party" / "bob-tray" / "tools" / "BobTrayDialogs.ps1"
+WATCH = ROOT / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
+if not WATCH.is_file():
+    WATCH = ROOT / "third_party" / "bob-tray" / "tools" / "Watch-BobTray.ps1"
+DIALOGS = ROOT / "bob" / "tray" / "tools" / "BobTrayDialogs.ps1"
+if not DIALOGS.is_file():
+    DIALOGS = ROOT / "third_party" / "bob-tray" / "tools" / "BobTrayDialogs.ps1"
 SKILL = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob" / "SKILL.md"
 TROUBLE = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-troubleshooting" / "SKILL.md"
 
@@ -71,14 +75,13 @@ def test_fr4142_engine_mode_skips_update_hover_ui_on_poll():
     poll = _poll_handler()
     assert "Test-BobTrayEngineMode" in poll
     assert "FR #4142" in poll
-    # Bare Update-Hover (TipForm paint) is gated: it only runs inside if (-not $engine).
+    # TipForm (-not $engine) paints from snapshot (FR #9149); engine uses update-hover-engine.
     assert "if (-not $engine)" in poll
-    guard = poll.index("if (-not $engine)")
-    assert "Update-Hover" in poll[guard:]
-    # Engine mode runs the data-only update-hover-engine job, never the bare UI paint.
     assert "update-hover-engine" in poll
     engine_else = poll.rindex("else", 0, poll.index("update-hover-engine"))
     assert "Update-Hover" not in poll[engine_else:]
+    tip = poll.split("if (-not $engine)", 1)[1].split("else {", 1)[0]
+    assert "Update-BobTrayTipFromStatusSnapshot" in tip or "tipform-ui-no-waitjob" in tip
 
 
 def test_fr4142_engine_mode_skips_flash_pulse_start():
