@@ -356,3 +356,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - TipForm park poll must never Wait-Job update-hover or Write-BobIrcStatus on STA: step-skip + trayHoverTimer snapshot + Update-Hover -FromSnapshot; trayDigestTimer posts for TipForm too.
 - FR #9180: bobiverse book harvest with real Lessons owes a lesson(book) PR patching .grok/skills/<book>/SKILL.md same-turn when gh is authenticated; receipt-without-skill-PR is fail-closed; -SkillFile lands at skill_book_path not harvest/<name>
 - Twin fix already merged: keep main's primitive as source of truth, wrap the branch API, and satisfy both pinned test files before push.
+- trayDigestTimer Action runspace has no parent BobBridge: Import-Module src\BobBridge.psd1 when Get-ThisMachineId or Write-BobIrcStatus is missing; dotting Get-BobIrc alone is not enough (FR #9198).

@@ -24,6 +24,10 @@ def test_fr8568_create_breakaway_constant_and_launch_flags():
     assert "CreateNewConsole | CreateBreakawayFromJob" in t.replace(" ", "") or (
         "CreateNewConsole | CreateBreakawayFromJob" in t
     )
+    # FR #9097: compiled WorkerLauncher retries without breakaway on Access Denied.
+    assert "ErrorAccessDenied" in t
+    assert "FR #9097" in t
+    assert t.count("CreateProcessW(run, cmd,") >= 2
     w = _read(WATCH)
     assert "CREATE_BREAKAWAY_FROM_JOB" in w
     assert "CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_BREAKAWAY_FROM_JOB" in w
