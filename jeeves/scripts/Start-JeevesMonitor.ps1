@@ -80,9 +80,9 @@ function Resolve-SyncBobiverseFromRepoPath {
         [string]$BobRoot
     )
     $name = 'Sync-BobiverseFromRepo.ps1'
+    # FR #9309: prefer Bob tip Sync (has sync-monitor-force) over a stale composed
+    # flat copy beside Start on J:\ (class of missing opencode_seats.py after #8583).
     $cands = @(
-        (Join-Path $ScriptRoot $name),
-        (Join-Path $JeevesInstallRoot ('scripts\' + $name)),
         (Join-Path $BobRoot ('common\scripts\' + $name)),
         (Join-Path $BobRoot ('scripts\' + $name))
     )
@@ -91,10 +91,24 @@ function Resolve-SyncBobiverseFromRepoPath {
         $cands += (Join-Path $parent ('common\scripts\' + $name))
         $cands += (Join-Path $parent ('scripts\' + $name))
     }
+    $cands += @(
+        (Join-Path $ScriptRoot $name),
+        (Join-Path $JeevesInstallRoot ('scripts\' + $name))
+    )
+    $fallback = ''
     foreach ($c in $cands) {
-        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+        if (-not ($c -and (Test-Path -LiteralPath $c))) { continue }
+        # Prefer a Sync that force-copies tools\monitor (FR #8860 marker).
+        $hit = $false
+        try {
+            foreach ($line in [IO.File]::ReadLines($c)) {
+                if ($line -match 'sync-monitor-force') { $hit = $true; break }
+            }
+        } catch { }
+        if ($hit) { return $c }
+        if (-not $fallback) { $fallback = $c }
     }
-    return ''
+    return $fallback
 }
 $syncMon = Resolve-SyncBobiverseFromRepoPath -ScriptRoot $PSScriptRoot -JeevesInstallRoot $InstallRoot -BobRoot $BobInstallRoot
 if ($syncMon) {
