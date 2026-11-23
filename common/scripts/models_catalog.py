@@ -15,8 +15,14 @@ inside ``models-catalog.json`` (models list + ``refreshed_at``); it does not
 rewrite agent selections or ``models-valid-combos.json``.
 
 Rows match ``bob/docs/mocks/systray-agents-workers/weights.html``. Optional
-digest-home ``models-catalog.json`` holds agents + refresh ``clis`` (PUT is
-BOB-02). There is no POST /models/validate (form-only).
+digest-home ``models-catalog.json`` overrides agent selections and holds refresh ``clis`` (PUT is BOB-02; FR #8820).
+
+BOB-03 / FR #8710: fail-closed valid ``(cli, model, context, effort)`` combinations
+live in a **separate** digest-home file ``models-valid-combos.json`` so BOB-02 PUT
+cannot wipe the allow-list. FR #9053 retired ``POST /bob/v1/models/validate`` on the
+callback (JSON 404 ``no_models_validate``; no check or persist). The Weights form
+limits dropdowns to the GET ``clis`` catalogue from that file; ``PUT /bob/v1/models``
+persists agent rows and does not apply the combo allow-list.
 """
 from __future__ import annotations
 
@@ -449,8 +455,15 @@ def _as_str_list(raw: Any) -> list[str] | None:
     return out
 
 
-def validate_combo_row(obj: Any) -> tuple[ModelComboRow | None, str]:
-    """Return ``(row, \"\")`` or ``(None, reason)`` for one model allow-list row."""
+def validate_combo_row(
+    obj: Any, *, cli: str = ""
+) -> tuple[ModelComboRow | None, str]:
+    """Return ``(row, \"\")`` or ``(None, reason)`` for one model allow-list row.
+
+    FR #9258: Grok rows require non-empty contexts (256|500) and efforts
+    (high|medium|low). Cursor / OpenCode / Aider may have empty contexts and
+    efforts (context/effort are Grok-only).
+    """
     if not isinstance(obj, dict):
         return None, "not an object"
     model = str(obj.get("model") or "").strip()
@@ -459,7 +472,9 @@ def validate_combo_row(obj: Any) -> tuple[ModelComboRow | None, str]:
     contexts = _as_str_list(obj.get("contexts"))
     if contexts is None:
         return None, "contexts must be a list"
-    if not contexts:
+    cli_l = str(cli or "").strip().lower()
+    grok_only = cli_l in ("", "grok")  # default strict when cli unknown
+    if grok_only and not contexts:
         return None, "contexts empty"
     efforts_raw = obj.get("efforts")
     if efforts_raw is None:
@@ -469,6 +484,17 @@ def validate_combo_row(obj: Any) -> tuple[ModelComboRow | None, str]:
         if efforts_parsed is None:
             return None, "efforts must be a list"
         efforts = efforts_parsed
+    if grok_only:
+        # Normalise Si's 256|500 / high|medium|low; drop unknown tokens.
+        contexts = [c for c in contexts if c in ("256", "500")]
+        if not contexts:
+            return None, "contexts empty"
+        efforts = [e for e in efforts if e.lower() in ("high", "medium", "low")]
+        efforts = [e.lower() for e in efforts]
+    else:
+        # Non-Grok: ignore leftover context/effort lists (treat as empty).
+        contexts = []
+        efforts = []
     return ModelComboRow(model=model, contexts=contexts, efforts=efforts), ""
 
 
@@ -488,7 +514,7 @@ def _clis_from_payload(raw: Any) -> dict[str, list[ModelComboRow]]:
         seen: set[str] = set()
         rows: list[ModelComboRow] = []
         for item in rows_raw:
-            row, _why = validate_combo_row(item)
+            row, _why = validate_combo_row(item, cli=cli)
             if row is None:
                 continue
             if row.model in seen:
@@ -568,12 +594,6 @@ def validate_combo(
     if not model_s:
         return False, ERROR_UNKNOWN_MODEL, "model"
 
-    if isinstance(context, bool) or not isinstance(context, (str, int, float)):
-        return False, ERROR_INVALID_CONTEXT, "context"
-    context_s = str(context).strip()
-    if not context_s:
-        return False, ERROR_INVALID_CONTEXT, "context"
-
     rows = cat.clis.get(cli_key) or []
     match: ModelComboRow | None = None
     for row in rows:
@@ -582,8 +602,20 @@ def validate_combo(
             break
     if match is None:
         return False, ERROR_UNKNOWN_MODEL, "model"
-    if context_s not in match.contexts:
-        return False, ERROR_INVALID_CONTEXT, "context"
+
+    # FR #9258: empty contexts (Cursor/OpenCode) → context not applicable;
+    # only Grok rows carry 256|500. Absent/empty context is required then.
+    if not match.contexts:
+        if context is not None and str(context).strip() != "":
+            return False, ERROR_INVALID_CONTEXT, "context"
+    else:
+        if isinstance(context, bool) or not isinstance(context, (str, int, float)):
+            return False, ERROR_INVALID_CONTEXT, "context"
+        context_s = str(context).strip()
+        if not context_s:
+            return False, ERROR_INVALID_CONTEXT, "context"
+        if context_s not in match.contexts:
+            return False, ERROR_INVALID_CONTEXT, "context"
 
     if not match.efforts:
         if not _effort_absent(effort):
@@ -611,7 +643,12 @@ def handle_models_validate(
     *,
     log: Any = print,
 ) -> tuple[int, bytes]:
-    """BobCallback POST /bob/v1/models/validate — non-persisting combo check."""
+    """Retained non-persisting combo check (200/400/503 when called directly).
+
+    FR #9053: bobcallback does not dispatch this helper for
+    ``POST /bob/v1/models/validate``; the callback returns JSON 404
+    ``no_models_validate`` for that retired route.
+    """
     raw_body = body if isinstance(body, (bytes, bytearray)) else str(body or "").encode("utf-8")
     try:
         payload = json.loads(raw_body.decode("utf-8") if raw_body else b"null")
@@ -870,7 +907,7 @@ def load_seed_document(path: Path | str) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in rows_raw:
-            row, why = validate_combo_row(item)
+            row, why = validate_combo_row(item, cli=cli)
             if row is None:
                 raise ValueError(f"seed cli {cli} invalid row: {why}")
             if row.model in seen:
@@ -951,7 +988,7 @@ def ensure_valid_combos_seeded(
     for cli, rows in seed_doc["clis"].items():
         parsed: list[ModelComboRow] = []
         for item in rows:
-            row, why = validate_combo_row(item)
+            row, why = validate_combo_row(item, cli=cli)
             if row is None:
                 status["error"] = f"seed_invalid:{cli}:{why}"
                 print(f"ERROR models-valid-combos seed row err={status['error']}", flush=True)

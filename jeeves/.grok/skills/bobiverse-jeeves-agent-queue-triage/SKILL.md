@@ -81,11 +81,16 @@ Empty queue with healthy idle seats is a valid one-line report (`no rows to tria
 | Accepted holder stuck | Accepted > 30 min (FR #5510) with dead/idle holder | Report as `!stuck` class; never `clear_seat_doing` a live seat |
 | No eligible idle seat | Offerable rows exist; every seat busy, out-of-fuel or wrong machine | Report counts; recycle/fuel is another skill |
 | Closed on GitHub | Row still in queue but issue closed | Resync will drop it; nothing to file |
+| Twin-closed issue, PR still open | Issue closed as twin/duplicate; covering PR stays open and keeps getting MRB offers (class #9020/#9022/#8981/#8993/#8995/#8978/#8979) | **List for Si to close.** Do not close the PR on the agent's own say |
+| Held MRB re-queued | Row on `hold` (or linked FR hold) re-enters offerable and seats GIVEUP in a loop (class #9080) | Known bug, not a seat fault; report once, do not blame the seat |
+| Depends-on still OPEN | Child offered while `Depends-on:` target is still OPEN (class #8808/#8805; see `bobiverse-jeeves-agent-depends-on`) | Known bug / correct skip when product skip is live; not a seat fault |
+| Disk offer starvation | Repeated `worktree-create-failed:disk` on one machine; seats look idle | Hand to `bobiverse-jeeves-agent-disk-starvation` |
 
 ## Twin and filing rules
 
 - #8738-class rows: comment evidence on **#8738**; never open a second issue for the same mid-turn assign / done-miss class.
 - Other findings: twin-check open issues first (`bobiverse-jeeves-agent-fr-filing`); comment on the first match; else file one FR with the table row as evidence.
+- Twin-closed issue with open PR: list the PR numbers for Si; never close those PRs yourself from this skill.
 - Never post ACK/DONE/`!bored`/GIVEUP for a seat. Never `!assign`.
 
 ## Verify
