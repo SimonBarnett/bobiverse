@@ -51,18 +51,21 @@ def test_done_mrb_still_drops_held_mrb_same_key():
     assert injected == []
 
 
-def test_prior_done_mrb_then_new_mrb_offer_nacks_not_silent_drop():
-    """Same typed key still finished: drop at release but NACK the prior ACK (no ghost busy)."""
+def test_prior_done_mrb_then_new_mrb_offer_injects_fr9339():
+    """FR #9339: fresh MRB assign after DONE clears finished mark and injects (re-review)."""
     r, outbox, injected, logs = _relay()
     r.note_outbound(MRB_DONE)
     assert r.is_finished_ref(MRB_ASSIGN) is True
     assert r.deliver("Jeeves", "#flamingo", MRB_ASSIGN) == "held_until_turn_end"
     assert "ACK MRB SimonBarnett/a-search#2366" in outbox
+    assert r.is_finished_ref(MRB_ASSIGN) is False
     r.hold_assigns_while = lambda: False
-    assert r.release_held_assigns() == 0
-    assert injected == []
-    assert any("dropped finished held assign" in l for l in logs)
-    assert any(o.startswith("NACK MRB SimonBarnett/a-search#2366") for o in outbox), outbox
+    assert r.release_held_assigns() == 1
+    assert len(injected) == 1 and "MRB SimonBarnett/a-search#2366" in injected[0]
+    assert not any(
+        o.startswith("NACK MRB SimonBarnett/a-search#2366") and "already finished" in o
+        for o in outbox
+    ), outbox
 
 
 def test_dropped_acked_finished_held_emits_nack():

@@ -10490,6 +10490,79 @@ def is_busy_nack_reason(reason: str) -> bool:
     return token == "busy" or token.startswith("busy-")
 
 
+def is_already_finished_nack_reason(reason: str) -> bool:
+    """True for ``NACK … already finished`` (FR #9339).
+
+    Seat may claim a job is finished; chair must confirm a verdict on the
+    **current** head SHA (or closed/merged PR) before treating it as terminal.
+    """
+    token = _deterministic_nack_token(reason)
+    if token == "already-finished" or token.startswith("already-finished"):
+        return True
+    text = (reason or "").strip().lower().replace("_", " ")
+    return "already finished" in text
+
+
+def mrb_verdict_covers_current_head(
+    row: dict,
+    doc: dict | None = None,
+    *,
+    home: Path | None = None,
+) -> bool:
+    """FR #9339: True when a recorded MRB verdict covers this row's current head.
+
+    Terminal when: row/PR looks closed or merged, or a done[] PASS/FAIL SHA
+    matches ``row['head_sha']``. Missing head_sha with no matching done SHA is
+    **not** terminal (re-offer; do not needs_human on already-finished NACK).
+    """
+    if not isinstance(row, dict):
+        return False
+    if _canon_task(row) != "MRB":
+        return False
+    state = str(row.get("state") or "").strip().lower()
+    if state in ("closed", "merged"):
+        return True
+    result = str(row.get("result") or "").strip().upper()
+    if result in ("MERGED", "CLOSED"):
+        return True
+    head = _sha_from_queue_row(row)
+    repo = str(row.get("repo") or "").strip()
+    ident = _norm_row_id(str(row.get("id") or ""))
+    if not repo or not ident:
+        return False
+    # Prefer done[] SHA for this PR (any nick).
+    done_sha = ""
+    if isinstance(doc, dict):
+        repo_c = canonical_queue_repo(repo)
+        for r in doc.get("done") or []:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("task") or "").upper() != "MRB":
+                continue
+            if canonical_queue_repo(str(r.get("repo") or "")) != repo_c:
+                continue
+            if _norm_row_id(str(r.get("id") or "")) != ident:
+                continue
+            res = str(r.get("result") or "").strip().upper()
+            if res not in ("PASS", "FAIL", "MERGED", "CLOSED"):
+                continue
+            if res in ("MERGED", "CLOSED"):
+                return True
+            done_sha = _sha_from_queue_row(r) or done_sha
+    if not done_sha and home is not None:
+        with contextlib.suppress(Exception):
+            num = int(ident.lstrip("#"))
+            done_sha = str(_merge_on_green_pass_sha(home, repo, num) or "").strip().lower()
+    if not head or not done_sha:
+        return False
+    try:
+        import mrb_merge_on_green as _mog
+
+        return bool(_mog.shas_match(done_sha, head))
+    except Exception:
+        return done_sha[:7] == head[:7]
+
+
 def giveup_agent_kinds(row: dict) -> list[str]:
     """Canonical agent kinds blocked after repeated hard-ceiling GIVEUPs (FR #8008)."""
     out: list[str] = []
