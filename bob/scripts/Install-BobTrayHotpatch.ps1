@@ -90,5 +90,16 @@ if (Get-Command Assert-BobiverseInvokeBobFleetParses -ErrorAction SilentlyContin
         throw ("FR #9187 fleet parse gate (install): " + $post.Reason)
     }
 }
+# FR #9199: intentional clickfalse/clicktrue park => strip live bob-tray.exe after hotpatch copy (Watch-only).
+$lifeHp = Join-Path $root 'tools\BobTrayLifecycle.ps1'
+if (Test-Path -LiteralPath $lifeHp) {
+    . $lifeHp
+    if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+        $parkedHp = Remove-BobTrayLiveExeWhileParked -Root $root
+        if ($parkedHp.Parked -and $parkedHp.Removed) {
+            Write-Output 'INFO tray-hotpatch FR #9199 removed live bob-tray.exe (intentional park present; Watch-only)'
+        }
+    }
+}
 Write-Output ("INFO tray-hotpatch backup={0} install={1}" -f $BackupDir, $root)
 Write-Output $BackupDir
