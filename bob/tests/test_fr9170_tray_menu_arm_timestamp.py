@@ -41,9 +41,11 @@ def test_watch_exit_ignores_clicks_inside_arm_window():
     assert "menuArmUntilUtc" in text
     # Exit click path must gate on the arm timestamp before Invoke-BobTrayExit.
     idx_exit = text.index("$miExit.Add_Click")
-    chunk = text[idx_exit : idx_exit + 500]
+    # Include Yes/No confirm (FR #9163) after the arm gate (FR #9170).
+    chunk = text[idx_exit : idx_exit + 900]
     assert "menuArmUntilUtc" in chunk
     assert "Invoke-BobTrayExit" in chunk
+    assert "menu-arm-ts" in chunk
 
 
 def test_watch_left_click_status_menu_dismiss_then_card():
