@@ -59,7 +59,8 @@ def test_status_is_the_bold_default_item_run_by_menu_left_click_and_double_click
 
 # ------------------------------------------------------------------------------------------------ 2. Acknowledge dialog
 def test_acknowledge_clears_the_alert_and_shows_the_about_dialog_with_logo_and_credit():
-    m = re.search(r"\$miAck\.Add_Click\(\{(.*?)\}\)", WATCH, re.S)
+    # FR #8713 / BOB-06: menu label About (was Acknowledge); same Clear-Attention + Show-BobTrayAbout.
+    m = re.search(r"\$miAbout\.Add_Click\(\{(.*?)\}\)", WATCH, re.S)
     assert m and m.group(1).index("Clear-Attention") < m.group(1).index("Show-BobTrayAbout")
     about = _fn(WATCH, "Show-BobTrayAbout")
     assert "by Simon Barnett" in about and "Get-BobTrayLogoImage" in about
@@ -341,9 +342,12 @@ def test_worker_exe_is_built_with_the_systray_icon_and_the_window_uses_it():
     # Build appends $icoArgs (icon + --add-data); splat @icoArgs was replaced by $argList += $icoArgs.
     assert "'--icon', $ico" in b and "--add-data" in b and "bob-systray.ico" in b
     assert "$icoArgs" in b and "$argList += $icoArgs" in b
+    assert "opencode-favicon.ico" in b  # FR #9211 MEIPASS embed
     w = _t(SCRIPTS / "bob_worker.py")
-    assert w.index("ensure_console(f\"Bob worker") < w.index("set_console_icon(Path(args.install_root))")
+    assert w.index("ensure_console(f\"Bob worker") < w.index("set_console_icon(Path(args.install_root)")
+    assert "kind=kind" in w[w.index("set_console_icon(Path(args.install_root)") : w.index("set_console_icon(Path(args.install_root)") + 80]
     assert "WM_SETICON" in w and "LoadImageW.argtypes" in w and "SendMessageW.argtypes" in w   # typed: 64-bit handles
+    assert "SetCurrentProcessExplicitAppUserModelID" in w  # FR #9211 Win11 AUMID
 
 
 def test_worker_finds_the_systray_icon_in_the_install_then_the_bundle(tmp_path, monkeypatch):

@@ -59,6 +59,8 @@ def _run(site: Path, *extra: str) -> subprocess.CompletedProcess[str]:
         str(site),
         "-Backend",
         "http://127.0.0.1:7700",
+        # FR #9246: unit runs must not wait on a live BobCallback.
+        "-SkipBackendProbe",
         *extra,
     ]
     return subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
@@ -90,13 +92,18 @@ def test_fr8803_websocket_rules_byte_identical_and_models_added(tmp_path: Path):
     assert body1.count("127.0.0.1:7700") >= 1
     assert 'name="BobModelsWebhook"' in body1
     models = re.search(r'(?s)<rule name="BobModelsWebhook".*?</rule>', body1)
-    assert models and 'REQUEST_METHOD' in models.group(0) and 'GET|HEAD' in models.group(0)
+    # FR #9224: POST refresh must rewrite. FR #9273: PUT models too (grouped GET|HEAD|POST|PUT); PATCH stays out.
+    assert models and 'REQUEST_METHOD' in models.group(0) and '^(GET|HEAD|POST|PUT)$' in models.group(0)
     assert 'name="BobJeevesAppliance"' in body1
     assert marker.read_text(encoding="utf-8") == "do-not-touch\n"
     assert not (site / "site.css").is_file(), "default run must not publish www"
     assert (site / "ROLLBACK-BobWebhooks.ps1").is_file()
-    baks = list(site.glob("web.config.fr8803.*.bak"))
-    assert baks, "web.config backup required"
+    # FR #8887: web.config backup lives under sibling _backup-www-<leaf>, not inside the site.
+    assert not list(site.glob("*.bak")) and not list(site.rglob("*.bak")), (
+        "no *.bak under web root"
+    )
+    bak = site.parent / ("_backup-www-" + site.name) / "web.config"
+    assert bak.is_file(), f"off-root web.config backup required at {bak}"
 
     sha1 = _sha(cfg_path)
     r2 = _run(site)

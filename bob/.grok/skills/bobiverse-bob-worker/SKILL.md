@@ -13,10 +13,14 @@ description: >
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+>    **Workers > Cursor harvest (FR #8718):** tray, worker, and Cursor-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 > 3. BEFORE finishing ANY debugging session run the harvest step:
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+>
+> **Workers > OpenCode harvest (FR #8731):** tray, worker, and OpenCode-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
+> **Workers > Grok harvest (FR #8724):** tray, worker, and Grok-start lessons from that seat use `-Repo SimonBarnett/bobiverse`. Do not file them on a-search.
 
 Everything about starting and running a **worker agent** from the bob install (`<ai root>\bob`). The worker is one compiled program,
 `<ai root>\bob\worker\bob-worker.exe`, that starts ONE agent, keeps ITS OWN IRC connection and feeds IRC messages into that agent.
@@ -309,6 +313,7 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #8008:** Hard-ceiling progress is output/worktree only (CPU/descendants refresh beat, not stall). After repeated ceiling GIVEUPs stamp giveup_agent_kinds so recycled OpenCode nicks cannot re-take the job. Product home is bob_worker + gitclaim/shop_listen (PR #8046). Do not park under harvest/SKILL.md (moved from tip #8047).
 - When turn_ended GIVEUP shows only exit, check Write-OpencodeTurnMarker/BoredEmitter: snip last stderr into reason and keep hitLimit as distinct out-of-fuel class.
 - Changing skill_dag_mcp_script_path must keep a literal _resolve_installed_worker_script("skill_dag_mcp.py") call or worker_shipped_scripts drops it from the bob-worker artifact (MRB #8075 / CI build-bob-worker)
+- **FR #8846 / #8785 / #8911:** skill-dag MCP down is not a disk-skills success path. A handshake `connection closed: initialize response` with only `skill-dag-core` in the bound cwd still uses seat `.cursor/mcp.json` mcpServers.skill-dag for `python <scripts>/skill_dag_mcp.py --once resolve` then `get_skill` (never invent `bob\bob\scripts`). If that CLI works, continue from its output. If MCP and that CLI both fail, GIVEUP `skill-dag-mcp-down`. Never continue FR/MRB/UAT by grepping skills from disk or by reading `SKILL.md` from another job worktree.
 - Before calling install-root .ps1 with new switches, probe param() (or retry on NamedParameterNotFound); prefer shipped/common scripts over stale flat scripts\; ship Clear+Common with bob-worker (FR #7910 path).
 - OpenCode finish/done-miss/corrective text must follow job type: MRB posts PASS/FAIL (fix PR on FAIL only); FIX pushes existing head; FR/UAT still gh pr create (FR #8248 / PR #8263).
 - Done-miss FINISH remind must release BoredEmitter._cv around the inject callback (same as failed-turn retry) so start_agent holding RLock then set_ready cannot deadlock (FR #8268 / PR #8272).
@@ -318,3 +323,5 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #8649:** an explicit Cursor start must not call `cursor_has_tokens` on the local Fuel. Attribute the seat to `si@ntsa.uk` only. Unknown/stale fleet remaining still starts; never substitute another agent. FR #7326 still strips public `fleet_pools.cursor`, so a live remaining=0 refuse needs a private meter (follow-up #8667). Do not park this playbook under `harvest/SKILL.md` (MOVED from harvest tip #8655).
 - **FR #8663:** Plan hosted console: agent ended code=4294967295 means grok child exited -1 with no session_end; check %USERPROFILE%\.grok\sessions\...\bob\plan\<sid>\events.jsonl and bob-worker-plan.log. `run_plan` must return non-zero (`EXIT_PLAN_CHILD`) on any non-zero child exit; a second hard exit within 10 minutes logs a heal tip. Do not tee grok stderr off the hosted console (FR #7916). Do not park this playbook under `harvest/SKILL.md` (MOVED from tip #8666).
 - **FR #8667:** Keep FR #7326 public digest cursor-free; write private `fleet-cursor-private.json` from `tick_fleet_pools` and let `explicit_cursor_si_decision` prefer that meter for fresh remaining=0 refuse. Unknown/stale still starts. Strip credman/token/key from the private source field. Do not park this playbook under `harvest/SKILL.md` (MOVED from tip #8674).
+- Recurring under-cap: bob-worker tree can outlive IRC marker; heal = stop unmarked trees then Start-Process hashed exe to refill 2/2
+- VIS-01 S1 is met by a build-output PlanAgent.exe that refuses --bob-worker with exit 2; do not FAIL the slice for a later release-asset step or for an unchanged index doc already tracked as a validate FR.

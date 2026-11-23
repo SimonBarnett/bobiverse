@@ -51,7 +51,8 @@ $hidden = @(
     'yaml', '_yaml', 'bobiverse_build',
     # FR #8770: chair_commands imports builds_catalog for BUILD_USAGE_LINES.
     # BOB-01/03 / FR #8707 / #8710: models Weights GET + validate combo catalogue.
-    'models_catalog', 'builds_catalog'
+    # FR #9224 / #8820: POST /bob/v1/models/refresh must ship inside frozen jeeves.exe.
+    'models_catalog', 'models_refresh', 'builds_catalog'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 # FR #6487: pull PyYAML package data/extensions into the freeze when installed on the build host.
@@ -125,6 +126,12 @@ $verFile = $verCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 if ($verFile) {
     $argList += @('--add-data', ($verFile + ';.'))
 }
+# BOB-04 / FR #8709: bundle valid-combos seed into _MEIPASS/defaults for receiver start-up.
+$seedFile = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\defaults\models-valid-combos.seed.json'
+if (-not $seedFile -or -not (Test-Path -LiteralPath $seedFile)) {
+    throw 'Build-Jeeves requires common\defaults\models-valid-combos.seed.json (FR #8709)'
+}
+$argList += @('--add-data', ($seedFile + ';defaults'))
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 
 $argText = (($argList | ForEach-Object {

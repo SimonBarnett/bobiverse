@@ -385,7 +385,8 @@ try {
 # IIS rewrite -> bobcallback :7700 (report/git/intake/jira)
 $installWh = Join-Path $here 'Install-BobWebhooks.ps1'
 if (Test-Path -LiteralPath $installWh) {
-    try { & $installWh } catch {
+    # FR #8887: keep publish backups under the install root, never inside IIS www.
+    try { & $installWh -BackupRoot $InstallRoot } catch {
         Write-Host "WARN Install-BobWebhooks: $($_.Exception.Message)"
     }
 }
@@ -509,6 +510,26 @@ if ((-not $NoStart) -and $script:InstallChairService) {
         }
     }
 }
+# FR #9136: skill-dag MCP must live under InstallRoot\scripts (not borrow C:\ai\bob).
+# Ensure from the flat UNION $here / split repo even when SkipCopy kept an older MSI payload.
+try {
+    $dagSrcRoot = if ($splitRepo) { $splitRepo } else { $repoRoot }
+    $dag = Ensure-BobiverseSkillDagScripts -InstallRoot $InstallRoot -SourceRoot $dagSrcRoot -SourceScripts $here
+    if ($dag.Ok) {
+        Write-Host ("INFO FR #9136 skill-dag scripts: {0}" -f $dag.Reason)
+    } else {
+        Write-Host ("WARN FR #9136 skill-dag scripts: {0}" -f $dag.Reason)
+    }
+    $mcp = Write-BobiverseInstallSkillDagMcp -InstallRoot $InstallRoot -Python $Python
+    if ($mcp.Ok) {
+        Write-Host ("INFO FR #9136 skill-dag mcp.json: {0}" -f $mcp.Path)
+    } else {
+        Write-Host ("WARN FR #9136 skill-dag mcp.json: {0}" -f $mcp.Reason)
+    }
+} catch {
+    Write-Host ("WARN FR #9136 skill-dag install: {0}" -f $_.Exception.Message)
+}
+
 Get-Service $ServiceName, BobIrcd -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize
 Write-Host 'INFO Install-Jeeves done'
 Write-BobiverseMsiInstallLog -Product jeeves -Message 'install-ok'

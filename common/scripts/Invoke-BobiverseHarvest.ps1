@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://bob.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4986: skip/empty/(no new playbook) Lesson never opens a tip. FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://bob.ntsa.uk/bob/v1/intake. FR #9180: -SkillFile lands at the owning skill_book_path (not harvest/<name>); when gh is authenticated and Lessons are new for a bobiverse book, Ensure-BobiverseHarvestSkillPr opens/links a lesson(<book>) PR that patches SKILL.md in the same turn (fail-closed vs receipt-only). FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4986: skip/empty/(no new playbook) Lesson never opens a tip. FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -41,7 +41,7 @@ $ErrorActionPreference = 'Stop'
 
 # FR #4917: stamp every harvest receipt (source.version); refuse when seat min is newer.
 # HARVEST_SCRIPT_VERSION constant name kept for pin tests / operator greps.
-$HARVEST_SCRIPT_VERSION = '20261026-fr4986'
+$HARVEST_SCRIPT_VERSION = '20261123-fr9180'
 $script:HarvestScriptVersion = $HARVEST_SCRIPT_VERSION
 $secretRx = '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:(password|passwd|secret|token|apikey|api_key)\s*[:=]\s*[A-Za-z0-9/+_.-]{8,}))'
 $home1 = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
@@ -951,17 +951,21 @@ function Protect-HarvestBodyClosesKeywords([string]$Text) {
 }
 
 
-$files = @()
+# FR #9180: collect SkillFile contents now; assign repo-relative paths after skillBookPath.
+$skillFileItems = @()
 foreach ($sf in $SkillFile) {
     if (-not (Test-Path -LiteralPath $sf)) { throw "skill file not found: $sf" }
     $item = Get-Item -LiteralPath $sf
     if ($item.Length -gt 100KB) { throw "skill file too large (max 100 KB): $sf" }
-    $files += [ordered]@{ path = ('harvest/' + $item.Name); content = (Get-Content -LiteralPath $sf -Raw -Encoding UTF8) }
+    $skillFileItems += [ordered]@{
+        Name    = $item.Name
+        Content = (Get-Content -LiteralPath $sf -Raw -Encoding UTF8)
+    }
 }
 $lessonText = if ($Lesson.Count) { ($Lesson | ForEach-Object { '- ' + $_ }) -join "`n" } else { '- (no new playbook line)' }
 $body = "Session summary:`n$Summary`n`nLessons:`n$lessonText`n"
 $body = Protect-HarvestBodyClosesKeywords $body
-$scan = $body + (($files | ForEach-Object { $_.content }) -join "`n")
+$scan = $body + (($skillFileItems | ForEach-Object { $_.Content }) -join "`n")
 if ($scan -match $secretRx) { throw 'refusing to send: text looks like it contains a secret/token/password. Remove it and retry.' }
 
 if ($ExistingPrUrl) {
@@ -1062,6 +1066,10 @@ switch -Regex ($bookName) {
             $skillBookPath = '.grok/skills/harvest-agent-skills/SKILL.md'
         }
     }
+    # FR #9303 / #9329 / SV #198: tip open is intake-side; intake.py mirrors
+    # apps/mcp-catalog/catalog/<book>/{SKILL.md,meta.json} and patches
+    # docs/skill-sources/skills-visionary/_dag when dag.json is readable (no tip
+    # worktree for a full tools/build-skill-dag.py rebuild).
     '^harvest-skills-visionary$' { $skillBookPath = '.grok/skills/harvest-skills-visionary/SKILL.md' }
     '^dayworks-launcher$' { $skillBookPath = 'dayworks/.grok/skills/dayworks-launcher/SKILL.md' }
     '^harvest$' { $skillBookPath = 'common/.grok/skills/harvest/SKILL.md' }
@@ -1083,6 +1091,31 @@ switch -Regex ($bookName) {
     }
 }
 
+# FR #9180: -SkillFile -> owning skill_book_path (companions share the book directory).
+$files = @()
+$bookDir = ''
+if ($skillBookPath) {
+    $bookDir = Split-Path -Parent ($skillBookPath -replace '/', '\')
+    $bookDir = ($bookDir -replace '\\', '/').TrimEnd('/')
+}
+$skillFileIdx = 0
+foreach ($sfi in $skillFileItems) {
+    $dest = ''
+    if ($skillBookPath) {
+        if ($skillFileIdx -eq 0 -or ($sfi.Name -match '(?i)^SKILL\.md$')) {
+            $dest = $skillBookPath
+        } elseif ($bookDir) {
+            $dest = ($bookDir + '/' + $sfi.Name)
+        }
+    }
+    if (-not $dest) {
+        # Product books without a resolved path still attach under harvest/ for intake.
+        $dest = 'harvest/' + $sfi.Name
+    }
+    $files += [ordered]@{ path = ($dest -replace '\\', '/'); content = $sfi.Content }
+    $skillFileIdx++
+}
+
 # FR #2790: bob-worker seats export BOB_NICK (and BOB_AGENT_NICK alias); prefer BOB_NICK
 # so lesson PR footers carry seat=<nick> for Jeeves self-MRB blocking. Fall back to
 # BOB_AGENT_NICK for Watch-AgentHealth / legacy seats that only set that name.
@@ -1093,6 +1126,86 @@ if ($env:BOB_NICK -and ([string]$env:BOB_NICK).Trim()) {
     $seatNick = ([string]$env:BOB_AGENT_NICK).Trim()
 }
 if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
+
+function Test-HarvestGhAuthenticated {
+    # FR #9180 / FR #26: same-turn skill PR when gh is on PATH and logged in.
+    try {
+        $null = & gh auth status 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-BobiverseHarvestSkillPr {
+    # FR #9180: open or link lesson(<book>) PR that patches skill_book_path via intake.py.
+    param(
+        [string]$RepoName,
+        [string]$Book,
+        [string]$SkillPath,
+        [string[]]$LessonLines,
+        [string]$SummaryText,
+        [object[]]$FileEntries,
+        [string]$Seat
+    )
+    $real = @(
+        $LessonLines |
+            ForEach-Object {
+                $t = ([string]$_).Trim()
+                if ($t -and $t -ne '(no new playbook line)' -and $t -notmatch '(?i)^(skip|empty)$') { $t }
+            }
+    )
+    if ($real.Count -lt 1) { return '' }
+    if (-not $SkillPath) { return '' }
+    if (-not (Test-HarvestGhAuthenticated)) {
+        Write-Host 'INFO FR #9180 Ensure-BobiverseHarvestSkillPr skipped: gh not authenticated (intake path)'
+        return ''
+    }
+    $intakePy = Join-Path $PSScriptRoot 'intake.py'
+    if (-not (Test-Path -LiteralPath $intakePy)) {
+        Write-Host 'WARN FR #9180 Ensure-BobiverseHarvestSkillPr: intake.py missing beside Harvest script'
+        return ''
+    }
+    $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    $bobHome = Join-Path $homeDir '.bobiverse'
+    New-Item -ItemType Directory -Force -Path $bobHome | Out-Null
+    $payloadObj = [ordered]@{
+        repo       = $RepoName
+        book       = $Book
+        skill_path = ($SkillPath -replace '\\', '/')
+        lessons    = @($real)
+        summary    = $SummaryText
+        seat       = $Seat
+        files      = @($FileEntries)
+    }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("bob-ensure-skill-pr-{0}.json" -f [guid]::NewGuid().ToString('n'))
+    try {
+        $payloadJson = ($payloadObj | ConvertTo-Json -Depth 8)
+        [IO.File]::WriteAllText($tmp, $payloadJson + "`n", [Text.UTF8Encoding]::new($false))
+        $pyOut = & python $intakePy ensure-skill-pr --home $bobHome --payload-file $tmp 2>&1
+        $exit = $LASTEXITCODE
+        $text = ($pyOut | Out-String)
+        if ($exit -ne 0) {
+            Write-Host ("WARN FR #9180 Ensure-BobiverseHarvestSkillPr exit={0}: {1}" -f $exit, $text.Substring(0, [Math]::Min(240, $text.Length)))
+            return ''
+        }
+        $m = [regex]::Match($text, '"url"\s*:\s*"(https://github\.com/[^"]+/pull/\d+)"')
+        if ($m.Success) {
+            $u = $m.Groups[1].Value
+            Write-Host ("INFO FR #9180 Ensure-BobiverseHarvestSkillPr url={0}" -f $u)
+            return $u
+        }
+        $stateM = [regex]::Match($text, '"state"\s*:\s*"([^"]+)"')
+        $st = if ($stateM.Success) { $stateM.Groups[1].Value } else { 'unknown' }
+        Write-Host ("INFO FR #9180 Ensure-BobiverseHarvestSkillPr state={0} (no pull url)" -f $st)
+        return ''
+    } catch {
+        Write-Host ("WARN FR #9180 Ensure-BobiverseHarvestSkillPr: {0}" -f $_.Exception.Message)
+        return ''
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # FR #3824: client-side skip when an open tip from this seat already has the lesson.
 $openTwinUrl = Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick
@@ -1124,6 +1237,28 @@ if ($lessonKey) {
 }
 $sha = [Security.Cryptography.SHA256]::Create()
 $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($idemMaterial))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
+
+# FR #9180: same-turn skill PR when gh authenticated + real lessons + book path.
+$ensureUrl = ''
+$realLessonLines = @(
+    $Lesson |
+        ForEach-Object {
+            $t = ([string]$_).Trim()
+            if ($t -and $t -ne '(no new playbook line)' -and $t -notmatch '(?i)^(skip|empty)$') { $t }
+        }
+)
+$bobiverseBook = (
+    ($Repo -match '(?i)^SimonBarnett/bobiverse$') -or
+    ($bookName -match '^(?i)(harvest|bobiverse-)')
+)
+if (-not $DryRun -and $realLessonLines.Count -gt 0 -and $skillBookPath -and $bobiverseBook -and -not $ExistingPrUrl) {
+    $ensureUrl = Ensure-BobiverseHarvestSkillPr -RepoName $Repo -Book $bookName -SkillPath $skillBookPath -LessonLines $realLessonLines -SummaryText $Summary -FileEntries $files -Seat $seatNick
+    if ($ensureUrl -and $body -notmatch [regex]::Escape($ensureUrl)) {
+        $body = $body + "`nExisting PR: $ensureUrl`n"
+        $body = Protect-HarvestBodyClosesKeywords $body
+    }
+}
+
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
     skill_book_path = $skillBookPath
@@ -1141,10 +1276,25 @@ try {
     $intakeId = Get-IntakeResponseProp -Response $r -Name 'intake_id' -Default ''
     $url = Get-IntakeResponseProp -Response $r -Name 'url' -Default ''
     $queued = Get-IntakeResponseProp -Response $r -Name 'queued' -Default $false
+    if ((-not $url) -and $ensureUrl) { $url = $ensureUrl }
     Write-Host "HARVESTED intake_id=$intakeId url=$url queued=$queued"
+    # FR #9180 fail-closed: real lessons for a bobiverse book must cite a skill PR URL.
+    if ($realLessonLines.Count -gt 0 -and $bobiverseBook -and $skillBookPath) {
+        if (-not $url -or ($url -notmatch '/pull/\d+')) {
+            Write-Host ("WARN FR #9180 receipt-without-skill-PR: lessons={0} book={1} path={2} url={3} (owe lesson(book) PR)" -f $realLessonLines.Count, $bookName, $skillBookPath, $url)
+        }
+    }
 } catch {
-    New-Item -ItemType Directory -Force -Path $OutboxDir | Out-Null
-    $out = Join-Path $OutboxDir ("harvest-$idem.json")
-    [IO.File]::WriteAllText($out, $json + "`n", [Text.UTF8Encoding]::new($false))
-    Write-Host "QUEUED $out ($($_.Exception.Message)); resend with: .\scripts\Invoke-BobiverseHarvest.ps1 -Flush"
+    if ($ensureUrl) {
+        Write-Host ("HARVESTED intake_id= ensure_url={0} queued=false (intake POST failed after same-turn skill PR)" -f $ensureUrl)
+        Write-Host ("WARN FR #9180 intake POST failed after Ensure: {0}" -f $_.Exception.Message)
+    } else {
+        New-Item -ItemType Directory -Force -Path $OutboxDir | Out-Null
+        $out = Join-Path $OutboxDir ("harvest-$idem.json")
+        [IO.File]::WriteAllText($out, $json + "`n", [Text.UTF8Encoding]::new($false))
+        Write-Host "QUEUED $out ($($_.Exception.Message)); resend with: .\scripts\Invoke-BobiverseHarvest.ps1 -Flush"
+        if ($realLessonLines.Count -gt 0 -and $bobiverseBook) {
+            Write-Host ("WARN FR #9180 receipt-without-skill-PR: queued offline without skill PR url for book={0}" -f $bookName)
+        }
+    }
 }

@@ -75,13 +75,28 @@ def test_reoffer_while_other_turn_live_nacks_and_does_not_inject():
     assert bored._ack_job_key == "MRB SimonBarnett/bobiverse#8231"
 
 
-def test_suppressed_ack_does_not_inject():
+def test_duplicate_ack_does_not_inject_or_nack():
+    """FR #9056: duplicate ACK (already open) is a no-op — no inject, no ack-not-sent."""
     bored = _bored()
     bored.set_ready(True)
     outbox: list[str] = []
     injected: list[str] = []
     relay = _wire(bored, outbox, injected)
     relay.ack_refuse_reason = lambda _payload: "duplicate ACK"
+    result = relay.deliver("jeeves", "#redqueen", ASSIGN_Y)
+    assert result == "duplicate"
+    assert injected == []
+    assert outbox == []
+
+
+def test_finished_job_ack_replay_still_nacks_ack_not_sent():
+    """FR #8246 / #9056: finished-job ACK replay still refuses with NACK ack-not-sent."""
+    bored = _bored()
+    bored.set_ready(True)
+    outbox: list[str] = []
+    injected: list[str] = []
+    relay = _wire(bored, outbox, injected)
+    relay.ack_refuse_reason = lambda _payload: "finished-job ACK replay"
     result = relay.deliver("jeeves", "#redqueen", ASSIGN_Y)
     assert result == "ack_not_sent"
     assert injected == []

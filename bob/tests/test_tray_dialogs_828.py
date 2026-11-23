@@ -305,18 +305,25 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
     out = tmp_path / "menu.txt"
     _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
     items = out.read_text(encoding="utf-8").splitlines()
-    # FR #5111: Reload engine sits between Restart and Exit (host-only recycle; Exit stays last).
+    # FR #8713 / BOB-06: Agents{Plan,Priority,Jeeves}; Workers hold CLI starts; Weights; About; Exit.
     assert items == [
         "Status",
         "Agents",
+        "Plan",
+        "Priority",
+        "Start PriorityAgent",
+        "Configure MCP (mcp.ntsa.uk)",
+        "Jeeves",
+        "Workers",
         "Automatic - Grok, then Cursor, then OpenCode",
         "Grok",
         "Cursor",
         "Start free model (opencode/deepseek-v4.1-flash-free) [default]",
         "Start paid model (opencode-go/deepseek-v4-pro)",
-        "OpenCode",
-        "Plan",
-        "Acknowledge",
+        "Open Code",
+        "Weights",
+        "About",
+        "Seats: on",
         "Open log",
         "OpenCode keys",
         "Set key...",

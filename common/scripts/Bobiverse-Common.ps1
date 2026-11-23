@@ -1754,6 +1754,46 @@ function Get-BobiverseJobScratchPath {
     return $full.TrimEnd('\')
 }
 
+function Assert-BobiverseJobWorktreePath {
+    <#
+      FR #8852: refuse empty / relative / install-relative job-wt before `git worktree add`.
+      When Get-BobiverseJobWorktreePath was never loaded (wrong Common path) and `$wt` was empty,
+      `git -C <install> worktree add -b fr-N $wt origin/main` created `<install>\origin\main`.
+      Dot `common\scripts\Bobiverse-Common.ps1` (repo tree) or `<install>\scripts\Bobiverse-Common.ps1`
+      (composed flat runtime) --- never `common\Bobiverse-Common.ps1`.
+    #>
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Path,
+        [string]$InstallRoot = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'FR #8852: job worktree path is empty; dot common\scripts\Bobiverse-Common.ps1 (or <install>\scripts\Bobiverse-Common.ps1) and call Get-BobiverseJobWorktreePath before git worktree add'
+    }
+    $trimmed = $Path.Trim()
+    if (-not [IO.Path]::IsPathRooted($trimmed)) {
+        throw "FR #8852: job worktree path must be absolute (got relative '$trimmed'); refuse git worktree add under the install"
+    }
+    if ($trimmed -match '(?i)(^|[/\\])origin[/\\]main[/\\]?$') {
+        throw "FR #8852: refusing install-relative origin/main worktree path '$trimmed'"
+    }
+    $full = [IO.Path]::GetFullPath($trimmed)
+    if (Test-BobiverseIsDriveRoot $full) {
+        throw "FR #4988/#8852: job worktree path must not be a drive root ($full)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $root = [IO.Path]::GetFullPath($InstallRoot.TrimEnd('\', '/'))
+        if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "FR #8852: job worktree path must not be the install root ($full)"
+        }
+        $prefix = $root.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        $alt = $root.TrimEnd('\', '/') + [IO.Path]::AltDirectorySeparatorChar
+        if ($full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or $full.StartsWith($alt, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "FR #8852: job worktree path must not be under the install root ($full under $root)"
+        }
+    }
+    return $full.TrimEnd('\')
+}
+
 # ---------------------------------------------------------------------------------------------------------------------------
 # The install dir as a git work tree (t781u/t782u). On every service start (Start-Bob / Start-Jeeves / Start-AircConsole ->
 # Sync-BobiverseFromRepo.ps1 -> Sync-BobiverseWorkTree) <ai root>\<product> is made a SPARSE checkout of the bobiverse repo that holds
@@ -2192,6 +2232,13 @@ function Sync-BobiverseWorkTree {
             $curHead = ("$curHead").Trim()
             if ($stampHead -and $curHead -and ($stampHead -eq $curHead)) {
                 $log.Add("INFO sync-skip-diverged FR#7301: already reported for $curHead; not retrying ff-only")
+                # FR #8863: still overlay allowlisted runtime scripts from the already-fetched origin tip.
+                try {
+                    $tipFiles = Sync-BobiverseAllowlistedTipFiles -InstallRoot $root -Branch $Branch -GitExe $git
+                    $log.Add("INFO sync-tip-file FR#8863 ok=$($tipFiles.Ok) $($tipFiles.Reason)")
+                } catch {
+                    $log.Add("WARN sync-tip-file FR#8863 error")
+                }
                 $res.Ok = $true
                 return (Done 'ff-only not possible (diverged; reported; not looping)')
             }
@@ -2482,6 +2529,51 @@ function Test-BobiverseScriptNewlines {
     return [pscustomobject]@{ Ok = [bool]$ok; Path = $Path; Lf = $lf; Bytes = $bytes.Length; Reason = $reason }
 }
 
+function Sync-BobiverseTraySrcFromCanonical {
+    # FR #9035: bob\tray\src is canonical. A stripped third_party\bob-tray\src
+    # must not survive to the install src robocopy (a1a94bd7 class).
+    param([Parameter(Mandatory)][string]$CloneRoot)
+    $canon = Join-Path $CloneRoot 'bob\tray\src'
+    $legacy = Join-Path $CloneRoot 'third_party\bob-tray\src'
+    if (-not (Test-Path -LiteralPath $canon -PathType Container)) {
+        return [pscustomobject]@{ Ok = $true; Source = $legacy; Reason = 'no bob\tray\src' }
+    }
+    if (Test-Path -LiteralPath $legacy -PathType Container) {
+        $root = $canon.TrimEnd('\')
+        Get-ChildItem -LiteralPath $canon -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\')
+            $dest = Join-Path $legacy $rel
+            $parent = Split-Path -Parent $dest
+            if (-not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Source = $canon; Reason = 'canonical bob\tray\src' }
+}
+
+function Assert-BobiverseInvokeBobFleetParses {
+    # FR #9035: refuse promote when src\Private\Invoke-BobFleet.ps1 has a nameless
+    # param([string]) or Parser::ParseFile errors (dollar-name strip).
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    $path = Join-Path $InstallRoot 'src\Private\Invoke-BobFleet.ps1'
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{ Ok = $true; Reason = 'Invoke-BobFleet.ps1 absent'; Path = $path }
+    }
+    $text = [IO.File]::ReadAllText($path)
+    $nameless = [regex]::IsMatch($text, 'param\s*\(\s*\[string\]\s*\)')
+    $tokens = $null
+    $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)
+    $nErr = @($errs).Count
+    if ($nameless -or $nErr -gt 0) {
+        $reason = "FR #9035 nameless param([string]) or parse errors in $path nameless=$nameless parseErrors=$nErr"
+        return [pscustomobject]@{ Ok = $false; Reason = $reason; Path = $path }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = 'Invoke-BobFleet.ps1 parses'; Path = $path }
+}
+
 function Assert-BobiverseScriptsHaveNewlines {
     # FR #4783: compose/Sync gate - fail when any .ps1 under scripts\ or
     # common\scripts\ is larger than MinBytes and has lf=0.
@@ -2665,6 +2757,269 @@ function Sync-BobiverseGitclaimFromOrigin {
     return Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
         -RelPath 'common/scripts/gitclaim.py' `
         -ContentMustMatch 'FR #4606|review_blocked_for_author|nick_inherits_dead_seat'
+}
+
+function Get-BobiverseTipFileAllowlist {
+    # FR #8863: diverged installs (sync-skip-diverged, FR #7301) and MSI VERSION newer
+    # than clone (FR #7167) must still land these runtime scripts from origin tip.
+    # A frozen bob-worker.exe does not execute the .py until the next MSI rebuild.
+    # FR #9136: skill_dag_index/bound are import siblings of skill_dag_mcp (--once / MCP host).
+    return @(
+        'bob/scripts/bob_worker.py',
+        'bob/scripts/skill_dag_mcp.py',
+        'bob/scripts/skill_dag_index.py',
+        'bob/scripts/skill_dag_bound.py'
+    )
+}
+
+function Get-BobiverseSkillDagScriptNames {
+    # FR #9136: flat install scripts\ must ship the MCP trio (mcp imports index; bound is the seat binder).
+    return @('skill_dag_mcp.py', 'skill_dag_index.py', 'skill_dag_bound.py')
+}
+
+function Ensure-BobiverseSkillDagScripts {
+    <#
+      FR #9136: copy skill_dag_{mcp,index,bound}.py onto InstallRoot\scripts from a
+      split-repo or flat source. Never invent C:\ai\bob paths. Returns Ok when every
+      leaf is present under scripts\ after the pass (copied or already there).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$SourceRoot = '',
+        [string]$SourceScripts = ''
+    )
+    $destDir = Join-Path $InstallRoot 'scripts'
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    $copied = @()
+    $missing = @()
+    foreach ($name in @(Get-BobiverseSkillDagScriptNames)) {
+        $dest = Join-Path $destDir $name
+        $src = $null
+        if ($SourceScripts) {
+            $c = Join-Path $SourceScripts $name
+            if (Test-Path -LiteralPath $c -PathType Leaf) { $src = $c }
+        }
+        if (-not $src -and $SourceRoot) {
+            foreach ($rel in @(
+                    (Join-Path 'bob\scripts' $name),
+                    (Join-Path 'scripts' $name),
+                    (Join-Path 'common\scripts' $name)
+                )) {
+                $c = Join-Path $SourceRoot $rel
+                if (Test-Path -LiteralPath $c -PathType Leaf) { $src = $c; break }
+                try {
+                    $via = Get-BobiverseRepoPath -Root $SourceRoot -Rel $rel
+                    if ($via -and (Test-Path -LiteralPath $via -PathType Leaf)) { $src = $via; break }
+                } catch { }
+            }
+        }
+        if (-not $src) {
+            $localBob = Join-Path $InstallRoot (Join-Path 'bob\scripts' $name)
+            if (Test-Path -LiteralPath $localBob -PathType Leaf) { $src = $localBob }
+        }
+        if ($src) {
+            if (-not (Test-Path -LiteralPath $dest -PathType Leaf) -or
+                ((Get-Item -LiteralPath $src).Length -ne (Get-Item -LiteralPath $dest).Length) -or
+                ((Get-Item -LiteralPath $src).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dest).LastWriteTimeUtc)) {
+                Copy-Item -LiteralPath $src -Destination $dest -Force
+                $copied += $name
+            }
+        }
+        if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
+            $missing += $name
+        }
+    }
+    if ($missing.Count -gt 0) {
+        return [pscustomobject]@{
+            Ok      = $false
+            Reason  = ("missing scripts\{0} (FR #9136)" -f ($missing -join ','))
+            Copied  = $copied
+            Missing = $missing
+        }
+    }
+    $why = if ($copied.Count -gt 0) { ("copied {0}" -f ($copied -join ',')) } else { 'already present' }
+    return [pscustomobject]@{
+        Ok      = $true
+        Reason  = ("skill-dag scripts ok: {0}" -f $why)
+        Copied  = $copied
+        Missing = @()
+    }
+}
+
+function Write-BobiverseInstallSkillDagMcp {
+    <#
+      FR #9136: write/merge InstallRoot\.cursor\mcp.json skill-dag stdio server.
+      command = install python (or 'python'); args = scripts\skill_dag_mcp.py --root
+      InstallRoot\.grok\skills. Never hardcode C:\ai\bob.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Python = ''
+    )
+    $scriptPath = Join-Path $InstallRoot 'scripts\skill_dag_mcp.py'
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            Ok     = $false
+            Reason = 'scripts\skill_dag_mcp.py missing (FR #9136)'
+            Path   = ''
+        }
+    }
+    $skillsRoot = Join-Path $InstallRoot '.grok\skills'
+    New-Item -ItemType Directory -Force -Path $skillsRoot | Out-Null
+    $cmd = ([string]$Python).Trim().Trim('"')
+    if (-not $cmd) {
+        try { $cmd = [string](Resolve-BobiversePython -InstallRoot $InstallRoot -AllowMissing) } catch { $cmd = '' }
+    }
+    if (-not $cmd) { $cmd = 'python' }
+    $cfgDir = Join-Path $InstallRoot '.cursor'
+    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+    $cfgPath = Join-Path $cfgDir 'mcp.json'
+    $server = [ordered]@{
+        command = $cmd
+        args    = @($scriptPath, '--root', $skillsRoot)
+    }
+    $data = @{ mcpServers = @{} }
+    if (Test-Path -LiteralPath $cfgPath -PathType Leaf) {
+        try {
+            $existing = Get-Content -LiteralPath $cfgPath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($existing -and $existing.mcpServers) {
+                $servers = @{}
+                foreach ($p in @($existing.mcpServers.PSObject.Properties)) {
+                    $servers[$p.Name] = $p.Value
+                }
+                $data.mcpServers = $servers
+            }
+        } catch {
+            $data = @{ mcpServers = @{} }
+        }
+    }
+    $data.mcpServers['skill-dag'] = $server
+    $json = ($data | ConvertTo-Json -Depth 6)
+    [IO.File]::WriteAllText($cfgPath, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding $false))
+    return [pscustomobject]@{
+        Ok     = $true
+        Reason = 'wrote skill-dag mcp.json (FR #9136)'
+        Path   = $cfgPath
+    }
+}
+
+function Sync-BobiverseTipFile {
+    # FR #8863: copy one allowlisted origin/<Branch> blob onto the install path
+    # and the flat scripts\ leaf. Does not fetch, merge, checkout, or touch VERSION.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$RelPath,
+        [string]$Branch = 'main',
+        [string]$GitExe = '',
+        [string]$ContentMustMatch = '',
+        [int]$MinBytes = 40
+    )
+    $git = if ($GitExe) { $GitExe } else {
+        $cmd = Get-Command git -ErrorAction SilentlyContinue
+        if ($cmd) { $cmd.Source } else { '' }
+    }
+    if (-not $git) { return [pscustomobject]@{ Ok = $false; Reason = 'no git' } }
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'install is not a git work tree' }
+    }
+    $rel = ($RelPath -replace '\\', '/').TrimStart('/')
+    if ($rel -match '\.\.|^\s*$') {
+        return [pscustomobject]@{ Ok = $false; Reason = "RelPath refused (got $rel)" }
+    }
+    $allow = @(Get-BobiverseTipFileAllowlist)
+    if ($allow -notcontains $rel) {
+        return [pscustomobject]@{ Ok = $false; Reason = "RelPath not allowlisted (FR #8863): $rel" }
+    }
+    $spec = "origin/${Branch}:${rel}"
+    $tmp = Join-Path $env:TEMP ("bobiverse-tipfile-" + [guid]::NewGuid().ToString('n'))
+    try {
+        $p = Start-Process -FilePath $git -ArgumentList @('-C', $InstallRoot, 'show', $spec) `
+            -RedirectStandardOutput $tmp -RedirectStandardError ($tmp + '.err') `
+            -NoNewWindow -Wait -PassThru
+        if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
+            $err = ''
+            if (Test-Path -LiteralPath ($tmp + '.err')) {
+                $err = (Get-Content -LiteralPath ($tmp + '.err') -Raw -ErrorAction SilentlyContinue)
+            }
+            if ($err -match 'does not exist|exists on disk|pathspec|invalid object name') {
+                return [pscustomobject]@{ Ok = $true; Reason = "skip missing $spec (FR #8863)"; Bytes = 0 }
+            }
+            return [pscustomobject]@{ Ok = $false; Reason = "git show $spec failed: $err" }
+        }
+        $bytes = [IO.File]::ReadAllBytes($tmp)
+        if ($bytes.Length -lt $MinBytes) {
+            return [pscustomobject]@{ Ok = $false; Reason = "tip blob too small ($($bytes.Length))" }
+        }
+        $lfCount = 0
+        foreach ($b in $bytes) { if ($b -eq 10) { $lfCount++ } }
+        if ($lfCount -eq 0) {
+            return [pscustomobject]@{ Ok = $false; Reason = 'tip blob has lf=0; refuse publish (FR #4783)' }
+        }
+        $text = [Text.Encoding]::UTF8.GetString($bytes)
+        if ($ContentMustMatch -and ($text -notmatch $ContentMustMatch)) {
+            return [pscustomobject]@{ Ok = $false; Reason = 'tip blob unexpected content' }
+        }
+        $relWin = $rel -replace '/', '\'
+        $leaf = Split-Path -Leaf $relWin
+        $targets = @(
+            (Join-Path $InstallRoot $relWin),
+            (Join-Path $InstallRoot ("scripts\$leaf"))
+        )
+        foreach ($t in $targets) {
+            $dir = Split-Path -Parent $t
+            if (-not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            }
+            [IO.File]::WriteAllBytes($t, $bytes)
+        }
+        return [pscustomobject]@{
+            Ok      = $true
+            Reason  = "overlay $spec"
+            Bytes   = $bytes.Length
+            Targets = $targets
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath ($tmp + '.err') -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Sync-BobiverseAllowlistedTipFiles {
+    # FR #8863: heal the allowlist even when sync-skip-diverged skips fetch/ff.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Branch = 'main',
+        [string]$GitExe = ''
+    )
+    $match = @{
+        'bob/scripts/bob_worker.py'     = 'FR #7000|bob_worker'
+        'bob/scripts/skill_dag_mcp.py'  = 'skill-dag-mcp|FR #7000'
+        'bob/scripts/skill_dag_index.py' = 'skill_dag_index|FR #7000'
+        'bob/scripts/skill_dag_bound.py' = 'skill_dag_bound|FR #7000'
+    }
+    $results = @()
+    $ok = $true
+    $reasons = @()
+    $bytes = 0
+    foreach ($rel in @(Get-BobiverseTipFileAllowlist)) {
+        $needle = [string]$match[$rel]
+        $r = Sync-BobiverseTipFile -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
+            -RelPath $rel -ContentMustMatch $needle
+        $results += $r
+        if (-not $r.Ok) {
+            $ok = $false
+            $reasons += $r.Reason
+        } else {
+            $bytes += [int]$r.Bytes
+            $reasons += $r.Reason
+        }
+    }
+    return [pscustomobject]@{
+        Ok      = $ok
+        Reason  = ($reasons -join '; ')
+        Bytes   = $bytes
+        Results = $results
+    }
 }
 
 
@@ -4132,6 +4487,35 @@ function Sync-BobiverseAgentFolders {
     # FR #3667: surface stale plan CAST IRON (pre-#3510 bobiverse examples) after refresh.
     Assert-BobiversePlanCastIronSkillsVisionary -InstallRoot $Destination
     return $made
+}
+
+
+function Write-BobiversePlanIdentity {
+    <#
+      FR #8675 / BOB-10: stamp plan\VERSION + plan\BUILD.json after agent-folder sync.
+      Skip when -Version is empty (About then falls back to bob (via bob) / unknown).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Destination,
+        [string]$Version = '',
+        [string]$Commit = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Version)) { return }
+    $plan = Join-Path $Destination 'plan'
+    if (-not (Test-Path -LiteralPath $plan)) { return }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    $verText = $Version.Trim() + [Environment]::NewLine
+    [IO.File]::WriteAllText((Join-Path $plan 'VERSION'), $verText, $enc)
+    $sha = ([string]$Commit).Trim()
+    $obj = [ordered]@{
+        product   = 'plan'
+        version   = $Version.Trim()
+        built_utc = [datetime]::UtcNow.ToString('o')
+        commit    = $sha
+    }
+    $json = ($obj | ConvertTo-Json -Compress)
+    [IO.File]::WriteAllText((Join-Path $plan 'BUILD.json'), $json + [Environment]::NewLine, $enc)
+    Write-Host ("INFO FR #8675 plan identity version={0} commit={1}" -f $Version.Trim(), $(if ($sha) { $sha } else { '(none)' }))
 }
 
 function Install-BobiverseAgentLayer {

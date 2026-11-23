@@ -229,16 +229,32 @@ namespace BobDialogs
             // FR #6924: re-read VERSION + deployed identity when shown (not only at process start).
             ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
             ver.Font = new Font("Segoe UI", 9f); ver.AutoSize = true; ver.Location = new Point(130, 84);
+            Label agents = new Label();
+            agents.Name = "agentBuildVersions";
+            agents.Text = "plan " + Common.PlanVersion(root) + "\r\n" + "priority " + Common.PriorityVersion(root);
+            agents.Font = new Font("Segoe UI", 9f); agents.AutoSize = true; agents.Location = new Point(130, 104);
             box = new TextBox();
             box.Multiline = true; box.ReadOnly = true; box.ScrollBars = ScrollBars.Vertical; box.Font = new Font("Consolas", 9f);
-            box.Text = "reading installs..."; box.Location = new Point(16, 128); box.Size = new Size(548, 256);
+            box.Text = "reading installs..."; box.Location = new Point(16, 148); box.Size = new Size(548, 236);
+            // FR #8677 / BOB-09: Show logs at bottom opens the tray watch log (same path as menu Open log).
+            Button logs = new Button();
+            logs.Text = "Show logs"; logs.Location = new Point(350, 398); logs.Size = new Size(100, 23);
+            logs.Click += delegate {
+                try
+                {
+                    string p = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? "", ".grok\\long-running-background-tasks\\watch_bob_tray.log");
+                    if (File.Exists(p)) Process.Start("notepad.exe", "\"" + p + "\"");
+                }
+                catch { }
+            };
             Button ok = new Button();
             ok.Text = "Close"; ok.Location = new Point(474, 398);
             ok.Click += delegate { Close(); };
-            Controls.AddRange(new Control[] { logo, title, by, ver, box, ok });
+            Controls.AddRange(new Control[] { logo, title, by, ver, agents, box, logs, ok });
             AcceptButton = ok;
             Shown += delegate {
                 ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
+                agents.Text = "plan " + Common.PlanVersion(root) + "\r\n" + "priority " + Common.PriorityVersion(root);
                 box.Select(0, 0); ok.Focus();
             };
             string r = root;
@@ -260,6 +276,16 @@ namespace BobDialogs
             CrashHook.Install("bob-about");
             string root = Common.Root(args);
             // Headless: write the install text to a file and exit (tests, support). No window, no single-instance lock.
+            // FR #8675 / BOB-10: headless versions seam (keep --text-out inventory-only).
+            string versionsOut = Common.Arg(args, "--versions-out");
+            if (versionsOut.Length > 0)
+            {
+                string lines = "bob " + Common.BobVersion(root) + "\r\n"
+                    + "plan " + Common.PlanVersion(root) + "\r\n"
+                    + "priority " + Common.PriorityVersion(root) + "\r\n";
+                File.WriteAllText(versionsOut, lines, new UTF8Encoding(false));
+                return 0;
+            }
             string textOut = Common.Arg(args, "--text-out");
             if (textOut.Length > 0)
             {
