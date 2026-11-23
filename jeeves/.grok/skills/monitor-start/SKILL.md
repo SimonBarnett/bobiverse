@@ -55,6 +55,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
 | Depends-on open | `depends_on` | offered or accepted row whose `Depends-on:` ref is still OPEN (FR #8848 / BOB-D3). Soft-ok when the product skip is not on tip or no Depends-on rows. Distinct from hold and from `fr_digest` (see `bobiverse-jeeves-agent-depends-on`) |
 | FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
+| Walrus install gate | `walrus_jeeves_install_ready` | FR #9376 Depends-on / Plan-agent gate issues CLOSED before DryRun / `-SiYes` WinRM hotpatch (`Install-JeevesWalrusWinRm.ps1`). Fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE`. Does not open WinRM. |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
