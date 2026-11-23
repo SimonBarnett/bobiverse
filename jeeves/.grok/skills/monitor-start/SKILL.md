@@ -42,6 +42,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019). **Report only** unless explicit `--force-orphan-busy` and `accepted` empty (harvest #1967 keep seats busy) |
 | OpenCode seats | `opencode_seats` | live GET `/bob/v1/report` flamingo `kind=opencode` stuck age / model_mismatch / week-exhausted while busy (FR #8583). **Report only** — digest alone misses remote OpenCode |
 | Stale digest | `stale_digest` | digest not updating |
+| Orphan last-good workers | `workers_last_good_orphan` | `workers_stale` + empty live workers + non-empty `workers_last_good` (FR #9145; token-free; local digest only) |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |
 | Auto-feed | `auto_feed` | BobAutoFeed / auto-offer liveness |
@@ -53,7 +54,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Open PR missing MRB/FIX | `open_pr_mrb_missing` | open non-draft non-receipt PRs with no MRB/FIX queue row (FR #8377; fixture JEEVES_OPEN_PR_MRB_MISSING_FIXTURE) |
 | Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
 | Depends-on open | `depends_on` | offered or accepted row whose `Depends-on:` ref is still OPEN (FR #8848 / BOB-D3). Soft-ok when the product skip is not on tip or no Depends-on rows. Distinct from hold and from `fr_digest` (see `bobiverse-jeeves-agent-depends-on`) |
-| FR digest go-gate | `fr_digest` | **when BOB-G live** — child offered while `fr-digest` still has `hold` (see `bobiverse-jeeves-agent-fr-digest`) |
+| FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 

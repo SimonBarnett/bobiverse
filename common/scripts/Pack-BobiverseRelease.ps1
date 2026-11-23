@@ -21,6 +21,7 @@ param(
     [switch]$SkipWorkerExe,
     # Tests only (needs -SkipMsi): skip bob-ear.exe (FR #1481 PyInstaller, ~40 s).
     [switch]$SkipEarExe,
+    [switch]$SkipPriorityExe,
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
     [switch]$SkipJeevesExe,
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
@@ -94,6 +95,71 @@ function Stage-BobAgentFolders([string]$Stage) {
     # FR #1481: also stage scripts\bob-ear.exe (frozen irc_agent) so ircBob does not need system Python for the ear.
     $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
     if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
+    # FR #8700 / BOB-49: bob-ear (bob product) MSI must include Plan agent build (plan\ layout).
+    $planDir = Join-Path $Stage 'plan'
+    $planAgents = Join-Path $planDir 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $planDir -PathType Container)) {
+        throw 'BOB-49: bob MSI stage missing plan\ (Plan agent build)'
+    }
+    if (-not (Test-Path -LiteralPath $planAgents -PathType Leaf)) {
+        throw 'BOB-49: bob MSI stage plan\ missing AGENTS.md'
+    }
+    $marker = Join-Path $Stage 'plan\BOB-49-PLAN-IN-MSI.txt'
+    $markerBody = @(
+        'bob=BOB-49'
+        'fr=8700'
+        'slice=bob-ear-msi-include-plan'
+        'path=plan\'
+        'heat=include-plan'
+    ) -join [Environment]::NewLine
+    [IO.File]::WriteAllText($marker, $markerBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
+    Write-Host 'INFO bob staged plan\ for bob-ear MSI (BOB-49 / FR #8700)'
+    # FR #8675 / BOB-10: stamp plan\VERSION from MSI-aligned pack identity.
+    $planCommit = ''
+    try { $planCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+    Write-BobiversePlanIdentity -Destination $Stage -Version $msiVersion -Commit $planCommit.Trim()
+    # FR #8701 / BOB-55: bob-ear MSI must include PriorityAgent.exe (PRI-06 supplies the real build).
+    $priDir = Join-Path $Stage 'priority'
+    New-Item -ItemType Directory -Force -Path $priDir | Out-Null
+    $priExe = Join-Path $priDir 'PriorityAgent.exe'
+    $priSrc = $null
+    foreach ($c in @(
+            [string]$env:BOB_PRIORITY_AGENT_EXE,
+            (Join-Path $OutDir 'PriorityAgent.exe'),
+            (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\PriorityAgent.exe')
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { $priSrc = $c; break }
+    }
+    if ($SkipPriorityExe) {
+        # Test stage: ensure file list still includes PriorityAgent.exe
+        if (-not $priSrc) {
+            $priSrc = Join-Path $priDir 'PriorityAgent.exe'
+            [IO.File]::WriteAllBytes($priSrc, [byte[]](0x4D, 0x5A))  # minimal MZ stub for layout tests
+        }
+        Copy-Item -LiteralPath $priSrc -Destination $priExe -Force
+        Write-Host 'WARN bob pack: -SkipPriorityExe (test stage PriorityAgent.exe stub)'
+    }
+    else {
+        if (-not $priSrc) {
+            throw 'BOB-55: PriorityAgent.exe missing (set BOB_PRIORITY_AGENT_EXE or build PRI-06; or pass -SkipPriorityExe for test stage)'
+        }
+        Copy-Item -LiteralPath $priSrc -Destination $priExe -Force
+        Write-Host ("INFO bob staged priority\PriorityAgent.exe from {0}" -f $priSrc)
+    }
+    if (-not (Test-Path -LiteralPath $priExe -PathType Leaf)) {
+        throw 'BOB-55: bob MSI stage missing priority\PriorityAgent.exe'
+    }
+    $priMarker = Join-Path $priDir 'BOB-55-PRIORITY-IN-MSI.txt'
+    $priBody = @(
+        'bob=BOB-55'
+        'fr=8701'
+        'slice=bob-ear-msi-include-priority'
+        'path=priority\PriorityAgent.exe'
+        'heat=include-PriorityAgent'
+    ) -join [Environment]::NewLine
+    [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
+    Write-Host 'INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701)'
+
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
     } else {
@@ -132,6 +198,27 @@ function Assert-BobiverseStageHasOpencodeFuel([string]$Stage) {
     }
 }
 
+function Assert-BobiverseStageHasSkillDagMcp([string]$Stage) {
+    # FR #9136: chair/monitor seats resolve skills via install scripts\skill_dag_mcp.py
+    # (not a borrowed C:\ai\bob path). Fail pack when the union omitted the trio.
+    foreach ($name in @('skill_dag_mcp.py', 'skill_dag_index.py', 'skill_dag_bound.py')) {
+        $p = Join-Path $Stage ("scripts\$name")
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+            throw ("bobiverse pack missing scripts\{0} (bob\scripts union; FR #9136)" -f $name)
+        }
+    }
+}
+
+function Assert-BobiverseStageHasModelsRefresh([string]$Stage) {
+    # FR #9224: BobCallback imports flat scripts\models_refresh.py for POST
+    # /bob/v1/models/refresh. A stage without it installs a chair that 404s refresh.
+    $mr = Join-Path $Stage 'scripts\models_refresh.py'
+    if (-not (Test-Path -LiteralPath $mr -PathType Leaf)) {
+        throw 'bobiverse pack missing scripts\models_refresh.py (common\scripts union)'
+    }
+}
+
+
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -140,6 +227,10 @@ function Stage-Product([string]$Name) {
     Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts' -Dest (Join-Path $stage 'scripts')
     # Flat scripts\opencode_fuel.py comes from common\scripts (Get-BobOpencodeFuel import).
     Assert-BobiverseStageHasOpencodeFuel -Stage $stage
+    # FR #9136: skill-dag MCP trio from bob\scripts must land in every product stage scripts\.
+    Assert-BobiverseStageHasSkillDagMcp -Stage $stage
+    # Flat scripts\models_refresh.py comes from common\scripts (BobCallback POST refresh).
+    Assert-BobiverseStageHasModelsRefresh -Stage $stage
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -208,7 +299,10 @@ function Stage-Product([string]$Name) {
     }
     Write-Host ("INFO $Name staged docs: {0}" -f (($docsToCopy | Sort-Object) -join ', '))
 
-    # Skills: product skill + harvest only (do not ship sibling product skills)
+    # Skills: product skill + harvest only (do not ship sibling product skills).
+    # FR #9180: staged skills come from the pack RepoRoot checkout (merged main /
+    # release tip). Harvest lessons reach MSI only after their lesson(<book>) PR
+    # merges --- agent harvest must owe that skill PR, not receipt-only.
     $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     function Find-RepoSkill([string]$n) { foreach ($sd in $skillsDirs) { $c = Join-Path $sd $n; if (Test-Path -LiteralPath $c) { return $c } } return (Join-Path $skillsDirs[0] $n) }
     $skillsDest = Join-Path $stage '.grok\skills'
@@ -245,6 +339,13 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest-agent-skills') | Out-Null
         Copy-Item -Path (Join-Path $harvestAliasSrc '*') -Destination (Join-Path $skillsDest 'harvest-agent-skills') -Recurse -Force
     }
+    # FR #9180: optional pin --- staged harvest book must include SKILL.md from merged tip.
+    $stagedHarvestSkill = Join-Path $skillsDest 'harvest\SKILL.md'
+    if (-not (Test-Path -LiteralPath $stagedHarvestSkill -PathType Leaf)) {
+        Write-Host ("WARN FR #9180 $Name stage missing harvest/SKILL.md under {0} (live skills come from merged bobiverse .grok/skills)" -f $skillsDest)
+    } else {
+        Write-Host "INFO FR #9180 $Name staged harvest/SKILL.md (merged skill book present)"
+    }
 
     # Bobiverse systray icon: every product's Start Menu shortcuts use it (bob also gets it via the tray payload).
     $trayIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\bob-systray.ico')
@@ -253,6 +354,18 @@ function Stage-Product([string]$Name) {
         Copy-Item -LiteralPath $trayIcoSrc -Destination (Join-Path $stage 'assets\bob-systray.ico') -Force
     } else {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
+    }
+    # FR #9211: OpenCode seat console icon (find_window_icon kind=opencode + launch-opencode.ps1).
+    $ocIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico')
+    if (-not $ocIcoSrc -or -not (Test-Path -LiteralPath $ocIcoSrc)) {
+        $ocIcoSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
+    }
+    if ($ocIcoSrc -and (Test-Path -LiteralPath $ocIcoSrc)) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
+        Copy-Item -LiteralPath $ocIcoSrc -Destination (Join-Path $stage 'assets\opencode-favicon.ico') -Force
+        Write-Host 'INFO FR #9211 staged assets\opencode-favicon.ico'
+    } else {
+        Write-Host 'WARN FR #9211 opencode-favicon.ico missing - OpenCode consoles keep default icon until staged'
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
@@ -371,6 +484,11 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path $defaultsDest | Out-Null
         Copy-Item -LiteralPath $resyncSrc -Destination (Join-Path $defaultsDest 'resync-repos.txt') -Force
         Write-Host 'INFO jeeves staged defaults\resync-repos.txt (FR #4725)'
+        # BOB-04 / FR #8709: seed for models-valid-combos.json (fail-closed allow-list)
+        $seedSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\defaults\models-valid-combos.seed.json'
+        if (-not (Test-Path -LiteralPath $seedSrc)) { throw 'jeeves pack requires common\defaults\models-valid-combos.seed.json (FR #8709)' }
+        Copy-Item -LiteralPath $seedSrc -Destination (Join-Path $defaultsDest 'models-valid-combos.seed.json') -Force
+        Write-Host 'INFO jeeves staged defaults\models-valid-combos.seed.json (FR #8709)'
         # FR #7455: publish jeeves/www beside flat scripts so Install-BobWebhooks ..\www\irc-ntsa works from MSI layout.
         $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
         if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }

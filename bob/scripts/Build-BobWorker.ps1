@@ -28,12 +28,23 @@ if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
 # PyInstaller needs every scripts dir on its path (the composed flat layout is the union of <service>\scripts).
 $pyPaths = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts')
 $pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
-# t794u: the systray icon (assets\bob-systray.ico) is the exe's own icon (--icon) and is embedded as data so the worker
-# window can show it too (bob_worker.set_console_icon).
+# t794u / FR #9211: bob-systray.ico is the exe PE icon (--icon) and MEIPASS data for set_console_icon.
+# Also embed opencode-favicon.ico so OpenCode seats resolve kind=opencode from the frozen bundle.
 $icoArgs = @()
 $ico = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\bob-systray.ico'
+if (-not $ico -or -not (Test-Path -LiteralPath $ico)) {
+    $ico = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\bob-systray.ico'
+}
 if ($ico -and (Test-Path -LiteralPath $ico)) { $icoArgs = @('--icon', $ico, '--add-data', "$ico;assets") }
 else { Write-Host 'WARN bob-systray.ico not found - bob-worker.exe gets the default icon' }
+$ocIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico'
+if (-not $ocIco -or -not (Test-Path -LiteralPath $ocIco)) {
+    $ocIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
+}
+if ($ocIco -and (Test-Path -LiteralPath $ocIco)) {
+    $icoArgs += @('--add-data', "$ocIco;assets")
+    Write-Host "INFO FR #9211 embedding opencode-favicon.ico for MEIPASS find_window_icon"
+}
 if (-not $Python) {
     foreach ($c in @((Get-Command python.exe -ErrorAction SilentlyContinue).Source, 'C:\Program Files\Python312\python.exe', 'C:\Python312\python.exe')) {
         if ($c -and (Test-Path -LiteralPath $c)) { $Python = $c; break }
@@ -79,7 +90,7 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $icoArgs
-$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model', '--hidden-import', 'worker_shipped_scripts', '--hidden-import', 'repo_clone_store')
+$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model', '--hidden-import', 'models_webhook', '--hidden-import', 'worker_shipped_scripts', '--hidden-import', 'repo_clone_store')
 # FR #7910: bundle every script bob_worker launches by path. _MEI is not a valid runtime path.
 $shipPy = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\worker_shipped_scripts.py'
 if (-not (Test-Path -LiteralPath $shipPy)) { throw "missing $shipPy" }

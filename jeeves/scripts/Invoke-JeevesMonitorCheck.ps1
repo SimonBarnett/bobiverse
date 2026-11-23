@@ -5,14 +5,14 @@
   Runs one named check under tools\monitor\*.py. Exit 0=ok, 1=finding, 2=error.
   Prints one JSON line on stdout. Prefer these scripts over reasoning.
 .PARAMETER Check
-  health | idle_seats | queue_flow | stale_digest | giveup_loops | stuck_accepted | auto_feed | auto_focus | focus_present | focus_redundant_items | seats_stuck_doing | opencode_seats | skill_promote_backlog | intake_allowlist | ticket_closure | open_pr_stale_base | open_pr_mrb_missing | needs_human_false_positive | depends_on
+  health | idle_seats | queue_flow | stale_digest | workers_last_good_orphan | giveup_loops | stuck_accepted | auto_feed | auto_focus | focus_present | focus_redundant_items | seats_stuck_doing | opencode_seats | skill_promote_backlog | intake_allowlist | ticket_closure | open_pr_stale_base | open_pr_mrb_missing | needs_human_false_positive | depends_on | fr_digest | github_rate_limit | pr_hold_labels | wake_brief | wake_grok_bot_bob | ircbob_ear
 .PARAMETER DryRun
   Offline: scripts emit ok JSON and exit 0.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('health','idle_seats','queue_flow','stale_digest','giveup_loops','stuck_accepted','auto_feed','auto_focus','focus_present','focus_redundant_items','seats_stuck_doing','opencode_seats','skill_promote_backlog','intake_allowlist','github_resync_focus','ticket_closure','open_pr_stale_base','open_pr_mrb_missing','needs_human_false_positive','depends_on')]
+    [ValidateSet('health','idle_seats','queue_flow','stale_digest','workers_last_good_orphan','giveup_loops','stuck_accepted','auto_feed','auto_focus','focus_present','focus_redundant_items','seats_stuck_doing','opencode_seats','skill_promote_backlog','intake_allowlist','github_resync_focus','ticket_closure','open_pr_stale_base','open_pr_mrb_missing','needs_human_false_positive','depends_on','fr_digest','github_rate_limit','pr_hold_labels','wake_brief','wake_grok_bot_bob','ircbob_ear')]
     [string]$Check,
     [switch]$DryRun,
     [string]$InstallRoot = '',
@@ -21,8 +21,68 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $here = if ($InstallRoot) { $InstallRoot } else { Split-Path -Parent $PSScriptRoot }
+# FR #9007 / FR #9309: refresh tools\monitor before the check when Sync is resolvable.
+# Drive-root J:\ has empty Split-Path -Parent; resolve bob like Start-JeevesMonitor.
+# FR #9309: prefer a tip Sync that contains sync-monitor-force over a stale flat J:\scripts copy.
+$syncName = 'Sync-BobiverseFromRepo.ps1'
+function Resolve-BobInstallRootFromJeeves([string]$JeevesRoot) {
+    $ai = Split-Path -Parent $JeevesRoot
+    if (-not [string]::IsNullOrWhiteSpace($ai) -and $ai -ne $JeevesRoot) {
+        $sib = Join-Path $ai 'bob'
+        if (Test-Path -LiteralPath (Join-Path $sib 'worker\bob-worker.exe')) { return $sib }
+        if (Test-Path -LiteralPath $sib) { return $sib }
+    }
+    $sys = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+    foreach ($cand in @((Join-Path $sys 'ai\bob'), 'C:\ai\bob', 'D:\ai\bob')) {
+        if (Test-Path -LiteralPath (Join-Path $cand 'worker\bob-worker.exe')) { return $cand }
+    }
+    return ''
+}
+$bobRoot = Resolve-BobInstallRootFromJeeves $here
+if (-not $bobRoot) {
+    $parent = Split-Path -Parent $here
+    if ($parent -and $parent -ne $here) { $bobRoot = $parent }
+}
+$syncCands = @()
+if ($bobRoot) {
+    $syncCands += (Join-Path $bobRoot ('common\scripts\' + $syncName))
+    $syncCands += (Join-Path $bobRoot ('scripts\' + $syncName))
+}
+$syncCands += @(
+    (Join-Path $PSScriptRoot $syncName),
+    (Join-Path $here ('scripts\' + $syncName))
+)
+$syncMon = ''
+$syncFallback = ''
+foreach ($c in $syncCands) {
+    if (-not ($c -and (Test-Path -LiteralPath $c))) { continue }
+    $hit = $false
+    try {
+        foreach ($line in [IO.File]::ReadLines($c)) {
+            if ($line -match 'sync-monitor-force') { $hit = $true; break }
+        }
+    } catch { }
+    if ($hit) { $syncMon = $c; break }
+    if (-not $syncFallback) { $syncFallback = $c }
+}
+if (-not $syncMon) { $syncMon = $syncFallback }
+if ($syncMon) {
+    try {
+        if ($DryRun) {
+            & $syncMon -Product jeeves -InstallRoot $here -DryRun
+        } else {
+            & $syncMon -Product jeeves -InstallRoot $here
+        }
+    } catch {
+        Write-Warning ("FR #9007 sync-monitor before check: {0}" -f $_.Exception.Message)
+    }
+}
 $py = Join-Path $here "tools\monitor\$Check.py"
-if (-not (Test-Path -LiteralPath $py)) { Write-Error "missing $py"; exit 2 }
+if (-not (Test-Path -LiteralPath $py)) {
+    # Soft-skip: tip tree may lag AGENTS.md check list (non-chair / sparse sync). FR #9066.
+    Write-Output (@{ check = $Check; ok = $true; skipped = $true; reason = "missing $py" } | ConvertTo-Json -Compress)
+    exit 0
+}
 $python = $null
 foreach ($c in @('python.exe', 'py.exe')) {
     $cmd = Get-Command $c -ErrorAction SilentlyContinue

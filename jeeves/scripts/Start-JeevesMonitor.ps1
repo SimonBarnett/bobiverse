@@ -69,20 +69,64 @@ if (-not $BobInstallRoot) {
     }
 }
 $BobInstallRoot = Normalize-JeevesRoot $BobInstallRoot
-# FR #8860: non-chair composed installs (drive-root J:\) never run Start-Jeeves,
-# so tools\monitor lagged main after #8585. Refresh from tip when the flat
-# Sync script is beside this file. A repo tree without that sibling is a no-op.
-$syncMon = Join-Path $PSScriptRoot 'Sync-BobiverseFromRepo.ps1'
-if (Test-Path -LiteralPath $syncMon) {
+# FR #8860 / #9007: non-chair installs never run Start-Jeeves, so tools\monitor
+# can lag main. Refresh via Sync-BobiverseFromRepo when we can find it.
+# Composed flat roots keep Sync beside this script; repo trees such as
+# C:\ai\bob keep it under common\scripts or flat scripts\ (FR #9007).
+function Resolve-SyncBobiverseFromRepoPath {
+    param(
+        [string]$ScriptRoot,
+        [string]$JeevesInstallRoot,
+        [string]$BobRoot
+    )
+    $name = 'Sync-BobiverseFromRepo.ps1'
+    # FR #9309: prefer Bob tip Sync (has sync-monitor-force) over a stale composed
+    # flat copy beside Start on J:\ (class of missing opencode_seats.py after #8583).
+    $cands = @(
+        (Join-Path $BobRoot ('common\scripts\' + $name)),
+        (Join-Path $BobRoot ('scripts\' + $name))
+    )
+    $parent = Split-Path -Parent $JeevesInstallRoot
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and $parent -ne $JeevesInstallRoot) {
+        $cands += (Join-Path $parent ('common\scripts\' + $name))
+        $cands += (Join-Path $parent ('scripts\' + $name))
+    }
+    $cands += @(
+        (Join-Path $ScriptRoot $name),
+        (Join-Path $JeevesInstallRoot ('scripts\' + $name))
+    )
+    $fallback = ''
+    foreach ($c in $cands) {
+        if (-not ($c -and (Test-Path -LiteralPath $c))) { continue }
+        # Prefer a Sync that force-copies tools\monitor (FR #8860 marker).
+        $hit = $false
+        try {
+            foreach ($line in [IO.File]::ReadLines($c)) {
+                if ($line -match 'sync-monitor-force') { $hit = $true; break }
+            }
+        } catch { }
+        if ($hit) { return $c }
+        if (-not $fallback) { $fallback = $c }
+    }
+    return $fallback
+}
+$syncMon = Resolve-SyncBobiverseFromRepoPath -ScriptRoot $PSScriptRoot -JeevesInstallRoot $InstallRoot -BobRoot $BobInstallRoot
+if ($syncMon) {
     try {
         if ($DryRun) {
             & $syncMon -Product jeeves -InstallRoot $InstallRoot -DryRun
         } else {
             & $syncMon -Product jeeves -InstallRoot $InstallRoot
         }
+        # FR #9100: warn when Sync fails; do not block monitor startup.
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-Warning ("FR #9100 sync-monitor exit={0}; tools/monitor may be stale" -f $LASTEXITCODE)
+        }
     } catch {
         Write-Warning ("FR #8860 sync-monitor: {0}" -f $_.Exception.Message)
     }
+} else {
+    Write-Warning "FR #9007: Sync-BobiverseFromRepo.ps1 not found beside Start-JeevesMonitor or under BobInstallRoot common/scripts|scripts; tools\monitor may stay stale on this host."
 }
 $exe = Join-Path $BobInstallRoot 'worker\bob-worker.exe'
 if (-not (Test-Path -LiteralPath $exe)) {

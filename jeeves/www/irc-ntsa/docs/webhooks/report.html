@@ -41,7 +41,7 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <p><strong>Status codes:</strong> 200 OK; 503 when digest.lock is wedged (retry).</p>
 <p><strong>Retry / idempotency:</strong> Safe to retry. Idempotent read.</p>
 <p><strong>Rate limits:</strong> Cloudflare + reverse proxy only (no app per-IP GET quota).</p>
-<p><strong>Reachability:</strong> Public via https://bob.ntsa.uk (Cloudflare). Local :7700 also serves aliases.</p>
+<p><strong>Reachability:</strong> Public via https://bob.ntsa.uk (Cloudflare). /bob/v1/digest 301s to this path.</p>
 <p><strong>Source:</strong> <code>common/scripts/bobcallback.py, bobreport.py</code> · <strong>Related:</strong> FR #149 / #174 / #2458</p>
 <p><strong>Redacted example</strong></p>
 <pre>GET https://bob.ntsa.uk/bob/v1/report
@@ -65,6 +65,22 @@ Accept: application/json</pre>
 Content-Type: application/json
 
 {&quot;op&quot;:&quot;merge&quot;,&quot;machine&quot;:&quot;example-host&quot;,&quot;pcent&quot;:12}</pre>
+</section>
+
+<section id="digest-alias">
+<h2>Digest alias (301 to report) <span class="badge">GET /bob/v1/digest</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Same webhook as GET/POST /bob/v1/report; responds 301 Location: /bob/v1/report.</p>
+<p><strong>Who calls it:</strong> Legacy clients using /bob/v1/digest.</p>
+<p><strong>Auth (named only):</strong> None (redirect only).</p>
+<p><strong>Request schema:</strong> No body.</p>
+<p><strong>Response schema:</strong> Empty body; Location: /bob/v1/report.</p>
+<p><strong>Status codes:</strong> 301 Permanent Redirect to /bob/v1/report.</p>
+<p><strong>Retry / idempotency:</strong> Follow redirect to report.</p>
+<p><strong>Rate limits:</strong> n/a</p>
+<p><strong>Reachability:</strong> Public + local :7700; IIS BobDigestWebhook Redirect Permanent.</p>
+<p><strong>Source:</strong> <code>common/scripts/bobcallback.py, Install-BobWebhooks.ps1</code> · <strong>Related:</strong> FR #149 / docs dedupe 2026-11-22</p>
+<p><strong>Redacted example</strong></p>
+<pre>GET https://bob.ntsa.uk/bob/v1/digest</pre>
 </section>
 
 <footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>

@@ -31,6 +31,9 @@ REQUIRED_ALLOW_REPOS = (
 _PROBE_TITLE = "do-not-file probe-do-not-file intake-allowlist-monitor"
 _PROBE_BODY = "probe-shape-only intake_allowlist monitor; discard"
 _HTTP_TIMEOUT_S = 20.0
+# FR #8861: bob.ntsa.uk is behind Cloudflare; Python-urllib's default UA gets
+# HTTP 403 "error code: 1010". That is not repo_not_allowed.
+_PROBE_USER_AGENT = "BobiverseIntakeAllowlist/1.0 (+https://github.com/SimonBarnett/bobiverse)"
 
 
 def intake_url() -> str:
@@ -81,6 +84,42 @@ def parse_default_allow_repos(text: str) -> set[str]:
     return set(re.findall(r'"([^"]+/[^"]+)"', m.group(1)))
 
 
+def _classify_http_result(status: int, body: str, *, reason: str = "") -> dict[str, Any]:
+    """FR #9100 / #8861: denial only when status is 403 and JSON error is repo_not_allowed.
+
+    Every other non-2xx (Cloudflare HTML 403, empty route-gate 403, 5xx even with
+    a misleading JSON error string) is ``probe_error``. 2xx is allowed.
+    """
+    err = ""
+    try:
+        parsed = json.loads(body) if body else {}
+        if isinstance(parsed, dict):
+            err = str(parsed.get("error") or "")
+    except json.JSONDecodeError:
+        parsed = {}
+    status_i = int(status)
+    if 200 <= status_i < 300:
+        return {
+            "http_status": status_i,
+            "error": err,
+            "allowed": True,
+        }
+    if status_i == 403 and err == "repo_not_allowed":
+        return {
+            "http_status": status_i,
+            "error": err,
+            "allowed": False,
+        }
+    snippet = (body or "").strip().replace("\n", " ")[:120]
+    detail = snippet or err or reason or "error"
+    return {
+        "http_status": status_i,
+        "error": f"http_{status_i}:{detail}",
+        "allowed": False,
+        "probe_error": True,
+    }
+
+
 def probe_repo(
     url: str,
     repo: str,
@@ -97,7 +136,11 @@ def probe_repo(
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": _PROBE_USER_AGENT,
+            "Accept": "application/json",
+        },
         method="POST",
     )
     open_fn = opener or urllib.request.urlopen
@@ -105,40 +148,18 @@ def probe_repo(
         with open_fn(req, timeout=_HTTP_TIMEOUT_S) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             status = getattr(resp, "status", None) or resp.getcode()
-            err = ""
-            try:
-                parsed = json.loads(body) if body else {}
-                if isinstance(parsed, dict):
-                    err = str(parsed.get("error") or "")
-            except json.JSONDecodeError:
-                parsed = {}
-            return {
-                "repo": repo,
-                "http_status": int(status),
-                "error": err,
-                "allowed": int(status) != 403,
-            }
+            row = _classify_http_result(int(status), body)
+            row["repo"] = repo
+            return row
     except urllib.error.HTTPError as e:
         body = ""
         try:
             body = e.read().decode("utf-8", errors="replace")
         except Exception:
             body = ""
-        err = ""
-        try:
-            parsed = json.loads(body) if body else {}
-            if isinstance(parsed, dict):
-                err = str(parsed.get("error") or "")
-        except json.JSONDecodeError:
-            parsed = {}
-        if not err and e.code == 403:
-            err = "repo_not_allowed"
-        return {
-            "repo": repo,
-            "http_status": int(e.code),
-            "error": err,
-            "allowed": int(e.code) != 403,
-        }
+        row = _classify_http_result(int(e.code), body, reason=str(e.reason or ""))
+        row["repo"] = repo
+        return row
     except Exception as e:
         return {
             "repo": repo,
@@ -193,6 +214,22 @@ def check(args, opener: Optional[Callable[..., Any]] = None):
                 f"live intake 403 {err} for {repo} (Sync/compose ircJeeves after allowlist PR)"
             )
 
+    has_denial = any(
+        (not p.get("probe_error")) and (not p.get("allowed")) for p in probes
+    )
+    has_probe_err = any(p.get("probe_error") for p in probes)
+    remediation_parts: list[str] = []
+    if has_denial:
+        remediation_parts.append(
+            "JSON error=repo_not_allowed: confirm common/scripts/intake.py repo_allowed / "
+            "SimonBarnett owner gate (FR #3135) and Sync/compose ircJeeves on the chair."
+        )
+    if has_probe_err:
+        remediation_parts.append(
+            "HTTP error without repo_not_allowed JSON (e.g. Cloudflare 1010 or the route "
+            "gate's empty 403): probe blocked before intake. Not allowlist drift. Do not "
+            "Sync (FR #8861 / #9100)."
+        )
     ok = not findings
     return (
         {
@@ -204,11 +241,7 @@ def check(args, opener: Optional[Callable[..., Any]] = None):
             "source_repos": sorted(source_repos),
             "probes": probes,
             "findings": findings,
-            "remediation": (
-                "Confirm common/scripts/intake.py repo_allowed / SimonBarnett owner gate (FR #3135); "
-                "on walrus run Sync-BobiverseFromRepo (or service restart compose) "
-                "so live ircJeeves picks up the allow rule."
-            ),
+            "remediation": " ".join(remediation_parts),
         },
         EXIT_OK if ok else EXIT_FINDING,
     )

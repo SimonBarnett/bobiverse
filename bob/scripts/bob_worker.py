@@ -2642,9 +2642,10 @@ def explicit_cursor_si_decision(
         row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
+        # FR #8719 / BOB-23: MarchHare (si@ntsa.uk) fleet meter gate — not local box fuel.
         return Decision(
             "refuse",
-            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            "explicit cursor: MarchHare tokens exhausted (%s remaining=0)" % account,
             account=account,
         )
     rem = fill["remaining"] if fill["usable"] else "unknown"
@@ -3604,7 +3605,74 @@ def describe_agent_child_launch(
     return out
 
 
+def _apply_worker_prompt_tokens(text: str, worker_dir: str, home: str, machine: str, nick: str) -> str:
+    """Substitute @@TOKEN@@ markers. The template stays free of secrets and machine paths."""
+    install = str(Path(worker_dir).parent)
+    intake = str(resolve_bobiverse_intake_script(worker_dir))
+    pairs = (
+        ("@@WORKER_DIR@@", worker_dir),
+        ("@@OUTBOX@@", str(outbox_path_for_run(home))),
+        ("@@INSTALL@@", install),
+        ("@@INTAKE_SCRIPT@@", intake),
+        ("@@NICK@@", nick),
+        ("@@MACHINE@@", machine),
+    )
+    out = text
+    for token, value in pairs:
+        out = out.replace(token, value)
+    return out
+
+
+def _worker_prompt_from_install_tip(worker_dir: str, home: str, machine: str, nick: str) -> str | None:
+    """FR #8865: prefer the install-root tip template over text frozen into bob-worker.exe.
+
+    Flat ``<install>\\scripts`` and ``<install>\\bob\\scripts`` win over the exe-adjacent
+    copy so a tip-heal updates the seat prompt without a new hashed exe. A template that
+    still names ``bob/bob/scripts`` (pre-#8785 FR #7000 path) is ignored.
+    """
+    name = "worker_prompt_template.txt"
+    install = Path(worker_dir).parent
+    ordered = [
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+        Path(worker_dir) / "scripts" / name,
+    ]
+    seen: set[str] = set()
+    for cand in ordered:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not cand.is_file():
+                continue
+            raw = cand.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "@@WORKER_DIR@@" not in raw or "@@NICK@@" not in raw or "@@MACHINE@@" not in raw:
+            continue
+        if "bob/bob/scripts" in raw.replace("\\", "/"):
+            continue
+        rendered = _apply_worker_prompt_tokens(raw, worker_dir, home, machine, nick)
+        if "bob/bob/scripts" in rendered.replace("\\", "/"):
+            continue
+        if "@@" in rendered:
+            continue
+        return rendered
+    return None
+
+
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
+    tipped = _worker_prompt_from_install_tip(worker_dir, home, machine, nick)
+    if tipped:
+        return tipped
+    return _worker_prompt_builtin(worker_dir, home, machine, nick)
+
+
+def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) -> str:
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
@@ -3628,13 +3696,16 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append DONE: "
         f"FR = 'DONE FR owner/repo#N <pr-url>' (no PASS/FAIL — FR #2419); "
         f"MRB/UAT = 'DONE <MRB|UAT> owner/repo#N PASS|FAIL <url>' "
-        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {resolve_bobiverse_intake_script(worker_dir)} "
         f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). "
         f"HARVEST REPO (FR #3189): ALWAYS pass the job's repo explicitly: "
         f"`..\\scripts\\Invoke-BobiverseHarvest.ps1 -Repo <owner/repo from the job id> -Summary ... -Lesson ...` "
         f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
         f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
         f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
+        f"Workers > OpenCode harvest (FR #8731): tray, worker, and OpenCode-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
+        f"Workers > Grok harvest (FR #8724): tray, worker, and Grok-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
+        f"Workers > Cursor harvest (FR #8718): tray, worker, and Cursor-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
@@ -3662,7 +3733,7 @@ def plan_prompt(plan_dir: str) -> str:
         f"You are a NEW Bobiverse plan agent (fresh session - never resume or continue an older plan). Your working folder is {plan_dir}. "
         f"FIRST read the skills in {plan_dir}\\.grok\\skills and {plan_dir}\\AGENTS.md (start with visionary). "
         f"Plan-mode only: no IRC, no builds. Create this plan's output in a NEW subfolder {plan_dir}\\work\\plan-<yyyyMMdd-HHmmss> and never touch earlier plans. "
-        f"CAST IRON: harvest skills and file every issue/FR/bug with {Path(plan_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"CAST IRON: harvest skills and file every issue/FR/bug with {resolve_bobiverse_intake_script(install_root=Path(plan_dir).parent)} in the same turn. "
         f"HARVEST HOW-TO-PLAN ONLY: a harvest lesson is a reusable lesson about HOW to plan (process, pitfalls, repo-setup steps) and goes to -Repo SimonBarnett/skills-visionary. "
         f"NEVER harvest the plan itself (requirements, designs, architecture or product decisions, FR/issue lists): that content stays in the plan subfolder and the product repo docs/FRs, never in a skill book. "
         f"Never print or store secrets."
@@ -3807,7 +3878,10 @@ def record_maintenance_session(session_id: str, cwd: str, kind: str, state_path:
 
 
 def maintenance_icon_path(folder: Path) -> Optional[Path]:
-    """FR #2522: the tray's Jeeves butler icon for the maintenance window (work root first, then bundled)."""
+    """FR #2522 / #9211: Jeeves butler icon (work root, install assets, jeeves\\assets, MEIPASS)."""
+    found = find_window_icon(folder, kind="maintenance")
+    if found:
+        return found
     cands = [Path(folder) / "assets" / "jeeves-butler.ico"]
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
@@ -3943,16 +4017,25 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     """Vision skill packs for worker MCP (FR #6899). Seat, bob, harvest, user.
 
     Does not include a job worktree (that is ``--job-worktree`` only).
+    FR #8682 / BOB-38: ``BOB_JEEVES_MCP_ROOT`` (Agents > Jeeves) is prepended so the
+    skill-dag MCP ``--root`` list starts on the J: skills path.
     """
     cwd = Path(worker_cwd).resolve()
     install = cwd.parent
     user = Path(home) if home is not None else Path.home()
-    return [
+    roots: list[Path] = []
+    jeeves = (os.environ.get("BOB_JEEVES_MCP_ROOT") or "").strip()
+    if jeeves:
+        roots.append(Path(jeeves))
+    for cand in (
         cwd / ".grok" / "skills",
         install / "bob" / ".grok" / "skills",
         install / "common" / ".grok" / "skills",
         user / ".grok" / "skills",
-    ]
+    ):
+        if cand not in roots:
+            roots.append(cand)
+    return roots
 
 
 SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
@@ -4747,6 +4830,57 @@ def agent_stderr_evidence(text: str) -> str:
         return "(evidence unavailable)"
 
 
+
+
+def _stderr_is_opencode_stdout_oserror22_noise(text: str) -> bool:
+    """True when stderr is only OpenCode stdout TextIOWrapper OSError 22.
+
+    FR #9013: unsigned exit 0xffffffff with
+    ``Exception ignored in: <_io.TextIOWrapper ... stdout ... cp1252>``
+    plus ``OSError: [Errno 22] Invalid argument`` is teardown noise after the
+    console closes, not a CLI crash. A real Traceback stays a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if "traceback" in low or "error_kind" in low:
+        return False
+    if "errno 22" not in low and "[errno 22]" not in low:
+        return False
+    if "invalid argument" not in low:
+        return False
+    if "textiowrapper" not in low and "stdout" not in low:
+        return False
+    return True
+
+
+def _stderr_is_opencode_missing_query_noise(text: str) -> bool:
+    """True when stderr is OpenCode idle tool noise ending in missing query.
+
+    FR #9012: unsigned exit 0xffffffff with console dir listings and
+    ``missing query (try ".")`` is an external kill / tool misuse while
+    job=(none), not a CLI crash. Traceback / exception / fatal stay failures.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(
+        tok in low
+        for tok in (
+            "traceback",
+            "exception",
+            "fatal",
+            "error_kind",
+            '"lvl": "error"',
+            '"lvl":"error"',
+        )
+    ):
+        return False
+    if "missing query" not in low:
+        return False
+    return True
+
+
 def agent_stderr_dedupe_line(text: str) -> str:
     """Normalised first nonempty stderr line for the intake key (FR #7671)."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
@@ -4754,6 +4888,103 @@ def agent_stderr_dedupe_line(text: str) -> str:
     norm = re.sub(r"\s+", " ", first).strip().lower()
     norm = re.sub(r"[^a-z0-9 .:_-]+", "", norm)[:80]
     return norm or "none"
+
+
+
+def _stderr_is_seat_prompt_echo(text: str) -> bool:
+    """True when stderr is the worker assignment prompt, not a CLI error.
+
+    FR #8990: OpenCode killed with exit 0xffffffff often leaves only the
+    seat prompt (worktree / .bob tmp / outbox rules) on stderr. That is an
+    external kill. A real crash still names a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind", '"lvl": "error"', '"lvl":"error"')):
+        return False
+    markers = (
+        "job worktree",
+        "do not check the outbox",
+        ".bob\\tmp",
+        ".bob/tmp",
+        "the turn is not over until done",
+    )
+    return any(m in low for m in markers)
+
+
+def _stderr_is_grok_structured_info_noise(text: str) -> bool:
+    """True when every nonempty line is a Grok JSON info/debug log, not an error.
+
+    FR #8992: a killed seat (exit 0xffffffff) often leaves only
+    ``billing: fetched credits config`` (or similar) with ``\"lvl\": \"info\"``.
+    Those are not a CLI crash. Reject warn/error levels and failure tokens.
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        low = ln.lower()
+        if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind")):
+            return False
+        if any(
+            tok in low
+            for tok in (
+                '"lvl": "error"',
+                '"lvl":"error"',
+                '"lvl": "warn"',
+                '"lvl":"warn"',
+                '"lvl": "warning"',
+                '"lvl":"warning"',
+            )
+        ):
+            return False
+        if not any(
+            tok in low
+            for tok in (
+                '"lvl": "info"',
+                '"lvl":"info"',
+                '"lvl": "debug"',
+                '"lvl":"debug"',
+            )
+        ):
+            return False
+    return True
+
+
+
+def grok_worker_spawn_connect_failure(text: str) -> bool:
+    """FR #8972: grok exited because its own worker_spawn could not connect.
+
+    That is a grok-internal connect blip, not a bob CLI bug. The seat still
+    recycles and GIVEUPs an accepted job. It does not open another intake issue.
+    """
+    raw = str(text or "")
+    return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
+
+
+def unsigned_exit_stderr_is_noise(text: str) -> bool:
+    """FR #8969 / #8970: 0xffffffff plus progress or TUI chrome is an external kill.
+
+    grok-pager info/debug and the live Grok prompt are not a CLI error. A real
+    failure word or an error/warn level stays a cli-failure.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return True
+    if re.search(
+        r'(?i)traceback|\bexception\b|\bfatal\b|\bfailed\b|\berror_kind\b|'
+        r'"lvl"\s*:\s*"(error|warn|warning|fatal)"',
+        raw,
+    ):
+        return False
+    return bool(re.search(
+        r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
+        raw,
+    ))
+
+
 
 
 def _intake_disabled_by_env() -> bool:
@@ -4816,6 +5047,41 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "no-ack-still-running"}
+    # FR #9025: fuel-exhausted / out-of-fuel recycle while the process is still running is
+    # expected (dialog+quit path / fuel gate). Do not open "seat stopped making progress".
+    _fuel_reason = str(reason or "").strip().lower()
+    if exit_code is None and (
+        _fuel_reason == "fuel-exhausted"
+        or _fuel_reason.startswith("fuel-exhausted:")
+        or _fuel_reason in ("out-of-fuel", "out_of_fuel")
+    ):
+        if log:
+            try:
+                log(
+                    "worker: fuel-exhausted recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9025)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "fuel-exhausted-recycle"}
+    # FR #9279: OpenCode frozen-progress / lost-ack-stale recycles (FR #8596 / #8646 / #9009)
+    # are intentional hang recovery while the process is still running. Filing "seat stopped
+    # making progress" every time is noise (class of #9279 after external-dir-loop GIVEUP
+    # cleared ACK and left digest doing aged). Recycle still happens; skip intake only.
+    if exit_code is None and _fuel_reason in (
+        "opencode-lost-ack-stale",
+        "opencode-frozen-progress",
+    ):
+        if log:
+            try:
+                log(
+                    "worker: opencode freeze recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9279 reason=%s)"
+                    % _fuel_reason
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "opencode-freeze-recycle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -4832,10 +5098,32 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
+    # FR #8972: grok worker_spawn connect is logged by the caller and recycled.
+    # Do not open "bug: agent CLI nonzero exit" for that signature.
+    if grok_worker_spawn_connect_failure(stderr_tail) or grok_worker_spawn_connect_failure(evidence):
+        if log:
+            try:
+                log("worker: skip agent-cli-nonzero-exit intake (grok worker_spawn connect; FR #8972)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "grok-worker-spawn-connect"}
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #8990: the same exit with only the assignment prompt echoed is the same class.
+    # FR #8992 / #9013 / #9012 / #8969 / #8970: unsigned-exit stderr noise classifiers (OR).
+    prompt_echo = u == 0xFFFFFFFF and _stderr_is_seat_prompt_echo(evidence)
+    info_noise = u == 0xFFFFFFFF and _stderr_is_grok_structured_info_noise(evidence)
+    oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
+    missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip()
+        or prompt_echo
+        or info_noise
+        or oserror22_noise
+        or missing_query_noise
+        or unsigned_exit_stderr_is_noise(evidence)
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
@@ -4886,6 +5174,22 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if prompt_echo:
+            what += (
+                "Stderr was the seat assignment prompt only (not a CLI error). FR #8990.\n"
+            )
+        if info_noise:
+            what += (
+                "Stderr was Grok JSON info/debug only (not a CLI error). FR #8992.\n"
+            )
+        if oserror22_noise:
+            what += (
+                "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
+            )
+        if missing_query_noise:
+            what += (
+                "Stderr was OpenCode idle missing-query tool noise only (not a CLI crash). FR #9012.\n"
+            )
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
@@ -5327,21 +5631,58 @@ def skill_dag_down_giveup_line(
 
 
 def opencode_fleet_script_roots(worker_cwd: str) -> list[Path]:
-    """Install script dirs the seat skills tell OpenCode to read (FR #8064).
+    """Install script dirs the seat skills tell OpenCode to read (FR #8064 / #9214).
 
     ``worker_cwd`` is ``<ai root>\\bob\\worker``. The fleet copies live beside
-    that, not inside the job worktree: ``bob\\scripts`` and ``common\\scripts``.
+    that, not inside the job worktree: ``bob\\scripts``, ``common\\scripts``, and
+    flat ``scripts`` (composed installs often only have the intake helper there).
     """
     install = Path(worker_cwd).resolve().parent
-    return [install / "bob" / "scripts", install / "common" / "scripts"]
+    return [
+        install / "bob" / "scripts",
+        install / "common" / "scripts",
+        install / "scripts",
+    ]
+
+
+def resolve_bobiverse_intake_script(
+    worker_cwd: str | Path | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> Path:
+    """Prefer an install intake script path OpenCode is allowed to read (FR #9214).
+
+    Order: ``common\\scripts`` (allowed since FR #8064), flat ``scripts`` (FR #9214),
+    then ``bob\\scripts``. Falls back to the ``common\\scripts`` path even when the
+    file is missing so CAST IRON prompts stay on an allowlisted root.
+    """
+    if install_root is not None:
+        install = Path(install_root).resolve()
+    elif worker_cwd is not None:
+        install = Path(worker_cwd).resolve().parent
+    else:
+        install = Path.cwd().resolve()
+    name = "Report-BobiverseIntakeIssue.ps1"
+    candidates = [
+        install / "common" / "scripts" / name,
+        install / "scripts" / name,
+        install / "bob" / "scripts" / name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand.resolve()
+        except OSError:
+            continue
+    return candidates[0].resolve()
 
 
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill roots and fleet scripts.
 
-    FR #7196 / #7909: skill-dag roots. FR #8064: ``bob\\scripts`` and
-    ``common\\scripts`` so harvest/intake reads are not auto-rejected. Edit
-    stays deny. ``C:\\passwords`` stays deny and is never an allow.
+    FR #7196 / #7909: skill-dag roots. FR #8064 / #9214: ``bob\\scripts``,
+    ``common\\scripts``, and flat ``scripts`` so harvest/intake reads are not
+    auto-rejected. Edit stays deny. ``C:\\passwords`` stays deny and is never an allow.
     """
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
@@ -5759,6 +6100,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         oc_fallback = (
             f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
         )
+        # FR #9211: pin OpenCode favicon on the launch-opencode PowerShell console (Win11 AUMID + WM_SETICON).
+        oc_ico_path = find_window_icon(Path(install_root) if install_root else None, kind="opencode")
+        oc_ico_lit = esc(str(oc_ico_path)) if oc_ico_path else ""
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             oc_fallback,
@@ -5766,6 +6110,49 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             f"$turnsLog = '{esc(turns_log)}'",
+            f"$bobOcIco = '{oc_ico_lit}'",
+            r"function Set-BobConsoleIcon([string]$IcoPath, [string]$Aumid) {",
+            r"    # FR #9211: title-bar + taskbar icon for the OpenCode seat console on Win11.",
+            r"    if (-not $IcoPath) {",
+            r"        $root = $env:BOB_INSTALL_ROOT",
+            r"        if (-not $root) { $root = 'C:\ai\bob' }",
+            r"        foreach ($rel in @('assets\opencode-favicon.ico','tray\assets\opencode-favicon.ico','bob\tray\assets\opencode-favicon.ico','assets\bob-systray.ico')) {",
+            r"            $try = Join-Path $root $rel",
+            r"            if (Test-Path -LiteralPath $try) { $IcoPath = $try; break }",
+            r"        }",
+            r"    }",
+            r"    if (-not $IcoPath -or -not (Test-Path -LiteralPath $IcoPath)) {",
+            r"        Write-Output 'console-icon: miss ico=none kind=opencode'",
+            r"        return $false",
+            r"    }",
+            r"    if (-not $Aumid) { $Aumid = 'Bobiverse.OpenCode' }",
+            r"    try {",
+            "        Add-Type -Namespace BobFr9211 -Name ConsoleIcon -MemberDefinition @'",
+            '            [System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();',
+            '            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr LoadImage(System.IntPtr h, string f, uint t, int cx, int cy, uint fu);',
+            '            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);',
+            '            [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);',
+            r"'@ -ErrorAction SilentlyContinue",
+            r"        [void][BobFr9211.ConsoleIcon]::SetCurrentProcessExplicitAppUserModelID($Aumid)",
+            r"        $hwnd = [BobFr9211.ConsoleIcon]::GetConsoleWindow()",
+            r"        if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 50; $hwnd = [BobFr9211.ConsoleIcon]::GetConsoleWindow() }",
+            r"        if ($hwnd -eq [IntPtr]::Zero) { Write-Output ('console-icon: miss hwnd=0 ico=' + $IcoPath); return $false }",
+            r"        $ok = $false",
+            r"        foreach ($pair in @(@(0,16),@(1,32))) {",
+            r"            $h = [BobFr9211.ConsoleIcon]::LoadImage([IntPtr]::Zero, $IcoPath, 1, $pair[1], $pair[1], 0x10)",
+            r"            if ($h -ne [IntPtr]::Zero) {",
+            r"                [void][BobFr9211.ConsoleIcon]::SendMessage($hwnd, 0x80, [IntPtr]$pair[0], $h)",
+            r"                $ok = $true",
+            r"            }",
+            r"        }",
+            r"        Write-Output ('console-icon: ' + $(if ($ok) { 'ok' } else { 'load-fail' }) + ' path=' + $IcoPath + ' hwnd=' + $hwnd + ' kind=opencode aumid=' + $Aumid + ' win11=aumid+wm_seticon')",
+            r"        return $ok",
+            r"    } catch {",
+            r"        Write-Output ('console-icon: error ' + $_.Exception.Message)",
+            r"        return $false",
+            r"    }",
+            r"}",
+            r"[void](Set-BobConsoleIcon -IcoPath $bobOcIco -Aumid 'Bobiverse.OpenCode')",
             r"$script:ocTurnN = 0",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
@@ -5952,11 +6339,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $env:TMP = $bobTmp",
             r"        $env:TMPDIR = $bobTmp",
             r"        $env:BOB_OPENCODE_SCRATCH = $bobTmp",
-            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
-            r"    } else {",
-            r"        $argList = @('run', '-m', $model, $line)",
             r"    }",
-            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
             # FR #7952: once per job, before the run. Never changes $model mid-turn.
             r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
@@ -5971,6 +6354,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
             r"        }",
             r"    }",
+            # FR #8734 / BOB-29: $argList is built after the pause-return model update
+            # so -m, the seat line and the job header name the same model.
+            r"    if ($ocDir) {",
+            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
+            r"    } else {",
+            r"        $argList = @('run', '-m', $model, $line)",
+            r"    }",
+            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
@@ -6017,6 +6408,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8553: never -NoNewWindow with redirects. Sharing the parent console
             # hangs opencode after the build banner (empty stdout) and can tear down the
             # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
+            # FR #8734 / BOB-29: stdout tee into seat-<nick>.log names the launched model.
+            r"        Write-Output ('opencode-run model=' + $model + ' job=' + [string]$jobKey)",
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
@@ -6068,15 +6461,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $lastLen = $len",
             r"                $lastBeat = [datetime]::UtcNow",
             r"                $lastProgress = [datetime]::UtcNow",
+            # FR #9209: mirror each new capture slice live on the success stream.
+            # bob_worker tees wrapper stdout to the seat console with flush; keep redirects
+            # + seat-log tee (FR #8553 / #8069). Do not wait for process exit.
+            r"                $pyLog = $null",
             r"                if ($script:ocStdoutLog) {",
             r"                    $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                    if (-not $pyLog) { $pyLog = 'python.exe' }",
-            r"                    foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
-            r"                        $cap = Read-OpencodeCapture $pair[0]",
-            r"                        $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
-            r"                        if ($cap.Length -gt $pos) {",
-            r"                            $slice = $cap.Substring($pos)",
-            r"                            Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                }",
+            r"                foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"                    $cap = Read-OpencodeCapture $pair[0]",
+            r"                    $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"                    if ($cap.Length -gt $pos) {",
+            r"                        $slice = $cap.Substring($pos)",
+            r"                        Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                        try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                        if ($script:ocStdoutLog -and $pyLog -and $stdoutLogPy) {",
             r"                            $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"                            try {",
             r"                                [IO.File]::WriteAllText($sliceFile, $slice)",
@@ -6221,17 +6621,23 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"          }",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
+            r"        $pyLogEnd = $null",
             r"        if ($script:ocStdoutLog -and $stdoutLogPy) {",
-            r"            $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
-            r"            if (-not $pyLog) { $pyLog = 'python.exe' }",
-            r"            foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
-            r"                $cap = Read-OpencodeCapture $pair[0]",
-            r"                $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
-            r"                if ($cap.Length -gt $pos) {",
+            r"            $pyLogEnd = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"            if (-not $pyLogEnd) { $pyLogEnd = 'python.exe' }",
+            r"        }",
+            r"        foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"            $cap = Read-OpencodeCapture $pair[0]",
+            r"            $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"            if ($cap.Length -gt $pos) {",
+            r"                $slice = $cap.Substring($pos)",
+            r"                Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            # FR #9209: remainder once (live loop already mirrored prior slices).
+            r"                try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                if ($pyLogEnd) {",
             r"                    $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
-            r"                    try { [IO.File]::WriteAllText($sliceFile, $cap.Substring($pos)); & $pyLog $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
+            r"                    try { [IO.File]::WriteAllText($sliceFile, $slice); & $pyLogEnd $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
             r"                    finally { Remove-Item -LiteralPath $sliceFile -ErrorAction SilentlyContinue }",
-            r"                    Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
             r"                }",
             r"            }",
             r"        }",
@@ -6249,7 +6655,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
-            r"    Write-Output $outStr",
+            # FR #9209: fuel/scan uses $outStr from capture files. Live text already flushed to
+            # the success stream; do not dump the full blob again (operator hate).
+            r"    Write-Output ('opencode-capture-done exit=' + [string]$exitCode + ' bytes=' + [string]$outStr.Length)",
             r"    # Drop the prompt echo and markdown quotations before the fuel match.",
             r"    # The seat prompt documents `402 Payment Required`; that is not a provider 402.",
             r"    $scan = $outStr",
@@ -6657,20 +7065,67 @@ def disable_console_quick_edit(k32=None) -> bool:
         return False
 
 
-def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
-    """Window icon: jeeves-butler.ico (monitor) or bob-systray.ico; install then PyInstaller embed."""
+def _window_icon_names(kind: Optional[str] = None) -> list:
+    """FR #9211: preferred .ico basenames by seat kind (OpenCode favicon, butler, Bob tray)."""
+    k = (kind or "").strip().lower()
+    if k in ("opencode", "oc"):
+        return ["opencode-favicon.ico", "bob-systray.ico", "jeeves-butler.ico"]
+    if k in ("monitor", "maintenance", "jeeves", "butler"):
+        return ["jeeves-butler.ico", "bob-systray.ico"]
+    return ["bob-systray.ico", "jeeves-butler.ico", "opencode-favicon.ico"]
+
+
+def _window_icon_aumid(kind: Optional[str] = None) -> str:
+    """FR #9211: Win11 taskbar groups by AppUserModelID; pin a stable id per seat family."""
+    k = (kind or "").strip().lower()
+    if k in ("opencode", "oc"):
+        return "Bobiverse.OpenCode"
+    if k in ("monitor", "maintenance", "jeeves", "butler"):
+        return "Bobiverse.Jeeves"
+    return "Bobiverse.BobWorker"
+
+
+def find_window_icon(
+    install_root: Optional[Path] = None, kind: Optional[str] = None
+) -> Optional[Path]:
+    """FR #9211: resolve a console .ico (install assets, tray, jeeves, MEIPASS, source tree)."""
+    names = _window_icon_names(kind)
     cands: list = []
+    roots: list = []
     if install_root:
-        cands.append(Path(install_root) / "assets" / "jeeves-butler.ico")
-        cands.append(Path(install_root) / "assets" / "bob-systray.ico")
+        ir = Path(install_root)
+        roots.extend(
+            [
+                ir / "assets",
+                ir / "tray" / "assets",
+                ir / "bob" / "tray" / "assets",
+                ir / "jeeves" / "assets",
+                ir.parent / "jeeves" / "assets",
+            ]
+        )
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
-        cands.append(Path(mei) / "assets" / "bob-systray.ico")
-    cands.append(Path(__file__).resolve().parent.parent / "assets" / "bob-systray.ico")
-    cands.append(Path(__file__).resolve().parent.parent / "tray" / "assets" / "bob-systray.ico")  # t829u: bob/tray is a first-class source
-    cands.append(Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "assets" / "bob-systray.ico")
+        roots.append(Path(mei) / "assets")
+    here = Path(__file__).resolve().parent.parent  # bob/ when scripts live under bob/scripts
+    roots.extend(
+        [
+            here / "assets",
+            here / "tray" / "assets",  # t829u: bob/tray is a first-class source
+            here / "third_party" / "bob-tray" / "assets",
+            here.parent / "jeeves" / "assets",
+            here.parent / "bob" / "tray" / "assets",
+        ]
+    )
+    for root in roots:
+        for name in names:
+            cands.append(root / name)
+    seen: set = set()
     for c in cands:
         try:
+            key = str(c).lower()
+            if key in seen:
+                continue
+            seen.add(key)
             if c.is_file():
                 return c
         except OSError:
@@ -6678,9 +7133,17 @@ def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] = None) -> bool:
-    """t794u: put the systray icon on the worker's console window (title bar + taskbar). The exe itself carries the same icon
-    (PyInstaller --icon). Typed ctypes (HWND/HICON are pointers); never raises, never prints."""
+def set_console_icon(
+    install_root: Optional[Path] = None,
+    icon: Optional[Path] = None,
+    kind: Optional[str] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """t794u / FR #9211: set console title-bar + taskbar icon (WM_SETICON) and Win11 AppUserModelID.
+
+    The hashed bob-worker.exe also carries bob-systray via PyInstaller --icon. Typed ctypes
+    (HWND/HICON are pointers); never raises. Logs path/hwnd/aumid when ``log`` is given.
+    """
     if os.name != "nt":
         return False
     try:
@@ -6690,21 +7153,59 @@ def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] =
         u32 = ctypes.WinDLL("user32", use_last_error=True)
         k32.GetConsoleWindow.restype = ctypes.c_void_p
         u32.LoadImageW.restype = ctypes.c_void_p
-        u32.LoadImageW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u32.LoadImageW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
         u32.SendMessageW.restype = ctypes.c_ssize_t
-        u32.SendMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        u32.SendMessageW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.c_size_t,
+            ctypes.c_ssize_t,
+        ]
+        aumid = _window_icon_aumid(kind)
+        try:
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
+            shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.HRESULT
+            shell32.SetCurrentProcessExplicitAppUserModelID(aumid)
+        except Exception:
+            aumid = aumid + "(aumid-fail)"
+        ico = Path(icon) if icon else find_window_icon(install_root, kind=kind)
         hwnd = k32.GetConsoleWindow()
-        ico = Path(icon) if icon else find_window_icon(install_root)
+        if not hwnd:
+            # Console HWND can lag AllocConsole; one short retry helps Win11.
+            time.sleep(0.05)
+            hwnd = k32.GetConsoleWindow()
         if not hwnd or not ico:
+            if log:
+                log(
+                    f"console-icon: miss hwnd={hwnd!r} ico={ico} kind={kind or '-'} aumid={aumid}"
+                )
             return False
         done = False
-        for which, px in ((0, 16), (1, 32)):   # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
+        for which, px in ((0, 16), (1, 32)):  # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
             h = u32.LoadImageW(None, str(ico), 1, px, px, 0x10)
             if h:
-                u32.SendMessageW(hwnd, 0x80, which, h)   # WM_SETICON
+                u32.SendMessageW(hwnd, 0x80, which, h)  # WM_SETICON
                 done = True
+        if log:
+            log(
+                f"console-icon: {'ok' if done else 'load-fail'} path={ico} hwnd={hwnd} "
+                f"kind={kind or '-'} aumid={aumid} win11=aumid+wm_seticon"
+            )
         return done
-    except Exception:
+    except Exception as e:
+        if log:
+            try:
+                log(f"console-icon: error {type(e).__name__}")
+            except Exception:
+                pass
         return False
 
 
@@ -7662,6 +8163,47 @@ def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) ->
             continue
         ts = _parse_iso_ts(str(obj.get("ts") or ""))
         if ts is not None and ts > float(since_wall):
+            return True
+    return False
+
+
+
+def probe_opencode_turns_recent(
+    turns_path: Path | str,
+    *,
+    within_s: float,
+    now_wall: float | None = None,
+) -> bool:
+    """True when opencode-turns.jsonl has turn_started/ended within within_s (FR #9009).
+
+    Digest worker.updated can lag while OpenCode is still turning. A fresh turn
+    marker means the seat is not frozen; do not recycle for opencode-frozen-progress.
+    """
+    path = Path(turns_path)
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    now = float(now_wall) if now_wall is not None else time.time()
+    cutoff = now - max(1.0, float(within_s))
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        typ = str(obj.get("type") or "")
+        if typ not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts >= cutoff:
             return True
     return False
 
@@ -9042,6 +9584,34 @@ def pid_is_alive(pid: int) -> bool:
         return False
 
 
+def classify_disappeared_seat_reason(run_dir: Path | str) -> tuple[str, int | None]:
+    """FR #9226: console-closed when worker.log shows CTRL_CLOSE / 0xC000013A, else external-kill."""
+    rd = Path(run_dir)
+    wl = rd / "worker.log"
+    if not wl.is_file():
+        return "external-kill", None
+    try:
+        data = wl.read_bytes()
+    except OSError:
+        return "external-kill", None
+    if len(data) > 65536:
+        data = data[-65536:]
+    try:
+        tail = data.decode("utf-8", errors="replace")
+    except Exception:
+        return "external-kill", None
+    low = tail.lower()
+    if (
+        "console-closed" in low
+        or "console-close exit" in low
+        or "0xc000013a" in low
+        or "3221225786" in tail
+        or "status_control_c_exit" in low
+    ):
+        return "console-closed", CONSOLE_CLOSE_EXIT
+    return "external-kill", None
+
+
 def write_disappeared_last_exit(
     run_dir: Path | str,
     *,
@@ -9051,22 +9621,25 @@ def write_disappeared_last_exit(
     machine: str = "",
     nick: str = "",
     kind: str = "",
+    exit_code: int | None = None,
+    via: str = "fr-8568-disappeared-seat",
 ) -> Path:
-    """FR #8568: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
+    """FR #8568 / #9226: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
     rd = Path(run_dir)
     rd.mkdir(parents=True, exist_ok=True)
     path = rd / "last-exit.json"
+    reason_s = (reason or "external-kill").strip() or "external-kill"
     payload = {
-        "reason": (reason or "external-kill").strip() or "external-kill",
-        "exit_code": None,
-        "raw_code": None,
+        "reason": reason_s,
+        "exit_code": exit_code,
+        "raw_code": exit_code,
         "job_key": (job_key or "").strip(),
         "machine": (machine or "").strip(),
         "nick": (nick or "").strip(),
         "kind": (kind or "").strip(),
         "agent_pid": int(pid) if pid else None,
         "synthetic": True,
-        "via": "fr-8568-disappeared-seat",
+        "via": (via or "fr-8568-disappeared-seat").strip() or "fr-8568-disappeared-seat",
     }
     text = json.dumps(payload, sort_keys=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
@@ -9088,7 +9661,7 @@ def handle_disappeared_worker_run(
     """If ``run_dir`` is a dead worker seat with no last-exit and an open job, write exit + GIVEUP.
 
     Does **not** restart the seat (FR #3180 manual-only). Returns a summary dict, or None when
-    no action was taken.
+    no action was taken. FR #9226: classify console-closed from worker.log when present.
     """
     rd = Path(run_dir)
     if not rd.is_dir():
@@ -9108,10 +9681,21 @@ def handle_disappeared_worker_run(
     except OSError:
         last_from = ""
     job_key = assign_job_key(last_from) or ""
+    reason, exit_code = classify_disappeared_seat_reason(rd)
+    nick = f"{mid}-{pid}"
+    via = "fr-9226-disappeared-seat"
     if not job_key:
         # No accepted-job breadcrumb — still leave last-exit so the gap is visible.
-        write_disappeared_last_exit(rd, reason="external-kill", pid=pid, machine=mid)
-        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False}
+        write_disappeared_last_exit(
+            rd,
+            reason=reason,
+            pid=pid,
+            machine=mid,
+            nick=nick,
+            exit_code=exit_code,
+            via=via,
+        )
+        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False, "reason": reason}
     outbox = outbox_path_for_run(rd)
     try:
         existing = outbox.read_text(encoding="utf-8", errors="replace") if outbox.is_file() else ""
@@ -9119,14 +9703,39 @@ def handle_disappeared_worker_run(
         existing = ""
     if outbox_text_has_terminal(existing, job_key):
         write_disappeared_last_exit(
-            rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+            rd,
+            reason=reason,
+            job_key=job_key,
+            pid=pid,
+            machine=mid,
+            nick=nick,
+            exit_code=exit_code,
+            via=via,
         )
-        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "already_terminal": True}
+        return {
+            "run_dir": str(rd),
+            "pid": pid,
+            "job_key": job_key,
+            "giveup": False,
+            "already_terminal": True,
+            "reason": reason,
+        }
     write_disappeared_last_exit(
-        rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+        rd,
+        reason=reason,
+        job_key=job_key,
+        pid=pid,
+        machine=mid,
+        nick=nick,
+        exit_code=exit_code,
+        via=via,
     )
     channel = (shop or mid or "shop").strip().lstrip("#") or "shop"
-    line = f"PRIVMSG #{channel} :{external_kill_giveup_line(job_key)}"
+    if reason == "console-closed":
+        giveup = console_closed_giveup_line(job_key)
+    else:
+        giveup = external_kill_giveup_line(job_key)
+    line = f"PRIVMSG #{channel} :{giveup}"
     try:
         with outbox.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(line + "\n")
@@ -9136,8 +9745,22 @@ def handle_disappeared_worker_run(
             except OSError:
                 pass
     except OSError:
-        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "outbox_error": True}
-    return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": True, "line": line}
+        return {
+            "run_dir": str(rd),
+            "pid": pid,
+            "job_key": job_key,
+            "giveup": False,
+            "outbox_error": True,
+            "reason": reason,
+        }
+    return {
+        "run_dir": str(rd),
+        "pid": pid,
+        "job_key": job_key,
+        "giveup": True,
+        "line": line,
+        "reason": reason,
+    }
 
 
 def scan_disappeared_worker_runs(
@@ -9512,18 +10135,41 @@ def opencode_external_dir_corrective_steps(
     worktree: str | Path,
     outbox: str | Path,
     scratch: str | Path,
+    reject_path: str | Path | None = None,
+    intake_script: str | Path | None = None,
 ) -> str:
-    """FR #8247: short corrective after an ``external_directory`` rejection (names allowed scratch)."""
+    """FR #8247 / #9214: short corrective after an ``external_directory`` rejection.
+
+    Names allowed scratch. When the reject is under install ``scripts`` (or an
+    intake_script is provided), point harvest at the allowlisted intake helper.
+    """
     key = (job_key or "job").strip() or "job"
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
     sc = str(scratch or "").strip()
+    intake = str(intake_script or "").strip()
+    rejected = str(reject_path or "").strip()
+    harvest_hint = ""
+    if intake:
+        harvest_hint = (
+            " For harvest/intake use the allowed script "
+            + intake
+            + " (common\\scripts or flat scripts under the install). "
+        )
+    else:
+        norm = rejected.replace("/", "\\").lower()
+        if "\\scripts\\" in norm or norm.endswith("\\scripts"):
+            harvest_hint = (
+                " For harvest/intake prefer common\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+                "(allowed) over a denied install path. "
+            )
     return (
         f"CORRECTIVE {key}: OpenCode rejected external_directory (path outside the job tree). "
         f"Use only the allowed scratch directory {sc} (worktree .bob\\tmp). "
         f"TEMP/TMP/TMPDIR already point there for this seat. "
         f"Do not request external_directory and never use %TEMP% or the user Temp folder. "
         f"Keep all scratch and tool paths inside {wt}. "
+        f"{harvest_hint}"
         f"Finish remaining work. {opencode_typed_delivery(key, outbox=ob)} "
         "The turn is not over until DONE is written."
     )
@@ -9890,6 +10536,41 @@ def out_of_fuel_quit_enabled(env: Optional[dict] = None) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+# TipForm / web meter fragments that must never appear in Win32 MessageBox (FR #9027).
+_OUT_OF_FUEL_DIALOG_HTML_RE = re.compile(r"<[^>]+>", re.DOTALL)
+_OUT_OF_FUEL_DIALOG_CSS_RE = re.compile(
+    r"\.token-progress[a-z0-9_-]*\s*\{[^}]*\}", re.IGNORECASE | re.DOTALL
+)
+_OUT_OF_FUEL_DIALOG_BAN_RE = re.compile(
+    r"(?i)(token-progress-bar|token-progress-fill|low cost models|<style|</style|<div|</div)"
+)
+
+
+def sanitize_out_of_fuel_dialog_field(text: str, maxlen: int) -> str:
+    """Plain-text only for MessageBox: strip tags/CSS/JSON blobs, cap length (FR #9027)."""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    # Drop HTML tags and TipForm meter CSS blocks.
+    cleaned = _OUT_OF_FUEL_DIALOG_HTML_RE.sub(" ", raw)
+    cleaned = _OUT_OF_FUEL_DIALOG_CSS_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("{", " ").replace("}", " ")
+    # Collapse whitespace (including newlines from dumped HTML).
+    cleaned = " ".join(cleaned.split())
+    if _OUT_OF_FUEL_DIALOG_BAN_RE.search(cleaned):
+        # Still looks like meter chrome — refuse the field rather than show garbage.
+        cleaned = ""
+    # Prefer short fuel summaries when evidence is a provider blob.
+    low = cleaned.lower()
+    if "fuel-exhausted:opencode-free" in low or "free usage limit" in low:
+        cleaned = "fuel-exhausted:opencode-free"
+    elif "hard-402" in low or ("402" in low and "payment" in low):
+        cleaned = "hard-402"
+    elif low.startswith("{") or '"error"' in low or '"html"' in low:
+        cleaned = ""
+    return one_line(cleaned, int(maxlen))
+
+
 def format_out_of_fuel_dialog_text(
     *,
     pool: str = "",
@@ -9898,21 +10579,21 @@ def format_out_of_fuel_dialog_text(
     evidence: str = "",
     nick: str = "",
 ) -> str:
-    """User-visible dialog body for FR #8814 fuel-exhausted quit."""
+    """User-visible dialog body for FR #8814 fuel-exhausted quit (plain text; FR #9027)."""
     lines = ["Fuel exhausted for this seat."]
-    pool_s = (pool or "").strip()
+    pool_s = sanitize_out_of_fuel_dialog_field(pool, 60)
     if pool_s:
         lines.append(f"Pool: {pool_s}")
-    rem_s = (remaining or "").strip()
+    rem_s = sanitize_out_of_fuel_dialog_field(remaining, 80)
     if rem_s:
         lines.append(f"Remaining: {rem_s}")
-    reset_s = (reset_hint or "").strip()
+    reset_s = sanitize_out_of_fuel_dialog_field(reset_hint, 80)
     if reset_s:
         lines.append(f"Reset: {reset_s}")
-    nick_s = (nick or "").strip()
+    nick_s = sanitize_out_of_fuel_dialog_field(nick, 40)
     if nick_s:
         lines.append(f"Seat: {nick_s}")
-    preview = one_line(evidence or "", 160)
+    preview = sanitize_out_of_fuel_dialog_field(evidence or "", 120)
     if preview:
         lines.append(preview)
     lines.append("This seat will close now so it leaves the digest.")
@@ -9944,22 +10625,32 @@ def show_out_of_fuel_dialog(
         evidence=evidence,
         nick=nick,
     )
-    if show_fn is not None:
-        show_fn(text, title)
-        return True
     raw = str(env.get("BOB_WORKER_FUEL_DIALOG", "1") or "1").strip().lower()
-    if raw in ("0", "false", "no", "off"):
+    if show_fn is None and raw in ("0", "false", "no", "off"):
         if log:
             try:
                 log("out-of-fuel: dialog skipped (BOB_WORKER_FUEL_DIALOG=0)")
             except Exception:
                 pass
         return False
+    # FR #8991 / #9016: never block worker-remove / shutdown on MessageBoxW (Session 0
+    # hang) or a slow injected show_fn. Daemon thread + short join; process can exit.
     try:
-        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        MB_OK = 0x00000000
-        MB_ICONWARNING = 0x00000030
-        user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+        def _box() -> None:
+            try:
+                if show_fn is not None:
+                    show_fn(text, title)
+                    return
+                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+                MB_OK = 0x00000000
+                MB_ICONWARNING = 0x00000030
+                user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+            except Exception:
+                pass
+
+        th = threading.Thread(target=_box, name="out-of-fuel-dialog", daemon=True)
+        th.start()
+        th.join(5.0)
         return True
     except Exception as e:
         if log:
@@ -10589,6 +11280,9 @@ class Relay:
         self.opencode_job_classify: Optional[Callable[[str], str]] = None
         self.opencode_ensure_worktree: Optional[Callable[[str], str]] = None
         self._worktree_creating_keys: set = set()
+        # FR #9228: first-seen time for parked worktree creates (stale-offer log).
+        self._worktree_parked_at: dict = {}
+        self._stale_offer_logged: set = set()
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
@@ -10598,6 +11292,8 @@ class Relay:
         self.ack_refuse_reason: Optional[Callable[[str], Optional[str]]] = None
         # True when a live turn belongs to another job (NACK busy, no inject).
         self.turn_busy_other_job: Optional[Callable[[str], bool]] = None
+        # FR #9254: open ACK job key for busy, holding <first> NACK text.
+        self.ack_open_job_key: Optional[Callable[[], Optional[str]]] = None
         # FR #8738: True while the prior job's closing turn is still open. Held assigns
         # stay parked (no inject) until that turn has ended.
         self.defer_flush_while: Optional[Callable[[], bool]] = None
@@ -10643,16 +11339,107 @@ class Relay:
             nack = f"NACK {key} job-context-malformed (FR #6240)" if key else ""
         return (nack or "").strip()
 
+    def _holding_job_display(self, prefer: str = "") -> str:
+        """FR #9254: best-effort display key for busy, holding <first> NACKs."""
+        hold = (prefer or "").strip()
+        if hold:
+            return hold
+        try:
+            if self.ack_open_job_key:
+                open_k = (self.ack_open_job_key() or "").strip()
+                if open_k:
+                    return open_k
+        except Exception:
+            pass
+        with self._lock:
+            if self._worktree_creating_keys:
+                return next(iter(self._worktree_creating_keys))
+            if self._acked_held_keys:
+                return next(iter(self._acked_held_keys))
+        return "job"
+
+    def _nack_busy_holding(self, line: str, holding: str = "") -> str:
+        """FR #9254: NACK … busy, holding <first> when the open job is known.
+
+        Falls back to plain ``NACK … busy`` when no holding key is available
+        (FR #8246 turn-busy path without an open ACK key).
+        """
+        hold = self._holding_job_display(holding)
+        key = assign_job_key(line) or "job"
+        if hold and hold.lower() != "job":
+            nack = busy_holding_nack_line(line, hold)
+            if nack:
+                return nack
+        return f"NACK {key} busy"
+
     def _park_worktree_create(self, nick: str, target: str, text: str, line: str) -> str:
-        """FR #6328: run ensure off the IRC read thread; ACK only after create."""
+        """FR #6328: run ensure off the IRC read thread; ACK only after create.
+
+        FR #9254: one park at a time per seat. A second different job while create
+        is in flight (or another job already ACK'd) is NACK busy, holding <first>.
+        """
         key = (assign_job_key(line) or "").strip().lower()
+        holding = ""
         with self._lock:
             if key and key in self._worktree_creating_keys:
                 self.log("relay: worktree create already in flight " + (key or "?"))
                 self._persist_last_from(line)
                 return "opencode_worktree_pending"
-            if key:
-                self._worktree_creating_keys.add(key)
+            # FR #9254: seat-level serialize — never twin-park two jobs.
+            others_creating = {
+                k for k in self._worktree_creating_keys if k and k != key
+            }
+            others_acked = {
+                k for k in self._acked_held_keys if k and k != key
+            }
+            if others_creating or others_acked:
+                holding = next(iter(others_creating or others_acked))
+            else:
+                if key:
+                    self._worktree_creating_keys.add(key)
+                    if key not in self._worktree_parked_at:
+                        self._worktree_parked_at[key] = float(self.clock())
+        if holding:
+            # Also refuse when Bored already has another ACK open (no park mark yet).
+            nack = self._nack_busy_holding(line, holding)
+            self.log(
+                "relay: refuse twin park while holding "
+                + holding
+                + " ("
+                + (key or "?")
+                + ")"
+            )
+            self._persist_last_from(line)
+            try:
+                return self._refuse_job_context(line, nack)
+            except Exception:
+                if self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                return "busy_holding"
+        # FR #9254: turn already busy on another job — do not start a second park.
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                nack = self._nack_busy_holding(line)
+                self.log("relay: refuse park (turn busy) " + (key or line[:80]))
+                self._persist_last_from(line)
+                with self._lock:
+                    if key:
+                        self._worktree_creating_keys.discard(key)
+                        self._worktree_parked_at.pop(key, None)
+                try:
+                    return self._refuse_job_context(line, nack)
+                except Exception:
+                    if self.write_outbox:
+                        try:
+                            self.write_outbox(nack)
+                        except Exception:
+                            pass
+                    return "busy_holding"
+        except Exception:
+            pass
         self.log("relay: park worktree create off read thread " + (key or line[:80]))
         self._persist_last_from(line)
         th = threading.Thread(
@@ -10667,7 +11454,12 @@ class Relay:
     def _worktree_create_then_deliver(
         self, nick: str, target: str, text: str, line: str, key: str
     ) -> None:
-        """Background: ensure worktree, then NACK or re-enter deliver for ACK."""
+        """Background: ensure worktree, then NACK or resume deliver for ACK+inject.
+
+        FR #9228: always log ensure result and resume status. Resume uses
+        ``resume_after_worktree`` so a second park / silent duplicate cannot
+        swallow the assign after create succeeded.
+        """
         nack = ""
         try:
             fn = self.opencode_ensure_worktree
@@ -10676,24 +11468,128 @@ class Relay:
             else:
                 job = assign_job_key(line) or "job"
                 nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
-        except Exception:
+        except Exception as e:
             job = assign_job_key(line) or "job"
             nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
+            self.log(
+                f"relay: worktree ensure exception key={key or '?'} err={type(e).__name__}"
+            )
         finally:
             if key:
                 with self._lock:
                     self._worktree_creating_keys.discard(key)
         if nack:
+            head = nack.splitlines()[0][:160]
+            self.log(f"relay: worktree ensure nack key={key or '?'} {head}")
             try:
                 self._refuse_job_context(line, nack)
             except Exception as e:
                 self.log(f"relay: worktree create NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
             return
+        # FR #9254: another job ACK'd while this create ran — never twin-ACK.
+        other_hold = ""
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != key}
+            if others:
+                other_hold = next(iter(others))
+        if not other_hold:
+            try:
+                if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                    other_hold = self._holding_job_display()
+            except Exception:
+                pass
+        if other_hold:
+            twin_nack = self._nack_busy_holding(line, other_hold)
+            self.log(
+                f"relay: worktree ensure ok but twin-busy key={key or '?'} "
+                f"holding={other_hold}"
+            )
+            try:
+                self._refuse_job_context(line, twin_nack)
+            except Exception as e:
+                self.log(f"relay: twin-busy NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
+            return
+        self.log(f"relay: worktree ensure ok key={key or '?'} -> resume deliver")
         try:
-            # Worktree exists now; classify will accept. Do not park again.
-            self.deliver(nick, target, text)
+            # Worktree exists now. Force resume so we never park again (FR #9228).
+            status = self.deliver(nick, target, text, resume_after_worktree=True)
+            self.log(
+                f"relay: worktree create resume status={status} key={key or '?'}"
+            )
+            if status in (
+                "opencode_worktree_pending",
+                "duplicate",
+                "ack_not_sent",
+                "held_until_turn_end",
+                "held",
+                "coalescing",
+            ):
+                # Last-chance force inject when soft statuses still blocked ACK.
+                forced = self._force_ack_inject_after_worktree(line)
+                self.log(
+                    f"relay: worktree create force-resume status={forced} key={key or '?'}"
+                )
+                if forced in ("injected", "held", "duplicate"):
+                    self.clear_worktree_park_mark(key)
+            elif status in ("injected", "held", "held_until_turn_end"):
+                self.clear_worktree_park_mark(key)
+            else:
+                # Unknown soft status — still clear park mark if we got a real inject/ACK path.
+                if status == "injected":
+                    self.clear_worktree_park_mark(key)
         except Exception as e:
             self.log(f"relay: worktree create resume error {type(e).__name__}")
+
+    def _force_ack_inject_after_worktree(self, line: str) -> str:
+        """FR #9228: after ensure ok, ACK+inject even if deliver soft-failed."""
+        if not line or not assign_job_ref(line):
+            return "no-assign"
+        with self._lock:
+            if line == self._last_line:
+                self._last_line = ""
+        # Hostile / fuel / busy still apply.
+        try:
+            if self.skips_hostile_assign and self.skips_hostile_assign(line):
+                nack = opencode_hostile_nack_line(line)
+                if nack and self.write_outbox:
+                    self.write_outbox(nack)
+                return "opencode_skips_hostile"
+        except Exception:
+            pass
+        try:
+            if self.refuse_assign_while and self.refuse_assign_while():
+                if self.on_refuse_assign:
+                    self.on_refuse_assign(line)
+                return "out_of_fuel"
+        except Exception:
+            pass
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                nack = self._nack_busy_holding(line)
+                if self.write_outbox:
+                    self.write_outbox(nack)
+                return "busy_turn"
+        except Exception:
+            pass
+        with self._lock:
+            self._last_line = line
+        ack_st = self._ack_offer_or_refuse(line)
+        if ack_st == "refused":
+            return "ack_not_sent"
+        if ack_st == "busy_holding":
+            return "busy_holding"
+        if ack_st == "duplicate":
+            # Same job already ACKed — still inject if target ready.
+            pass
+        self._persist_last_from(line)
+        if self._inject is None:
+            with self._lock:
+                if line not in self._pending:
+                    self._pending.append(line)
+            return "held"
+        return self._do_inject(line)
 
     def _write_nacks(self, nack: str) -> None:
         if not nack or not self.write_outbox:
@@ -10761,7 +11657,14 @@ class Relay:
         self._write_nacks(nack)
         return "opencode_job_blocked"
 
-    def deliver(self, nick: str, target: str, text: str) -> str:
+    def deliver(
+        self,
+        nick: str,
+        target: str,
+        text: str,
+        *,
+        resume_after_worktree: bool = False,
+    ) -> str:
         nq = is_nothing_queued(text)
         if drop_text(text):
             if nq:
@@ -10776,6 +11679,11 @@ class Relay:
             self._persist_last_from(line)
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
+        # FR #9228: resume after ensure must not soft-duplicate before ACK/inject.
+        if resume_after_worktree:
+            with self._lock:
+                if line == self._last_line:
+                    self._last_line = ""
         # FR #6134: OpenCode seats NACK hostile MRB/UAT before ACK-on-receipt / inject.
         if assign_job_ref(line):
             skip_hostile = False
@@ -10809,6 +11717,17 @@ class Relay:
                 if self.opencode_job_classify:
                     nack = self._job_context_classify(line)
                     if nack and is_worktree_absent_nack(nack) and self.opencode_ensure_worktree:
+                        if resume_after_worktree:
+                            # Ensure claimed ok but classify still absent — do not park again.
+                            job = keys[0]
+                            verify = (
+                                f"NACK {job} worktree-create-failed:verify (FR #9228)"
+                            )
+                            self.log(
+                                "relay: worktree still absent after ensure; "
+                                + verify
+                            )
+                            return self._refuse_job_context(line, verify)
                         return self._park_worktree_create(nick, target, text, line)
                     if nack:
                         return self._refuse_job_context(line, nack)
@@ -10837,7 +11756,8 @@ class Relay:
                     except Exception:
                         pass
                 return "out_of_fuel"
-        # FR #8246: a live turn for another job is not a hold. NACK busy and do not inject.
+        # FR #8246 / #9254: a live turn for another job is not a hold.
+        # NACK busy, holding <first> and do not inject.
         if assign_job_ref(line):
             busy_turn = False
             try:
@@ -10849,8 +11769,7 @@ class Relay:
                     if line == self._last_line:
                         return "duplicate"
                     self._last_line = line
-                key = assign_job_key(line) or "job"
-                nack = f"NACK {key} busy"
+                nack = self._nack_busy_holding(line)
                 self.log("relay: refused assign (turn busy) " + line[:120])
                 self._persist_last_from(line)
                 if self.write_outbox:
@@ -10866,6 +11785,13 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            # FR #9056: re-delivery of an already-open same job while holding — no-op.
+            # Do not append another pending copy or emit NACK ack-not-sent.
+            if self._ack_refuse_is_duplicate(line):
+                self.log(
+                    "relay: ignore re-offer of already-ACKed open job " + (line or "")[:120]
+                )
+                return "duplicate"
             first_held = False
             with self._lock:
                 if line == self._last_line and not self._consume_context_refusal(line):
@@ -10878,9 +11804,18 @@ class Relay:
                     del self._pending[0]
             # FR #4115: ACK the first held assign on receipt (before inject / turn end).
             # FR #8246: if that ACK is suppressed, drop the hold and do not inject later.
-            if first_held and not self._ack_offer_or_refuse(line):
-                self._drop_pending_line(line)
-                return "ack_not_sent"
+            # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK).
+            if first_held:
+                ack_st = self._ack_offer_or_refuse(line)
+                if ack_st == "refused":
+                    self._drop_pending_line(line)
+                    return "ack_not_sent"
+                if ack_st == "busy_holding":
+                    self._drop_pending_line(line)
+                    return "busy_holding"
+                if ack_st == "duplicate":
+                    self._drop_pending_line(line)
+                    return "duplicate"
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -10922,10 +11857,21 @@ class Relay:
                 ack_first = bool(assign_job_ref(line))
         # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
         # FR #8246: a suppressed ACK is one decision with inject — do not deliver the job.
-        if ack_first and not self._ack_offer_or_refuse(line):
-            if not do_inject:
-                self._drop_pending_line(line)
-            return "ack_not_sent"
+        # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK / no re-inject).
+        if ack_first:
+            ack_st = self._ack_offer_or_refuse(line)
+            if ack_st == "refused":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "ack_not_sent"
+            if ack_st == "busy_holding":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "busy_holding"
+            if ack_st == "duplicate":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "duplicate"
         if do_inject:
             return self._do_inject(line)
         return "held"
@@ -10934,11 +11880,37 @@ class Relay:
         with self._lock:
             self._pending = [p for p in self._pending if p != line]
 
-    def _ack_offer_or_refuse(self, line: str) -> bool:
-        """FR #8246: fresh offer clears the finished mark, then ACK.
+    def _ack_refuse_is_duplicate(self, line: str) -> bool:
+        """FR #9056: True when program ACK for this job is already open."""
+        ack = ack_on_receipt_line(line)
+        if not ack or not self.ack_refuse_reason:
+            return False
+        try:
+            return self.ack_refuse_reason(ack) == "duplicate ACK"
+        except Exception:
+            return False
 
-        Returns False when the ACK would be dropped. Caller must not inject.
+    def clear_finished_ref(self, line: str) -> None:
+        """FR #9339: drop typed finished mark so a re-offered MRB/FR is not NACKed already finished."""
+        key = assign_job_key(line)
+        if not key:
+            return
+        typed = key.lower()
+        with self._lock:
+            self._finished_refs.discard(typed)
+
+    def _ack_offer_or_refuse(self, line: str) -> str:
+        """FR #8246 / #9056 / #9254 / #9339: fresh offer clears the finished mark, then ACK.
+
+        Returns:
+          ``"acked"`` — ACK written; caller may inject/hold.
+          ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"busy_holding"`` — other job ACK open; ``NACK … busy, holding <first>``.
+          ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
+        # FR #9339: clear Relay finished mark before prepare_offer / ACK so a FIX
+        # push re-offer of the same MRB number is reviewed, not NACKed already finished.
+        self.clear_finished_ref(line)
         if self.prepare_offer:
             try:
                 self.prepare_offer(line)
@@ -10951,6 +11923,22 @@ class Relay:
                 reason = self.ack_refuse_reason(ack)
             except Exception:
                 reason = None
+        if reason == "duplicate ACK":
+            # FR #9056: program already ACK'd this in-flight job (held flush / receipt).
+            # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
+            self.log(f"relay: ACK already open for same job; no-op ({reason})")
+            return "duplicate"
+        # FR #9254: cross-job ACK while another ACK is open.
+        if reason and str(reason).startswith("busy holding"):
+            holding = str(reason)[len("busy holding") :].strip() or "job"
+            nack = self._nack_busy_holding(line, holding)
+            self.log(f"relay: ACK suppressed ({reason}); not injecting")
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "busy_holding"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -10960,9 +11948,25 @@ class Relay:
                     self.write_outbox(nack)
                 except Exception:
                     pass
-            return False
+            return "refused"
+        # FR #9254 belt: seat already ACK'd a different job (Bored not yet painted).
+        incoming = (assign_job_key(line) or "").strip().lower()
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != incoming}
+            other = next(iter(others)) if others else ""
+        if other:
+            nack = self._nack_busy_holding(line, other)
+            self.log(
+                f"relay: ACK suppressed (seat already holding {other}); not injecting"
+            )
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "busy_holding"
         self._ack_on_receipt(line)
-        return True
+        return "acked"
 
     def _ack_on_receipt(self, line: str) -> None:
         """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
@@ -11110,7 +12114,8 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
-            if self._ack_offer_or_refuse(line):
+            # FR #9056: only inject on a fresh ACK; duplicate/refused skip re-inject.
+            if self._ack_offer_or_refuse(line) == "acked":
                 self._do_inject(line)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
@@ -11302,6 +12307,38 @@ class Relay:
                 if assign_job_ref(line):
                     return True
         return False
+
+    def maybe_log_stale_worktree_offer(self, *, min_age_s: float = 180.0) -> None:
+        """FR #9228: when idle with a parked create older than *min_age_s*, log once."""
+        now = float(self.clock())
+        stale: list[tuple[str, float]] = []
+        with self._lock:
+            for key, started in list(self._worktree_parked_at.items()):
+                age = now - float(started)
+                if age < float(min_age_s):
+                    continue
+                if key in self._stale_offer_logged:
+                    continue
+                # Still creating, or create finished but never ACKed (key left in parked_at).
+                stale.append((key, age))
+                self._stale_offer_logged.add(key)
+        for key, age in stale:
+            inflight = False
+            with self._lock:
+                inflight = key in self._worktree_creating_keys
+            self.log(
+                f"relay: stale worktree offer key={key} age_s={age:.0f} "
+                f"inflight={inflight} (no ACK yet; FR #9228)"
+            )
+
+    def clear_worktree_park_mark(self, key: str) -> None:
+        """FR #9228: drop stale-offer tracking after ACK/inject/NACK."""
+        k = (key or "").strip().lower()
+        if not k:
+            return
+        with self._lock:
+            self._worktree_parked_at.pop(k, None)
+            self._stale_offer_logged.discard(k)
 
     def pending_assign_keys(self) -> set:
         """FR #8738: lower-cased typed keys of assigns still parked (not injected)."""
@@ -12439,6 +13476,7 @@ def opencode_frozen_recycle_reason(
     digest_doing_age_s: float | None,
     progress_moved_age_s: float | None,
     threshold_s: float = 900.0,
+    turns_recent: bool = False,
 ) -> str:
     """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
 
@@ -12447,6 +13485,11 @@ def opencode_frozen_recycle_reason(
     `limited=true` with rolling remaining must not set `out_of_fuel` (that
     hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
     hard 402 / exhausted holds.
+
+    FR #9009: recent opencode-turns.jsonl activity (turn_started/ended) means the
+    agent is still working even when digest worker.updated is stale. That
+    suppresses frozen-progress / lost-ack-stale recycles (FR #8646 still applies
+    when turns are not recent).
     """
     if (kind or "").strip().lower() != "opencode":
         return ""
@@ -12462,8 +13505,13 @@ def opencode_frozen_recycle_reason(
     if digest_age is not None and digest_age >= thr:
         if not ack_open:
             return "opencode-lost-ack-stale"
+        # FR #9009: fresh turns mean the agent is working despite a stale digest stamp.
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     return ""
 
@@ -14322,6 +15370,8 @@ class BoredEmitter:
         # FR #6366: OpenCode finish-run decide hook ("retry"|"giveup"); attempt counter.
         self.opencode_finish_decide_fn: Optional[Callable[[str], str]] = None
         self.job_end_cleanup_fn: Optional[Callable[[Optional[str]], None]] = None
+        # FR #9183: idle sweep + locked worktree retry (set by Seat for all kinds).
+        self.idle_worktree_sweep_fn: Optional[Callable[[str], None]] = None
         self._opencode_finish_attempt: int = 0
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
@@ -14534,9 +15584,10 @@ class BoredEmitter:
         return True
 
     def outbox_ack_refuse_reason(self, payload: str) -> Optional[str]:
-        """FR #4730 / #6333 / #6472: ACK-only refuse tag, else None (allow).
+        """FR #4730 / #6333 / #6472 / #9254: ACK-only refuse tag, else None (allow).
 
-        Tags: ``finished-job ACK replay``, ``duplicate ACK``.
+        Tags: ``finished-job ACK replay``, ``duplicate ACK``,
+        ``busy holding <open-job>`` (cross-job twin ACK).
         """
         p = (payload or "").strip()
         if not _OUT_ACK_RX.match(p):
@@ -14548,6 +15599,9 @@ class BoredEmitter:
             # Dedupe model ACK after program ACK-on-receipt for the same open job.
             if job and self._ack_open and self._ack_job_key and job == self._ack_job_key:
                 return "duplicate ACK"
+            # FR #9254: never forward a second job's ACK while one ACK is open.
+            if job and self._ack_open and self._ack_job_key and job != self._ack_job_key:
+                return f"busy holding {self._ack_job_key}"
             return None
 
     def should_forward_outbox(self, payload: str) -> bool:
@@ -15652,7 +16706,19 @@ class BoredEmitter:
             self._idle_since = None
             if self._nak_due is not None and now >= self._nak_due:
                 self._nak_due = None  # busy at due time: never send; post-harvest !bored covers it
+            # FR #9228: also surface while "busy" only because ensure is hung/in-flight.
+            try:
+                if self.relay is not None:
+                    self.relay.maybe_log_stale_worktree_offer(min_age_s=180.0)
+            except Exception:
+                pass
             return None
+        # FR #9228: idle seat with a parked worktree create and no ACK — surface once.
+        try:
+            if self.relay is not None:
+                self.relay.maybe_log_stale_worktree_offer(min_age_s=180.0)
+        except Exception:
+            pass
         # FR #4753: ACK past ack_stale_s must clear and !bored (reason ack-stale), even when
         # turn_started bumped release_gen and the cursor turn never ended (error stall).
         if (
@@ -15816,6 +16882,14 @@ class BoredEmitter:
                 self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
         except Exception:
             pass
+        # FR #9183: while idle / after terminal job lines, retry locked removes + sweep extras.
+        if reason in ("idle", "start", "done", "free", "turn"):
+            sweep = getattr(self, "idle_worktree_sweep_fn", None)
+            if sweep is not None:
+                try:
+                    sweep(reason)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: failed:{type(e).__name__}")
         ok = False
         try:
             ok = bool(self.send())
@@ -16133,7 +17207,10 @@ class Supervisor:
                 self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
             elif (self.kind or "").strip().lower() in ("grok", "cursor"):
                 # FR #6918: drop --job-worktree from live MCP configs when the job ends.
+                # FR #9183: also prune the finished job worktree (same helper as OpenCode).
                 self.bored.job_end_cleanup_fn = self._live_skill_dag_job_end_cleanup
+            # FR #9183: idle sweep + locked-remove retry for every seat kind.
+            self.bored.idle_worktree_sweep_fn = self._idle_job_worktree_sweep
             # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
             self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
@@ -16161,6 +17238,12 @@ class Supervisor:
         )
         relay.turn_busy_other_job = lambda line: (
             self.bored.live_turn_blocks_assign(line) if self.bored else False
+        )
+        # FR #9254: surface open ACK key for busy, holding <first> NACK text.
+        relay.ack_open_job_key = lambda: (
+            self.bored._ack_job_key
+            if self.bored and getattr(self.bored, "_ack_open", False)
+            else None
         )
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)
@@ -16667,11 +17750,20 @@ class Supervisor:
             except Exception:
                 pass
         if "reset" in (evidence or "").lower():
-            reset_hint = one_line(evidence or "", 80)
-        return pool, remaining, reset_hint
+            # FR #9027: never dump provider HTML/JSON into Reset: — sanitize first.
+            reset_hint = sanitize_out_of_fuel_dialog_field(evidence or "", 80)
+        return (
+            sanitize_out_of_fuel_dialog_field(pool, 60),
+            sanitize_out_of_fuel_dialog_field(remaining, 80),
+            reset_hint,
+        )
 
     def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
-        """FR #8814: dialog + worker-remove + shutdown so the nick leaves the digest."""
+        """FR #8814 / #8991 / #9016: worker-remove + dialog + shutdown (no fuel-hold zombie).
+
+        Remove the nick before any dialog so digest capacity frees. Dialog is
+        best-effort and must not block exit (daemon MessageBox / short join).
+        """
         if getattr(self, "_out_of_fuel_quit_started", False):
             return
         self._out_of_fuel_quit_started = True
@@ -16679,6 +17771,29 @@ class Supervisor:
         if not out_of_fuel_quit_enabled(env):
             self.log("out-of-fuel: quit skipped (BOB_WORKER_OUT_OF_FUEL_QUIT=0)")
             return
+        pid = None
+        try:
+            if self.proc is not None:
+                pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
+        if pid is None:
+            try:
+                pid = os.getpid()
+            except Exception:
+                pid = None
+        # FR #8991 / #9016: remove before dialog so Session 0 MessageBox cannot
+        # leave the nick painted out_of_fuel while fuel-hold heartbeats continue.
+        try:
+            post_digest_worker_remove(
+                machine=self.machine,
+                nick=self.nick,
+                pid=pid,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
         pool, remaining, reset_hint = self._out_of_fuel_dialog_pool_bits(evidence)
         show_fn = getattr(self, "_out_of_fuel_dialog_show_fn", None)
         try:
@@ -16694,28 +17809,7 @@ class Supervisor:
             )
         except Exception as e:
             self.log(f"out-of-fuel: dialog path failed {type(e).__name__}")
-        pid = None
-        try:
-            if self.proc is not None:
-                pid = getattr(self.proc, "pid", None)
-        except Exception:
-            pid = None
-        if pid is None:
-            try:
-                pid = os.getpid()
-            except Exception:
-                pid = None
-        try:
-            post_digest_worker_remove(
-                machine=self.machine,
-                nick=self.nick,
-                pid=pid,
-                env=env,
-                log=self.log,
-            )
-        except Exception as e:
-            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
-        self.log("out-of-fuel: closing seat (FR #8814)")
+        self.log("out-of-fuel: closing seat (FR #8814 / #9016)")
         try:
             self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
         except Exception as e:
@@ -17129,19 +18223,24 @@ class Supervisor:
             if ref:
                 self.bored.note_stand_down(ref)
 
-    def may_send_outbox(self, payload: str) -> bool:
-        """FR #4730: drop replayed ACK for a finished job before it hits IRC.
+    def may_send_outbox(self, payload: str):
+        """FR #4730 / #9056: drop replayed ACK for a finished or already-open job.
 
-        Used for the run-dir outbox. Do not apply the OpenCode job-key filter here
+        Used for the run-dir outbox. Returns True, or ``(False, reason)`` so drain
+        logs ``duplicate ACK`` / ``finished-job ACK replay`` instead of bare
+        ``stale replay``. Do not apply the OpenCode job-key filter here
         (FR #6333 MRB): program NACKs for a new key can arrive while `_opencode_job_key`
         is still the previous job. Job-key filtering is `may_send_job_outbox` only.
         """
         if self.bored is None:
             return True
         try:
-            return bool(self.bored.should_forward_outbox(payload))
+            reason = self.bored.outbox_ack_refuse_reason(payload)
         except Exception:
             return True
+        if reason:
+            return (False, reason)
+        return True
 
     def may_send_job_outbox(self, payload: str):
         """FR #6333 / #6472: worktree ``.bob/outbox.txt`` job-key filter then ACK rules.
@@ -17509,6 +18608,11 @@ class Supervisor:
             self._session_cursor = CursorTurnWatcher(since_wall=time.time()) if self.kind == "cursor" else None
             spec.session_log = self.session_log
             self.session_log.write("start", f"kind={self.kind} session={spec.session_id}")
+            # FR #8734 / BOB-29: seat session log names the model stamped into the child.
+            if (self.kind or "").strip().lower() == "opencode":
+                oc_id = str((child.get("env") or {}).get("BOB_OPENCODE_MODEL") or "").strip()
+                if oc_id:
+                    self.session_log.write("model", f"opencode model={oc_id}")
             self.session_log.write("console-start", json.dumps(console_startup_state()))
             self.session_log.write("prompt", self._prompt() + (" " + note if note else ""))
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
@@ -17539,6 +18643,15 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #8721 / BOB-21 S1: stable cursor-agent token after successful Cursor spawn (wrapper PID).
+            if (self.kind or "").strip().lower() == "cursor":
+                try:
+                    _cc = resolve_cursor_cmd(env) or resolve_cursor_cmd() or "(unresolved)"
+                except Exception:
+                    _cc = "(unresolved)"
+                self.log(
+                    f"cursor-agent: cmd={_cc} pid={proc.pid} nick={self.nick} workspace={self.cwd}"
+                )
             # FR #4843: warn when the live install checkout is not on main.
             try:
                 log_install_root_guard(self._install_root_for_fuel(), self.log)
@@ -18230,7 +19343,63 @@ class Supervisor:
             pass
 
     def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
+        # FR #9183: prune this job's worktree after DONE/GIVEUP/NACK (grok/cursor).
+        self._prune_finished_job_worktree(job)
         self._clear_per_job_seat_state(job)
+
+    def _prune_finished_job_worktree(self, job: Optional[str] = None) -> None:
+        """FR #9183: git worktree remove --force the finished job tree; queue if locked."""
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        if not wt:
+            return
+        try:
+            import job_worktree_lifecycle as _jwl
+
+            install = (
+                str(getattr(self, "install_root", "") or "")
+                or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+                or str(Path(getattr(self, "cwd", "") or "").parent)
+            )
+            _jwl.remove_finished_job_worktree(
+                wt,
+                install_root=install or None,
+                keep_paths=[],
+                log_fn=self.log,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-wt-prune: failed:{type(e).__name__} job={job or ''}")
+
+    def _idle_job_worktree_sweep(self, reason: str = "") -> None:
+        """FR #9183: retry locked removals; Clear soft-cap extras while idle."""
+        try:
+            import job_worktree_lifecycle as _jwl
+
+            install = (
+                str(getattr(self, "install_root", "") or "")
+                or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+                or ""
+            )
+            keep = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+            keep_paths = [keep] if keep else []
+            _jwl.drain_locked_worktree_retries(
+                install_root=install or None,
+                keep_paths=keep_paths,
+                log_fn=self.log,
+            )
+            # Soft-cap extras via existing Clear helper when a job tree (or install) is known.
+            anchor = keep or install
+            if anchor and (self.kind or "").strip().lower() == "opencode":
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
+            elif anchor and install:
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-wt-sweep: failed:{type(e).__name__} reason={reason}")
 
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
@@ -18585,6 +19754,22 @@ class Supervisor:
             self.log(
                 f"agent: exited by itself code={code} (u32={exit_label}); {kill_line}"
             )
+        # FR #9016: CLI teardown (0xffffffff / OSError 22) after fuel-quit or while
+        # out-of-fuel must close the seat cleanly — no cli-failure intake, no recycle hang.
+        fuel_hold = bool(self.bored and getattr(self.bored, "out_of_fuel", False))
+        fuel_quit = bool(getattr(self, "_out_of_fuel_quit_started", False))
+        if fuel_hold or fuel_quit:
+            self.log(
+                f"agent: exit during out-of-fuel code={code} (u32={exit_label}); "
+                f"closing seat (FR #9016); {kill_line}"
+            )
+            try:
+                self.restart_agent("agent-cli-nonzero-exit")
+            except Exception as e:
+                self.log(f"agent: fuel-hold exit close failed {type(e).__name__}")
+                if not getattr(self, "_shutting", False):
+                    self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+            return
         # FR #7593: zero exit ends the seat (unchanged). Nonzero → report, GIVEUP accepted
         # job (no fake DONE), restart the supported way so the replacement !bored's.
         if exit_u == 0:
@@ -18805,7 +19990,13 @@ class Supervisor:
         now_mono = float(self.clock())
         # FR #8494: out-of-fuel hold still heartbeats so digest ``updated`` stays fresh
         # and state paints ``out_of_fuel`` (not quiet idle). ACK may already be clear.
+        # FR #9016: after quit decision, never post fuel-hold (that kept redqueen OC
+        # zombies alive after ``quitting seat after dialog``).
         if snap.out_of_fuel:
+            if getattr(self, "_out_of_fuel_quit_started", False) or getattr(
+                self, "_shutting", False
+            ):
+                return
             self._post_fuel_hold_heartbeat(now_mono=now_mono)
             return
         if not snap.ack_open:
@@ -19020,11 +20211,24 @@ class Supervisor:
                         st["corrective_pending"] = False
                 if use_corrective:
                     scratch = ensure_opencode_job_scratch(wt)
+                    _intake = None
+                    try:
+                        _cwd = str(
+                            getattr(self, "worker_dir", "")
+                            or getattr(self, "cwd", "")
+                            or ""
+                        )
+                        if not _cwd:
+                            _cwd = str(Path(__file__).resolve().parent.parent / "worker")
+                        _intake = resolve_bobiverse_intake_script(_cwd)
+                    except Exception:
+                        _intake = None
                     body = opencode_external_dir_corrective_steps(
                         job_key=job_key,
                         worktree=wt,
                         outbox=outbox,
                         scratch=scratch,
+                        intake_script=_intake,
                     )
                     from_line = format_from(
                         "bob-worker", shop, body, outbox=outbox
@@ -19086,11 +20290,20 @@ class Supervisor:
                 self.log(f"opencode finish: bored on_outbox failed {type(e).__name__}")
 
     def _opencode_job_end_cleanup(self, job: Optional[str] = None) -> None:
-        """FR #6370: drop Temp worktrees; FR #8094: clear per-job context for the next offer."""
+        """FR #6370 / FR #9183: remove finished job tree, sweep extras; FR #8094 clear context."""
+        # FR #9183: remove THIS job's worktree first (KeepPath soft-cap left it behind).
+        self._prune_finished_job_worktree(job)
         wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
-        if (self.kind or "").strip().lower() == "opencode" and wt:
+        install = (
+            str(getattr(self, "install_root", "") or "")
+            or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+            or ""
+        )
+        # Sweep remaining extras; prefer install root as KeepPath so finished wt is gone.
+        anchor = install or wt
+        if (self.kind or "").strip().lower() == "opencode" and anchor:
             try:
-                opencode_cleanup_extra_worktrees(wt, log_fn=self.log)
+                opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
             except Exception as e:  # noqa: BLE001
                 self.log(f"opencode finish: cleanup failed {type(e).__name__}")
         self._clear_per_job_seat_state(job)
@@ -19218,6 +20431,14 @@ class Supervisor:
                 digest_age = self._opencode_report_doing_age_s(nick)
         except Exception:
             digest_age = None
+        turns_recent = False
+        try:
+            turns_path = Path(self.run_dir) / "opencode-turns.jsonl"
+            turns_recent = probe_opencode_turns_recent(
+                turns_path, within_s=thr, now_wall=time.time()
+            )
+        except Exception:
+            turns_recent = False
         reason = opencode_frozen_recycle_reason(
             kind=self.kind,
             out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
@@ -19225,12 +20446,13 @@ class Supervisor:
             digest_doing_age_s=digest_age,
             progress_moved_age_s=moved_age,
             threshold_s=thr,
+            turns_recent=turns_recent,
         )
         if not reason:
             return False
         self.log(
             f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
-            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+            f"moved_age={moved_age!r} turns_recent={turns_recent} thr={thr:.0f}s; recycling"
         )
         self.restart_agent(reason)
         return True
@@ -19362,11 +20584,31 @@ class Supervisor:
 
     def restart_agent(self, reason: str) -> None:
         # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
+        # FR #9016: after fuel-quit (or hold with quit enabled), closing the agent
+        # must shut the seat down — refusing restart alone left fuel-hold zombies
+        # after CLI ``0xffffffff`` / OSError 22 teardown.
         if self.bored and self.bored.out_of_fuel:
             self.log(
                 f"agent: HUNG ({reason}) ignored - out-of-fuel hold (no respawn; FR #4180)"
             )
             self._clear_watchdogs_for_out_of_fuel()
+            quit_started = bool(getattr(self, "_out_of_fuel_quit_started", False))
+            env = (
+                self.base_env
+                if isinstance(getattr(self, "base_env", None), dict)
+                else None
+            )
+            if quit_started or out_of_fuel_quit_enabled(env):
+                if not getattr(self, "_shutting", False):
+                    self.log(
+                        "agent: out-of-fuel + agent exit → closing seat (FR #9016)"
+                    )
+                    try:
+                        self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+                    except Exception as e:
+                        self.log(
+                            f"agent: fuel-quit shutdown failed {type(e).__name__}"
+                        )
             return
         # FR #7123: never silently drop an accepted job on hang-recycle.
         if self.bored and getattr(self.bored, "_ack_open", False) and getattr(self.bored, "_ack_job_key", None):
@@ -20094,6 +21336,25 @@ def _explicit_refusal_exit(
         log=log,
         filer_post=filer_post,
     )
+    # FR #8719 / BOB-23: MarchHare Cursor token gate — dialog then quit (EXIT_OUT_OF_FUEL).
+    reason_l = str(dec.reason or "").lower()
+    marchhare_gate = (
+        "marchhare tokens exhausted" in reason_l
+        or ("marchhare" in reason_l and "remaining=0" in reason_l)
+    )
+    if marchhare_gate:
+        try:
+            show_out_of_fuel_dialog(
+                pool="MarchHare Cursor",
+                remaining="0",
+                evidence=dec.reason or "",
+                nick="",
+                title="Bobiverse — MarchHare Cursor tokens",
+                log=log,
+            )
+        except Exception:
+            pass
+        return EXIT_OUT_OF_FUEL
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -20333,13 +21594,11 @@ def run_monitor(args, log: Log) -> int:
     run_dir = _new_run_dir("monitor", "monitor")
     run_dir.mkdir(parents=True, exist_ok=True)
     ensure_console("Jeeves Monitor (%s) - closing this window ends the agent" % kind)
-    # Prefer butler icon when present on the work root
-    butler = folder / "assets" / "jeeves-butler.ico"
-    if butler.is_file():
-        try:
-            set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
-        except Exception:
-            pass
+    # FR #9211: butler / bob paths via find_window_icon(kind=monitor); AUMID + WM_SETICON.
+    try:
+        set_console_icon(folder, kind="monitor", log=log)
+    except Exception:
+        pass
     spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir,
                              install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
@@ -20606,7 +21865,8 @@ def run_agent(args, log: Log) -> int:
     log.path = run_dir / "worker.log"
     log(f"worker: pid={pid} nick={nick} shop=#{machine} kind={kind} run_dir={run_dir}")
     ensure_console(f"Bob worker {nick} ({kind}) - closing this window ends the agent")
-    set_console_icon(Path(args.install_root))
+    # FR #9211: Win11 taskbar ignores bare WM_SETICON without AUMID; kind picks OC favicon vs Bob.
+    set_console_icon(Path(args.install_root), kind=kind, log=log)
     pw = find_ergo_password(Path(args.install_root))
     sasl = None
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
@@ -21261,9 +22521,54 @@ def main(argv: Optional[list] = None) -> int:
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
-        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "agent": args.agent or "auto",
-                          "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
+        # BOB-15 / FR #8711: S1 dry-run evidence - final CLI setting args in JSONL.
+        # BOB-22 / FR #8720: a Cursor decision cites the Cursor webhook row, not the tray default.
+        launch_section = {}
+        try:
+            import worker_start_model as _wsm
+
+            settings = _wsm.resolved_start_settings(dec.kind, env=os.environ)
+            exe = ""
+            if dec.kind == "grok":
+                exe = str(ge or "")
+            elif dec.kind == "cursor":
+                exe = str(cc or "")
+            elif dec.kind == "opencode":
+                exe = str(oe or "")
+            cli_args = list(settings.get("cli_settings_args") or [])
+            if exe and cli_args:
+                final_args = [exe] + cli_args
+            elif exe:
+                final_args = [exe]
+            else:
+                final_args = list(cli_args)
+            launch_section = {
+                "kind": settings.get("kind") or dec.kind,
+                "mode": args.mode,
+                "settings_source": settings.get("settings_source") or "",
+                "model": settings.get("model") or "",
+                "context": settings.get("context") or "",
+                "effort": settings.get("effort") or "",
+                "setting_status": settings.get("setting_status") or {},
+                "cli_args": final_args,
+                "executable": exe,
+            }
+            _wsm.append_launch_dryrun(launch_section, env=os.environ)
+        except Exception as exc:
+            launch_section = {"error": str(exc)[:200]}
+        payload = {
+            "decision": dec.kind,
+            "reason": dec.reason,
+            "agent": args.agent or "auto",
+            "cursor_cmd": bool(cc),
+            "grok_exe": bool(ge),
+            "opencode_cmd": bool(oe),
+            "fuel": fuel.__dict__,
+            "cwd": cwd,
+            "mode": args.mode,
+            "launch": launch_section,
+        }
+        print(json.dumps(payload, sort_keys=True))
         return EXIT_OK
     if args.startup_grace_s is None:
         env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()

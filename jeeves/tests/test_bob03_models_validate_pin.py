@@ -1,4 +1,4 @@
-"""BOB-03 / FR #8710: pin MODELS_VALIDATE_PATH + models_catalog freeze import (CI=jeeves/tests)."""
+"""BOB-03 pin updated 2026-11-22: no POST /models/validate (form-only); catalog helpers remain."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,16 +11,17 @@ CATALOG = ROOT / "common/scripts/models_catalog.py"
 DOCS = ROOT / "jeeves/docs/webhooks.md"
 
 
-def test_bob03_models_validate_route_constant():
+def test_bob03_models_validate_route_retired():
     text = CALLBACK.read_text(encoding="utf-8")
     assert "MODELS_VALIDATE_PATH" in text
     assert "/bob/v1/models/validate" in text
-    assert "MODELS_VALIDATE_PATH" in text.split("POST_ROUTES", 1)[1][:400]
+    # No longer a POST_ROUTES member — returns 404 no_models_validate.
+    post = text.split("POST_ROUTES", 1)[1][:500]
+    assert "MODELS_VALIDATE_PATH" not in post
+    assert "no_models_validate" in text
     cat = CATALOG.read_text(encoding="utf-8")
     assert "MODELS_VALIDATE_PATH = \"/bob/v1/models/validate\"" in cat
-    assert "MODELS_VALID_COMBOS_NAME" in cat
     assert "def validate_combo" in cat
-    assert "def handle_models_validate" in cat
     assert "models-valid-combos.json" in cat
 
 
@@ -30,9 +31,15 @@ def test_bob03_build_jeeves_hidden_import_models_catalog():
     assert "--hidden-import" in text
 
 
-def test_bob03_webhooks_md_documents_validate():
+def test_bob03_build_jeeves_hidden_import_models_refresh():
+    # FR #9224: frozen chair must embed models_refresh for POST /models/refresh.
+    text = BUILD.read_text(encoding="utf-8")
+    assert "models_refresh" in text
+    assert "--hidden-import" in text
+
+
+def test_bob03_webhooks_md_documents_form_only_validation():
     text = DOCS.read_text(encoding="utf-8")
-    assert "/bob/v1/models/validate" in text
-    assert "models-valid-combos.json" in text
-    assert "catalog_unavailable" in text
-    assert "INFO models validate reject" in text
+    assert "no" in text.lower() and "models/validate" in text
+    assert "form" in text.lower() and "dropdown" in text.lower()
+    assert "no_models_validate" in text or "form-only" in text.lower()

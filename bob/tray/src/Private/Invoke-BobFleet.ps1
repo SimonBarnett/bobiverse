@@ -52,6 +52,7 @@ function Read-FleetJob {
 function Test-BobFrBodyDispatched {
     <#
       FR #8760 S3: issue body that says dispatched beats older CodeRabbit park-only comments.
+      FR #8877: dollar names were stripped on commit a1a94bd7; keep them.
     #>
     param([string]$Body)
     $text = [string]$Body
@@ -67,12 +68,12 @@ function Get-BobBuildLoopStatePath {
         [Parameter(Mandatory)][string]$Issue,
         [string]$RepoSlug = 'bobiverse'
     )
-    $slug = ($RepoSlug -replace '[^a-zA-Z0-9._-]', '_').ToLowerInvariant()
+    $repo = ($RepoSlug -replace '[^a-zA-Z0-9._-]', '_').ToLowerInvariant()
     $num = ($Issue -replace '[^0-9]', '')
     if (-not $num) { throw 'issue required for build-loop state' }
     $dir = Join-Path (Get-BridgeRoot) 'loops'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    Join-Path $dir ('{0}-{1}.json' -f $slug, $num)
+    Join-Path $dir ('{0}-{1}.json' -f $repo, $num)
 }
 
 function Get-BobBuildLoopCurrentJob {
@@ -81,13 +82,13 @@ function Get-BobBuildLoopCurrentJob {
         [string]$RepoSlug = 'bobiverse'
     )
     $path = Get-BobBuildLoopStatePath -Issue $Issue -RepoSlug $RepoSlug
-    $doc = Read-JsonFile $path
-    if (-not $doc) { return $null }
+    $row = Read-JsonFile $path
+    if (-not $row) { return $null }
     return [pscustomobject]@{
         path         = $path
-        currentJobId = $doc.currentJobId
-        machine      = $doc.machine
-        updatedAt    = $doc.updatedAt
+        currentJobId = $row.currentJobId
+        machine      = $row.machine
+        updatedAt    = $row.updatedAt
     }
 }
 
@@ -102,15 +103,15 @@ function Set-BobBuildLoopCurrentJob {
         [string]$RepoSlug = 'bobiverse'
     )
     $path = Get-BobBuildLoopStatePath -Issue $Issue -RepoSlug $RepoSlug
-    $doc = [pscustomobject]@{
+    $row = [pscustomobject]@{
         issue        = ($Issue -replace '[^0-9]', '')
         repo         = $RepoSlug
         currentJobId = [string]$JobId
         machine      = $Machine
         updatedAt    = [DateTime]::UtcNow.ToString('o')
     }
-    Write-JsonFile $path $doc
-    return $doc
+    Write-JsonFile $path $row
+    return $row
 }
 
 function Resolve-BobFleetMachineRecord {

@@ -60,6 +60,7 @@ def test_explicit_cursor_refuses_only_si_pool_zero():
     assert dec.kind == "refuse"
     assert ACCOUNT in dec.reason
     assert "remaining=0" in dec.reason
+    assert "MarchHare tokens exhausted" in dec.reason  # FR #8719 / BOB-23
     assert "credman" not in dec.reason
     assert "hidden" not in dec.reason
     assert dec.kind != "grok"
