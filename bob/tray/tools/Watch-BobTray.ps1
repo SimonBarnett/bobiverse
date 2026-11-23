@@ -1,4 +1,4 @@
-# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
+﻿# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
 # Title is Bob Fleet. Primary bar is weekly remaining (CLI billing log).
 # Job list: every registered fleet machine (bundled registry + local store +
 # read-only filesystem peer peek). Fail closed: unreachable / lastSeen stale.
@@ -2216,8 +2216,8 @@ function Test-BobTrayPlanFuelEmpty {
 }
 
 function Start-BobTrayPlanExe {
-    # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
-    $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    # FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10: plan\PlanAgent.exe (MSI / BOB-49). Do not fall back to bob-worker --mode plan.
+    $exe = Join-Path $RepoRoot 'plan\PlanAgent.exe'
     $hook = $env:BOB_MODELS_WEBHOOK_FILE
     if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
     if (Test-Path -LiteralPath $hook) {
@@ -2241,6 +2241,11 @@ function Start-BobTrayPlanExe {
     Write-TrayLog ('Plan: start exe ' + $exe)
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-TrayLog ('Plan exe missing: ' + $exe)
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ('PlanAgent.exe not found at:{0}{1}{0}{0}Install or repair the bob MSI (BOB-49 / skills-visionary PlanAgent).' -f [Environment]::NewLine, $exe),
+            'Plan - missing exe',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
