@@ -11274,6 +11274,8 @@ class Relay:
         self.ack_refuse_reason: Optional[Callable[[str], Optional[str]]] = None
         # True when a live turn belongs to another job (NACK busy, no inject).
         self.turn_busy_other_job: Optional[Callable[[str], bool]] = None
+        # FR #9254: open ACK job key for busy, holding <first> NACK text.
+        self.ack_open_job_key: Optional[Callable[[], Optional[str]]] = None
         # FR #8738: True while the prior job's closing turn is still open. Held assigns
         # stay parked (no inject) until that turn has ended.
         self.defer_flush_while: Optional[Callable[[], bool]] = None
@@ -11319,18 +11321,107 @@ class Relay:
             nack = f"NACK {key} job-context-malformed (FR #6240)" if key else ""
         return (nack or "").strip()
 
+    def _holding_job_display(self, prefer: str = "") -> str:
+        """FR #9254: best-effort display key for busy, holding <first> NACKs."""
+        hold = (prefer or "").strip()
+        if hold:
+            return hold
+        try:
+            if self.ack_open_job_key:
+                open_k = (self.ack_open_job_key() or "").strip()
+                if open_k:
+                    return open_k
+        except Exception:
+            pass
+        with self._lock:
+            if self._worktree_creating_keys:
+                return next(iter(self._worktree_creating_keys))
+            if self._acked_held_keys:
+                return next(iter(self._acked_held_keys))
+        return "job"
+
+    def _nack_busy_holding(self, line: str, holding: str = "") -> str:
+        """FR #9254: NACK … busy, holding <first> when the open job is known.
+
+        Falls back to plain ``NACK … busy`` when no holding key is available
+        (FR #8246 turn-busy path without an open ACK key).
+        """
+        hold = self._holding_job_display(holding)
+        key = assign_job_key(line) or "job"
+        if hold and hold.lower() != "job":
+            nack = busy_holding_nack_line(line, hold)
+            if nack:
+                return nack
+        return f"NACK {key} busy"
+
     def _park_worktree_create(self, nick: str, target: str, text: str, line: str) -> str:
-        """FR #6328: run ensure off the IRC read thread; ACK only after create."""
+        """FR #6328: run ensure off the IRC read thread; ACK only after create.
+
+        FR #9254: one park at a time per seat. A second different job while create
+        is in flight (or another job already ACK'd) is NACK busy, holding <first>.
+        """
         key = (assign_job_key(line) or "").strip().lower()
+        holding = ""
         with self._lock:
             if key and key in self._worktree_creating_keys:
                 self.log("relay: worktree create already in flight " + (key or "?"))
                 self._persist_last_from(line)
                 return "opencode_worktree_pending"
-            if key:
-                self._worktree_creating_keys.add(key)
-                if key not in self._worktree_parked_at:
-                    self._worktree_parked_at[key] = float(self.clock())
+            # FR #9254: seat-level serialize — never twin-park two jobs.
+            others_creating = {
+                k for k in self._worktree_creating_keys if k and k != key
+            }
+            others_acked = {
+                k for k in self._acked_held_keys if k and k != key
+            }
+            if others_creating or others_acked:
+                holding = next(iter(others_creating or others_acked))
+            else:
+                if key:
+                    self._worktree_creating_keys.add(key)
+                    if key not in self._worktree_parked_at:
+                        self._worktree_parked_at[key] = float(self.clock())
+        if holding:
+            # Also refuse when Bored already has another ACK open (no park mark yet).
+            nack = self._nack_busy_holding(line, holding)
+            self.log(
+                "relay: refuse twin park while holding "
+                + holding
+                + " ("
+                + (key or "?")
+                + ")"
+            )
+            self._persist_last_from(line)
+            try:
+                return self._refuse_job_context(line, nack)
+            except Exception:
+                if self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                return "busy_holding"
+        # FR #9254: turn already busy on another job — do not start a second park.
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                nack = self._nack_busy_holding(line)
+                self.log("relay: refuse park (turn busy) " + (key or line[:80]))
+                self._persist_last_from(line)
+                with self._lock:
+                    if key:
+                        self._worktree_creating_keys.discard(key)
+                        self._worktree_parked_at.pop(key, None)
+                try:
+                    return self._refuse_job_context(line, nack)
+                except Exception:
+                    if self.write_outbox:
+                        try:
+                            self.write_outbox(nack)
+                        except Exception:
+                            pass
+                    return "busy_holding"
+        except Exception:
+            pass
         self.log("relay: park worktree create off read thread " + (key or line[:80]))
         self._persist_last_from(line)
         th = threading.Thread(
@@ -11376,6 +11467,30 @@ class Relay:
                 self._refuse_job_context(line, nack)
             except Exception as e:
                 self.log(f"relay: worktree create NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
+            return
+        # FR #9254: another job ACK'd while this create ran — never twin-ACK.
+        other_hold = ""
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != key}
+            if others:
+                other_hold = next(iter(others))
+        if not other_hold:
+            try:
+                if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                    other_hold = self._holding_job_display()
+            except Exception:
+                pass
+        if other_hold:
+            twin_nack = self._nack_busy_holding(line, other_hold)
+            self.log(
+                f"relay: worktree ensure ok but twin-busy key={key or '?'} "
+                f"holding={other_hold}"
+            )
+            try:
+                self._refuse_job_context(line, twin_nack)
+            except Exception as e:
+                self.log(f"relay: twin-busy NACK error {type(e).__name__}")
             self.clear_worktree_park_mark(key)
             return
         self.log(f"relay: worktree ensure ok key={key or '?'} -> resume deliver")
@@ -11434,9 +11549,9 @@ class Relay:
             pass
         try:
             if self.turn_busy_other_job and self.turn_busy_other_job(line):
-                key = assign_job_key(line) or "job"
+                nack = self._nack_busy_holding(line)
                 if self.write_outbox:
-                    self.write_outbox(f"NACK {key} busy")
+                    self.write_outbox(nack)
                 return "busy_turn"
         except Exception:
             pass
@@ -11445,6 +11560,8 @@ class Relay:
         ack_st = self._ack_offer_or_refuse(line)
         if ack_st == "refused":
             return "ack_not_sent"
+        if ack_st == "busy_holding":
+            return "busy_holding"
         if ack_st == "duplicate":
             # Same job already ACKed — still inject if target ready.
             pass
@@ -11621,7 +11738,8 @@ class Relay:
                     except Exception:
                         pass
                 return "out_of_fuel"
-        # FR #8246: a live turn for another job is not a hold. NACK busy and do not inject.
+        # FR #8246 / #9254: a live turn for another job is not a hold.
+        # NACK busy, holding <first> and do not inject.
         if assign_job_ref(line):
             busy_turn = False
             try:
@@ -11633,8 +11751,7 @@ class Relay:
                     if line == self._last_line:
                         return "duplicate"
                     self._last_line = line
-                key = assign_job_key(line) or "job"
-                nack = f"NACK {key} busy"
+                nack = self._nack_busy_holding(line)
                 self.log("relay: refused assign (turn busy) " + line[:120])
                 self._persist_last_from(line)
                 if self.write_outbox:
@@ -11675,6 +11792,9 @@ class Relay:
                 if ack_st == "refused":
                     self._drop_pending_line(line)
                     return "ack_not_sent"
+                if ack_st == "busy_holding":
+                    self._drop_pending_line(line)
+                    return "busy_holding"
                 if ack_st == "duplicate":
                     self._drop_pending_line(line)
                     return "duplicate"
@@ -11726,6 +11846,10 @@ class Relay:
                 if not do_inject:
                     self._drop_pending_line(line)
                 return "ack_not_sent"
+            if ack_st == "busy_holding":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "busy_holding"
             if ack_st == "duplicate":
                 if not do_inject:
                     self._drop_pending_line(line)
@@ -11749,11 +11873,12 @@ class Relay:
             return False
 
     def _ack_offer_or_refuse(self, line: str) -> str:
-        """FR #8246 / #9056: fresh offer clears the finished mark, then ACK.
+        """FR #8246 / #9056 / #9254: fresh offer clears the finished mark, then ACK.
 
         Returns:
           ``"acked"`` — ACK written; caller may inject/hold.
           ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"busy_holding"`` — other job ACK open; ``NACK … busy, holding <first>``.
           ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
         if self.prepare_offer:
@@ -11773,6 +11898,17 @@ class Relay:
             # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
             self.log(f"relay: ACK already open for same job; no-op ({reason})")
             return "duplicate"
+        # FR #9254: cross-job ACK while another ACK is open.
+        if reason and str(reason).startswith("busy holding"):
+            holding = str(reason)[len("busy holding") :].strip() or "job"
+            nack = self._nack_busy_holding(line, holding)
+            self.log(f"relay: ACK suppressed ({reason}); not injecting")
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "busy_holding"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -11783,6 +11919,22 @@ class Relay:
                 except Exception:
                     pass
             return "refused"
+        # FR #9254 belt: seat already ACK'd a different job (Bored not yet painted).
+        incoming = (assign_job_key(line) or "").strip().lower()
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != incoming}
+            other = next(iter(others)) if others else ""
+        if other:
+            nack = self._nack_busy_holding(line, other)
+            self.log(
+                f"relay: ACK suppressed (seat already holding {other}); not injecting"
+            )
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "busy_holding"
         self._ack_on_receipt(line)
         return "acked"
 
@@ -15402,9 +15554,10 @@ class BoredEmitter:
         return True
 
     def outbox_ack_refuse_reason(self, payload: str) -> Optional[str]:
-        """FR #4730 / #6333 / #6472: ACK-only refuse tag, else None (allow).
+        """FR #4730 / #6333 / #6472 / #9254: ACK-only refuse tag, else None (allow).
 
-        Tags: ``finished-job ACK replay``, ``duplicate ACK``.
+        Tags: ``finished-job ACK replay``, ``duplicate ACK``,
+        ``busy holding <open-job>`` (cross-job twin ACK).
         """
         p = (payload or "").strip()
         if not _OUT_ACK_RX.match(p):
@@ -15416,6 +15569,9 @@ class BoredEmitter:
             # Dedupe model ACK after program ACK-on-receipt for the same open job.
             if job and self._ack_open and self._ack_job_key and job == self._ack_job_key:
                 return "duplicate ACK"
+            # FR #9254: never forward a second job's ACK while one ACK is open.
+            if job and self._ack_open and self._ack_job_key and job != self._ack_job_key:
+                return f"busy holding {self._ack_job_key}"
             return None
 
     def should_forward_outbox(self, payload: str) -> bool:
@@ -17052,6 +17208,12 @@ class Supervisor:
         )
         relay.turn_busy_other_job = lambda line: (
             self.bored.live_turn_blocks_assign(line) if self.bored else False
+        )
+        # FR #9254: surface open ACK key for busy, holding <first> NACK text.
+        relay.ack_open_job_key = lambda: (
+            self.bored._ack_job_key
+            if self.bored and getattr(self.bored, "_ack_open", False)
+            else None
         )
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)

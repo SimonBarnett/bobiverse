@@ -5201,6 +5201,11 @@ class Client:
             self._git_say(target, f"{src}: accepted {line}")
             info(f"INFO git-claim ack accepted {line} nick={src}")
             return
+        # FR #9254: twin ACK while seat already accepted elsewhere — refuse, keep first.
+        if status == "twin" and isinstance(job, dict):
+            line = gitclaim.format_claimed(job)
+            info(f"INFO git-claim ack twin-refuse holding={line} nick={src}")
+            return
         info(f"INFO git-claim ack no offer nick={src}")
 
     def _git_accept(self, src: str, target: str, body: str) -> None:
