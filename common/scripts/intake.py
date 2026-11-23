@@ -1448,6 +1448,72 @@ def apply_lessons_to_skill_md(
     return base.rstrip() + "\n\n" + heading + "\n\n" + bullets + "\n"
 
 
+_SKILL_TREE_PATH_RE = re.compile(
+    r"(?:^|/)(?:common/|bob/|jeeves/|airc/)?\.grok/skills/",
+    re.IGNORECASE,
+)
+
+
+def _norm_repo_rel_path(path: str) -> str:
+    """Normalize repo-relative path; keep leading ``.`` on ``.grok/...`` (FR #9180).
+
+    Do not use ``str.lstrip('./')`` - that strips every leading ``.`` / ``/`` char
+    and turns ``.grok/skills/...`` into ``grok/skills/...``.
+    """
+    p = str(path or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.lstrip("/")
+
+
+def is_skill_tree_path(path: str) -> bool:
+    """True when path is under a product ``.grok/skills/`` tree (FR #9180)."""
+    p = _norm_repo_rel_path(path)
+    if not p or ".." in p.split("/"):
+        return False
+    return bool(_SKILL_TREE_PATH_RE.search(p))
+
+
+def skill_file_base_for_path(
+    skill_path: str, payload_files: list[dict] | None
+) -> str | None:
+    """Return SkillFile content when payload targets the owning SKILL.md (FR #9180)."""
+    want = _norm_repo_rel_path(skill_path)
+    if not want:
+        return None
+    for item in payload_files or []:
+        p = _norm_repo_rel_path(str(item.get("path") or ""))
+        if p == want:
+            content = str(item.get("content") or "")
+            if content.strip():
+                return content
+    return None
+
+
+def merge_lesson_pr_files(
+    skill_path: str,
+    new_md: str,
+    payload_files: list[dict] | None = None,
+) -> list[dict[str, str]]:
+    """Build lesson PR ``files[]``: always patch skill_path; add skill-tree companions.
+
+    FR #9180: ``-SkillFile`` must land under the owning book path (not ``harvest/<name>``).
+    Non-skill-tree payload paths (e.g. ``harvest/orphan.md``) are dropped from the tip.
+    """
+    want = _norm_repo_rel_path(skill_path)
+    out: list[dict[str, str]] = [{"path": want, "content": str(new_md or "")}]
+    seen = {want}
+    for item in payload_files or []:
+        p = _norm_repo_rel_path(str(item.get("path") or ""))
+        if not p or p in seen:
+            continue
+        if not is_skill_tree_path(p):
+            continue
+        seen.add(p)
+        out.append({"path": p, "content": str(item.get("content") or "")})
+    return out
+
+
 def _filer_get_file(filer: Any, repo: str, path: str) -> str:
     getter = getattr(filer, "get_file_content", None)
     if not callable(getter):
@@ -1471,7 +1537,7 @@ def _filer_create_pr(
     draft: bool,
 ) -> dict[str, Any]:
     """Prefer create_pr (non-draft) / create_draft_pr; Fake supports both (FR #2705)."""
-    # FR #9082: hold / on-hold are issues-only — never stamp them on pull requests.
+    # FR #9082: hold / on-hold are issues-only --- never stamp them on pull requests.
     try:
         from gitclaim import strip_issues_only_hold_labels
 
@@ -2685,6 +2751,10 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
+                # FR #9180: -SkillFile targeting the book path is the base content.
+                skill_file_base = skill_file_base_for_path(skill_path, files)
+                if skill_file_base is not None:
+                    existing_md = skill_file_base
                 # FR #8310: include harvest/lessons.md so archived bullets still dedupe.
                 covered_md = harvest_book_text_for_dedupe(
                     filer, repo, skill_path, existing_md
@@ -2710,7 +2780,8 @@ def file_submission(
                 new_md = apply_lessons_to_skill_md(
                     existing_md, new_lessons, covered_md=covered_md
                 )
-                lesson_files = [{"path": skill_path, "content": new_md}]
+                # FR #9180: SkillFile companions under .grok/skills join the tip files[].
+                lesson_files = merge_lesson_pr_files(skill_path, new_md, files)
                 lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
                     book=book,
@@ -3285,6 +3356,142 @@ def report_should_use_intake(*, gh_available: bool, gh_authenticated: bool) -> b
     )
 
 
+def ensure_bobiverse_harvest_skill_pr(
+    home: Path,
+    *,
+    repo: str,
+    book: str,
+    skill_path: str,
+    lessons: list[str],
+    summary: str = "",
+    files: list[dict] | None = None,
+    seat: str = "",
+    filer: GitHubFiler | None = None,
+    intake_id: str | None = None,
+) -> dict[str, Any]:
+    """FR #9180: same-turn open/link a ``lesson(<book>)`` PR that patches SKILL.md.
+
+    Prefer this when ``gh`` is authenticated on the seat so builds/Sync/MSI ship
+    merged skill content. Twin / ExistingPrUrl / already-covered paths reuse
+    ``file_submission`` (linked_existing_pr / lesson_already_covered / filed).
+    Empty lessons -> ``state=noop`` (receipt-only stays receipt-only).
+    """
+    cleaned = [str(x).strip() for x in (lessons or []) if str(x).strip()]
+    cleaned = [
+        x
+        for x in cleaned
+        if x.lower() not in ("(no new playbook line)", "skip", "empty")
+    ]
+    if not cleaned:
+        return {
+            "state": "noop",
+            "url": None,
+            "queued": False,
+            "skill_book": str(book or "").strip() or "harvest",
+            "lesson_count": 0,
+        }
+    book_name = str(book or "").strip() or "harvest"
+    path = _norm_repo_rel_path(skill_path)
+    if not path:
+        _b, path = resolve_skill_book(
+            skill_book=book_name,
+            title=f"harvest: {summary}",
+            body="Lessons:\n- " + cleaned[0],
+            repo=str(repo or ""),
+        )
+        book_name = _b or book_name
+    tip_repo = rewrite_harvest_repo_for_skill_book(str(repo or ""), book_name)
+    title_stem = (summary or cleaned[0]).strip()
+    title = "harvest: " + title_stem[:80]
+    lesson_block = "\n".join(f"- {x}" for x in cleaned)
+    body = f"Session summary:\n{summary or title_stem}\n\nLessons:\n{lesson_block}\n"
+    src = {
+        "skill_book": book_name,
+        "skill_book_path": path,
+        "agent": "Ensure-BobiverseHarvestSkillPr",
+        "seat": str(seat or "")[:64],
+    }
+    payload: dict[str, Any] = {
+        "kind": "harvest",
+        "repo": tip_repo,
+        "title": title,
+        "body": body,
+        "source": src,
+        "files": list(files or []),
+    }
+    err, norm = validate_payload(payload)
+    if err:
+        return {
+            "state": "error",
+            "error": err,
+            "url": None,
+            "queued": False,
+            "skill_book": book_name,
+        }
+    active = filer
+    if active is None:
+        try:
+            from gh_filer import default_filer as _default_filer
+        except Exception:
+            _default_filer = None  # type: ignore[assignment]
+        active = _default_filer() if _default_filer else FakeGitHubFiler()
+    iid = intake_id or f"in_ens_{uuid.uuid4().hex[:12]}"
+    return file_submission(home, norm, active, intake_id=iid)
+
+
+def _cli_ensure_skill_pr(argv: list[str] | None = None) -> int:
+    """CLI: ``python intake.py ensure-skill-pr --home <path> --payload-file <json>``."""
+    import argparse
+
+    p = argparse.ArgumentParser(
+        prog="intake.py ensure-skill-pr",
+        description="FR #9180 same-turn lesson(book) skill PR when gh is authenticated",
+    )
+    p.add_argument("--home", required=True, help="Bobiverse home for intake records")
+    p.add_argument(
+        "--payload-file",
+        required=True,
+        help="JSON with repo, book, skill_path, lessons[], summary, files[], seat",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate only; use FakeGitHubFiler (no network)",
+    )
+    ns = p.parse_args(argv)
+    raw = Path(ns.payload_file).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        print(json.dumps({"state": "error", "error": "bad_payload"}))
+        return 2
+    lessons = data.get("lessons") or []
+    if isinstance(lessons, str):
+        lessons = [lessons]
+    files = data.get("files") or []
+    if not isinstance(files, list):
+        files = []
+    filer: GitHubFiler | None = FakeGitHubFiler() if ns.dry_run else None
+    if ns.dry_run:
+        path = str(data.get("skill_path") or "").replace("\\", "/")
+        if path:
+            filer.repo_files[path] = str(  # type: ignore[union-attr]
+                (data.get("existing_md") or f"# {data.get('book') or 'skill'}\n")
+            )
+    rec = ensure_bobiverse_harvest_skill_pr(
+        Path(ns.home),
+        repo=str(data.get("repo") or ""),
+        book=str(data.get("book") or "harvest"),
+        skill_path=str(data.get("skill_path") or ""),
+        lessons=[str(x) for x in lessons],
+        summary=str(data.get("summary") or ""),
+        files=files,
+        seat=str(data.get("seat") or ""),
+        filer=filer,
+    )
+    print(json.dumps(rec, indent=2))
+    return 0 if str(rec.get("state") or "") not in ("error",) else 2
+
+
 def build_report_payload(
     *,
     kind: str,
@@ -3397,11 +3604,15 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help"):
         print(
-            "usage: intake.py drain --home <path> [--limit N] [--dry-run] [--source-dir PATH]"
+            "usage: intake.py drain|ensure-skill-pr ...\n"
+            "  drain --home <path> [--limit N] [--dry-run] [--source-dir PATH]\n"
+            "  ensure-skill-pr --home <path> --payload-file <json> [--dry-run]"
         )
         return 0
     if args[0] == "drain":
         return _cli_drain(args[1:])
+    if args[0] == "ensure-skill-pr":
+        return _cli_ensure_skill_pr(args[1:])
     print(f"unknown command: {args[0]}", file=sys.stderr)
     return 2
 

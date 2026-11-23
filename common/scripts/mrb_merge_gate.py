@@ -1,8 +1,9 @@
 """FR #3928: MRB merge gate — owner hold blocks merge; require posted MRB PASS board.
 
 Workers call ``evaluate_merge_gate`` (pure) or ``assert_mrb_merge_allowed`` (live GitHub)
-before ``gh pr merge``. Chair offer skip lives in ``gitclaim.pr_hold_reason`` /
-``mrb_row_offerable``.
+before ``gh pr merge``. Prefer ``gated_auto_merge`` / CLI ``--merge`` so gate refuse
+never reaches a separate ``gh pr merge`` (FR #9083 / #8977). Chair offer skip lives in
+``gitclaim.pr_hold_reason`` / ``mrb_row_offerable``.
 """
 
 from __future__ import annotations
@@ -494,16 +495,70 @@ def assert_mrb_merge_allowed(repo: str, num: str, *, token: str | None = None) -
         raise RuntimeError(f"FR #3928 merge refused for {repo}#{num}: {reason}")
 
 
+def invoke_gh_pr_merge(repo: str, num: str, *, run: Callable[..., Any] | None = None) -> int:
+    """Run ``gh pr merge --auto --merge``. Caller must already have exit 0 from the gate."""
+    cmd = ["gh", "pr", "merge", str(num), "--repo", str(repo), "--auto", "--merge"]
+    if run is None:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            sys.stderr.write(err + "\n")
+        return int(proc.returncode)
+    return int(run(cmd))
+
+
+def finish_merge(gate_code: int, repo: str, num: str, *, run: Callable[..., Any] | None = None) -> int:
+    """FR #8977: exit 2 (and any non-zero gate) is a hard stop. Never call gh afterwards."""
+    if int(gate_code) != 0:
+        return int(gate_code)
+    return invoke_gh_pr_merge(repo, num, run=run)
+
+
+def gated_auto_merge(
+    repo: str,
+    num: str,
+    *,
+    token: str | None = None,
+) -> int:
+    """FR #9083 / #8977: gate then ``gh pr merge --auto --merge`` in one process.
+
+    Never calls ``gh pr merge`` when the gate refuses (exit 2) or comments are
+    unknown (exit 3). Returns the gate exit code, or ``gh``'s returncode when
+    the merge is allowed. Reuses ``finish_merge`` so there is a single
+    hard-stop primitive.
+    """
+    try:
+        assert_mrb_merge_allowed(repo, num, token=token)
+    except CommentsUnavailable as e:
+        sys.stderr.write(str(e) + "\n")
+        return 3
+    except RuntimeError as e:
+        msg = str(e)
+        sys.stderr.write(msg + "\n")
+        if msg.startswith("FR #3928 merge refused"):
+            return 2
+        return 1
+    return finish_merge(0, repo, num)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    do_merge = False
+    if "--merge" in args:
+        do_merge = True
+        args = [a for a in args if a != "--merge"]
     if len(args) != 2 or args[0] in {"-h", "--help"}:
         sys.stderr.write(
-            "usage: mrb_merge_gate.py <owner/repo> <pr-number>\n"
+            "usage: mrb_merge_gate.py <owner/repo> <pr-number> [--merge]\n"
             "Exit 0 when merge allowed; 2 when refused; "
             "3 when comments unknown (HTTP 403/429, not a hold); 1 on error.\n"
+            "With --merge, gate then gh pr merge --auto --merge runs in one "
+            "process only after exit 0. Exit 2 does not call gh (FR #9083 / #8977).\n"
         )
         return 1
     repo, num = args[0], args[1]
+    if do_merge:
+        return gated_auto_merge(repo, num)
     try:
         assert_mrb_merge_allowed(repo, num)
     except CommentsUnavailable as e:
@@ -511,10 +566,9 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except RuntimeError as e:
         msg = str(e)
-        if msg.startswith("FR #3928 merge refused"):
-            sys.stderr.write(msg + "\n")
-            return 2
         sys.stderr.write(msg + "\n")
+        if msg.startswith("FR #3928 merge refused"):
+            return 2
         return 1
     sys.stdout.write(f"ok: merge allowed for {repo}#{num}\n")
     return 0
