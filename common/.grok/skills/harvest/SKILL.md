@@ -410,3 +410,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Bob HTTP API defaults must use bob.ntsa.uk/bob; irc.ntsa.uk stays for IRC only --- tree scan test_irc_host_defaults_remain_irc fails on any https://irc.ntsa.uk/bob embed.
 - walrus_jeeves_install_ready: run with PYTHONPATH pointing at jeeves/tools/monitor (PR worktree until that tip merges, else install); MONITORING outbox assigns must be PRIVMSG #channel :!assign ... (never bare !assign to the outbox file)
 - When adding uat_release.repo_has_release_to_build gates, extend jeeves/tests conftest BOB_UAT_RELEASE_REPOS for synthetic o/* UAT fixtures in the same PR; denial tests must use real non-release names (wetherby).
+- Monitor unit tests that expect EXIT_FINDING must monkeypatch non_chair_overlay to None; fresh live /bob/v1/report + missing queue.json soft-passes findings on CI/worker (FR #8579)
