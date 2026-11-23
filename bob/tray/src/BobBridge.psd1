@@ -50,6 +50,8 @@
         'Stop-BobWorker',
         'Export-BobTranscript',
         'Get-BobStallAlerts',
+    'Invoke-BobQueueIntervene',
+    'Get-BobStallFrIntake',
         'Get-BobTrayHover',
         'Get-BobTrayDigestPoolCatalog',
         'Format-BobTrayDigestPoolHeading',
