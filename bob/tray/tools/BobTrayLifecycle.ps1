@@ -149,6 +149,18 @@ function Test-BobTrayWatchdogSuppressed {
     }
 }
 
+function Test-BobTrayExeParked {
+    # FR #9011 / #9146: bob-tray.exe renamed aside while Watch TipForm owns the icon
+    # (clickfix-park / clickfalse-park / clicktrue-park). TipForm Exit under park must
+    # use a short watchdog suppress so Watch can recover TipForm within minutes.
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $tools = Join-Path $Root 'tools'
+    foreach ($name in @('bob-tray.exe.clickfix-park', 'bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        if ([IO.File]::Exists((Join-Path $tools $name))) { return $true }
+    }
+    return $false
+}
 function Restore-BobTrayExeFromClickfixPark {
     # FR #9044: tools\bob-tray.exe missing while tools\bob-tray.exe.clickfix-park remains.
     # Test-Path is falsely False on that dotted name. File.Copy restores the live exe and keeps the park.

@@ -8,7 +8,8 @@
 .NOTES
   t794u: the tray never updates. Product Sync/ff and the release self-update run only on ircBob service start (Start-Bob).
   Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart) restarts ircBob via
-  Start-BobFleetTray, so a start also applies a pending update. Tray Exit stops ircBob (detached).
+  Start-BobFleetTray, so a start also applies a pending update. TipForm Exit never stops ircBob
+  (FR #9034 / #9146; ear is a machine service). Under #9011 park, Exit uses a 5m watchdog suppress.
   FR #1636: autostart/shortcuts pass -SkipTidy (ForceNew replaces the prior tray only). TipForm Restart
   still tidies seats. Lifecycle lines append to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log.
 #>
