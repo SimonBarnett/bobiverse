@@ -433,6 +433,52 @@ def row_is_digest_issue(row: dict) -> bool:
     return digest_issue_reason(row) is not None
 
 
+def clear_sticky_offer_fields(row: dict) -> None:
+    """Drop offered_to / offered_ts / offered_channel / offered_via on one row."""
+    if not isinstance(row, dict):
+        return
+    row.pop("offered_to", None)
+    row.pop("offered_ts", None)
+    row.pop("offered_channel", None)
+    row.pop("offered_via", None)
+
+
+def clear_held_fr_sticky_offers(doc: dict) -> list[str]:
+    """FR #9402 / #9406: clear sticky offered_to on hold-gated FR rows and drop them.
+
+    Hold-labeled ops umbrellas must not pin a seat as ``busy (offered FR ...)`` after
+    the issue gains ``hold`` (or an owner HOLD stamp). Digest gate rows stay queued
+    (BOB-G3) but still lose sticky offered_* so they cannot block assigns.
+    Returns human drop labels for logging.
+    """
+    dropped: list[str] = []
+    if not isinstance(doc, dict):
+        return dropped
+    keep: list[dict] = []
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) != "FR":
+            keep.append(row)
+            continue
+        why = row_fr_hold_reason(row)
+        if not why:
+            keep.append(row)
+            continue
+        had_offer = bool(str(row.get("offered_to") or "").strip())
+        clear_sticky_offer_fields(row)
+        # BOB-G3: digest gate records stay queued even when held.
+        if digest_issue_reason(row):
+            keep.append(row)
+            if had_offer:
+                dropped.append(f"{_row_drop_label(row)} fr_hold_clear_offer")
+            continue
+        dropped.append(f"{_row_drop_label(row)} fr_hold")
+    doc["unaccepted"] = keep
+    return dropped
+
+
+
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
 _DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
 _BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
@@ -12054,6 +12100,8 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
     key = _seat_key(nick)
     if not key:
         return ""
+    # FR #9402 / #9406: held FR sticky offered_to must not busy the seat.
+    clear_held_fr_sticky_offers(doc)
     for row in doc.get("accepted") or []:
         if not isinstance(row, dict):
             continue
@@ -12182,7 +12230,22 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return ""
-            return _seat_open_job_in(home, doc, nick, now_f, live)
+            before_n = len(doc.get("unaccepted") or [])
+            before_offers = [
+                str(r.get("offered_to") or "")
+                for r in (doc.get("unaccepted") or [])
+                if isinstance(r, dict)
+            ]
+            out = _seat_open_job_in(home, doc, nick, now_f, live)
+            after_offers = [
+                str(r.get("offered_to") or "")
+                for r in (doc.get("unaccepted") or [])
+                if isinstance(r, dict)
+            ]
+            if len(doc.get("unaccepted") or []) != before_n or before_offers != after_offers:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+            return out
     except (TimeoutError, OSError):
         return ""
 
@@ -12266,6 +12329,9 @@ def offer_focus_top(
             # FR #3867: promote unaccepted rows a digest seat is already working (lost ACK
             # across chair restart) before purging offered_to or picking a new offer.
             purged = bool(_reconcile_lost_ack_unlocked(home, doc))
+            # FR #9402 / #9406: drop hold-gated FR sticky offers before pick.
+            if clear_held_fr_sticky_offers(doc):
+                purged = True
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
             # FR #3188: no live pr_exists fan-out here — stamped/ledger only.
