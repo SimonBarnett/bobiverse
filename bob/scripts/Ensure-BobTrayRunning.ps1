@@ -165,6 +165,24 @@ if ($present -and -not $frozen) {
     exit 0
 }
 
+# FR #9146 / #9144: TipForm Exit must not leave ircBob Stopped. Heal the ear even while
+# tray-watchdog.suppress is active (TipForm stay-down is intentional; the machine ear is not).
+try {
+    $irc = Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue
+    if ($irc -and $irc.Status -ne 'Running') {
+        if (-not $WhatIf) {
+            Start-Service -Name 'ircBob' -ErrorAction SilentlyContinue
+        }
+        Write-BobTrayLifecycleEvent -Event 'ircbob-heal' -Fields @{
+            why         = 'stopped-while-tray-exit-suppress'
+            via         = 'Ensure-BobTrayRunning'
+            installRoot = $InstallRoot
+            whatIf      = [bool]$WhatIf
+        }
+        Write-Host 'INFO tray watchdog: ircBob was Stopped; Start-Service attempted (FR #9146)'
+    }
+} catch { }
+
 if (Test-BobTrayWatchdogSuppressed) {
     Write-BobTrayLifecycleEvent -Event 'watchdog-skip-suppress' -Fields @{ installRoot = $InstallRoot }
     Write-Host 'INFO tray watchdog: suppressed (intentional Exit)'

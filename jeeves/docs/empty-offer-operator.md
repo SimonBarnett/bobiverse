@@ -31,12 +31,21 @@ Typical pattern (incident 2026-10-05):
 5. File **unpinned** follow-up FRs so marchhare/flamingo stay fed while pins wait for the right box.
 6. If pin machine has **zero** shop seats, start workers there (or clear/adjust the pin) — see monitor note `require_machine pins only; no seats on …`.
 
+## Undispatched lookalikes (FR #9347)
+
+Open MERGEABLE tips can look "never dispatched" for three distinct reasons:
+
+1. **Ghost seat NAMES refuse** — digest `worker_list` still lists a departed nick; `!assign` hits NAMES timeout / not-in-shop. Chair drops that nick from the roster (`gitclaim.drop_ghost_seat_after_names_miss`) so the next offer prefers a live shop member.
+2. **needs_human walls** — `giveup_count>=2` stamps `needs_human`; `!bored` will not take them. Digest `needs_human_hint` and queue_flow notes name `!cleargiveup owner/repo#N [seat]` or `!recycle`.
+3. **held-pass** — MRB PASS already done; merge-on-green `skip_hold` (phase-gated). Digest/report `held_pass_count` and queue_flow `held-pass=N` — do not re-chase as MRB.
+
 ## Monitor (FR #2446)
 
 `jeeves/tools/monitor/queue_flow.py`:
 
 - **Heal + finding** when a living `require_machine` FR is GIVEUP'd by all live seats on that machine.
 - **Finding after 10 minutes** when `unaccepted>0`, idle shop seats exist, and ungated `offerable=0` (fleet-wide empty offerable). State file: `{ops_home}/pin-ledger-starve.json`.
+- **FR #9347 notes:** `needs_human=…` recycle hint; `held-pass=…` for phase-gated MRB PASS.
 
 Also see `jeeves/docs/empty-offer-playbook.md` (FR #2448). Related: `jeeves/docs/monitoring.md` (idle_seats / queue_flow). Follow-ons folded here: ops playbook #2448, CAST IRON empty-offer tests #2449.
 
