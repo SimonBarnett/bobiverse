@@ -245,8 +245,10 @@ ISSUES_ONLY_HOLD_LABELS = frozenset({"hold", "on-hold"})
 # Title-only free hold cues (short titles). Not applied to PR bodies — lesson
 # prose such as "do not merge the thinner duplicate" must not count as a hold
 # (FR #4545; class of a-search#3627). Body uses line-anchored stamps below.
+# FR #9395: bare mid-title "on hold" (e.g. "Create fr-digest on hold before…")
+# is product prose, not a gate. Title "on hold" only when leading or "on hold:".
 PR_HOLD_TITLE_RE = re.compile(
-    r"(?i)(?:\bon\s+hold\b|\bmust\s+not\s+merge\b|\bdo\s+not\s+merge\b|"
+    r"(?i)(?:^\s*on\s+hold\b|\bon\s+hold\s*:|\bmust\s+not\s+merge\b|\bdo\s+not\s+merge\b|"
     r"\bhold(?:ing)?\s+(?:this\s+)?(?:pr|pull(?:\s+request)?)\b)"
 )
 # Owner body hold stamp (class of a-search#1334 "On hold (Simon …): must not merge…").
@@ -301,7 +303,8 @@ def pr_hold_reason(
     ``do-not-merge`` / ``wip`` labels still count. ``hold`` / ``on-hold`` on a PR
     do **not** (issues-only; see ``pr_forbidden_hold_labels`` / monitor). Body
     hold text only matches an owner stamp line (``On hold:`` / ``HOLD:``).
-    Title still scans short hold cues.
+    Title still scans short hold cues (leading ``On hold`` / ``on hold:``,
+    do-not-merge); mid-title prose ``on hold`` (VIS-G1) does not count (FR #9395).
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = sorted(labs & HOLD_MRB_LABELS)
