@@ -314,7 +314,7 @@ def _inbound() -> list[DocEntry]:
             request_schema="No body. HEAD returns empty body.",
             response_schema=(
                 'JSON {"agents":[{"agent","cli","model","context","effort"}, ...]} '
-                "(BOB-01). Options catalog shape (clis) lands with #8819."
+                "(BOB-01 / FR #8820). Includes clis catalog; stale:true when selection model absent."
             ),
             example_request="GET https://bob.ntsa.uk/bob/v1/models",
             status_codes="200 JSON; never invents secret fields.",
@@ -377,25 +377,29 @@ def _inbound() -> list[DocEntry]:
         ),
         DocEntry(
             slug="models-refresh",
-            title="Models refresh (POST) — coming",
+            title="Models refresh (POST)",
             method="POST",
             path=bobcallback.MODELS_PATH + "/refresh",
             direction="in",
-            purpose="Rebuild per-CLI options from each CLI listing (#8820). Not served yet.",
+            purpose="Rebuild per-CLI options catalog from grok/agent/opencode models listings (FR #8820).",
             callers="Operators / tray refresh.",
-            auth="None once live (rate-limited).",
-            request_schema="Empty or optional CLI filter JSON.",
-            response_schema="JSON clis + refreshed_at + added/removed; failed CLI keeps prior.",
+            auth="Peer allow-list (BOB_REPORT_ALLOW) same as other POSTs.",
+            request_schema='Empty body or {"clis":["grok","cursor","opencode"]}.',
+            response_schema=(
+                '200 JSON {"clis":{cli:{"models":[...],"refreshed_at"}},'
+                '"refresh":{cli:{"status":"refreshed|failed","added","removed","reason"}}}; '
+                'failed CLI keeps prior catalog; selections unchanged.'
+            ),
             example_request="POST https://bob.ntsa.uk/bob/v1/models/refresh",
-            status_codes="Coming — 404 today; 429 when rate-limited once live.",
-            retry_idempotency="Safe to retry; fail-closed per CLI.",
-            rate_limits="TBD with #8820.",
-            reachability="Not served yet (same BobModelsWebhook prefix).",
-            source="planned with #8820",
+            status_codes="200 refreshed; 400 bad_json/unknown_cli; 403 peer; 429 rate_limited; 503 catalog_unavailable/busy.",
+            retry_idempotency="Safe to retry; per-CLI fail-closed; second call inside 60s returns 429 with no change.",
+            rate_limits="One attempt per CLI per 60s (in-memory; restart resets).",
+            reachability="Public Cloudflare via BobModelsWebhook (^bob/v1/models(.*)).",
+            source="common/scripts/models_refresh.py, common/scripts/models_catalog.py, common/scripts/bobcallback.py",
             fr="FR #8820",
             html_rel="docs/webhooks/models.html",
-            status="coming",
         ),
+
         DocEntry(
             slug="builds-get",
             title="Builds catalog (GET)",

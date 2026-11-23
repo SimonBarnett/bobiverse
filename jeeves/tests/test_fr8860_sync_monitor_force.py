@@ -25,8 +25,19 @@ def test_start_monitor_refreshes_when_sync_script_present():
     assert "-InstallRoot $InstallRoot" in text
 
 
+def test_start_monitor_resolves_sync_under_bob_common_scripts():
+    """FR #9007: C:\\ai\\bob keeps Sync under common\\scripts, not beside Start."""
+    text = START.read_text(encoding="utf-8-sig")
+    assert "Resolve-SyncBobiverseFromRepoPath" in text
+    assert "FR #9007" in text
+    assert "common\\scripts\\" in text or "common\\scripts" in text
+    assert "BobInstallRoot" in text
+
+
 def test_monitoring_doc_names_drive_root_sync():
     text = DOCS.read_text(encoding="utf-8")
     assert "FR #8860" in text
     assert "sync-monitor-force" in text
     assert "-Product jeeves" in text
+    assert "FR #9007" in text
+    assert "common\\scripts" in text or "common/scripts" in text
