@@ -67,6 +67,28 @@ $watch = Join-Path $stage 'tools\Watch-BobTray.ps1'
 if (-not (Test-Path -LiteralPath $watch)) {
     throw 'Stage-BobTrayHotpatchArtifact: missing tools/Watch-BobTray.ps1'
 }
+# FR #9187: refuse staging a dollar-stripped Invoke-BobFleet.ps1 (fed44b9b / a1a94bd7 class).
+# Sync already gates compose (FR #9035); tray CI hotpatch must gate too.
+$common = Join-Path $repo 'common\scripts\Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $common)) { $common = Join-Path $repo 'scripts\Bobiverse-Common.ps1' }
+if (Test-Path -LiteralPath $common) {
+    . $common
+    if (Get-Command Assert-BobiverseInvokeBobFleetParses -ErrorAction SilentlyContinue) {
+        $fleetGate = Assert-BobiverseInvokeBobFleetParses -InstallRoot $stage
+        if (-not $fleetGate.Ok) {
+            throw ("FR #9187 fleet parse gate (stage): " + $fleetGate.Reason)
+        }
+    }
+}
+else {
+    $fleetPath = Join-Path $stage 'src\Private\Invoke-BobFleet.ps1'
+    if (Test-Path -LiteralPath $fleetPath) {
+        $fleetText = [IO.File]::ReadAllText($fleetPath)
+        if ([regex]::IsMatch($fleetText, 'param\s*\(\s*\[string\]\s*\)')) {
+            throw 'FR #9187 fleet parse gate (stage): nameless param([string]) in Invoke-BobFleet.ps1'
+        }
+    }
+}
 
 $sha = ([string]$Commit).Trim()
 if (-not $sha) { $sha = ([string]$env:WORKFLOW_COMMIT).Trim() }

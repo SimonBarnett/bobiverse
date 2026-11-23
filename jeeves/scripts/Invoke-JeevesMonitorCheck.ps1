@@ -5,14 +5,14 @@
   Runs one named check under tools\monitor\*.py. Exit 0=ok, 1=finding, 2=error.
   Prints one JSON line on stdout. Prefer these scripts over reasoning.
 .PARAMETER Check
-  health | idle_seats | queue_flow | stale_digest | giveup_loops | stuck_accepted | auto_feed | auto_focus | focus_present | focus_redundant_items | seats_stuck_doing | opencode_seats | skill_promote_backlog | intake_allowlist | ticket_closure | open_pr_stale_base | open_pr_mrb_missing | needs_human_false_positive | depends_on | fr_digest | wake_brief | wake_grok_bot_bob
+  health | idle_seats | queue_flow | stale_digest | giveup_loops | stuck_accepted | auto_feed | auto_focus | focus_present | focus_redundant_items | seats_stuck_doing | opencode_seats | skill_promote_backlog | intake_allowlist | ticket_closure | open_pr_stale_base | open_pr_mrb_missing | needs_human_false_positive | depends_on | fr_digest | pr_hold_labels | wake_brief | wake_grok_bot_bob
 .PARAMETER DryRun
   Offline: scripts emit ok JSON and exit 0.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('health','idle_seats','queue_flow','stale_digest','giveup_loops','stuck_accepted','auto_feed','auto_focus','focus_present','focus_redundant_items','seats_stuck_doing','opencode_seats','skill_promote_backlog','intake_allowlist','github_resync_focus','ticket_closure','open_pr_stale_base','open_pr_mrb_missing','needs_human_false_positive','depends_on','fr_digest','wake_brief','wake_grok_bot_bob')]
+    [ValidateSet('health','idle_seats','queue_flow','stale_digest','giveup_loops','stuck_accepted','auto_feed','auto_focus','focus_present','focus_redundant_items','seats_stuck_doing','opencode_seats','skill_promote_backlog','intake_allowlist','github_resync_focus','ticket_closure','open_pr_stale_base','open_pr_mrb_missing','needs_human_false_positive','depends_on','fr_digest','pr_hold_labels','wake_brief','wake_grok_bot_bob')]
     [string]$Check,
     [switch]$DryRun,
     [string]$InstallRoot = '',
@@ -46,7 +46,11 @@ foreach ($syncMon in $syncCands) {
     }
 }
 $py = Join-Path $here "tools\monitor\$Check.py"
-if (-not (Test-Path -LiteralPath $py)) { Write-Error "missing $py"; exit 2 }
+if (-not (Test-Path -LiteralPath $py)) {
+    # Soft-skip: tip tree may lag AGENTS.md check list (non-chair / sparse sync). FR #9066.
+    Write-Output (@{ check = $Check; ok = $true; skipped = $true; reason = "missing $py" } | ConvertTo-Json -Compress)
+    exit 0
+}
 $python = $null
 foreach ($c in @('python.exe', 'py.exe')) {
     $cmd = Get-Command $c -ErrorAction SilentlyContinue

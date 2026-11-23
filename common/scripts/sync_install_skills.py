@@ -1,6 +1,11 @@
 """FR #7238: overlay origin main `.grok/skills` into a dirty install without ff.
 
 Never copies secrets. Never switches the install branch. Skill trees only.
+
+FR #9180: live install / MSI / Sync skill stages ship **merged** bobiverse
+``.grok/skills`` from ``origin/main`` (or the sparse work-tree sync). Agent
+harvest must open a ``lesson(<book>)`` PR that patches the owning SKILL.md so
+the next sync carries the playbook — receipt-only harvest does not update builds.
 """
 from __future__ import annotations
 
