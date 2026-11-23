@@ -140,16 +140,16 @@ Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `bob/tests/test
 
 ## FR #8698 / BOB-52 Priority no-token gate
 
-**Start PriorityAgent** reads this box's Priority fuel file (`BOB_PRIORITY_FUEL_FILE`, else `%LOCALAPPDATA%\Bobiverse\priority-fuel.json`). When remaining is known zero / status empty: MessageBox dialog, quit the start, tray stays up. Missing or unreadable fuel does not block (unknown passes the gate). Same order as Plan BOB-46. Evidence: `bob/docs/bob-52-priority-no-token-evidence.md`.
+**Agents > Priority** (flat click; FR #9269) reads this box's Priority fuel file (`BOB_PRIORITY_FUEL_FILE`, else `%LOCALAPPDATA%\Bobiverse\priority-fuel.json`). When remaining is known zero / status empty: MessageBox dialog, quit the start, tray stays up. Missing or unreadable fuel does not block (unknown passes the gate). Same order as Plan BOB-46. Evidence: `bob/docs/bob-52-priority-no-token-evidence.md`.
 
 ## FR #8695 / BOB-53 Priority MCP (mcp.ntsa.uk)
 
-**Agents > Priority** is a submenu. **Start PriorityAgent** still launches `vendor\priority\PriorityAgent.exe` (BOB-50). **Configure MCP (mcp.ntsa.uk)** registers the Grok user-level server `priority-catalog` at `https://mcp.ntsa.uk/mcp`. The same registration is what `PriorityAgent.exe` adds; the tray also refuses a wrong URL instead of keeping it.
+**FR #9269 / BOB-TRAY-UI-08:** Agents > Priority is a flat click that starts `vendor\priority\PriorityAgent.exe` (BOB-50); the Start / Configure MCP submenu is gone. Headless `bob-tray.exe --priority-mcp-configure` still registers Grok user-level server `priority-catalog` at `https://mcp.ntsa.uk/mcp` (same registration PriorityAgent adds); wrong hosts are refused.
 
 - Compiled default `https://mcp.ntsa.uk/mcp`. Optional shipped `tray/config/default.json` key `priorityMcpUrl` is accepted only for scheme `https` and host `mcp.ntsa.uk`. Any other value is rejected and the constant is used. There is no `%LOCALAPPDATA%` override for this key.
 - Workflow: `grok mcp list`, `grok mcp add --transport http priority-catalog <url>` only when the entry is absent, then `grok mcp doctor priority-catalog`. A different URL or a `stdio` entry sets `state=wrong` and is not overwritten. `list` failure is `state=list-failed`. A missing `grok` is `state=grok-missing`.
 - Doctor is `ok` only when the exit code is 0, the output contains `handshake OK`, and it does not contain `handshake failed`.
-- Evidence file: `<root>\run\tray-priority-mcp.json` (`name`, `url`, `state`, `doctor`, `doctorMessage`, `ts`, `version`). One lifecycle line `priority-mcp` carries the same fields and no environment dump. Headless: `bob-tray.exe --priority-mcp-configure <out.json>` (no message box). The menu action shows a message box.
+- Evidence file: `<root>\run\tray-priority-mcp.json` (`name`, `url`, `state`, `doctor`, `doctorMessage`, `ts`, `version`). One lifecycle line `priority-mcp` carries the same fields and no environment dump. Headless: `bob-tray.exe --priority-mcp-configure <out.json>` (no message box). FR #9269 removed the Configure MCP menu action.
 - Grok resolution: `%USERPROFILE%\.grok\bin\grok.exe`, then `grok.exe` / `grok.cmd` / `grok.bat` on `PATH`.
 
 ## FR #6309 TipForm OpenCode keys menu

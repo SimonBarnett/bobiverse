@@ -28,11 +28,11 @@ def test_evidence_doc_pins_s1():
 def test_clicks_quit_before_priority_start():
     cs = TRAY.read_text(encoding="utf-8-sig")
     ps = WATCH.read_text(encoding="utf-8-sig")
-    i = cs.find('miPriorityStart.Click')
+    # FR #9269: flat miPriority.Click (no Start PriorityAgent submenu).
+    i = cs.find("miPriority.Click")
     assert i > 0
-    j = cs.find('miPriority.DropDownItems.Add(miPriorityStart)', i)
+    j = cs.find("miAgents.DropDownItems.Add(miPriority)", i)
     assert j > i
-    # Gate must sit in the Start PriorityAgent click path before StartPriorityExe.
     block = cs[i:j]
     assert "PriorityFuelEmpty" in block
     assert block.find("PriorityFuelEmpty") < block.find("StartPriorityExe()")

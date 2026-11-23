@@ -1,4 +1,4 @@
-// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
+﻿// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
 // windows (hosted in-process) all run natively, so the menu opens at once and nothing waits on PowerShell.
 // The slow DATA work (digest webhook, Cursor/Grok usage, stall alerts, IRC watcher, !startworker queue) stays in the existing
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
@@ -1065,7 +1065,7 @@ namespace BobDialogs
             miAgents.DropDownItems.Add(miPlan);
             MenuItems.Add("Plan");
             ToolStripMenuItem miPriority = new ToolStripMenuItem("Priority");
-            // FR #8694 / BOB-54 + FR #9267: vendor\priority\priority.ico, else assets\priority.ico.
+            // FR #9269 / BOB-TRAY-UI-08 + BOB-54 + FR #9267: vendor\priority, then assets\priority.ico.
             string priorityIco = Path.Combine(root, "vendor", "priority", "priority.ico");
             if (!File.Exists(priorityIco))
                 priorityIco = ResolveTrayMenuIconPath(root, "priority.ico");
@@ -1085,10 +1085,9 @@ namespace BobDialogs
             {
                 TrayLifecycle.Write("priority", "action", "menu-icon MISSING", "path", priorityIco, "file", "priority.ico");
             }
-            // FR #8699 / BOB-50 start stays the first child. FR #8695 / BOB-53 adds Configure MCP.
+            // FR #9269 / BOB-TRAY-UI-08: flat Priority click starts PriorityAgent (no Start/Configure MCP submenu).
             MenuItems.Add("Priority");
-            ToolStripMenuItem miPriorityStart = new ToolStripMenuItem("Start PriorityAgent");
-            miPriorityStart.Click += delegate {
+            miPriority.Click += delegate {
                 // FR #8698 / BOB-52: this box with no tokens shows a dialog and quits. It does not start Priority.
                 string fuel = PriorityFuelPath();
                 if (PriorityFuelEmpty(fuel))
@@ -1099,12 +1098,6 @@ namespace BobDialogs
                 }
                 StartPriorityExe();
             };
-            miPriority.DropDownItems.Add(miPriorityStart);
-            MenuItems.Add("Start PriorityAgent");
-            ToolStripMenuItem miPriorityMcp = new ToolStripMenuItem("Configure MCP (mcp.ntsa.uk)");
-            miPriorityMcp.Click += delegate { BeginConfigurePriorityMcp(); };
-            miPriority.DropDownItems.Add(miPriorityMcp);
-            MenuItems.Add("Configure MCP (mcp.ntsa.uk)");
             miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
             // BOB-40 + FR #9267: jeeves\assets, sibling jeeves install, then assets\jeeves-butler.ico.
