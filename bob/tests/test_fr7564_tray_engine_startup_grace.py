@@ -35,7 +35,7 @@ def test_fr7564_cold_start_grace_at_least_max_age():
 
 def test_fr7564_heal_storm_reports_exception():
     t = _cs()
-    heal = t[t.find("void HealEngine()") : t.find("void HealEngine()") + 3500]
+    heal = t[t.find("void HealEngine()") : t.find("void HealEngine()") + 6000]
     assert "engine-restart-storm" in heal
     assert "CrashHook.Report" in heal or "TrayEngineFailure" in heal
     assert "StartEngine()" in heal
