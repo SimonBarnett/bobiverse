@@ -27,7 +27,7 @@ def test_tray_logs_jeeves_dag_lazy_before_start():
     cs = TRAY.read_text(encoding="utf-8-sig")
     block = _fn(cs, 'ToolStripMenuItem miJeeves', "menu.Items.Add(miAgents)")
     lazy = block.find("jeeves-dag")
-    start = block.find('StartWorker("agent", "grok")')
+    start = block.find('StartWorker("agent", "grok"')
     assert 0 <= lazy < start
     assert "JeevesLazyDag.DryRunLine" in block
     assert "JeevesLazyDag.cs" in BUILD.read_text(encoding="utf-8-sig")
