@@ -408,3 +408,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Write-BobiverseVendoredExeManifest must not emit Path on the success stream; Stage-Product return Stage concatenates pipeline output and heat FR6969 fails when MANIFEST.json paths join Stage.
 - When Sync moves to Start-Process ArgumentList, widen FR #9007 pin to accept '-Product','jeeves' as well as literal -Product jeeves
 - Bob HTTP API defaults must use bob.ntsa.uk/bob; irc.ntsa.uk stays for IRC only --- tree scan test_irc_host_defaults_remain_irc fails on any https://irc.ntsa.uk/bob embed.
+- walrus_jeeves_install_ready: run with PYTHONPATH pointing at jeeves/tools/monitor (PR worktree until that tip merges, else install); MONITORING outbox assigns must be PRIVMSG #channel :!assign ... (never bare !assign to the outbox file)
