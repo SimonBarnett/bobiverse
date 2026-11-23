@@ -899,6 +899,20 @@ DEPENDS_UNRESOLVED_REASON = "depends-unresolved"
 # _QUALIFIED_DEPENDS_ISSUE_RE defined with FR #8754 Depends-on regexes above.
 _RELATIVE_DEPENDS_ISSUE_RE = re.compile(r"^#(\d+)$")
 _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
+# FR #9434: strip human annotations like ``#9259 (Digest: BOB-TRAY-UI)`` before
+# whitespace tokenization so BOB-D5 does not treat ``(Digest:`` as a bad ref.
+_DEPENDS_VALUE_ANNOTATION_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+
+
+def _depends_on_value_tokens(value: str) -> list[str]:
+    """Split a Depends-on value into issue-ref tokens; drop ``(...)`` / ``[...]`` notes."""
+    cleaned = _DEPENDS_VALUE_ANNOTATION_RE.sub(" ", value or "")
+    out: list[str] = []
+    for raw in re.split(r"[,;\s]+", cleaned):
+        tok = raw.strip().strip("`*")
+        if tok:
+            out.append(tok)
+    return out
 
 
 def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
@@ -924,10 +938,7 @@ def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
         value = (m.group(1) or "").strip()
         if not value or _NONE_DEPENDS_VALUE_RE.match(value):
             continue
-        for raw in re.split(r"[,;\s]+", value):
-            tok = raw.strip().strip("`*")
-            if not tok:
-                continue
+        for tok in _depends_on_value_tokens(value):
             qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
             if qm:
                 pair = (_repo_key(qm.group(1)), int(qm.group(2)))
@@ -952,6 +963,7 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
 
     ``(none)`` (whole value) and empty lines are fine. Relative ``#N`` without a
     home ``row["repo"]`` counts as unresolved. Self-references are ignored (not bad).
+    Parenthetical / bracket annotations after a ref (FR #9434) are stripped first.
     """
     if not isinstance(row, dict) or _canon_task(row) != "FR":
         return False
@@ -966,10 +978,7 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
         value = (m.group(1) or "").strip()
         if not value or _NONE_DEPENDS_VALUE_RE.match(value):
             continue
-        for raw in re.split(r"[,;\s]+", value):
-            tok = raw.strip().strip("`*")
-            if not tok:
-                continue
+        for tok in _depends_on_value_tokens(value):
             qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
             if qm:
                 pair = (_repo_key(qm.group(1)), int(qm.group(2)))
@@ -8998,6 +9007,8 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
             # BOB-D3 / BOB-D5 + BOB-G1: depends-open / depends-unresolved / depends-held.
+            # Local open_keys only (no live GitHub) — empty-offer honesty must stay
+            # token-free. Stuck/report paths pass issue_fetch (FR #9434 / #9418).
             if _canon_task(cand) == "FR":
                 dep_why = row_depends_open_reason(
                     cand, open_dep_keys_summary, doc=raw if isinstance(raw, dict) else None
