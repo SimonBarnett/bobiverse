@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625 / #8536).
+"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625 / #8536 / #9461).
+
+FR #9461: EXIT 1 idle+offerable triggers ear-relay !assign by default (--no-intervene to report-only).
 
 FR #8536: when idle seats exist and offerable==0, emit healthy_idle_empty_offerable
 (+ queue_needs_human_only when every unaccepted row is needs_human) so ops do not
@@ -15,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from _common import (
+    EXIT_ERROR,
     EXIT_FINDING,
     EXIT_OK,
     iter_worker_entries,
@@ -494,12 +497,144 @@ def check(args):
 
 
 def main(argv=None) -> int:
-    return run_check(
-        "idle_seats",
-        "Idle seats vs offerable queue work for live seats (exit 0/1/2)",
-        check,
-        argv,
+    """FR #9461: optional ear-relay intervene when EXIT 1 (idle+offerable)."""
+    import argparse
+
+    from _common import emit
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    p = argparse.ArgumentParser(
+        prog="idle_seats",
+        description=(
+            "Idle seats vs offerable queue work for live seats (exit 0/1/2); "
+            "optional ear-relay !assign intervene (FR #9461)"
+        ),
     )
+    p.add_argument("--help-exit0", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--dry-run", action="store_true", help="offline: emit ok JSON and exit 0")
+    p.add_argument("--chair-home", default="", help="override ~/.jeeves")
+    p.add_argument("--digest-home", default="", help="override ~/.bobiverse")
+    # FR #9461: default intervene ON so Start-JeevesMonitor keeps fleet moving.
+    p.add_argument(
+        "--intervene",
+        dest="intervene",
+        action="store_true",
+        default=True,
+        help="on EXIT 1 idle+offerable, ear-relay !assign (default on)",
+    )
+    p.add_argument(
+        "--no-intervene",
+        dest="intervene",
+        action="store_false",
+        help="report-only (legacy)",
+    )
+    p.add_argument(
+        "--intervene-dry-run",
+        action="store_true",
+        help="plan !assign lines without writing ear outbox",
+    )
+    p.add_argument("--ear-outbox", default="", help="ear outbox.txt for intervene")
+    p.add_argument(
+        "--force-needs-human",
+        action="store_true",
+        help="intervene may pick needs_human rows",
+    )
+    p.add_argument("--pace-s", type=float, default=3.0, help="pace between !assign lines")
+    p.add_argument(
+        "--truncate-outbox",
+        action="store_true",
+        help="truncate drained ear outbox after intervene",
+    )
+    args = p.parse_args(argv)
+    if args.help_exit0:
+        p.print_help()
+        return EXIT_OK
+    if args.dry_run:
+        return emit(
+            {
+                "check": "idle_seats",
+                "ok": True,
+                "dry_run": True,
+                "findings": [],
+                "intervene": False,
+            },
+            EXIT_OK,
+        )
+    try:
+        payload, code = check(args)
+    except Exception as e:
+        return emit(
+            {
+                "check": "idle_seats",
+                "ok": False,
+                "dry_run": False,
+                "error": f"{type(e).__name__}: {e}",
+                "findings": [str(e)],
+            },
+            EXIT_ERROR,
+        )
+    payload.setdefault("check", "idle_seats")
+    payload.setdefault("dry_run", False)
+    payload["intervene_requested"] = bool(getattr(args, "intervene", True))
+    try:
+        offerable = int(payload.get("offerable_for_live_seats") or 0)
+    except (TypeError, ValueError):
+        offerable = 0
+    idle_n = len(payload.get("idle_seats") or [])
+    should = (
+        bool(getattr(args, "intervene", True))
+        and code == EXIT_FINDING
+        and idle_n > 0
+        and offerable > 0
+    )
+    if should:
+        try:
+            import intervene_assign as ia
+            from _common import queue_bucket_rows, resolve_queue_path
+
+            report = dict(payload)
+            if not ia.rows_from_report(report):
+                chair, digest = resolve_homes(args)
+                qpath = resolve_queue_path(chair, digest)
+                if qpath.is_file():
+                    queue = json.loads(qpath.read_text(encoding="utf-8-sig"))
+                    report["unaccepted"] = queue_bucket_rows(queue, "unaccepted")
+            outbox = Path(getattr(args, "ear_outbox", "") or ia.default_ear_outbox())
+            dry_i = bool(getattr(args, "intervene_dry_run", False))
+            chair, digest = resolve_homes(args)
+            offerable_fn = ia._offerable_fn_from_homes(chair, digest)
+            inter = ia.intervene_from_report(
+                report,
+                outbox=outbox,
+                dry_run=dry_i,
+                force_needs_human=bool(getattr(args, "force_needs_human", False)),
+                pace_s=float(getattr(args, "pace_s", 3.0) or 3.0),
+                truncate=bool(getattr(args, "truncate_outbox", False)),
+                offerable_fn=offerable_fn,
+            )
+            payload["intervene"] = inter
+            notes = list(payload.get("notes") or [])
+            if inter.get("written_count", 0) > 0:
+                notes.append(
+                    f"FR #9461 intervene wrote {inter['written_count']} !assign line(s) to {outbox}"
+                )
+            elif dry_i and inter.get("planned"):
+                notes.append(
+                    f"FR #9461 intervene dry-run planned {len(inter['planned'])} !assign line(s)"
+                )
+            else:
+                notes.append("FR #9461 intervene ran but planned 0 assigns")
+            payload["notes"] = notes
+        except Exception as e:
+            notes = list(payload.get("notes") or [])
+            notes.append(f"FR #9461 intervene error: {e}")
+            payload["notes"] = notes
+            findings = list(payload.get("findings") or [])
+            findings.append(f"intervene failed: {e}")
+            payload["findings"] = findings
+    else:
+        payload["intervene"] = None
+    return emit(payload, code)
 
 
 if __name__ == "__main__":

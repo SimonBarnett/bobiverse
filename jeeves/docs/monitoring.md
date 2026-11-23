@@ -97,9 +97,11 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 - Log fields: `require_machine` / `ledger` / `out-of-focus`; seat-ledger heal when every live pin-machine seat GIVEUP'd; shop workers on pin machines.
 - `queue_flow` auto-heals pin+ledger starvation (FR #2446) and raises a finding after **>10m** of pin-only / empty offerable for idle seats (FR #2448).
 
-## idle_seats (FR #1116 / #8536)
+## idle_seats (FR #1116 / #8536 / #9461)
 
 `Test-JeevesMonitorIdleSeats.ps1` / `tools/monitor/idle_seats.py` finds idle digest seats only when at least one unaccepted row is **offerable** to a live idle seat (same gates as `offer_focus_top`: needs_human, cooldown, skip labels, machine pin, ledger, UAT/MRB rules).
+
+**FR #9461 (deterministic intervene):** EXIT 1 (idle + offerable) **triggers** ear-relay !assign by default (--intervene, use --no-intervene for report-only). Implementation: `tools/monitor/intervene_assign.py` + `scripts/Invoke-JeevesMonitorInterveneAssign.ps1`. Picks eligible idle shop nicks and MERGEABLE-preferring unaccepted rows, appends UTF-8 no-BOM PRIVMSG #bobiverse :!assign <nick> <repo> <TASK> <n> to the ear outbox (C:\ai\bob\home\outbox.txt or %USERPROFILE%\.bobiverse\outbox.txt, override BOB_EAR_OUTBOX), paces >=3s, skips self-MRB and needs_human (unless --force-needs-human). Never edits queue.json, never touches Ergo, never Start-BobWorker. Optional --truncate-outbox when companion *.pos is at EOF. --intervene-dry-run plans without writing. Sibling chair-side push: FR #9460.
 
 **FR #8536:** when idle seats exist and `offerable_for_live_seats==0`, the check stays EXIT 0 and sets `healthy_idle_empty_offerable=true` (and `queue_needs_human_only` when every unaccepted row is needs_human). Notes say do not recycle as hung. Digest `queue` also exposes `offerable_count` / `queue_needs_human_only` for TipForm.
 
