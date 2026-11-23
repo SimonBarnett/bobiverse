@@ -343,6 +343,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
 - FR assign with open Closes PR: DONE covering URL; do not open a twin tip (#9100/#9107)
 - FIX on CLI-exit classifier DIRTY tip: keep _stderr_is_seat_prompt_echo with grok_worker_spawn_connect_failure and unsigned_exit_stderr_is_noise; silent ORs prompt-echo and noise
+- MRB tip behind main: run mrb_merge_gate.py --merge from a current worktree when the assigned tip predates --merge support; do not fail the gate on tip-local usage error
 - gh_auth_blocks: Failed to log in / re-authenticate wins over Active account true even on exit 0; never invent GH_TOKEN
 - BOB-HOVER-XAI: Get-BobTrayHoverXaiPoolLabel maps SuperGrok to xAI never SG; hover remainPct uses digest xai_weekly remaining_pct including stale so it matches Format-BobTrayXaiWeeklyRow
 - Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
@@ -375,6 +376,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR #9121: bobcallback /bob/v1/digest and /digest are 301 to /bob/v1/report; docstring must not claim same JSON body
 - FR #9229: after hold/on-hold are issues-only (#9082), fr9080 requeue hold-skip tests must use do-not-merge/wip on PR snapshots (not hold).
 - FR #9104: under local intake RateLimiter deny, bobcallback acks check_run/check_suite with 204 rate deferred (no retry storm); push/PR/issues stay 429; monitor github_rate_limit EXIT 1 under floor 500
+- FR TipForm digest fail: prefer digest ear-offline when ircBob Stopped or digest online=false; keep digest unreachable for pure HTTP GetResponse timeouts; ship ircbob_ear monitor in ValidateSet.
 - TipForm menu vanishes on AppFocusChange when bob-status/tip TOPMOST steals focus --- Cancel AppFocusChange on MenuClosing, gate Status while menu open, Opening Hide-BobTrayCard + close bob-status.
 - FR #9209: OpenCode launch wrapper mirrors capture-file growth with Console.Out.Write+Flush live; end with opencode-capture-done marker, never dump full $outStr again
 - ensure_mrb_requeued_after_head_move must take issue_lookup and call linked_issue_hold_reason; prefetch outside the queue lock (FR #9243).
@@ -383,3 +385,16 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.
 - OpenCode: one park-worktree at a time per seat; NACK busy, holding <first> for a second job; accept_offered refuses twin when nick already accepted (FR #9254).
 - TipForm HealEngine must compare tray-status.json age vs tray.alive freshness and refuse heartbeat mtime refresh while short/title is startup seed starting; bounded status-writer restart never touches seats; paint Bob: engine up at tray-up or Bob: status stalled after 180s
+- SiteKit owned-rule HTML comments must sit immediately before <rule name=...>, never inside <conditions>/<rule>; Get-BobOwnedRuleXml drops inner comments and second Install fails byte-stable CI (fr8934 / CR on #9278).
+- When FR #7618 self-probe exits under low RAM, log free_mb, defer exit with BOB_CALLBACK_LOW_MEM_* instead of crash-looping, and retry prior-clean scans (BOB_PRIOR_SCAN_ATTEMPTS) so the first NSSM restart survives transient CIM failure.
+- OpenCode opencode-lost-ack-stale / opencode-frozen-progress recycles with exit_code None skip seat-stopped intake (class of #7978/#9025); MRB may repair PR body control-char nits without a fix PR.
+- monkeypatch.setenv(BOB_DIGEST_HOME/BOB_HOME) before jeeves_main.main so undo clears the chair tmp home; bare delenv raising=False when absent registers no undo and leaks into later suite tests (FR #9291).
+- fr-digest / umbrella epics: ACK then GIVEUP; never Closes a living digest; children implement (job-irc umbrella rule).
+- When FR #9236 tip CONFLICTING with #9297 bobcallback intake skips: keep LOW_MEM_* constants and free_mb intake plus early pytest/UNIT_TEST_LISTENER_PORTS skips; do not drop either side.
+- FR #9310: live_seat_nicks must skip machines with workers_stale (FR #8513 last-good restore into worker_list); otherwise auto-offer targets dead nicks after workers=[].
+- SV harvest tips without a worktree: mirror catalog SKILL.md + meta.json from frontmatter; patch docs/skill-sources/_dag when dag.json is readable, else omit full rebuild.
+- Composed J:\ Start/Invoke must prefer Bob tip Sync that contains sync-monitor-force over stale J:\scripts\Sync; else tools\monitor never force-copies (opencode_seats class of #9309)
+- MRB CI-G2: PASS when build-jeeves pull_request runs open_children_gate.py --pr with issues/pull-requests read; stack may Closes CI-G1+#G2 together; soft-ok without Closes parents
+- skill-dag resolve must not sum SKILL.md body sizes across depends_on when packing matched metadata; charge response metadata and skip only single bodies over max_bytes so MRB keeps job-irc (FR #9330 / PR #9334).
+- Fresh MRB re-offer after FIX: clear Relay _finished_refs on ACK; treat already-finished NACK as terminal only when done[] verdict SHA matches current head.
+- BOB-G3 digests must remain offerable and hold-purge exempt --- skip only in offer/assign via digest_issue_reason, or purge paths drop the gate row.

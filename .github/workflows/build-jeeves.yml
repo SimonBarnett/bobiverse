@@ -16,6 +16,8 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - common/tests/test_fr8841_wire_open_children_build_jeeves.py
+      - common/scripts/open_children_gate.py
       - jeeves/tests/test_fr7547_build_jeeves_pytest.py
       - common/requirements-freeze.txt
       - common/scripts/assert_jeeves_yaml_embed.py
@@ -30,12 +32,16 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - common/tests/test_fr8841_wire_open_children_build_jeeves.py
+      - common/scripts/open_children_gate.py
       - jeeves/tests/test_fr7547_build_jeeves_pytest.py
       - common/requirements-freeze.txt
       - common/scripts/assert_jeeves_yaml_embed.py
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   build-jeeves:
@@ -61,6 +67,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller/pytest failed: $LASTEXITCODE" }
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      # CI-G2 / FR #8841: run CI-G1 open-children gate on pull_request only.
+      # Reuse: same script for other SimonBarnett repos via --repo / --pr (or --parent).
+      # Fail-when: open issues still Depends-on a Closes parent of this PR.
+      - name: Open-children gate (CI-G1 / FR #8841)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}/common/scripts
+        run: |
+          $root = (Get-Location).Path
+          $repo = "${{ github.repository }}"
+          $pr = "${{ github.event.pull_request.number }}"
+          python "$root\common\scripts\open_children_gate.py" --repo $repo --pr $pr
+          if ($LASTEXITCODE -ne 0) { throw "open-children-gate exit $LASTEXITCODE" }
 
       - name: Pytest jeeves/tests (FR #7547)
         env:

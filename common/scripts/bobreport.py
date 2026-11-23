@@ -2876,10 +2876,23 @@ def digest_lock(
 
         hb_thread = None
         if hb_fh is not None:
-            hb_thread = threading.Thread(
-                target=_heartbeat, name="digest-lock-heartbeat", daemon=True
-            )
-            hb_thread.start()
+            try:
+                hb_thread = threading.Thread(
+                    target=_heartbeat, name="digest-lock-heartbeat", daemon=True
+                )
+                hb_thread.start()
+            except RuntimeError as exc:
+                # FR #9238: thread exhaustion must not fail every /bob/v1/report.
+                # Keep the lock; skip heartbeat (watchdog may still break stale).
+                msg = str(exc).lower()
+                if "can't start new thread" in msg or "start new thread" in msg:
+                    print(
+                        f"WARN digest-lock-heartbeat skipped (thread exhausted): {exc}",
+                        flush=True,
+                    )
+                    hb_thread = None
+                else:
+                    raise
         try:
             yield
         except OSError as exc:

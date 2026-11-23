@@ -145,7 +145,7 @@ def test_fr8835_models_and_git_cards_present():
 
 def test_fr8835_coming_models_ops_marked():
     coming = {e.slug for e in docs.all_entries() if getattr(e, "status", "live") == "coming"}
-    # FR #9122: models-put is live (BOB-02); FR #8820: models-refresh is live; PATCH remains coming.
+    # FR #9122 / #9273: models-put live via IIS; FR #8820 refresh live; PATCH remains coming.
     assert "models-put" not in coming
     assert "models-refresh" not in coming
     assert "models-patch" in coming
@@ -154,9 +154,10 @@ def test_fr8835_coming_models_ops_marked():
     assert "clis" in page.lower()
     put_live = [e for e in docs.all_entries() if e.slug == "models-put"][0]
     assert getattr(put_live, "status", "live") == "live"
-    # FR #9224 / MRB #9126: public BobModelsWebhook is GET|HEAD|POST; PUT stays direct/LAN.
-    assert "GET|HEAD|POST" in (put_live.status_codes or "")
-    assert "GET|HEAD|POST" in (put_live.reachability or "")
+    # FR #9273: public BobModelsWebhook forwards GET|HEAD|POST|PUT.
+    assert "GET|HEAD|POST|PUT" in (put_live.status_codes or "") or "GET, HEAD, POST, and PUT" in (put_live.reachability or "")
+    assert "PUT" in (put_live.reachability or "")
+    assert "FR #9273" in (put_live.fr or "") or "FR #9273" in page
 
 
 
