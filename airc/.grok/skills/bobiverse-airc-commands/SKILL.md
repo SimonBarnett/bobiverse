@@ -214,3 +214,7 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo -Profile fleet
 - **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-legion-2026-10-31.md`.
+
+## Harvested lessons (intake)
+
+- **FR #9344:** a `bob-<other>` ear PRIVMSG to `{machine}_console` is unauthorized (`DONE exit=126 not-op`). Drive airc from the same-machine ear (`bob-<machine>`) or use RDP/WinRM; do not expect cross-machine ear auth.
