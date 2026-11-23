@@ -29,10 +29,10 @@ depends_on: []
 >    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
 >    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
 >    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
-> 6. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
->    or `bobiverse-jeeves-*` must open or update a `lesson(<book>):` / `harvest/…` PR that patches the owning
+> 6. **FR #9180 â€” owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
+>    or `bobiverse-jeeves-*` must open or update a `lesson(<book>):` / `harvest/â€¦` PR that patches the owning
 >    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
->    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
+>    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed â€” builds, Sync,
 >    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
@@ -48,9 +48,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
 
-- Gap, bug or wish ├ö├Ñ├å issue (`FR:` for features). When the operator has no
+- Gap, bug or wish â”œÃ¶â”œÃ‘â”œÃ¥ issue (`FR:` for features). When the operator has no
   GitHub account, POST `kind: issue` | `fr` to `/bob/v1/intake`.
-- New or fixed playbook ├ö├Ñ├å branch + PR (never `main`).
+- New or fixed playbook â”œÃ¶â”œÃ‘â”œÃ¥ branch + PR (never `main`).
 - Empty harvest only when nothing is new and nothing is broken.
 
 **Home:** `https://github.com/SimonBarnett/bobiverse`. Frontmatter `github:`
@@ -99,20 +99,20 @@ flowchart TD
 
 *Caption: prefer `gh`; fall back to the Bob webhook intake; if offline, queue locally and retry.*
 
-1. **`gh` available and authenticated** ├ö├Ñ├å branch + PR against
+1. **`gh` available and authenticated** â”œÃ¶â”œÃ‘â”œÃ¥ branch + PR against
    `SimonBarnett/bobiverse` (skills) or an issue (`harvest:` / `FR:`). If the PR
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
-2. **No `gh`, or not authenticated** ├ö├Ñ├å POST to the Bob webhook intake
+2. **No `gh`, or not authenticated** â”œÃ¶â”œÃ‘â”œÃ¥ POST to the Bob webhook intake
    `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
-3. **Offline / intake unreachable** ├ö├Ñ├å write the JSON payload to a local
+3. **Offline / intake unreachable** â”œÃ¶â”œÃ‘â”œÃ¥ write the JSON payload to a local
    `harvest-outbox/` (or `report-outbox/` / `install-outbox/`) folder and retry
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-### Open skill / harvest receipts ├ö├Ñ├å consolidate then PR (FR #1682 / FR #1684)
+### Open skill / harvest receipts â”œÃ¶â”œÃ‘â”œÃ¥ consolidate then PR (FR #1682 / FR #1684)
 
 Intake `kind: skill|harvest` creates `label:skill` issues. The chair **offers** them as FR promote jobs (not product code FRs; they still do not block repo UAT). Do **not** GIVEUP. Without a promote PR the lessons never reach MRB merge.
 
@@ -120,10 +120,10 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
 2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/├ö├ç┬¬` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes ├ö├ç┬¬` / `Duplicates closed: ├ö├ç┬¬`.
+3. Open **one** `harvest/â”œÃ¶â”œÃ§â”¬Â¬` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes â”œÃ¶â”œÃ§â”¬Â¬` / `Duplicates closed: â”œÃ¶â”œÃ§â”¬Â¬`.
 4. Leave merge to hostile **MRB**. Never push `main`.
 
-Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts ├ö├Ñ├å promote PR**.
+Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts â”œÃ¶â”œÃ‘â”œÃ¥ promote PR**.
 
 ### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
 
@@ -359,3 +359,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - trayDigestTimer Action runspace has no parent BobBridge: Import-Module src\BobBridge.psd1 when Get-ThisMachineId or Write-BobIrcStatus is missing; dotting Get-BobIrc alone is not enough (FR #9198).
 - Drain must recreate empty outbox.txt after atomic move.
 - WinPS 5.1: never assign $pid/$PID in tray helpers (read-only automatic); use $trayPid/$killPid; pin source forbids $pid = in Stop-BobTrayProcessesProtectingSeats (MRB #9206).
+- FR #9217: ruleset required-ci-3948 requires pytest-ascii-bom with conflict-markers; job name must stay pytest-ascii-bom.
