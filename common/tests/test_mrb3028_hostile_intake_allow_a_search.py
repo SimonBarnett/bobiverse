@@ -7,16 +7,6 @@ import intake
 
 ROOT = Path(__file__).resolve().parents[2]
 ASEARCH = "SimonBarnett/a-search"
-PLAN_SKILL = (
-    ROOT
-    / "bob"
-    / "agents"
-    / "plan"
-    / ".grok"
-    / "skills"
-    / "plan-git-from-plan"
-    / "SKILL.md"
-)
 
 
 def test_mrb3028_default_allow_repos_includes_a_search():
@@ -41,9 +31,8 @@ def test_mrb3028_harvest_fallback_and_webhooks_doc():
     assert "SimonBarnett/" in doc
 
 
-def test_mrb3028_plan_git_documents_intake_allow():
-    raw = PLAN_SKILL.read_bytes()
-    assert not raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8")
-    assert "SimonBarnett/" in text
-    assert "3135" in text or "3023" in text or "intake" in text.lower()
+def test_mrb3028_plan_pointer_readme_exists():
+    # FR #8833: plan-git-from-plan moved upstream; pointer README remains.
+    readme = ROOT / "bob" / "agents" / "plan" / "README.md"
+    assert readme.is_file()
+    assert "skills-visionary" in readme.read_text(encoding="utf-8")

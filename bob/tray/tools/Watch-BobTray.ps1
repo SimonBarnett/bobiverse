@@ -2244,6 +2244,7 @@ function Start-BobTrayWorkerExe {
         [ValidateSet('agent', 'plan')][string]$Mode,
         [ValidateSet('', 'auto', 'grok', 'cursor', 'opencode')][string]$Agent = '',
         [string]$SeatId = '',
+        # FR #9346: default 'other' is fail-closed (blocked when empty-online.disabled).
         [string]$Trigger = 'other',
         [string]$Model = '',
         [switch]$Quiet,
@@ -2264,8 +2265,9 @@ function Start-BobTrayWorkerExe {
             if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($offMsg, 'Bobiverse', 'OK', 'Information') } catch { } }
             return 0
         }
-        # FR #9240: empty-online.disabled blocks auto triggers (auto-start, restore-after-recycle).
-        # TipForm menu / workers-* / jeeves-menu and explicit !startworker stay allowed.
+        # FR #9240 / #9346: empty-online.disabled blocks every non-manual trigger (fail-closed:
+        # auto-start, restore-after-recycle, other, empty, unknown). TipForm menu / workers-* /
+        # jeeves-menu and explicit !startworker stay allowed.
         if ($Mode -eq 'agent' -and (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue)) {
             $blockAuto = $false
             try { $blockAuto = [bool](Test-BobTrayEmptyOnlineBlocksAutoStart -Root $RepoRoot -Trigger $Trigger) } catch { $blockAuto = $false }
@@ -3273,20 +3275,39 @@ function Close-BobTrayDialogs {
     $script:tip = $null
 }
 
-# t798u / FR #9034: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop.
+# t798u / FR #9034 / FR #9146: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop.
 # Never stop ircBob — the ear is a machine service, not a TipForm child (matches Restart -SkipServiceRestart).
+# Under #9011 park (bob-tray.exe.clickfix/false/true-park present): short suppress (5m, Exit-park) so Watch can recover TipForm.
 function Invoke-BobTrayExit {
     $script:trayExitReason = 'Exit'
-    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI (ircBob left running; FR #9034)'
-    # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch.
+    $parked = $false
     try {
-        if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
-            Set-BobTrayWatchdogSuppress -Reason 'Exit'
+        if (Get-Command Test-BobTrayExeParked -ErrorAction SilentlyContinue) {
+            $parked = [bool](Test-BobTrayExeParked -Root $RepoRoot)
         }
-        if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
-            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit'; ircBob = 'left-running' }
-        }
-    } catch { }
+    } catch { $parked = $false }
+    if ($parked) {
+        Write-TrayLog 'Exit: park TipForm close dialogs, dispose icon, exit UI (ircBob left running; suppress 5m; FR #9146)'
+        try {
+            if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
+                Set-BobTrayWatchdogSuppress -Reason 'Exit-park' -TtlMinutes 5
+            }
+            if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+                Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit-park'; ircBob = 'left-running'; park = $true }
+            }
+        } catch { }
+    } else {
+        Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI (ircBob left running; FR #9034)'
+        # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch (default 1440m).
+        try {
+            if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
+                Set-BobTrayWatchdogSuppress -Reason 'Exit'
+            }
+            if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+                Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit'; ircBob = 'left-running' }
+            }
+        } catch { }
+    }
     [void](Invoke-BobTrayExitSequence `
             -CloseDialogs { Close-BobTrayDialogs } `
             -DisposeIcon { $notify.Visible = $false; $notify.Dispose() } `
@@ -5562,7 +5583,7 @@ try {
     }
 } catch { }
 # Exit path (menu Exit/Restart already announced+logout). Idempotent; skip second announce.
-# t798u: Exit already stopped ircBob (detached); the slow logout/kill path is only for Restart and external stops.
+# t798u / FR #9034 / FR #9146: TipForm Exit leaves ircBob running; slow logout/kill is only for Restart and external stops.
 if ($script:trayExitReason -ne 'Exit') {
     try { Request-BobTrayIrcLogout -Reason Exit -SkipAnnounce } catch { Write-TrayLog ('final irc logout: ' + $_.Exception.Message) }
 }

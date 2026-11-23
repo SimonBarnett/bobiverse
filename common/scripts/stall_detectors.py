@@ -474,6 +474,61 @@ def _idle_has_offerable(home: Any, idle: list[str]) -> bool:
     return False
 
 
+def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> bool:
+    """FR #9374: True when offer would skip this FR (Depends-on / digest).
+
+    Matches ``gitclaim.row_depends_open_reason`` / ``digest_issue_reason`` so
+    ``idle_with_work`` does not treat blocked FRs as waiting work.
+    """
+    if str(row.get("task") or "").upper() != "FR":
+        return False
+    try:
+        if gitclaim.digest_issue_reason(row):
+            return True
+    except Exception:
+        pass
+    doc: dict[str, Any] = {}
+    open_keys: set = set()
+    issue_open = snap.get("depends_issue_open")
+    home = snap.get("home")
+    if home is not None:
+        try:
+            from pathlib import Path
+
+            home_p = home if isinstance(home, Path) else Path(str(home))
+            doc = gitclaim.load_queue(home_p) or {}
+        except Exception:
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        try:
+            open_keys = gitclaim.open_fr_issue_keys(doc)
+        except Exception:
+            open_keys = set()
+        if issue_open is None:
+            try:
+                issue_open = gitclaim.depends_issue_open_checker()
+            except Exception:
+                issue_open = None
+    else:
+        doc = {
+            "unaccepted": list(snap.get("unaccepted") or []),
+            "accepted": list(snap.get("accepted") or []),
+        }
+        try:
+            open_keys = gitclaim.open_fr_issue_keys(doc)
+        except Exception:
+            open_keys = set()
+    try:
+        return bool(
+            gitclaim.row_depends_open_reason(
+                row, open_keys, issue_open=issue_open, doc=doc or None
+            )
+        )
+    except Exception:
+        return False
+
+
 def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
     """FR #6439: idle seats + unaccepted work waiting > N min with no live offer.
 
@@ -482,6 +537,8 @@ def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
     not file ``stall:idle-with-work:queue``. When ``home`` is in the snap, also
     require ``summarize_empty_offer`` offerable > 0 for some idle seat (same
     ungated gate as quiet-idle), fail-closed on errors.
+
+    FR #9374: skip FRs blocked by open Depends-on / digest (same as offer).
     """
     idle_raw = snap.get("idle") or []
     idle = [n for n in idle_raw if str(n or "").strip()]
@@ -500,6 +557,8 @@ def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(row, dict):
             continue
         if row.get("needs_human"):
+            continue
+        if _row_offer_gated_for_stall(row, snap):
             continue
         if not _idle_seat_can_take_row(row, idle):
             continue

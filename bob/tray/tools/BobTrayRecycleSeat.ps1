@@ -97,17 +97,26 @@ function Invoke-BobTrayRecycleSeatReportFailure {
 function Get-BobTrayRecycleLaunchRefusal {
     <#
     .SYNOPSIS
-      FR #8403: why a restore Launch would return no pid (mirrors the Start-BobTrayWorkerExe
+      FR #8403 / #9346: why a restore Launch would return no pid (mirrors the Start-BobTrayWorkerExe
       gates). '' when a launch may proceed. A -Restore launch skips the 2-seat cap, so the
-      refusal left is seats-off or a missing worker exe; the cap check remains as a guard for
-      callers that do not pass -Restore.
+      refusal left is seats-off, empty-online.disabled, or a missing worker exe; the cap check
+      remains as a guard for callers that do not pass -Restore.
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
-        [string]$Mode = 'agent'
+        [string]$Mode = 'agent',
+        [string]$Trigger = 'restore-after-recycle'
     )
     if ($Mode -eq 'agent' -and (Get-Command Test-BobTraySeatsOff -ErrorAction SilentlyContinue)) {
         if (Test-BobTraySeatsOff) { return 'seats-off' }
+    }
+    # FR #9346 / #9240: shared empty-online.disabled gate (fail-closed for restore-after-recycle).
+    if (
+        $Mode -eq 'agent' -and
+        (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue) -and
+        (Test-BobTrayEmptyOnlineBlocksAutoStart -Root $Root -Trigger $Trigger)
+    ) {
+        return 'empty-online-disabled'
     }
     if (Get-Command Get-BobTrayWorkerCapRefusal -ErrorAction SilentlyContinue) {
         $capRefusal = Get-BobTrayWorkerCapRefusal -Mode $Mode
@@ -251,13 +260,41 @@ function Invoke-BobTrayRecycleSeatQueue {
         $seatNick = [string]$row.seatNick
         $clickedKind = [string]$row.clickedKind
         $clickedModel = [string]$row.clickedModel
+        # FR #9346: refuse before Launch when empty-online.disabled blocks restore-after-recycle.
+        # Only the kill-switch gate runs here; seats-off / cap / worker-exe-missing stay post-Launch
+        # (Get-BobTrayRecycleLaunchRefusal) so stub Launch tests and -Restore cap skip still work.
+        $blockEmpty = $false
+        if (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue) {
+            try { $blockEmpty = [bool](Test-BobTrayEmptyOnlineBlocksAutoStart -Root $Root -Trigger 'restore-after-recycle') } catch { $blockEmpty = $false }
+        }
+        if ($blockEmpty) {
+            $row.ok = $false
+            $row.reason = 'empty-online-disabled'
+            try {
+                if (Get-Command Write-BobTrayUnrequestedSeatStartIntake -ErrorAction SilentlyContinue) {
+                    [void](Write-BobTrayUnrequestedSeatStartIntake -Root $Root -Trigger 'restore-after-recycle' -Site 'Invoke-BobTrayRecycleSeatQueue')
+                }
+            } catch { }
+            continue
+        }
         # FR #7117: one retry if the first start returns no pid; never wait for a key.
         $tries = 0
         while ($tries -lt 2 -and -not $row.ok) {
             $tries++
             try {
                 # FR #8864: last numeric pid; Write-Output log lines are not the pid.
-                $newPid = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $seatNick $clickedKind $clickedModel))
+                # Soft-dep: unit tests may load RecycleSeat without BobTrayStartWorker.ps1.
+                $launchOut = @(& $Launch $seatNick $clickedKind $clickedModel)
+                if (Get-Command Get-BobTrayLaunchPidFromOutput -ErrorAction SilentlyContinue) {
+                    $newPid = [int](Get-BobTrayLaunchPidFromOutput -Output $launchOut)
+                } else {
+                    $newPid = 0
+                    foreach ($item in @($launchOut)) {
+                        if ($null -eq $item) { continue }
+                        $n = 0
+                        if ([int]::TryParse([string]$item, [ref]$n) -and $n -gt 0) { $newPid = $n }
+                    }
+                }
                 if ($newPid -gt 0) { $row.ok = $true; $row.reason = 'ok'; $row.new_pid = $newPid }
                 else {
                     # FR #8403: name the refusal (seats-off / cap / worker-exe-missing), never a bare launch-failed.

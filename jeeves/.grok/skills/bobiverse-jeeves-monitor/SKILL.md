@@ -82,7 +82,7 @@ Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `De
 | `bobiverse-jeeves-agent-depends-on` | Every monitor cycle **once BOB-D offer skip is on tip** (D1/D3+); until then load on demand only |
 | `bobiverse-jeeves-agent-fr-digest` | Every cycle **after** depends-on once BOB-G1 is on tip; until then on demand only |
 
-Token-free checks (when landed): `depends_on`, `fr_digest` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies.
+Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo.
 
 **Ops until BOB-G1 (FR #9344):** unhold alone does not release children whose bodies still list `Depends-on: #<digest>` while live D3 skips open parents --- close the digest (or clear Depends-on) so assign can proceed.
 
@@ -187,3 +187,8 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
 - Bored-latency heal must count `!recycleseat` by **machine slot** in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever (harvest-lesson MRB #6812; keep the product gap here, not in harvest honesty-box).
 - **FR #9344 / live D3 before BOB-G1:** unhold of an fr-digest alone leaves children with `Depends-on` OPEN blocked under live D3. Close the digest (or clear Depends-on) to release assign. Prefer outbox file-edit + HTTPS digest when the chair-host shell/WinRM hangs.
+
+## Harvested lessons
+
+- If build-jeeves / tip CI fails while waiting on FR #9376 walrus install: FR the CI failures; do not Install-JeevesWalrusWinRm -SiYes until green.
+- FR #9376 / PR #9387: document and prefer `Install-JeevesWalrusWinRm.ps1` + check `walrus_jeeves_install_ready` (full playbook in `bobiverse-jeeves-agent-install`). DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only.

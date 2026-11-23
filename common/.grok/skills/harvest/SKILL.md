@@ -311,6 +311,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - BOB-08 About rename: menu label Acknowledge->About on BobTray.cs and Watch-BobTray.ps1; keep Acknowledge() attention clear; pin mock home.html
 - BOB-11 Status keep pool dialog: when Item(Status)/ShowStatus/StatusForm already on main, DONE with covering PR URL (#7521) and close the twin --- do not re-implement
 - When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
+- BOB-49 S1: Stage-BobAgentFolders must fail closed without plan\AGENTS.md and write plan\BOB-49-PLAN-IN-MSI.txt so bob-ear MSI heat harvest includes Plan.
 - Intake allowlist monitor: send an explicit User-Agent through Cloudflare; only JSON error=repo_not_allowed is allowlist drift, not bare HTTP 403 1010.
 - When renaming a tray submenu label, update MenuItems.Add for --dump-menu in the same change; source pins can pass while the compiled dump-menu pin fails.
 - Recycleseat queue TTL must outlast a lagged tray tick (300s). Read the last numeric value from Launch output; do not cast the last pipeline object when the tray logs on the success stream.
@@ -394,8 +395,18 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR #9310: live_seat_nicks must skip machines with workers_stale (FR #8513 last-good restore into worker_list); otherwise auto-offer targets dead nicks after workers=[].
 - SV harvest tips without a worktree: mirror catalog SKILL.md + meta.json from frontmatter; patch docs/skill-sources/_dag when dag.json is readable, else omit full rebuild.
 - Composed J:\ Start/Invoke must prefer Bob tip Sync that contains sync-monitor-force over stale J:\scripts\Sync; else tools\monitor never force-copies (opencode_seats class of #9309)
+- MRB BOB-D8: FAIL tip that says Depends-on not enforced after D1-D7 closed; one fix PR marks enforced + pin tests; FAIL-supersede original tip; Closes on fix
 - BOB-D6 FR_BODY_FETCH_SHARED_CACHE: clear TTLCache in pytest fixtures or pass cache={} --- empty negative-cache hits make fetch_issue look never called.
 - MRB CI-G2: PASS when build-jeeves pull_request runs open_children_gate.py --pr with issues/pull-requests read; stack may Closes CI-G1+#G2 together; soft-ok without Closes parents
 - skill-dag resolve must not sum SKILL.md body sizes across depends_on when packing matched metadata; charge response metadata and skip only single bodies over max_bytes so MRB keeps job-irc (FR #9330 / PR #9334).
 - Fresh MRB re-offer after FIX: clear Relay _finished_refs on ACK; treat already-finished NACK as terminal only when done[] verdict SHA matches current head.
 - BOB-G3 digests must remain offerable and hold-purge exempt --- skip only in offer/assign via digest_issue_reason, or purge paths drop the gate row.
+- empty-online.disabled seat-start guard must be fail-closed: allowlist only TipForm menu/workers-*/jeeves-menu and explicit startworker; default/other/unknown triggers refuse like auto-start
+- On non-chair J:\, bypass Invoke-JeevesMonitorCheck Sync preflight (or bound it) and run python -u tools\monitor\<check>.py; clear freeze watch when target issue closed / nick absent from /report.
+- MRB TipForm Exit under #9011 park: Exit-park 5m + TipForm-Exit-park; never Stop ircBob; Ensure-BobTrayRunning heals Stopped ear before watchdog-skip-suppress
+- FR #9354: bob MSI PlanAgent comes from skills-visionary release download+sha256 into plan\ with PlanAgent.MANIFEST.json; -SkipPlanAgentExe only with -SkipMsi; then re-offer #8833
+- Write-BobiverseVendoredExeManifest must not emit Path on the success stream; Stage-Product return Stage concatenates pipeline output and heat FR6969 fails when MANIFEST.json paths join Stage.
+- When Sync moves to Start-Process ArgumentList, widen FR #9007 pin to accept '-Product','jeeves' as well as literal -Product jeeves
+- Bob HTTP API defaults must use bob.ntsa.uk/bob; irc.ntsa.uk stays for IRC only --- tree scan test_irc_host_defaults_remain_irc fails on any https://irc.ntsa.uk/bob embed.
+- walrus_jeeves_install_ready: run with PYTHONPATH pointing at jeeves/tools/monitor (PR worktree until that tip merges, else install); MONITORING outbox assigns must be PRIVMSG #channel :!assign ... (never bare !assign to the outbox file)
+- When adding uat_release.repo_has_release_to_build gates, extend jeeves/tests conftest BOB_UAT_RELEASE_REPOS for synthetic o/* UAT fixtures in the same PR; denial tests must use real non-release names (wetherby).

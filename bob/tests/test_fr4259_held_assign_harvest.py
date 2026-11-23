@@ -61,6 +61,9 @@ def test_fr4259_repeat_done_after_turn_ended_does_not_rearm_harvest():
     bored.set_ready(True)
     assert _wait(lambda: any(r == "start" for _, r in bored.sent), clock)
 
+    # Open turn so DONE arms harvest (FR #9364: no open turn → skip hold).
+    bored.turn_started(at=clock())
+    clock.advance(0.5)
     bored.on_outbox(DONE_LINE)
     assert bored.holding_incoming_assigns is True
     clock.advance(5.0)
@@ -117,7 +120,9 @@ def test_fr4259_harvest_expiry_releases_held_assign_and_allows_bored():
     relay.hold_assigns_while = lambda: bored.holding_incoming_assigns
     relay.on_hold_assign = lambda line: bored.note_held_assign()
 
-    # First DONE + turn_ended + !bored (normal path).
+    # First DONE + turn_ended + !bored (normal path). Open turn so harvest arms.
+    bored.turn_started(at=clock())
+    clock.advance(0.5)
     bored.on_outbox(DONE_LINE)
     clock.advance(1.0)
     bored.turn_ended(at=clock())
@@ -126,8 +131,11 @@ def test_fr4259_harvest_expiry_releases_held_assign_and_allows_bored():
 
     # Simulate the bug: force a harvest re-arm as if a repeat DONE slipped through,
     # then park an assign while holding. (Production fix also blocks the re-arm;
-    # this test covers the expiry-flush safety net.)
+    # this test covers the expiry-flush safety net.) Force an open turn so
+    # _begin_harvest_hold does not skip (FR #9364).
     with bored._cv:
+        bored._turn_open = True
+        bored._turn_watcher_armed = True
         bored._begin_harvest_hold(clock())
         bored._held_assign = True
         bored._cv.notify_all()
@@ -138,6 +146,9 @@ def test_fr4259_harvest_expiry_releases_held_assign_and_allows_bored():
     assert injected == []
     assert relay.has_pending_work() is True
 
+    # Close the open-turn bookkeeping so harvest expiry (not turn_ended) can flush.
+    with bored._cv:
+        bored._turn_open = False
     # Wait past harvest_hold_s with no turn open — must flush held assign.
     clock.advance(6.0)
     assert _wait(
@@ -175,15 +186,22 @@ def test_fr4259_idle_bored_after_expiry_when_only_held_flag():
     bored.set_ready(True)
     assert _wait(lambda: any(r == "start" for _, r in bored.sent), clock)
 
+    bored.turn_started(at=clock())
+    clock.advance(0.5)
     bored.on_outbox(DONE_LINE)
     clock.advance(0.5)
     bored.turn_ended(at=clock())
     assert _wait(lambda: any(r == "done" for _, r in bored.sent), clock)
     n_after = len(bored.sent)
 
+    # Force re-arm with an open turn so FR #9364 does not skip the clock,
+    # then clear open-turn so harvest expiry (not turn_ended) clears the flag.
     with bored._cv:
+        bored._turn_open = True
+        bored._turn_watcher_armed = True
         bored._begin_harvest_hold(clock())
         bored._held_assign = True
+        bored._turn_open = False
         bored._cv.notify_all()
 
     clock.advance(4.0)

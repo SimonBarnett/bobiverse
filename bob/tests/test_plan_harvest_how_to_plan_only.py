@@ -1,4 +1,7 @@
-"""Plan seats harvest only how-to-plan lessons, never plan content (owner rule 2026-10-08, #3097)."""
+"""Plan seats harvest only how-to-plan lessons, never plan content (owner rule 2026-10-08, #3097).
+
+FR #8833: in-tree plan AGENTS/skills removed; bob_worker.plan_prompt + MRB/intake pins remain.
+"""
 from __future__ import annotations
 
 import sys
@@ -25,24 +28,10 @@ def test_plan_prompt_says_how_to_plan_only():
         assert word in p
 
 
-def test_plan_pack_files_forbid_plan_content_harvest():
-    for rel in (
-        "bob/agents/plan/AGENTS.md",
-        "bob/agents/plan/.grok/skills/harvest-skills-visionary/SKILL.md",
-        "bob/agents/plan/.grok/skills/visionary/SKILL.md",
-        "bob/.grok/skills/bobiverse-bob-plan/SKILL.md",
-    ):
-        text = _read(rel)
-        assert "how-to-plan" in text, rel
-        assert "#3097" in text, rel
-        assert "requirements" in text, rel
-
-
-def test_plan_agents_no_longer_routes_product_decisions_as_harvest():
-    text = _read("bob/agents/plan/AGENTS.md")
-    assert "product decisions →\n>    `-Repo SimonBarnett/<product>`" not in text
-    assert "(use `-Repo SimonBarnett/<product>` for product decisions)" not in text
-    assert "`owner-missing` hold" in text
+def test_plan_pointer_readme_forbids_readding_source():
+    text = _read("bob/agents/plan/README.md")
+    assert "skills-visionary" in text
+    assert "Do not re-add" in text or "removed" in text.lower()
 
 
 def test_mrb_closes_plan_content_and_moves_planning_lesson():

@@ -186,6 +186,9 @@ SKIP_FR_LABELS = frozenset(
         # Still excluded from repo-UAT blocking via issue_blocks_repo_uat.
         "umbrella",
         "parent-fr",
+        # FR #9304: fr-digest epics are go-gate release switches (ACK then GIVEUP),
+        # never implement FRs. Offer children (e.g. BOB-G1) instead.
+        "fr-digest",
         "mrb-home",
         "mrb_home",
         "evergreen",
@@ -209,6 +212,11 @@ SKIP_FR_LABELS = frozenset(
         # FR #3317: harvest tip held until the intended product repo exists.
         "owner-missing",
     }
+)
+
+# FR #9304: line-anchored Kind: fr-digest (label may be missing on a stale queue row).
+FR_DIGEST_KIND_BODY_RE = re.compile(
+    r"(?im)^\s*(?:\*\*)?Kind\s*:\s*fr-digest(?:\*\*)?\s*$"
 )
 
 # Labels safe to detect in free text (title/line only when GitHub labels empty).
@@ -876,6 +884,23 @@ def open_fr_issue_keys(doc: dict) -> set[tuple[str, int]]:
     return keys
 
 
+def depends_issue_open_checker(issue_open=None):
+    """Unbudgeted ``issue_open`` for the Depends-on gate (FR #8754 strengthen).
+
+    ``!bored`` keeps ``BORED_GITHUB_CALL_BUDGET=0`` for ordinary lookups. Depends-on
+    prerequisites are often still OPEN on GitHub while absent from the local FR
+    queue, so this checker must live-check without consuming that budget. Test
+    fakes (no ``.budget`` attr) are returned as-is; budgeted wrappers are replaced
+    with ``github_issue_open_checker()`` (disk cache still applies).
+    """
+    if issue_open is not None and getattr(issue_open, "budget", None) is None:
+        return issue_open
+    try:
+        return github_issue_open_checker()
+    except Exception:
+        return None
+
+
 def row_depends_open_reason(
     row: dict,
     open_keys: set[tuple[str, int]] | None = None,
@@ -893,6 +918,8 @@ def row_depends_open_reason(
     - Empty stamp / `(none)` / absent ref with no checker: do not block.
     - BOB-D4 / FR #8808: when every depend is CLOSED (absent from `open_keys` and
       `issue_open` False / unset), returns None so the FR is offerable again.
+    - FR #8754: callers should pass ``depends_issue_open_checker(...)`` so OPEN
+      GitHub issues block even when they are not local queue keys.
     """
     if _canon_task(row) != "FR":
         return None
@@ -2090,6 +2117,9 @@ def issue_skip_fr_reason(
             return "harvest_pr_summary"
         if re.search(r"(?i)\bPR\s+opened\b", title_s):
             return "harvest_pr_summary"
+    # FR #9304: Kind: fr-digest body stamp (go-gate epic) even without the label.
+    if FR_DIGEST_KIND_BODY_RE.search(body or ""):
+        return "fr_digest_kind"
     return None
 
 
@@ -5555,6 +5585,33 @@ def is_repo_uat(row: dict) -> bool:
     if is_mrb_fix_pr_title(titleish):
         return False
     return True
+
+
+def repo_has_uat_release_to_build(repo: str, *, home: Path | None = None) -> bool:
+    """FR #9382: UAT #0 only for repos whose PASS path builds/publishes a release."""
+    try:
+        import uat_release
+
+        return bool(uat_release.repo_has_release_to_build(repo, home=home))
+    except Exception:
+        return False
+
+
+def uat_no_release_to_build_reason(row: dict, *, home: Path | None = None) -> str | None:
+    """Return ``no-release-to-build`` when this UAT row must not be offered/assigned."""
+    if _canon_task(row) != "UAT":
+        return None
+    if not is_repo_uat(row):
+        return None
+    repo = str(row.get("repo") or "").strip()
+    if repo_has_uat_release_to_build(repo, home=home):
+        return None
+    try:
+        import uat_release
+
+        return str(uat_release.NO_RELEASE_TO_BUILD)
+    except Exception:
+        return "no-release-to-build"
 
 
 def _mrb_fix_offer_stamped(row: dict) -> bool:
@@ -12158,6 +12215,9 @@ def offer_focus_top(
     precompute_ok = offer_precompute_fresh(home, _rows_peek)
     bored_budget = 0 if precompute_ok else BORED_GITHUB_CALL_BUDGET
     budget = _GithubCallBudget(bored_budget)
+    # FR #8754: Depends-on live OPEN check is unbudgeted — prereqs are often OPEN on
+    # GitHub while absent from the local FR queue; zero !bored budget must not skip them.
+    depends_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -12393,12 +12453,19 @@ def offer_focus_top(
                     cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
                     return None
-                # BOB-D3 / FR #8807 + BOB-G1 / FR #8837: Depends-on OPEN / held digest.
+                # BOB-D3 / FR #8807 + BOB-G1 / FR #8837 + FR #8754 live GitHub OPEN.
                 if row_depends_open_reason(
-                    cand, open_dep_keys, issue_open=issue_open, doc=doc
+                    cand, open_dep_keys, issue_open=depends_issue_open, doc=doc
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
+                    return None
+                # FR #9382: CAST IRON — no UAT when the repo has no release to build.
+                if uat_no_release_to_build_reason(cand, home=home):
+                    if _drop_unaccepted_row(
+                        doc, cand, kind="uat-no-release", reason="no-release-to-build"
+                    ):
+                        purged = True
                     return None
                 # FR #740 / MRB #3207: one shared lookup per MRB row; definitive not-open
                 # purges this row only; unknown (budget / 403 / 5xx) still offers.
@@ -12710,6 +12777,7 @@ def offer_top(
 
     now_f = _time.time() if now is None else float(now)
     budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
+    depends_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -12727,6 +12795,7 @@ def offer_top(
             purged = bool(_purge_dead_fix_unaccepted(doc, pr_exists=None)) or purged
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
+            open_dep_keys_top = open_fr_issue_keys(doc)
             purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
             # Accepted list is small — live check under the shared budget (FR #2361).
             purged = bool(
@@ -12769,8 +12838,13 @@ def offer_top(
                         continue
                     i += 1
                     continue
-                # FR #8754: Depends-on backlog still open — skip; keep row.
+                # FR #8754: Depends-on backlog still open (queue keys + live GitHub OPEN).
                 if row_fr_depends_blocked_reason(row, doc):
+                    i += 1
+                    continue
+                if row_depends_open_reason(
+                    row, open_dep_keys_top, issue_open=depends_issue_open, doc=doc
+                ):
                     i += 1
                     continue
                 if row_awaits_mrb1(row):
@@ -12813,6 +12887,15 @@ def offer_top(
                     continue  # FR #846 / #838 / #2340
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
+                    i += 1
+                    continue
+                # FR #9382: CAST IRON — no UAT when the repo has no release to build.
+                if uat_no_release_to_build_reason(row, home=home):
+                    if _drop_unaccepted_row(
+                        doc, row, kind="uat-no-release", reason="no-release-to-build"
+                    ):
+                        purged = True
+                        continue
                     i += 1
                     continue
                 # FR #740 / MRB #3207: definitive not-open MRB -> purge this row only.
@@ -15378,6 +15461,96 @@ def _release_accepted_for_nick_unlocked(doc: dict, nick: str) -> list[dict]:
     return released
 
 
+def drop_ghost_seat_after_names_miss(
+    home: Path,
+    nick: str,
+    *,
+    reason: str = "",
+) -> dict:
+    """FR #9347: after NAMES miss / shop-presence refuse, drop nick from offer roster.
+
+    Ghost seats that stay on ``worker_list`` without JOIN/NAMES keep getting
+    auto-offers and ``!assign`` refuses. Remove the nick from the digest
+    worker_list (worker-remove), clear ``offered_to`` pins, and release any
+    ACC rows. Prefer live shop members on the next offer tick.
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    out = {
+        "removed": False,
+        "released_offers": 0,
+        "released_accepted": 0,
+        "nick": me,
+        "reason": str(reason or "").strip(),
+    }
+    if not me:
+        return out
+    me_l = me.lower()
+    seat = bobreport.parse_seat_nick(me)
+    mid = bobreport.fold_machine_id(seat[0]) if seat else ""
+    if mid:
+        try:
+            import chan_workers
+
+            tracker = chan_workers.WorkerTracker(home)
+            code = tracker.post(
+                chan_workers.payload_for("worker-remove", mid, me)
+            )
+            out["removed"] = int(code or 0) in (200, 204)
+        except Exception:
+            out["removed"] = False
+        if not out["removed"]:
+            # Fall back: edit digest directly when tracker gate rejects.
+            with contextlib.suppress(Exception):
+                doc = bobreport.load_digest(_root(home))
+                ent = (doc.get("machines") or {}).get(mid)
+                if isinstance(ent, dict):
+                    rows = list(ent.get("worker_list") or [])
+                    keep = [
+                        r
+                        for r in rows
+                        if str((r or {}).get("nick") or "").lower() != me_l
+                    ]
+                    if len(keep) != len(rows):
+                        ent["worker_list"] = bobreport._coerce_worker_list(keep)
+                        bobreport.save_digest(_root(home), doc)
+                        out["removed"] = True
+    # Clear offered_to pins so the row is free for a live seat immediately.
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                doc = None
+            if isinstance(doc, dict):
+                changed = False
+                for row in doc.get("unaccepted") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    to = str(row.get("offered_to") or "").strip()
+                    to_c = (canonical_worker_nick(to) or to).strip().lower()
+                    if not to_c or to_c != me_l:
+                        continue
+                    for k in (
+                        "offered_to",
+                        "offered_ts",
+                        "offered_channel",
+                        "offered_via",
+                    ):
+                        row.pop(k, None)
+                    out["released_offers"] += 1
+                    changed = True
+                if changed:
+                    with contextlib.suppress(OSError):
+                        _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        pass
+    released = release_accepted_for_departed_nick(home, me)
+    out["released_accepted"] = len(released or [])
+    with contextlib.suppress(Exception):
+        clear_idle_after_empty(home, me)
+    return out
+
+
 def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
     """FR #3400: seat left the shop — return its ACKed rows to unaccepted (prior ACK void).
 
@@ -16151,6 +16324,15 @@ def assign_row(
             dep_why = row_fr_depends_blocked_reason(cand, doc)
             if dep_why:
                 return "refused", f"row blocked: {dep_why}"
+            # FR #8754: live GitHub OPEN for Depends-on refs not in the local FR queue.
+            live_dep = row_depends_open_reason(
+                cand,
+                open_fr_issue_keys(doc),
+                issue_open=depends_issue_open_checker(issue_open),
+                doc=doc,
+            )
+            if live_dep:
+                return "refused", f"row blocked: {live_dep}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
@@ -16181,6 +16363,10 @@ def assign_row(
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
+            # FR #9382: CAST IRON — refuse UAT when the repo has no release to build.
+            no_rel = uat_no_release_to_build_reason(cand, home=home)
+            if no_rel:
+                return "refused", no_rel
             # FR #740 / #738 / #1585: refuse already-DONE MRB unless the pull is still open.
             if task_u == "MRB" and mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
@@ -17752,6 +17938,12 @@ def resync_from_github(
                     if not is_repo_uat(row):
                         dropped_detail.append(f"{_row_drop_label(row)} uat_not_repo_level")
                         continue
+                    # FR #9382: drop UAT when the repo has no release to build.
+                    if uat_no_release_to_build_reason(row, home=home):
+                        dropped_detail.append(
+                            f"{_row_drop_label(row)} uat_no_release_to_build"
+                        )
+                        continue
                     if (
                         _row_fetched(repo_s)
                         and not _repo_clear_for(repo_s)
@@ -18095,6 +18287,12 @@ def resync_from_github(
                             )
                             break
             for urepo, (merged, linked) in uat_plan.items():
+                # FR #9382: never enqueue UAT #0 for repos with no release to build.
+                if not repo_has_uat_release_to_build(urepo, home=home):
+                    _log_queue_purge(
+                        f"INFO git-claim skip uat {urepo} reason=no-release-to-build"
+                    )
+                    continue
                 if any(
                     str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
                     for r in doc["accepted"] + doc["unaccepted"]

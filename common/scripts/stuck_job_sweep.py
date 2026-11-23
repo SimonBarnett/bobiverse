@@ -608,6 +608,43 @@ def classify_queue_row(
         base["state"] = "held"
         base["rule"] = f"hold:{hold}"
         return base
+    # FR #9374: same Depends-on / digest gates as offer — do not mark
+    # unaccepted_starved (or fire idle-with-work) for blocked FRs.
+    if task == "FR":
+        digest_why = gitclaim.digest_issue_reason(row)
+        if digest_why:
+            base["state"] = "held"
+            base["rule"] = "digest"
+            return base
+        doc: dict = {}
+        open_keys: set = set()
+        issue_open = None
+        if home is not None:
+            try:
+                doc = gitclaim.load_queue(home) or {}
+            except Exception:
+                doc = {}
+            if not isinstance(doc, dict):
+                doc = {}
+            try:
+                open_keys = gitclaim.open_fr_issue_keys(doc)
+            except Exception:
+                open_keys = set()
+            with contextlib.suppress(Exception):
+                issue_open = gitclaim.depends_issue_open_checker()
+        dep_why = gitclaim.row_depends_open_reason(
+            row, open_keys, issue_open=issue_open, doc=doc or None
+        )
+        if dep_why:
+            base["state"] = "held"
+            # Digest / !stuck surface: depends_on_open (acceptance FR #9374).
+            if dep_why == gitclaim.DEPENDS_HELD_REASON:
+                base["rule"] = "depends_held"
+            elif dep_why == gitclaim.DEPENDS_UNRESOLVED_REASON:
+                base["rule"] = "depends_unresolved"
+            else:
+                base["rule"] = "depends_on_open"
+            return base
     if task == "MRB" and home is not None:
         awaiting = ""
         line = str(row.get("line") or "")
