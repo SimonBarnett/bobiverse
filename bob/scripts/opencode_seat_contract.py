@@ -124,19 +124,34 @@ def gh_auth_blocks(stdout: str, stderr: str, exit_code: int) -> tuple[bool, str]
     """Classify ``gh auth status`` text. Never opens a credential file.
 
     The returned message does not include the CLI output (it can echo an account).
+
+    FR #8999: a stale/invalid token can still print ``Active account: true``
+    (and occasionally exit 0) while also saying ``Failed to log in`` /
+    ``re-authenticate``. Failure cues win over ``active account`` alone so
+    OpenCode keeps refusing with ``gh_auth_missing`` until the operator runs
+    ``gh auth login`` on that Windows user. Never invent GH_TOKEN / read
+    hosts.yml from here.
     """
     blob = ((stdout or "") + "\n" + (stderr or "")).lower()
     code = int(exit_code)
-    logged_in = code == 0 and ("logged in" in blob or "active account" in blob)
-    if logged_in:
-        return False, ""
-    if (
+    # Stale-token / re-auth cues first (FR #8999). Do not trust Active account
+    # when the CLI also reports login failure.
+    stale = (
+        "failed to log in" in blob
+        or "re-authenticate" in blob
+        or ("token" in blob and ("invalid" in blob or "expired" in blob))
+        or "authentication failed" in blob
+    )
+    if stale or (
         "gh auth login" in blob
         or "to get started with github cli" in blob
         or "not logged" in blob
         or code != 0
     ):
         return True, GH_BLOCK_MESSAGE
+    logged_in = code == 0 and ("logged in" in blob or "active account" in blob)
+    if logged_in:
+        return False, ""
     return True, (
         "opencode-ready: blocked gh_auth_unknown. "
         "Next: gh auth status. Do not read credential files."
@@ -1557,21 +1572,30 @@ def create_job_worktree(
         folder.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, "disk", ""
-    # FR #8023: low-disk admission on the destination volume before worktree add.
+    # FR #8023 / FR #9183: low-disk admission on the destination volume before worktree add.
+    # Default floor is 5 GB (FR #9183); override with BOB_JOB_WORKTREE_MIN_FREE_GB.
+    # When low: sweep once (Clear soft-cap + locked retries), then NACK disk-low + one intake.
     try:
-        import shutil as _shutil
+        from job_worktree_lifecycle import (
+            admit_job_worktree_disk,
+            drain_locked_worktree_retries,
+            sweep_job_worktrees_via_clear,
+        )
 
-        min_free_gb = 2.0
-        raw_min = (os.environ.get("BOB_JOB_WORKTREE_MIN_FREE_GB") or "").strip()
-        if raw_min:
-            try:
-                min_free_gb = float(raw_min)
-            except ValueError:
-                min_free_gb = 2.0
-        usage = _shutil.disk_usage(str(folder.parent))
-        free_gb = float(usage.free) / (1024.0 ** 3)
-        if free_gb < min_free_gb:
-            return False, "disk", ""
+        def _sweep() -> None:
+            drain_locked_worktree_retries(install_root=clone or None, log_fn=None)
+            if clone:
+                sweep_job_worktrees_via_clear(clone, keep_path="", log_fn=None)
+
+        nack = admit_job_worktree_disk(
+            folder.parent,
+            job_key=key,
+            machine=str(os.environ.get("COMPUTERNAME") or os.environ.get("BOB_MACHINE") or ""),
+            env=os.environ,
+            sweep_fn=_sweep,
+        )
+        if nack:
+            return False, "disk-low", ""
     except OSError:
         return False, "disk", ""
     except Exception:

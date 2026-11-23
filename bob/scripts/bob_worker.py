@@ -3701,6 +3701,8 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
         f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
         f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
+        f"Workers > OpenCode harvest (FR #8731): tray, worker, and OpenCode-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
+        f"Workers > Grok harvest (FR #8724): tray, worker, and Grok-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Workers > Cursor harvest (FR #8718): tray, worker, and Cursor-start lessons from that seat use -Repo SimonBarnett/bobiverse. Do not file them on a-search. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
@@ -4010,16 +4012,25 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     """Vision skill packs for worker MCP (FR #6899). Seat, bob, harvest, user.
 
     Does not include a job worktree (that is ``--job-worktree`` only).
+    FR #8682 / BOB-38: ``BOB_JEEVES_MCP_ROOT`` (Agents > Jeeves) is prepended so the
+    skill-dag MCP ``--root`` list starts on the J: skills path.
     """
     cwd = Path(worker_cwd).resolve()
     install = cwd.parent
     user = Path(home) if home is not None else Path.home()
-    return [
+    roots: list[Path] = []
+    jeeves = (os.environ.get("BOB_JEEVES_MCP_ROOT") or "").strip()
+    if jeeves:
+        roots.append(Path(jeeves))
+    for cand in (
         cwd / ".grok" / "skills",
         install / "bob" / ".grok" / "skills",
         install / "common" / ".grok" / "skills",
         user / ".grok" / "skills",
-    ]
+    ):
+        if cand not in roots:
+            roots.append(cand)
+    return roots
 
 
 SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
@@ -4814,6 +4825,57 @@ def agent_stderr_evidence(text: str) -> str:
         return "(evidence unavailable)"
 
 
+
+
+def _stderr_is_opencode_stdout_oserror22_noise(text: str) -> bool:
+    """True when stderr is only OpenCode stdout TextIOWrapper OSError 22.
+
+    FR #9013: unsigned exit 0xffffffff with
+    ``Exception ignored in: <_io.TextIOWrapper ... stdout ... cp1252>``
+    plus ``OSError: [Errno 22] Invalid argument`` is teardown noise after the
+    console closes, not a CLI crash. A real Traceback stays a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if "traceback" in low or "error_kind" in low:
+        return False
+    if "errno 22" not in low and "[errno 22]" not in low:
+        return False
+    if "invalid argument" not in low:
+        return False
+    if "textiowrapper" not in low and "stdout" not in low:
+        return False
+    return True
+
+
+def _stderr_is_opencode_missing_query_noise(text: str) -> bool:
+    """True when stderr is OpenCode idle tool noise ending in missing query.
+
+    FR #9012: unsigned exit 0xffffffff with console dir listings and
+    ``missing query (try ".")`` is an external kill / tool misuse while
+    job=(none), not a CLI crash. Traceback / exception / fatal stay failures.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(
+        tok in low
+        for tok in (
+            "traceback",
+            "exception",
+            "fatal",
+            "error_kind",
+            '"lvl": "error"',
+            '"lvl":"error"',
+        )
+    ):
+        return False
+    if "missing query" not in low:
+        return False
+    return True
+
+
 def agent_stderr_dedupe_line(text: str) -> str:
     """Normalised first nonempty stderr line for the intake key (FR #7671)."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
@@ -4821,6 +4883,103 @@ def agent_stderr_dedupe_line(text: str) -> str:
     norm = re.sub(r"\s+", " ", first).strip().lower()
     norm = re.sub(r"[^a-z0-9 .:_-]+", "", norm)[:80]
     return norm or "none"
+
+
+
+def _stderr_is_seat_prompt_echo(text: str) -> bool:
+    """True when stderr is the worker assignment prompt, not a CLI error.
+
+    FR #8990: OpenCode killed with exit 0xffffffff often leaves only the
+    seat prompt (worktree / .bob tmp / outbox rules) on stderr. That is an
+    external kill. A real crash still names a failure.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return False
+    if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind", '"lvl": "error"', '"lvl":"error"')):
+        return False
+    markers = (
+        "job worktree",
+        "do not check the outbox",
+        ".bob\\tmp",
+        ".bob/tmp",
+        "the turn is not over until done",
+    )
+    return any(m in low for m in markers)
+
+
+def _stderr_is_grok_structured_info_noise(text: str) -> bool:
+    """True when every nonempty line is a Grok JSON info/debug log, not an error.
+
+    FR #8992: a killed seat (exit 0xffffffff) often leaves only
+    ``billing: fetched credits config`` (or similar) with ``\"lvl\": \"info\"``.
+    Those are not a CLI crash. Reject warn/error levels and failure tokens.
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        low = ln.lower()
+        if any(tok in low for tok in ("traceback", "exception", "fatal", "error_kind")):
+            return False
+        if any(
+            tok in low
+            for tok in (
+                '"lvl": "error"',
+                '"lvl":"error"',
+                '"lvl": "warn"',
+                '"lvl":"warn"',
+                '"lvl": "warning"',
+                '"lvl":"warning"',
+            )
+        ):
+            return False
+        if not any(
+            tok in low
+            for tok in (
+                '"lvl": "info"',
+                '"lvl":"info"',
+                '"lvl": "debug"',
+                '"lvl":"debug"',
+            )
+        ):
+            return False
+    return True
+
+
+
+def grok_worker_spawn_connect_failure(text: str) -> bool:
+    """FR #8972: grok exited because its own worker_spawn could not connect.
+
+    That is a grok-internal connect blip, not a bob CLI bug. The seat still
+    recycles and GIVEUPs an accepted job. It does not open another intake issue.
+    """
+    raw = str(text or "")
+    return '"error_kind": "connect"' in raw and '"failed_phase": "worker_spawn"' in raw
+
+
+
+def unsigned_exit_stderr_is_noise(text: str) -> bool:
+    """FR #8969 / #8970: 0xffffffff plus progress or TUI chrome is an external kill.
+
+    grok-pager info/debug and the live Grok prompt are not a CLI error. A real
+    failure word or an error/warn level stays a cli-failure.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return True
+    if re.search(
+        r'(?i)traceback|\bexception\b|\bfatal\b|\bfailed\b|\berror_kind\b|'
+        r'"lvl"\s*:\s*"(error|warn|warning|fatal)"',
+        raw,
+    ):
+        return False
+    return bool(re.search(
+        r'(?i)"lvl"\s*:\s*"(info|debug|trace)"|grok-pager|Shift\+Tab|Grok 4',
+        raw,
+    ))
+
+
 
 
 def _intake_disabled_by_env() -> bool:
@@ -4883,6 +5042,23 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "no-ack-still-running"}
+    # FR #9025: fuel-exhausted / out-of-fuel recycle while the process is still running is
+    # expected (dialog+quit path / fuel gate). Do not open "seat stopped making progress".
+    _fuel_reason = str(reason or "").strip().lower()
+    if exit_code is None and (
+        _fuel_reason == "fuel-exhausted"
+        or _fuel_reason.startswith("fuel-exhausted:")
+        or _fuel_reason in ("out-of-fuel", "out_of_fuel")
+    ):
+        if log:
+            try:
+                log(
+                    "worker: fuel-exhausted recycle while process still running; "
+                    "no stopped-making-progress intake (FR #9025)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "fuel-exhausted-recycle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -4899,10 +5075,32 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
+    # FR #8972: grok worker_spawn connect is logged by the caller and recycled.
+    # Do not open "bug: agent CLI nonzero exit" for that signature.
+    if grok_worker_spawn_connect_failure(stderr_tail) or grok_worker_spawn_connect_failure(evidence):
+        if log:
+            try:
+                log("worker: skip agent-cli-nonzero-exit intake (grok worker_spawn connect; FR #8972)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "grok-worker-spawn-connect"}
     parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
-    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    # FR #8990: the same exit with only the assignment prompt echoed is the same class.
+    # FR #8992 / #9013 / #9012 / #8969 / #8970: unsigned-exit stderr noise classifiers (OR).
+    prompt_echo = u == 0xFFFFFFFF and _stderr_is_seat_prompt_echo(evidence)
+    info_noise = u == 0xFFFFFFFF and _stderr_is_grok_structured_info_noise(evidence)
+    oserror22_noise = u == 0xFFFFFFFF and _stderr_is_opencode_stdout_oserror22_noise(evidence)
+    missing_query_noise = u == 0xFFFFFFFF and _stderr_is_opencode_missing_query_noise(evidence)
+    silent = u == 0xFFFFFFFF and (
+        not str(evidence or "").strip()
+        or prompt_echo
+        or info_noise
+        or oserror22_noise
+        or missing_query_noise
+        or unsigned_exit_stderr_is_noise(evidence)
+    )
     parent_l = parent.lower()
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
@@ -4953,6 +5151,22 @@ def report_agent_cli_nonzero_exit(
             "What: the seat process ended and there was no CLI stderr. "
             "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
+        if prompt_echo:
+            what += (
+                "Stderr was the seat assignment prompt only (not a CLI error). FR #8990.\n"
+            )
+        if info_noise:
+            what += (
+                "Stderr was Grok JSON info/debug only (not a CLI error). FR #8992.\n"
+            )
+        if oserror22_noise:
+            what += (
+                "Stderr was OpenCode stdout OSError 22 teardown noise only (not a CLI crash). FR #9013.\n"
+            )
+        if missing_query_noise:
+            what += (
+                "Stderr was OpenCode idle missing-query tool noise only (not a CLI crash). FR #9012.\n"
+            )
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
@@ -6019,11 +6233,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $env:TMP = $bobTmp",
             r"        $env:TMPDIR = $bobTmp",
             r"        $env:BOB_OPENCODE_SCRATCH = $bobTmp",
-            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
-            r"    } else {",
-            r"        $argList = @('run', '-m', $model, $line)",
             r"    }",
-            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
             # FR #7952: once per job, before the run. Never changes $model mid-turn.
             r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
@@ -6038,6 +6248,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
             r"        }",
             r"    }",
+            # FR #8734 / BOB-29: $argList is built after the pause-return model update
+            # so -m, the seat line and the job header name the same model.
+            r"    if ($ocDir) {",
+            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
+            r"    } else {",
+            r"        $argList = @('run', '-m', $model, $line)",
+            r"    }",
+            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
@@ -6084,6 +6302,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8553: never -NoNewWindow with redirects. Sharing the parent console
             # hangs opencode after the build banner (empty stdout) and can tear down the
             # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
+            # FR #8734 / BOB-29: stdout tee into seat-<nick>.log names the launched model.
+            r"        Write-Output ('opencode-run model=' + $model + ' job=' + [string]$jobKey)",
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
@@ -7729,6 +7949,47 @@ def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) ->
             continue
         ts = _parse_iso_ts(str(obj.get("ts") or ""))
         if ts is not None and ts > float(since_wall):
+            return True
+    return False
+
+
+
+def probe_opencode_turns_recent(
+    turns_path: Path | str,
+    *,
+    within_s: float,
+    now_wall: float | None = None,
+) -> bool:
+    """True when opencode-turns.jsonl has turn_started/ended within within_s (FR #9009).
+
+    Digest worker.updated can lag while OpenCode is still turning. A fresh turn
+    marker means the seat is not frozen; do not recycle for opencode-frozen-progress.
+    """
+    path = Path(turns_path)
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    now = float(now_wall) if now_wall is not None else time.time()
+    cutoff = now - max(1.0, float(within_s))
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        typ = str(obj.get("type") or "")
+        if typ not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts >= cutoff:
             return True
     return False
 
@@ -9957,6 +10218,41 @@ def out_of_fuel_quit_enabled(env: Optional[dict] = None) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+# TipForm / web meter fragments that must never appear in Win32 MessageBox (FR #9027).
+_OUT_OF_FUEL_DIALOG_HTML_RE = re.compile(r"<[^>]+>", re.DOTALL)
+_OUT_OF_FUEL_DIALOG_CSS_RE = re.compile(
+    r"\.token-progress[a-z0-9_-]*\s*\{[^}]*\}", re.IGNORECASE | re.DOTALL
+)
+_OUT_OF_FUEL_DIALOG_BAN_RE = re.compile(
+    r"(?i)(token-progress-bar|token-progress-fill|low cost models|<style|</style|<div|</div)"
+)
+
+
+def sanitize_out_of_fuel_dialog_field(text: str, maxlen: int) -> str:
+    """Plain-text only for MessageBox: strip tags/CSS/JSON blobs, cap length (FR #9027)."""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    # Drop HTML tags and TipForm meter CSS blocks.
+    cleaned = _OUT_OF_FUEL_DIALOG_HTML_RE.sub(" ", raw)
+    cleaned = _OUT_OF_FUEL_DIALOG_CSS_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("{", " ").replace("}", " ")
+    # Collapse whitespace (including newlines from dumped HTML).
+    cleaned = " ".join(cleaned.split())
+    if _OUT_OF_FUEL_DIALOG_BAN_RE.search(cleaned):
+        # Still looks like meter chrome — refuse the field rather than show garbage.
+        cleaned = ""
+    # Prefer short fuel summaries when evidence is a provider blob.
+    low = cleaned.lower()
+    if "fuel-exhausted:opencode-free" in low or "free usage limit" in low:
+        cleaned = "fuel-exhausted:opencode-free"
+    elif "hard-402" in low or ("402" in low and "payment" in low):
+        cleaned = "hard-402"
+    elif low.startswith("{") or '"error"' in low or '"html"' in low:
+        cleaned = ""
+    return one_line(cleaned, int(maxlen))
+
+
 def format_out_of_fuel_dialog_text(
     *,
     pool: str = "",
@@ -9965,21 +10261,21 @@ def format_out_of_fuel_dialog_text(
     evidence: str = "",
     nick: str = "",
 ) -> str:
-    """User-visible dialog body for FR #8814 fuel-exhausted quit."""
+    """User-visible dialog body for FR #8814 fuel-exhausted quit (plain text; FR #9027)."""
     lines = ["Fuel exhausted for this seat."]
-    pool_s = (pool or "").strip()
+    pool_s = sanitize_out_of_fuel_dialog_field(pool, 60)
     if pool_s:
         lines.append(f"Pool: {pool_s}")
-    rem_s = (remaining or "").strip()
+    rem_s = sanitize_out_of_fuel_dialog_field(remaining, 80)
     if rem_s:
         lines.append(f"Remaining: {rem_s}")
-    reset_s = (reset_hint or "").strip()
+    reset_s = sanitize_out_of_fuel_dialog_field(reset_hint, 80)
     if reset_s:
         lines.append(f"Reset: {reset_s}")
-    nick_s = (nick or "").strip()
+    nick_s = sanitize_out_of_fuel_dialog_field(nick, 40)
     if nick_s:
         lines.append(f"Seat: {nick_s}")
-    preview = one_line(evidence or "", 160)
+    preview = sanitize_out_of_fuel_dialog_field(evidence or "", 120)
     if preview:
         lines.append(preview)
     lines.append("This seat will close now so it leaves the digest.")
@@ -10011,22 +10307,32 @@ def show_out_of_fuel_dialog(
         evidence=evidence,
         nick=nick,
     )
-    if show_fn is not None:
-        show_fn(text, title)
-        return True
     raw = str(env.get("BOB_WORKER_FUEL_DIALOG", "1") or "1").strip().lower()
-    if raw in ("0", "false", "no", "off"):
+    if show_fn is None and raw in ("0", "false", "no", "off"):
         if log:
             try:
                 log("out-of-fuel: dialog skipped (BOB_WORKER_FUEL_DIALOG=0)")
             except Exception:
                 pass
         return False
+    # FR #8991 / #9016: never block worker-remove / shutdown on MessageBoxW (Session 0
+    # hang) or a slow injected show_fn. Daemon thread + short join; process can exit.
     try:
-        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        MB_OK = 0x00000000
-        MB_ICONWARNING = 0x00000030
-        user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+        def _box() -> None:
+            try:
+                if show_fn is not None:
+                    show_fn(text, title)
+                    return
+                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+                MB_OK = 0x00000000
+                MB_ICONWARNING = 0x00000030
+                user32.MessageBoxW(None, text, title, MB_OK | MB_ICONWARNING)
+            except Exception:
+                pass
+
+        th = threading.Thread(target=_box, name="out-of-fuel-dialog", daemon=True)
+        th.start()
+        th.join(5.0)
         return True
     except Exception as e:
         if log:
@@ -10933,6 +11239,13 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            # FR #9056: re-delivery of an already-open same job while holding — no-op.
+            # Do not append another pending copy or emit NACK ack-not-sent.
+            if self._ack_refuse_is_duplicate(line):
+                self.log(
+                    "relay: ignore re-offer of already-ACKed open job " + (line or "")[:120]
+                )
+                return "duplicate"
             first_held = False
             with self._lock:
                 if line == self._last_line and not self._consume_context_refusal(line):
@@ -10945,9 +11258,15 @@ class Relay:
                     del self._pending[0]
             # FR #4115: ACK the first held assign on receipt (before inject / turn end).
             # FR #8246: if that ACK is suppressed, drop the hold and do not inject later.
-            if first_held and not self._ack_offer_or_refuse(line):
-                self._drop_pending_line(line)
-                return "ack_not_sent"
+            # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK).
+            if first_held:
+                ack_st = self._ack_offer_or_refuse(line)
+                if ack_st == "refused":
+                    self._drop_pending_line(line)
+                    return "ack_not_sent"
+                if ack_st == "duplicate":
+                    self._drop_pending_line(line)
+                    return "duplicate"
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -10989,10 +11308,17 @@ class Relay:
                 ack_first = bool(assign_job_ref(line))
         # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
         # FR #8246: a suppressed ACK is one decision with inject — do not deliver the job.
-        if ack_first and not self._ack_offer_or_refuse(line):
-            if not do_inject:
-                self._drop_pending_line(line)
-            return "ack_not_sent"
+        # FR #9056: duplicate ACK for an already-open same job is a no-op (no NACK / no re-inject).
+        if ack_first:
+            ack_st = self._ack_offer_or_refuse(line)
+            if ack_st == "refused":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "ack_not_sent"
+            if ack_st == "duplicate":
+                if not do_inject:
+                    self._drop_pending_line(line)
+                return "duplicate"
         if do_inject:
             return self._do_inject(line)
         return "held"
@@ -11001,10 +11327,23 @@ class Relay:
         with self._lock:
             self._pending = [p for p in self._pending if p != line]
 
-    def _ack_offer_or_refuse(self, line: str) -> bool:
-        """FR #8246: fresh offer clears the finished mark, then ACK.
+    def _ack_refuse_is_duplicate(self, line: str) -> bool:
+        """FR #9056: True when program ACK for this job is already open."""
+        ack = ack_on_receipt_line(line)
+        if not ack or not self.ack_refuse_reason:
+            return False
+        try:
+            return self.ack_refuse_reason(ack) == "duplicate ACK"
+        except Exception:
+            return False
 
-        Returns False when the ACK would be dropped. Caller must not inject.
+    def _ack_offer_or_refuse(self, line: str) -> str:
+        """FR #8246 / #9056: fresh offer clears the finished mark, then ACK.
+
+        Returns:
+          ``"acked"`` — ACK written; caller may inject/hold.
+          ``"duplicate"`` — same job ACK already open; no NACK, caller must not inject.
+          ``"refused"`` — ACK suppressed with ``NACK … ack-not-sent``; do not inject.
         """
         if self.prepare_offer:
             try:
@@ -11018,6 +11357,11 @@ class Relay:
                 reason = self.ack_refuse_reason(ack)
             except Exception:
                 reason = None
+        if reason == "duplicate ACK":
+            # FR #9056: program already ACK'd this in-flight job (held flush / receipt).
+            # Seat re-ACK or re-offer must not emit NACK ack-not-sent.
+            self.log(f"relay: ACK already open for same job; no-op ({reason})")
+            return "duplicate"
         if reason:
             key = assign_job_key(line) or "job"
             nack = f"NACK {key} ack-not-sent"
@@ -11027,9 +11371,9 @@ class Relay:
                     self.write_outbox(nack)
                 except Exception:
                     pass
-            return False
+            return "refused"
         self._ack_on_receipt(line)
-        return True
+        return "acked"
 
     def _ack_on_receipt(self, line: str) -> None:
         """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
@@ -11177,7 +11521,8 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
-            if self._ack_offer_or_refuse(line):
+            # FR #9056: only inject on a fresh ACK; duplicate/refused skip re-inject.
+            if self._ack_offer_or_refuse(line) == "acked":
                 self._do_inject(line)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
@@ -12506,6 +12851,7 @@ def opencode_frozen_recycle_reason(
     digest_doing_age_s: float | None,
     progress_moved_age_s: float | None,
     threshold_s: float = 900.0,
+    turns_recent: bool = False,
 ) -> str:
     """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
 
@@ -12514,6 +12860,11 @@ def opencode_frozen_recycle_reason(
     `limited=true` with rolling remaining must not set `out_of_fuel` (that
     hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
     hard 402 / exhausted holds.
+
+    FR #9009: recent opencode-turns.jsonl activity (turn_started/ended) means the
+    agent is still working even when digest worker.updated is stale. That
+    suppresses frozen-progress / lost-ack-stale recycles (FR #8646 still applies
+    when turns are not recent).
     """
     if (kind or "").strip().lower() != "opencode":
         return ""
@@ -12529,8 +12880,13 @@ def opencode_frozen_recycle_reason(
     if digest_age is not None and digest_age >= thr:
         if not ack_open:
             return "opencode-lost-ack-stale"
+        # FR #9009: fresh turns mean the agent is working despite a stale digest stamp.
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
+        if turns_recent:
+            return ""
         return "opencode-frozen-progress"
     return ""
 
@@ -14389,6 +14745,8 @@ class BoredEmitter:
         # FR #6366: OpenCode finish-run decide hook ("retry"|"giveup"); attempt counter.
         self.opencode_finish_decide_fn: Optional[Callable[[str], str]] = None
         self.job_end_cleanup_fn: Optional[Callable[[Optional[str]], None]] = None
+        # FR #9183: idle sweep + locked worktree retry (set by Seat for all kinds).
+        self.idle_worktree_sweep_fn: Optional[Callable[[str], None]] = None
         self._opencode_finish_attempt: int = 0
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
@@ -15883,6 +16241,14 @@ class BoredEmitter:
                 self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
         except Exception:
             pass
+        # FR #9183: while idle / after terminal job lines, retry locked removes + sweep extras.
+        if reason in ("idle", "start", "done", "free", "turn"):
+            sweep = getattr(self, "idle_worktree_sweep_fn", None)
+            if sweep is not None:
+                try:
+                    sweep(reason)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: failed:{type(e).__name__}")
         ok = False
         try:
             ok = bool(self.send())
@@ -16200,7 +16566,10 @@ class Supervisor:
                 self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
             elif (self.kind or "").strip().lower() in ("grok", "cursor"):
                 # FR #6918: drop --job-worktree from live MCP configs when the job ends.
+                # FR #9183: also prune the finished job worktree (same helper as OpenCode).
                 self.bored.job_end_cleanup_fn = self._live_skill_dag_job_end_cleanup
+            # FR #9183: idle sweep + locked-remove retry for every seat kind.
+            self.bored.idle_worktree_sweep_fn = self._idle_job_worktree_sweep
             # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
             self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
@@ -16734,11 +17103,20 @@ class Supervisor:
             except Exception:
                 pass
         if "reset" in (evidence or "").lower():
-            reset_hint = one_line(evidence or "", 80)
-        return pool, remaining, reset_hint
+            # FR #9027: never dump provider HTML/JSON into Reset: — sanitize first.
+            reset_hint = sanitize_out_of_fuel_dialog_field(evidence or "", 80)
+        return (
+            sanitize_out_of_fuel_dialog_field(pool, 60),
+            sanitize_out_of_fuel_dialog_field(remaining, 80),
+            reset_hint,
+        )
 
     def _quit_after_out_of_fuel(self, evidence: str = "") -> None:
-        """FR #8814: dialog + worker-remove + shutdown so the nick leaves the digest."""
+        """FR #8814 / #8991 / #9016: worker-remove + dialog + shutdown (no fuel-hold zombie).
+
+        Remove the nick before any dialog so digest capacity frees. Dialog is
+        best-effort and must not block exit (daemon MessageBox / short join).
+        """
         if getattr(self, "_out_of_fuel_quit_started", False):
             return
         self._out_of_fuel_quit_started = True
@@ -16746,6 +17124,29 @@ class Supervisor:
         if not out_of_fuel_quit_enabled(env):
             self.log("out-of-fuel: quit skipped (BOB_WORKER_OUT_OF_FUEL_QUIT=0)")
             return
+        pid = None
+        try:
+            if self.proc is not None:
+                pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
+        if pid is None:
+            try:
+                pid = os.getpid()
+            except Exception:
+                pid = None
+        # FR #8991 / #9016: remove before dialog so Session 0 MessageBox cannot
+        # leave the nick painted out_of_fuel while fuel-hold heartbeats continue.
+        try:
+            post_digest_worker_remove(
+                machine=self.machine,
+                nick=self.nick,
+                pid=pid,
+                env=env,
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
         pool, remaining, reset_hint = self._out_of_fuel_dialog_pool_bits(evidence)
         show_fn = getattr(self, "_out_of_fuel_dialog_show_fn", None)
         try:
@@ -16761,28 +17162,7 @@ class Supervisor:
             )
         except Exception as e:
             self.log(f"out-of-fuel: dialog path failed {type(e).__name__}")
-        pid = None
-        try:
-            if self.proc is not None:
-                pid = getattr(self.proc, "pid", None)
-        except Exception:
-            pid = None
-        if pid is None:
-            try:
-                pid = os.getpid()
-            except Exception:
-                pid = None
-        try:
-            post_digest_worker_remove(
-                machine=self.machine,
-                nick=self.nick,
-                pid=pid,
-                env=env,
-                log=self.log,
-            )
-        except Exception as e:
-            self.log(f"out-of-fuel: worker-remove failed {type(e).__name__}")
-        self.log("out-of-fuel: closing seat (FR #8814)")
+        self.log("out-of-fuel: closing seat (FR #8814 / #9016)")
         try:
             self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
         except Exception as e:
@@ -17196,19 +17576,24 @@ class Supervisor:
             if ref:
                 self.bored.note_stand_down(ref)
 
-    def may_send_outbox(self, payload: str) -> bool:
-        """FR #4730: drop replayed ACK for a finished job before it hits IRC.
+    def may_send_outbox(self, payload: str):
+        """FR #4730 / #9056: drop replayed ACK for a finished or already-open job.
 
-        Used for the run-dir outbox. Do not apply the OpenCode job-key filter here
+        Used for the run-dir outbox. Returns True, or ``(False, reason)`` so drain
+        logs ``duplicate ACK`` / ``finished-job ACK replay`` instead of bare
+        ``stale replay``. Do not apply the OpenCode job-key filter here
         (FR #6333 MRB): program NACKs for a new key can arrive while `_opencode_job_key`
         is still the previous job. Job-key filtering is `may_send_job_outbox` only.
         """
         if self.bored is None:
             return True
         try:
-            return bool(self.bored.should_forward_outbox(payload))
+            reason = self.bored.outbox_ack_refuse_reason(payload)
         except Exception:
             return True
+        if reason:
+            return (False, reason)
+        return True
 
     def may_send_job_outbox(self, payload: str):
         """FR #6333 / #6472: worktree ``.bob/outbox.txt`` job-key filter then ACK rules.
@@ -17576,6 +17961,11 @@ class Supervisor:
             self._session_cursor = CursorTurnWatcher(since_wall=time.time()) if self.kind == "cursor" else None
             spec.session_log = self.session_log
             self.session_log.write("start", f"kind={self.kind} session={spec.session_id}")
+            # FR #8734 / BOB-29: seat session log names the model stamped into the child.
+            if (self.kind or "").strip().lower() == "opencode":
+                oc_id = str((child.get("env") or {}).get("BOB_OPENCODE_MODEL") or "").strip()
+                if oc_id:
+                    self.session_log.write("model", f"opencode model={oc_id}")
             self.session_log.write("console-start", json.dumps(console_startup_state()))
             self.session_log.write("prompt", self._prompt() + (" " + note if note else ""))
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
@@ -18306,7 +18696,63 @@ class Supervisor:
             pass
 
     def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
+        # FR #9183: prune this job's worktree after DONE/GIVEUP/NACK (grok/cursor).
+        self._prune_finished_job_worktree(job)
         self._clear_per_job_seat_state(job)
+
+    def _prune_finished_job_worktree(self, job: Optional[str] = None) -> None:
+        """FR #9183: git worktree remove --force the finished job tree; queue if locked."""
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        if not wt:
+            return
+        try:
+            import job_worktree_lifecycle as _jwl
+
+            install = (
+                str(getattr(self, "install_root", "") or "")
+                or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+                or str(Path(getattr(self, "cwd", "") or "").parent)
+            )
+            _jwl.remove_finished_job_worktree(
+                wt,
+                install_root=install or None,
+                keep_paths=[],
+                log_fn=self.log,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-wt-prune: failed:{type(e).__name__} job={job or ''}")
+
+    def _idle_job_worktree_sweep(self, reason: str = "") -> None:
+        """FR #9183: retry locked removals; Clear soft-cap extras while idle."""
+        try:
+            import job_worktree_lifecycle as _jwl
+
+            install = (
+                str(getattr(self, "install_root", "") or "")
+                or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+                or ""
+            )
+            keep = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+            keep_paths = [keep] if keep else []
+            _jwl.drain_locked_worktree_retries(
+                install_root=install or None,
+                keep_paths=keep_paths,
+                log_fn=self.log,
+            )
+            # Soft-cap extras via existing Clear helper when a job tree (or install) is known.
+            anchor = keep or install
+            if anchor and (self.kind or "").strip().lower() == "opencode":
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
+            elif anchor and install:
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-wt-sweep: failed:{type(e).__name__} reason={reason}")
 
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
@@ -18661,6 +19107,22 @@ class Supervisor:
             self.log(
                 f"agent: exited by itself code={code} (u32={exit_label}); {kill_line}"
             )
+        # FR #9016: CLI teardown (0xffffffff / OSError 22) after fuel-quit or while
+        # out-of-fuel must close the seat cleanly — no cli-failure intake, no recycle hang.
+        fuel_hold = bool(self.bored and getattr(self.bored, "out_of_fuel", False))
+        fuel_quit = bool(getattr(self, "_out_of_fuel_quit_started", False))
+        if fuel_hold or fuel_quit:
+            self.log(
+                f"agent: exit during out-of-fuel code={code} (u32={exit_label}); "
+                f"closing seat (FR #9016); {kill_line}"
+            )
+            try:
+                self.restart_agent("agent-cli-nonzero-exit")
+            except Exception as e:
+                self.log(f"agent: fuel-hold exit close failed {type(e).__name__}")
+                if not getattr(self, "_shutting", False):
+                    self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+            return
         # FR #7593: zero exit ends the seat (unchanged). Nonzero → report, GIVEUP accepted
         # job (no fake DONE), restart the supported way so the replacement !bored's.
         if exit_u == 0:
@@ -18881,7 +19343,13 @@ class Supervisor:
         now_mono = float(self.clock())
         # FR #8494: out-of-fuel hold still heartbeats so digest ``updated`` stays fresh
         # and state paints ``out_of_fuel`` (not quiet idle). ACK may already be clear.
+        # FR #9016: after quit decision, never post fuel-hold (that kept redqueen OC
+        # zombies alive after ``quitting seat after dialog``).
         if snap.out_of_fuel:
+            if getattr(self, "_out_of_fuel_quit_started", False) or getattr(
+                self, "_shutting", False
+            ):
+                return
             self._post_fuel_hold_heartbeat(now_mono=now_mono)
             return
         if not snap.ack_open:
@@ -19162,11 +19630,20 @@ class Supervisor:
                 self.log(f"opencode finish: bored on_outbox failed {type(e).__name__}")
 
     def _opencode_job_end_cleanup(self, job: Optional[str] = None) -> None:
-        """FR #6370: drop Temp worktrees; FR #8094: clear per-job context for the next offer."""
+        """FR #6370 / FR #9183: remove finished job tree, sweep extras; FR #8094 clear context."""
+        # FR #9183: remove THIS job's worktree first (KeepPath soft-cap left it behind).
+        self._prune_finished_job_worktree(job)
         wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
-        if (self.kind or "").strip().lower() == "opencode" and wt:
+        install = (
+            str(getattr(self, "install_root", "") or "")
+            or str(os.environ.get("BOB_INSTALL_ROOT") or "")
+            or ""
+        )
+        # Sweep remaining extras; prefer install root as KeepPath so finished wt is gone.
+        anchor = install or wt
+        if (self.kind or "").strip().lower() == "opencode" and anchor:
             try:
-                opencode_cleanup_extra_worktrees(wt, log_fn=self.log)
+                opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
             except Exception as e:  # noqa: BLE001
                 self.log(f"opencode finish: cleanup failed {type(e).__name__}")
         self._clear_per_job_seat_state(job)
@@ -19294,6 +19771,14 @@ class Supervisor:
                 digest_age = self._opencode_report_doing_age_s(nick)
         except Exception:
             digest_age = None
+        turns_recent = False
+        try:
+            turns_path = Path(self.run_dir) / "opencode-turns.jsonl"
+            turns_recent = probe_opencode_turns_recent(
+                turns_path, within_s=thr, now_wall=time.time()
+            )
+        except Exception:
+            turns_recent = False
         reason = opencode_frozen_recycle_reason(
             kind=self.kind,
             out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
@@ -19301,12 +19786,13 @@ class Supervisor:
             digest_doing_age_s=digest_age,
             progress_moved_age_s=moved_age,
             threshold_s=thr,
+            turns_recent=turns_recent,
         )
         if not reason:
             return False
         self.log(
             f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
-            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+            f"moved_age={moved_age!r} turns_recent={turns_recent} thr={thr:.0f}s; recycling"
         )
         self.restart_agent(reason)
         return True
@@ -19438,11 +19924,31 @@ class Supervisor:
 
     def restart_agent(self, reason: str) -> None:
         # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
+        # FR #9016: after fuel-quit (or hold with quit enabled), closing the agent
+        # must shut the seat down — refusing restart alone left fuel-hold zombies
+        # after CLI ``0xffffffff`` / OSError 22 teardown.
         if self.bored and self.bored.out_of_fuel:
             self.log(
                 f"agent: HUNG ({reason}) ignored - out-of-fuel hold (no respawn; FR #4180)"
             )
             self._clear_watchdogs_for_out_of_fuel()
+            quit_started = bool(getattr(self, "_out_of_fuel_quit_started", False))
+            env = (
+                self.base_env
+                if isinstance(getattr(self, "base_env", None), dict)
+                else None
+            )
+            if quit_started or out_of_fuel_quit_enabled(env):
+                if not getattr(self, "_shutting", False):
+                    self.log(
+                        "agent: out-of-fuel + agent exit → closing seat (FR #9016)"
+                    )
+                    try:
+                        self.shutdown("fuel-exhausted", EXIT_OUT_OF_FUEL)
+                    except Exception as e:
+                        self.log(
+                            f"agent: fuel-quit shutdown failed {type(e).__name__}"
+                        )
             return
         # FR #7123: never silently drop an accepted job on hang-recycle.
         if self.bored and getattr(self.bored, "_ack_open", False) and getattr(self.bored, "_ack_job_key", None):
