@@ -322,6 +322,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Weights S1 is a modeless grid with columns Agent, CLI, Model, Context, Effort. Dump those headers with --dump-weights-columns before the tray UI starts.
 - Seed models-valid-combos from a shipped seed on BobCallback start: create if missing, append missing models, never rewrite a malformed store.
 - Workers > Cursor menu image is assets/menu-favicons/cursor.com.ico. Log worker-favicon with that path. Do not reuse the fuel badge.
+- BOB-54 Priority menu icon: pin PRI-07 priority.ico at vendor/priority/ next to PriorityAgent.exe (same path as BOB-50 StartPriorityExe); MSI priority\ layout is BOB-55 scope
 - A fresh Install-BobWebhooks.ps1 must write the same canonical web.config the second run would upsert, or site-kit CI fails with second install changed web.config bytes.
 - When neither home has queue.json, idle_seats uses one live /bob/v1/report estimate. A local queue never fetches. Unverified gates stay named and are not applied.
 - About Plan and Priority versions come from slice VERSION files or BOBIVERSE_PLAN_VERSION and BOBIVERSE_PRIORITY_VERSION, and fall back to the bob version so the fields are never blank.
@@ -353,9 +354,15 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Empty-online fill: when grok weekly remaining is known 0 and an OpenCode free leaf resolves, write agent=opencode slot=free; unknown grok or free=0 keeps auto.
 - FR #9025: fuel-exhausted recycle while process still running is expected fuel quit --- skip seat-stopped-making-progress intake; leave hang recycles filing
 - A DIRTY tray-dialog FIX must keep both sides of the bob-tray.exe Srcs list (BobModelsClient.cs from main and PlanMcpConfig.cs from the PR) and compile before push.
+- Steady OK cycle: no intake when seats busy, pools fresh, held_prs=0.
+- FR #8811: wire row_fr_depends_blocked_reason beside every FR hold offer/purge/reconcile site (bob_d7_wire_hold); Depends-on OPEN skips offer but keeps the row
+
 - Ghost TipForm clicks with Clear toolbars=0: Clear-BobOrphanNotifyIcons -HealLadder (session explorer recycle + re-sweep) and MenuClosed Visible rebind before relaunching Watch.
 - TipForm park poll must never Wait-Job update-hover or Write-BobIrcStatus on STA: step-skip + trayHoverTimer snapshot + Update-Hover -FromSnapshot; trayDigestTimer posts for TipForm too.
 - FR #9180: bobiverse book harvest with real Lessons owes a lesson(book) PR patching .grok/skills/<book>/SKILL.md same-turn when gh is authenticated; receipt-without-skill-PR is fail-closed; -SkillFile lands at skill_book_path not harvest/<name>
 - Twin fix already merged: keep main's primitive as source of truth, wrap the branch API, and satisfy both pinned test files before push.
 - trayDigestTimer Action runspace has no parent BobBridge: Import-Module src\BobBridge.psd1 when Get-ThisMachineId or Write-BobIrcStatus is missing; dotting Get-BobIrc alone is not enough (FR #9198).
 - Drain must recreate empty outbox.txt after atomic move.
+- WinPS 5.1: never assign $pid/$PID in tray helpers (read-only automatic); use $trayPid/$killPid; pin source forbids $pid = in Stop-BobTrayProcessesProtectingSeats (MRB #9206).
+- FR #9217: ruleset required-ci-3948 requires pytest-ascii-bom with conflict-markers; job name must stay pytest-ascii-bom.
+- FR #9220: Depends-on offer gate indexes open FRs by owner/repo#N; relative #N resolves against the FR repo (no cross-repo bare-number false skip).
