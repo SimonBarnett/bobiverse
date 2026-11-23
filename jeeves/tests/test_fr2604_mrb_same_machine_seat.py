@@ -47,20 +47,22 @@ def test_fr2604_done_fr_queues_mrb_with_pull_url(tmp_path, monkeypatch):
     assert gitclaim.mrb_row_offerable(mrbs[0]) is True
 
 
-def test_fr2604_sibling_same_machine_may_take_mrb_even_if_other_machine_live(
+def test_fr2604_sibling_same_machine_blocked_when_other_machine_live(
     tmp_path, monkeypatch
 ):
-    """Self-MRB is exact seat only (FR #2604); sibling on same box may review."""
+    """FR #9401 supersedes multi-machine sibling allow from FR #2604."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
     digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    digest["machines"]["marchhare"]["workers"] = {
-        "39912": {"state": "idle"},
-        "9524": {"state": "idle"},
-    }
+    digest["machines"]["marchhare"]["worker_list"] = [
+        {"nick": "marchhare-39912", "state": "idle"},
+        {"nick": "marchhare-9524", "state": "idle"},
+    ]
     digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
-    digest["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
+    digest["machines"]["flamingo"]["worker_list"] = [
+        {"nick": "flamingo-9", "state": "idle"},
+    ]
     bobreport.save_digest(tmp_path, digest)
 
     row = {
@@ -73,22 +75,26 @@ def test_fr2604_sibling_same_machine_may_take_mrb_even_if_other_machine_live(
         "event": "pull_request",
     }
     live = gitclaim.live_seat_nicks(tmp_path)
+    assert "flamingo-9" in live
     assert gitclaim.review_blocked_for_author(row, "marchhare-39912", live) is True
-    assert gitclaim.review_blocked_for_author(row, "marchhare-9524", live) is False
+    assert gitclaim.review_blocked_for_author(row, "marchhare-9524", live) is True
     assert gitclaim.review_blocked_for_author(row, "flamingo-9", live) is False
 
 
-def test_fr2604_offer_focus_top_same_machine_sibling(tmp_path, monkeypatch):
+def test_fr2604_offer_focus_top_other_machine_not_sibling(tmp_path, monkeypatch):
+    """When another machine is live, offer the other machine — not the sibling."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
     digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    digest["machines"]["marchhare"]["workers"] = {
-        "39912": {"state": "idle"},
-        "9524": {"state": "idle"},
-    }
+    digest["machines"]["marchhare"]["worker_list"] = [
+        {"nick": "marchhare-39912", "state": "idle"},
+        {"nick": "marchhare-9524", "state": "idle"},
+    ]
     digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
-    digest["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
+    digest["machines"]["flamingo"]["worker_list"] = [
+        {"nick": "flamingo-9", "state": "idle"},
+    ]
     bobreport.save_digest(tmp_path, digest)
 
     doc = {
@@ -115,7 +121,9 @@ def test_fr2604_offer_focus_top_same_machine_sibling(tmp_path, monkeypatch):
     st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-39912", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(tmp_path, "marchhare-9524", "#marchhare")
-    assert st2 == "ok" and job2["id"] == "#2602"
+    assert st2 == "empty"
+    st3, job3 = gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")
+    assert st3 == "ok" and job3["id"] == "#2602"
 
 
 def test_fr2604_resync_skips_draft_and_logs(tmp_path, monkeypatch, capsys):
