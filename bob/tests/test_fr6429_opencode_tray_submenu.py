@@ -106,8 +106,8 @@ def test_fr6429_format_helper_region_and_missing():
 def test_fr6429_docs_pin_submenu_and_child_env():
     text = DOCS.read_text(encoding="utf-8")
     assert "FR #6429" in text
-    assert "Start free model" in text
-    assert "Start paid model" in text
+    # FR #9263: menu labels are Free|Paid only (was "Start free/paid model").
+    assert "**Free**" in text and "**Paid**" in text
     assert FREE_DEFAULT in text
     assert PAID_DEFAULT in text
     assert "child seat process only" in text or "CreateProcessW" in text
