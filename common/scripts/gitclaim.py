@@ -884,6 +884,23 @@ def open_fr_issue_keys(doc: dict) -> set[tuple[str, int]]:
     return keys
 
 
+def depends_issue_open_checker(issue_open=None):
+    """Unbudgeted ``issue_open`` for the Depends-on gate (FR #8754 strengthen).
+
+    ``!bored`` keeps ``BORED_GITHUB_CALL_BUDGET=0`` for ordinary lookups. Depends-on
+    prerequisites are often still OPEN on GitHub while absent from the local FR
+    queue, so this checker must live-check without consuming that budget. Test
+    fakes (no ``.budget`` attr) are returned as-is; budgeted wrappers are replaced
+    with ``github_issue_open_checker()`` (disk cache still applies).
+    """
+    if issue_open is not None and getattr(issue_open, "budget", None) is None:
+        return issue_open
+    try:
+        return github_issue_open_checker()
+    except Exception:
+        return None
+
+
 def row_depends_open_reason(
     row: dict,
     open_keys: set[tuple[str, int]] | None = None,
@@ -901,6 +918,8 @@ def row_depends_open_reason(
     - Empty stamp / `(none)` / absent ref with no checker: do not block.
     - BOB-D4 / FR #8808: when every depend is CLOSED (absent from `open_keys` and
       `issue_open` False / unset), returns None so the FR is offerable again.
+    - FR #8754: callers should pass ``depends_issue_open_checker(...)`` so OPEN
+      GitHub issues block even when they are not local queue keys.
     """
     if _canon_task(row) != "FR":
         return None
@@ -12169,6 +12188,9 @@ def offer_focus_top(
     precompute_ok = offer_precompute_fresh(home, _rows_peek)
     bored_budget = 0 if precompute_ok else BORED_GITHUB_CALL_BUDGET
     budget = _GithubCallBudget(bored_budget)
+    # FR #8754: Depends-on live OPEN check is unbudgeted — prereqs are often OPEN on
+    # GitHub while absent from the local FR queue; zero !bored budget must not skip them.
+    depends_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -12404,9 +12426,9 @@ def offer_focus_top(
                     cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
                     return None
-                # BOB-D3 / FR #8807 + BOB-G1 / FR #8837: Depends-on OPEN / held digest.
+                # BOB-D3 / FR #8807 + BOB-G1 / FR #8837 + FR #8754 live GitHub OPEN.
                 if row_depends_open_reason(
-                    cand, open_dep_keys, issue_open=issue_open, doc=doc
+                    cand, open_dep_keys, issue_open=depends_issue_open, doc=doc
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -12721,6 +12743,7 @@ def offer_top(
 
     now_f = _time.time() if now is None else float(now)
     budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
+    depends_issue_open = depends_issue_open_checker(issue_open)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -12738,6 +12761,7 @@ def offer_top(
             purged = bool(_purge_dead_fix_unaccepted(doc, pr_exists=None)) or purged
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
+            open_dep_keys_top = open_fr_issue_keys(doc)
             purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
             # Accepted list is small — live check under the shared budget (FR #2361).
             purged = bool(
@@ -12780,8 +12804,13 @@ def offer_top(
                         continue
                     i += 1
                     continue
-                # FR #8754: Depends-on backlog still open — skip; keep row.
+                # FR #8754: Depends-on backlog still open (queue keys + live GitHub OPEN).
                 if row_fr_depends_blocked_reason(row, doc):
+                    i += 1
+                    continue
+                if row_depends_open_reason(
+                    row, open_dep_keys_top, issue_open=depends_issue_open, doc=doc
+                ):
                     i += 1
                     continue
                 if row_awaits_mrb1(row):
@@ -16162,6 +16191,15 @@ def assign_row(
             dep_why = row_fr_depends_blocked_reason(cand, doc)
             if dep_why:
                 return "refused", f"row blocked: {dep_why}"
+            # FR #8754: live GitHub OPEN for Depends-on refs not in the local FR queue.
+            live_dep = row_depends_open_reason(
+                cand,
+                open_fr_issue_keys(doc),
+                issue_open=depends_issue_open_checker(issue_open),
+                doc=doc,
+            )
+            if live_dep:
+                return "refused", f"row blocked: {live_dep}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
