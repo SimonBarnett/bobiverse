@@ -1,0 +1,15 @@
+# synthetic:false
+# cli: grok
+# command: grok models
+# captured: 2026-11-22
+# note: captured on marchhare under interactive user (not ircJeeves)
+You are logged in with grok.com.
+
+Default model: grok-4.5
+
+Available models:
+  - grok-4.7
+  - grok-4.7-build-fast
+  - grok-4.6
+  * grok-4.5 (default)
+
