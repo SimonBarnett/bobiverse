@@ -342,6 +342,23 @@ def pr_hold_reason(
     return None
 
 
+def ops_monitor_tracker_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #9402: why an issue is an ops/MONITORING gate tracker (None = ordinary FR).
+
+    These trackers must not be ``feature-request`` shop work. Chair skips enqueue/offer;
+    operators keep them as hold/ops records (see #9400 Closes rule).
+    """
+    blob = f"{title or ''}\n{body or ''}"
+    if OPS_MONITOR_TRACKER_BODY_RE.search(blob):
+        return "ops_monitor_tracker"
+    return None
+
+
 def fr_hold_reason(
     *,
     title: str = "",
@@ -4078,6 +4095,35 @@ def claim_from_payload(
     return GitClaim(repo=repo, task=task, id=ident, event=ev, action=action, line=src)
 
 
+def _clear_unaccepted_offer_pins_for_job(
+    home: Path | None,
+    doc: dict,
+    repo: str,
+    task: str,
+    ident: str,
+) -> int:
+    """FR #9402: clear offered_to (+ seat-holds) on matching unaccepted rows.
+
+    Returns how many rows had an offer pin cleared. Caller still removes/drops
+    the row when hold/skip applies.
+    """
+    cleared = 0
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if not _same(row, repo, task, ident):
+            continue
+        had = bool(str(row.get("offered_to") or "").strip())
+        for k in ("offered_to", "offered_ts", "offered_channel", "offered_via"):
+            row.pop(k, None)
+        if had:
+            cleared += 1
+    if home is not None:
+        with contextlib.suppress(Exception):
+            _clear_job_seat_holds_unlocked(home, repo, task, ident)
+    return cleared
+
+
 def _remove_unaccepted(doc: dict, repo: str, task: str, ident: str) -> int:
     before = len(doc["unaccepted"])
     doc["unaccepted"] = [
@@ -4353,18 +4399,49 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                 )
             ]
             return "skipped"
-    if claim.task == "FR" and issue_skip_fr_reason(
-        title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
-    ):
-        return "skipped"
+    if claim.task == "FR":
+        _skip_fr = issue_skip_fr_reason(
+            title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
+        )
+        if _skip_fr:
+            # FR #9402: ops/monitor trackers drop any twin + clear offered_to.
+            # Other skip_fr reasons keep prior behaviour (return skipped; digests
+            # and needs-human paths are handled by prune / label mutation).
+            if _skip_fr == "ops_monitor_tracker":
+                store_repo = canonical_queue_repo(claim.repo)
+                _clear_unaccepted_offer_pins_for_job(
+                    home, doc, store_repo, claim.task, claim.id
+                )
+                doc["unaccepted"] = [
+                    r
+                    for r in (doc.get("unaccepted") or [])
+                    if not (
+                        isinstance(r, dict)
+                        and _same(r, store_repo, claim.task, claim.id)
+                    )
+                ]
+            return "skipped"
     if claim.task == "FR" and fr_is_superseded(doc, claim.repo, claim.id):
         return "skipped"  # FR #254: MRB / open implement PR supersedes FR
     # FR #4009: never enqueue FR for issues on hold (label or owner HOLD body stamp).
     # Drop any already-queued twin so webhook edited / resync clears the offer path.
+    # FR #9402: also clear offered_to / seat-holds so the pin cannot block !assign.
+    # BOB-G3: held digests stay as gate records (do not drop).
     if claim.task == "FR" and fr_hold_reason(
         title=claim.title, body=claim.body, labels=claim.labels
     ):
+        _digest_probe = {
+            "task": "FR",
+            "title": claim.title,
+            "body": claim.body,
+            "labels": list(claim.labels),
+        }
+        if digest_issue_reason(_digest_probe):
+            return "skipped"
         store_repo = canonical_queue_repo(claim.repo)
+        _clear_unaccepted_offer_pins_for_job(
+            home, doc, store_repo, claim.task, claim.id
+        )
         doc["unaccepted"] = [
             r
             for r in (doc.get("unaccepted") or [])
@@ -4561,9 +4638,27 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
         skip = issue_skip_fr_reason(
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
         )
-        if skip:
+        # FR #9402: hold (and skip/ops-tracker) must drop the unaccepted row and
+        # clear offered_to / seat-holds — label mutation used to stamp hold in
+        # place and leave the ghost pin (class of #9376 / flamingo busy refuse).
+        hold = fr_hold_reason(
+            title=claim.title, body=claim.body, labels=claim.labels
+        )
+        # BOB-G3: digest gate records stay queued even when held / fr-digest skip.
+        _digest_probe = {
+            "task": "FR",
+            "title": claim.title,
+            "body": claim.body,
+            "labels": list(claim.labels),
+        }
+        if digest_issue_reason(_digest_probe):
+            return "updated" if updated else "noop"
+        if skip or hold:
+            cleared = _clear_unaccepted_offer_pins_for_job(
+                home, doc, claim.repo, "FR", claim.id
+            )
             n = _remove_unaccepted(doc, claim.repo, "FR", claim.id)
-            if n:
+            if n or cleared:
                 return "removed"
             return "updated" if updated else "noop"
         if not found_unaccepted and not repo_archived_for_queue(claim.repo):
@@ -7553,11 +7648,24 @@ def _live_verdict(check, row: dict) -> bool | None:
         return None
 
 
-def _drop_unaccepted_row(doc: dict, row: dict, *, kind: str, reason: str, log=None) -> int:
-    """Remove one definitively-dead unaccepted row and log why (FR #3188 / MRB #3207)."""
+def _drop_unaccepted_row(
+    doc: dict,
+    row: dict,
+    *,
+    kind: str,
+    reason: str,
+    log=None,
+    home: Path | None = None,
+) -> int:
+    """Remove one definitively-dead unaccepted row and log why (FR #3188 / MRB #3207).
+
+    FR #9402: when ``home`` is set, also clear offered_to seat-holds for the job.
+    """
     repo = str(row.get("repo") or "").strip()
     num = str(row.get("id") or "").strip().lstrip("#")
     task = _canon_task(row)
+    if home is not None:
+        _clear_unaccepted_offer_pins_for_job(home, doc, repo, task, num)
     before = len(doc.get("unaccepted") or [])
     doc["unaccepted"] = [
         r
@@ -12324,6 +12432,98 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
     return ""
 
 
+def purge_stale_offered_pins(
+    home: Path,
+    *,
+    now: float | None = None,
+    live: set[str] | None = None,
+    locked_doc: dict | None = None,
+) -> int:
+    """FR #9402: clear aged/dead ``offered_to`` pins (same rules as ``offer_focus_top``).
+
+    ``!assign`` used ``seat_open_job`` without this purge, so an idle seat past
+    ``OFFER_TIMEOUT_S`` still refused busy. Returns how many pins were cleared.
+    When ``locked_doc`` is provided the caller already holds ``_lock``.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    try:
+        live_set = set(live) if live is not None else live_seat_nicks(home, now=now_f)
+    except Exception:  # noqa: BLE001
+        live_set = set()
+    live_l = {
+        (canonical_worker_nick(n) or n or "").strip().lower()
+        for n in live_set
+        if (canonical_worker_nick(n) or n or "").strip()
+    }
+
+    def _purge(doc: dict) -> int:
+        cleared = 0
+        for cand in doc.get("unaccepted") or []:
+            if not isinstance(cand, dict):
+                continue
+            to = str(cand.get("offered_to") or "").strip()
+            if not to:
+                continue
+            to_c = (canonical_worker_nick(to) or to).strip().lower()
+            dead_pin = bool(to_c) and bool(live_l) and to_c not in live_l
+            try:
+                age = now_f - datetime.fromisoformat(
+                    str(cand.get("offered_ts") or "").replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                age = offer_timeout_s(cand) + 1
+            if (
+                not dead_pin
+                and age >= offer_timeout_s(cand)
+                and to_c in live_l
+                and seat_submit_verify_in_flight(home, to)
+            ):
+                continue
+            if dead_pin or age >= offer_timeout_s(cand):
+                if not dead_pin:
+                    with contextlib.suppress(Exception):
+                        note_unanswered_offer(
+                            cand, to, now_f, offer_timeout_reason(home, to)
+                        )
+                else:
+                    with contextlib.suppress(Exception):
+                        note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
+                # FR #4089: aged-but-live seats keep seat-holds until offer_focus_top
+                # observes the timeout. Dead seats drop holds with the pin.
+                if dead_pin:
+                    with contextlib.suppress(Exception):
+                        _clear_job_seat_holds_unlocked(
+                            home,
+                            str(cand.get("repo") or ""),
+                            str(cand.get("task") or ""),
+                            str(cand.get("id") or ""),
+                        )
+                cand.pop("offered_to", None)
+                cand.pop("offered_ts", None)
+                cand.pop("offered_channel", None)
+                cand.pop("offered_via", None)
+                cleared += 1
+        return cleared
+
+    if locked_doc is not None:
+        return _purge(locked_doc)
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return 0
+            n = _purge(doc)
+            if n:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+            return n
+    except (TimeoutError, OSError):
+        return 0
+
+
 def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
     """FR #4089: describe the seat's open job ('' when free). Accepted row, any-age
     offered_to pin, or a remembered offer in seat-holds.json all count."""
@@ -12340,19 +12540,29 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return ""
+            # FR #9402: drop aged/dead pins before the any-age busy check so
+            # !assign matches offer_focus_top timeout behaviour. Aged live seats
+            # keep seat-holds (FR #4089) until the offer loop observes timeout.
             before_n = len(doc.get("unaccepted") or [])
             before_offers = [
                 str(r.get("offered_to") or "")
                 for r in (doc.get("unaccepted") or [])
                 if isinstance(r, dict)
             ]
+            cleared = purge_stale_offered_pins(
+                home, now=now_f, live=live, locked_doc=doc
+            )
             out = _seat_open_job_in(home, doc, nick, now_f, live)
             after_offers = [
                 str(r.get("offered_to") or "")
                 for r in (doc.get("unaccepted") or [])
                 if isinstance(r, dict)
             ]
-            if len(doc.get("unaccepted") or []) != before_n or before_offers != after_offers:
+            if (
+                cleared
+                or len(doc.get("unaccepted") or []) != before_n
+                or before_offers != after_offers
+            ):
                 with contextlib.suppress(OSError):
                     _write_queue(queue_path(home), doc)
             return out
@@ -12584,7 +12794,13 @@ def offer_focus_top(
                     return None
                 # FR #4009: hold-labeled / HOLD-stamped FR — skip offer; purge so it leaves unaccepted.
                 if row_fr_hold_reason(cand):
-                    if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
+                    if _drop_unaccepted_row(
+                        doc,
+                        cand,
+                        kind="fr-hold",
+                        reason=row_fr_hold_reason(cand),
+                        home=home,
+                    ):
                         purged = True
                     return None
                 # BOB-D6 / FR #8810: empty queue body → fetch issue body before Depends-on parse
@@ -13071,7 +13287,13 @@ def offer_top(
                     continue
                 # FR #4009: hold-labeled / HOLD-stamped FR — skip and purge from unaccepted.
                 if row_fr_hold_reason(row):
-                    if _drop_unaccepted_row(doc, row, kind="fr-hold", reason=row_fr_hold_reason(row)):
+                    if _drop_unaccepted_row(
+                        doc,
+                        row,
+                        kind="fr-hold",
+                        reason=row_fr_hold_reason(row),
+                        home=home,
+                    ):
                         purged = True
                         continue
                     i += 1
