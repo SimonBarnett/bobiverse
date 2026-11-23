@@ -84,6 +84,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 * **UAT is per repo, never per PR / issue**; there is no UAT of a single PR. A seat that implemented a merged PR of the cycle does not run the repo UAT (unless the chair offered it because every live seat implemented something).
 * Evidence before stamp; never stamp from the PR diff alone. * **Gaps => no release, ever**; a release exists only after a UAT with zero gaps. * One FR per gap, filed through the intake (explicit `-Repo`), never a bundle.
 * No Ergo changes, PowerShell only, never print or commit secrets (no tokens in release notes, evidence or FRs). * The release is created only inside an assigned UAT job (the general "no release / no VERSION bump" rule is lifted for that case only).
+* **CAST IRON (operator 2026-11-23 / FR #9382):** **only UAT repos that have a release to build.** If the repo has no release-build path (`PRODUCT_UAT_RELEASE` / Pack-BobiverseRelease / configured `uat_release.py` product row / ops-intended release), do not run UAT: ACK then GIVEUP `reason=no-release-to-build`. Chair must not offer `UAT #0` for those repos. Ops `!ignore` of priority-customer repos is a temporary override of the same class.
 * **FR #147:** never dump `nssm get <svc> AppEnvironmentExtra` values into the transcript — print env **key names only** (split on first `=`; see `bobiverse-fleet-ops`).
 * CAST IRON harvest rule at the top: file every defect, gap and improvement you notice during UAT in the same turn.
 
