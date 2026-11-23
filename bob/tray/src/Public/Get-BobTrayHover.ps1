@@ -675,6 +675,77 @@ function Format-BobTrayXaiWeeklyRow {
     }
 }
 
+
+function Test-BobTrayDigestEarOffline {
+    <#
+    .SYNOPSIS
+      FR #9144: True when a digest/pools machine node reports ear offline (online=false / I am offline).
+    #>
+    param($Node)
+    if (-not $Node) { return $false }
+    try {
+        if ($null -ne $Node.online -and [bool]$Node.online -eq $false) { return $true }
+    } catch { }
+    try {
+        $st = [string]$Node.status
+        if ($st -and ($st -match '(?i)i am offline|(?i)^\s*offline\s*$')) { return $true }
+    } catch { }
+    return $false
+}
+
+function Get-BobTrayIrcBobServiceStatus {
+    <#
+    .SYNOPSIS
+      FR #9144: local ircBob service Status (Running/Stopped/missing/skipped). Token-free.
+    #>
+    if ($env:OS -notmatch 'Windows') { return 'skipped' }
+    try {
+        $svc = Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue
+        if (-not $svc) { return 'missing' }
+        return [string]$svc.Status
+    } catch {
+        return 'error'
+    }
+}
+
+function Resolve-BobTrayDigestFailNote {
+    <#
+    .SYNOPSIS
+      FR #9144: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+    #>
+    param(
+        [string]$DigestErr,
+        $Doc,
+        [string]$LocalMachineId = '',
+        [string]$IrcBobStatus = ''
+    )
+    $err = [string]$DigestErr
+    if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
+    $svc = ([string]$IrcBobStatus).Trim()
+    if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
+        return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
+    }
+    $hit = $false
+    $localHit = $false
+    if ($Doc -and $Doc.machines) {
+        try {
+            foreach ($prop in @($Doc.machines.PSObject.Properties)) {
+                if (Test-BobTrayDigestEarOffline -Node $prop.Value) {
+                    $hit = $true
+                    if ($LocalMachineId -and ([string]$prop.Name -ieq $LocalMachineId)) {
+                        $localHit = $true
+                        return ('digest ear-offline: {0} online=false (HTTP fail: {1})' -f $prop.Name, $err)
+                    }
+                }
+            }
+        } catch { }
+    }
+    if ($localHit -or $hit) {
+        return ('digest ear-offline: digest shows machine(s) offline (HTTP fail: {0})' -f $err)
+    }
+    return ('digest unreachable: {0}' -f $err)
+}
+
 function Select-BobTrayXaiWeeklyFromDigestNode {
     <#
     .SYNOPSIS
@@ -2419,6 +2490,20 @@ function Update-BobTrayDigestPools {
         if (-not $wroteFail) {
             if (-not $doc) { throw 'digest empty' }
             $digestOk = $true
+            # FR #9144: successful HTTP still paint ear-offline when digest says so.
+            try {
+                $off = @()
+                if ($doc.machines) {
+                    foreach ($prop in @($doc.machines.PSObject.Properties)) {
+                        if (Test-BobTrayDigestEarOffline -Node $prop.Value) {
+                            $off += [string]$prop.Name
+                        }
+                    }
+                }
+                if ($off.Count -gt 0 -and -not $note) {
+                    $note = ('digest ear-offline: {0}' -f ($off -join ','))
+                }
+            } catch { }
         }
     }
     catch {
@@ -2427,7 +2512,23 @@ function Update-BobTrayDigestPools {
         if ($digestErr.Length -gt 240) { $digestErr = $digestErr.Substring(0, 240) }
         # Strip anything that looks like a bearer/token fragment from the note.
         $digestErr = ($digestErr -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***')
-        $note = ('digest unreachable: {0}' -f $digestErr)
+        # FR #9144: distinguish ear-offline (ircBob Stopped / digest online=false) from GetResponse timeout.
+        $earDoc = $null
+        try {
+            if (Get-Command Read-BobTrayDigestPoolsFallback -ErrorAction SilentlyContinue) {
+                $fb = Read-BobTrayDigestPoolsFallback
+                if ($fb -and $fb.machines) { $earDoc = $fb }
+            }
+        } catch { }
+        $localMid = ''
+        try {
+            if (Get-Command Get-ThisMachineId -ErrorAction SilentlyContinue) {
+                $localMid = [string](Get-ThisMachineId)
+            }
+        } catch { }
+        $ircStatus = ''
+        try { $ircStatus = [string](Get-BobTrayIrcBobServiceStatus) } catch { $ircStatus = '' }
+        $note = Resolve-BobTrayDigestFailNote -DigestErr $digestErr -Doc $earDoc -LocalMachineId $localMid -IrcBobStatus $ircStatus
         [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $note -ErrorText $digestErr -Report)
         $wroteFail = $true
     }
