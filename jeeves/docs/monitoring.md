@@ -1,5 +1,13 @@
 # Jeeves monitoring checks
 
+## Ops / MONITORING rebuild-install trackers (FR #9402 / #9400)
+
+Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for Jeeves MONITORING agent" / "Ops install NOT done" / do-not-`Closes`-while-gates-OPEN) are **ops gate records**, not shop FR work.
+
+- Do **not** stamp `feature-request` on them (intake `kind: issue` or bare ops filing). Chair `issue_skip_fr_reason` returns `ops_monitor_tracker` so they are never offered or `!assign`ed.
+- Use label `hold` while gates are open; tool-only PRs use `Refs` / `Toward`, never `Closes`, until install acceptance (FR #9400).
+- If a tracker was already offered, labeling `hold` (or the ops body cues) clears `offered_to` / seat-holds. `!stuck` / `!sweep` also release ghost offers (`released_offers`) for held rows and idle seats past offer timeout with no ACK.
+
 ## MONITORING command access (FR #8827)
 
 The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / …) **to keep the queue moving**. Chair auth: principal kind `monitor` — nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
@@ -17,10 +25,11 @@ The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus
 
 `Test-JeevesMonitorIntakeAllowlist.ps1` / `tools/monitor/intake_allowlist.py` probes live `POST /bob/v1/intake` with do-not-file titles for known products (including `SimonBarnett/a-search` and `SimonBarnett/trutex`).
 
-- HTTP **403** with JSON `error=repo_not_allowed` → EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR).
-- HTTP **403** without that JSON (Cloudflare `error code: 1010`, HTML WAF page) → probe error, **not** allowlist drift (FR #8861). Probes send `User-Agent: BobiverseIntakeAllowlist/1.0` so `bob.ntsa.uk` (Cloudflare) does not bot-block Python-urllib's default UA.
+- Denial is **only** HTTP **403** with JSON `error=repo_not_allowed` → EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR). FR #9100: both the returned-response and raised-`HTTPError` paths use that rule.
+- Every other non-2xx (Cloudflare `error code: 1010` / HTML WAF 403, empty route-gate 403, 5xx) → probe error, **not** allowlist drift (FR #8861 / #9100). Do **not** Sync for a probe error.
+- Probes send `User-Agent: BobiverseIntakeAllowlist/1.0 (+https://github.com/SimonBarnett/bobiverse)` plus `Content-Type` / `Accept` JSON headers so `bob.ntsa.uk` (Cloudflare) does not bot-block Python-urllib's default UA.
 - Also asserts on-disk `common/scripts/intake.py` exposes `repo_allowed` / SimonBarnett owner gate (FR #3135) when the file is present.
-- Remediation for JSON `repo_not_allowed`: confirm source allow rule, then on the chair run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
+- Remediation is scoped: Sync/compose guidance only for confirmed denials; probe-error remediation says Do not Sync.
 - Overrides: `BOB_INTAKE_URL`, `BOB_INTAKE_REQUIRED_REPOS` (comma list), `BOB_INTAKE_PY`.
 
 ## open_pr_stale_base (FR #8333)
@@ -43,11 +52,17 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 
 ## depends_on (FR #8848)
 
-`Test-JeevesMonitorDependsOn.ps1` / `tools/monitor/depends_on.py` exits 1 when an offered or accepted queue row has a `Depends-on:` ref that is still OPEN in the local queue (chair missed BOB-D3). A skipped row (`status=skipped`, `depends_skipped`, or `skip_reason`) exits 0. No Depends-on rows is a soft-ok. Live runs without `--chair-home` stay soft-ok until `common/scripts/depends_on_parse.py` exists or `gitclaim.py` contains `bob_d3_skip_open`. No GitHub token. Distinct from the hold label and from `fr_digest`.
+`Test-JeevesMonitorDependsOn.ps1` / `tools/monitor/depends_on.py` exits 1 when an offered or accepted queue row has a `Depends-on:` ref that is still OPEN in the local queue (chair missed BOB-D3). A skipped row (`status=skipped`, `depends_skipped`, or `skip_reason`) exits 0. No Depends-on rows is a soft-ok. Live runs without `--chair-home` stay soft-ok until `common/scripts/depends_on_parse.py` exists or `gitclaim.py` contains `bob_d3_skip_open`. No GitHub token. Distinct from the hold label and from `fr_digest`. BOB-G3: an **unheld** digest (`digest` / `fr-digest` label or body `Kind: fr-digest`) does not count as a blocking OPEN depend.
+
+Chair note for the three gates (digest go-gate vs hold vs Depends-on CLOSED): [fr-digest-vs-hold-vs-depends-on.md](fr-digest-vs-hold-vs-depends-on.md) (BOB-G2 / FR #8838; cites VIS-G3 + BOB-G1 `bob_g1_skip_held_digest`).
 
 ## fr_digest (FR #8849)
 
-`Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that still has both labels `fr-digest` and `hold` (chair missed BOB-G1). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
+`Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that is still a **held digest** (BOB-G1 + BOB-G3 Digest flag: `digest` or `fr-digest` label, or `Kind: digest|fr-digest`, plus `hold`). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Title alone never makes a digest. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
+
+## Digest flag (BOB-G3 / FR #9108)
+
+Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR rows with label `digest` or `fr-digest`, or line-anchored `Kind: digest|fr-digest`. Never offered or `!assign`ed as work (stay queued as gate records). `!list` marks `[digest]`. Intake strips those labels from PRs.
 
 ## github_resync_focus (FR #3146)
 
@@ -58,11 +73,21 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 - FR #4725: install and chair start seed/merge `DEFAULT_RESYNC_REPOS` into chair + digest `resync-repos.txt` (includes `SimonBarnett/ce-priority`). Pack copy: `jeeves/defaults/resync-repos.txt`.
 - Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
 
-## Composed drive-root monitor scripts (FR #8860)
+## workers_last_good_orphan (FR #9145)
 
-A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when that script sits beside it. Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
+`Test-JeevesMonitorWorkersLastGoodOrphan.ps1` / `tools/monitor/workers_last_good_orphan.py` is **token-free** and reads only the local `digest.json`. It EXIT 1 when a machine has `workers_stale` true, empty live `workers` / `worker_list`, and a non-empty `workers_last_good` snapshot (ghost seats that still paint on GET `/bob/v1/report`). Missing digest is EXIT 0 (`digest_present=false`). Unreadable or wrong-shape JSON is EXIT 2. Remediation: `POST /bob/v1/report` `worker-remove` for each nick (or `delete-worker` by pid). Related product: last-good TTL `BOB_DIGEST_LAST_GOOD_MAX_S` (default 1800s) on export/restore.
 
-Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves`.
+## ircbob_ear (FR #9144)
+
+`tools/monitor/ircbob_ear.py` is **token-free**. It EXIT 1 when digest machines show `online=false` / status `I am offline`, or `lastSeen` older than 900s (same band as `stale_digest`). On win32 it also reads local `Get-Service ircBob`; when Status is Stopped it tries one `Start-Service` and re-checks (`heal=started|failed`). TipForm `Resolve-BobTrayDigestFailNote` prefers `digest ear-offline:` over `digest unreachable:` when the ear is down or digest shows offline (pure GetResponse failures stay unreachable). Never touches Ergo / BobIrcd. Remote WinRM Start-Service is out of scope.
+
+## Composed drive-root monitor scripts (FR #8860 / #9007 / #9100 / #9309)
+
+A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650 / FR #9007 / FR #9309). `Start-JeevesMonitor.ps1` and `Invoke-JeevesMonitorCheck.ps1` call `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when they can resolve that script (FR #9007). **FR #9309:** prefer `BobInstallRoot\common\scripts\Sync-BobiverseFromRepo.ps1` (tip, with `sync-monitor-force`) over a stale composed flat copy under `J:\scripts` --- the flat Sync from an old MSI/compose lacked the force path, so checks such as `opencode_seats.py` (FR #8583) never landed even though AGENTS listed them. Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime; FR #9100 skips when source equals destination and warns on a nonzero Sync exit without blocking monitor start. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
+
+UNC installs such as `\\walrus\Jeeves` need `BOBIVERSE_REPO` pointing at a checkout because Sync discovery uses drive prefixes. Drive-root `J:\` resolves bob via `C:\ai\bob` / `D:\ai\bob` (same as Start-JeevesMonitor), not `Split-Path -Parent` of `J:\` (empty).
+
+Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` with `$env:BOBIVERSE_REPO` set to a tip checkout (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host). After Sync, `tools\monitor\opencode_seats.py` and `scripts\Test-JeevesMonitorOpencodeSeats.ps1` must be present.
 
 ## empty-offer playbook (FR #2448 / #2446)
 

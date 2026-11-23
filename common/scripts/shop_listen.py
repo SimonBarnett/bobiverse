@@ -853,6 +853,19 @@ def return_job_to_unaccepted(
             # FR #8937: it must still keep the row, record giveup_seats, and set
             # cooldown_until. Dropping those fields let an open FR leave the queue.
             no_terminal_giveup = gitclaim.is_no_terminal_reply_reason(reason)
+            # FR #9339: already-finished NACK is terminal only when a verdict covers
+            # the current head (or PR closed). Otherwise re-offer; do not needs_human.
+            already_finished_nack = gitclaim.is_already_finished_nack_reason(reason)
+            already_finished_nonterminal = False
+            if already_finished_nack:
+                covered = False
+                with contextlib.suppress(Exception):
+                    covered = bool(
+                        gitclaim.mrb_verdict_covers_current_head(
+                            job, doc, home=home
+                        )
+                    )
+                already_finished_nonterminal = not covered
             seat_not_job_giveup = (
                 self_mrb_giveup
                 or out_of_fuel_giveup
@@ -861,6 +874,7 @@ def return_job_to_unaccepted(
             or no_terminal_giveup
             or head_mismatch_giveup
             or infra_soft_giveup
+            or already_finished_nonterminal
         )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
@@ -929,6 +943,7 @@ def return_job_to_unaccepted(
                 and not console_closed_giveup
                 and not head_mismatch_giveup
                 and not busy_nack
+                and not already_finished_nonterminal
             ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)

@@ -10,6 +10,7 @@
                    "opencodeFree":  "opencode/deepseek-v4.1-flash-free",
                    "opencodePaid":  "opencode-go/deepseek-v4-pro"
                },
+    "priorityMcpUrl":  "https://mcp.ntsa.uk/mcp",
     "workerStartModels":  {
                               "grok":  "",
                               "cursor":  "",

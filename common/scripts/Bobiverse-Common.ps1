@@ -2529,6 +2529,51 @@ function Test-BobiverseScriptNewlines {
     return [pscustomobject]@{ Ok = [bool]$ok; Path = $Path; Lf = $lf; Bytes = $bytes.Length; Reason = $reason }
 }
 
+function Sync-BobiverseTraySrcFromCanonical {
+    # FR #9035: bob\tray\src is canonical. A stripped third_party\bob-tray\src
+    # must not survive to the install src robocopy (a1a94bd7 class).
+    param([Parameter(Mandatory)][string]$CloneRoot)
+    $canon = Join-Path $CloneRoot 'bob\tray\src'
+    $legacy = Join-Path $CloneRoot 'third_party\bob-tray\src'
+    if (-not (Test-Path -LiteralPath $canon -PathType Container)) {
+        return [pscustomobject]@{ Ok = $true; Source = $legacy; Reason = 'no bob\tray\src' }
+    }
+    if (Test-Path -LiteralPath $legacy -PathType Container) {
+        $root = $canon.TrimEnd('\')
+        Get-ChildItem -LiteralPath $canon -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\')
+            $dest = Join-Path $legacy $rel
+            $parent = Split-Path -Parent $dest
+            if (-not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Source = $canon; Reason = 'canonical bob\tray\src' }
+}
+
+function Assert-BobiverseInvokeBobFleetParses {
+    # FR #9035: refuse promote when src\Private\Invoke-BobFleet.ps1 has a nameless
+    # param([string]) or Parser::ParseFile errors (dollar-name strip).
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    $path = Join-Path $InstallRoot 'src\Private\Invoke-BobFleet.ps1'
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{ Ok = $true; Reason = 'Invoke-BobFleet.ps1 absent'; Path = $path }
+    }
+    $text = [IO.File]::ReadAllText($path)
+    $nameless = [regex]::IsMatch($text, 'param\s*\(\s*\[string\]\s*\)')
+    $tokens = $null
+    $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)
+    $nErr = @($errs).Count
+    if ($nameless -or $nErr -gt 0) {
+        $reason = "FR #9035 nameless param([string]) or parse errors in $path nameless=$nameless parseErrors=$nErr"
+        return [pscustomobject]@{ Ok = $false; Reason = $reason; Path = $path }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = 'Invoke-BobFleet.ps1 parses'; Path = $path }
+}
+
 function Assert-BobiverseScriptsHaveNewlines {
     # FR #4783: compose/Sync gate - fail when any .ps1 under scripts\ or
     # common\scripts\ is larger than MinBytes and has lf=0.
@@ -2718,10 +2763,144 @@ function Get-BobiverseTipFileAllowlist {
     # FR #8863: diverged installs (sync-skip-diverged, FR #7301) and MSI VERSION newer
     # than clone (FR #7167) must still land these runtime scripts from origin tip.
     # A frozen bob-worker.exe does not execute the .py until the next MSI rebuild.
+    # FR #9136: skill_dag_index/bound are import siblings of skill_dag_mcp (--once / MCP host).
     return @(
         'bob/scripts/bob_worker.py',
-        'bob/scripts/skill_dag_mcp.py'
+        'bob/scripts/skill_dag_mcp.py',
+        'bob/scripts/skill_dag_index.py',
+        'bob/scripts/skill_dag_bound.py'
     )
+}
+
+function Get-BobiverseSkillDagScriptNames {
+    # FR #9136: flat install scripts\ must ship the MCP trio (mcp imports index; bound is the seat binder).
+    return @('skill_dag_mcp.py', 'skill_dag_index.py', 'skill_dag_bound.py')
+}
+
+function Ensure-BobiverseSkillDagScripts {
+    <#
+      FR #9136: copy skill_dag_{mcp,index,bound}.py onto InstallRoot\scripts from a
+      split-repo or flat source. Never invent C:\ai\bob paths. Returns Ok when every
+      leaf is present under scripts\ after the pass (copied or already there).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$SourceRoot = '',
+        [string]$SourceScripts = ''
+    )
+    $destDir = Join-Path $InstallRoot 'scripts'
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    $copied = @()
+    $missing = @()
+    foreach ($name in @(Get-BobiverseSkillDagScriptNames)) {
+        $dest = Join-Path $destDir $name
+        $src = $null
+        if ($SourceScripts) {
+            $c = Join-Path $SourceScripts $name
+            if (Test-Path -LiteralPath $c -PathType Leaf) { $src = $c }
+        }
+        if (-not $src -and $SourceRoot) {
+            foreach ($rel in @(
+                    (Join-Path 'bob\scripts' $name),
+                    (Join-Path 'scripts' $name),
+                    (Join-Path 'common\scripts' $name)
+                )) {
+                $c = Join-Path $SourceRoot $rel
+                if (Test-Path -LiteralPath $c -PathType Leaf) { $src = $c; break }
+                try {
+                    $via = Get-BobiverseRepoPath -Root $SourceRoot -Rel $rel
+                    if ($via -and (Test-Path -LiteralPath $via -PathType Leaf)) { $src = $via; break }
+                } catch { }
+            }
+        }
+        if (-not $src) {
+            $localBob = Join-Path $InstallRoot (Join-Path 'bob\scripts' $name)
+            if (Test-Path -LiteralPath $localBob -PathType Leaf) { $src = $localBob }
+        }
+        if ($src) {
+            if (-not (Test-Path -LiteralPath $dest -PathType Leaf) -or
+                ((Get-Item -LiteralPath $src).Length -ne (Get-Item -LiteralPath $dest).Length) -or
+                ((Get-Item -LiteralPath $src).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dest).LastWriteTimeUtc)) {
+                Copy-Item -LiteralPath $src -Destination $dest -Force
+                $copied += $name
+            }
+        }
+        if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
+            $missing += $name
+        }
+    }
+    if ($missing.Count -gt 0) {
+        return [pscustomobject]@{
+            Ok      = $false
+            Reason  = ("missing scripts\{0} (FR #9136)" -f ($missing -join ','))
+            Copied  = $copied
+            Missing = $missing
+        }
+    }
+    $why = if ($copied.Count -gt 0) { ("copied {0}" -f ($copied -join ',')) } else { 'already present' }
+    return [pscustomobject]@{
+        Ok      = $true
+        Reason  = ("skill-dag scripts ok: {0}" -f $why)
+        Copied  = $copied
+        Missing = @()
+    }
+}
+
+function Write-BobiverseInstallSkillDagMcp {
+    <#
+      FR #9136: write/merge InstallRoot\.cursor\mcp.json skill-dag stdio server.
+      command = install python (or 'python'); args = scripts\skill_dag_mcp.py --root
+      InstallRoot\.grok\skills. Never hardcode C:\ai\bob.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Python = ''
+    )
+    $scriptPath = Join-Path $InstallRoot 'scripts\skill_dag_mcp.py'
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            Ok     = $false
+            Reason = 'scripts\skill_dag_mcp.py missing (FR #9136)'
+            Path   = ''
+        }
+    }
+    $skillsRoot = Join-Path $InstallRoot '.grok\skills'
+    New-Item -ItemType Directory -Force -Path $skillsRoot | Out-Null
+    $cmd = ([string]$Python).Trim().Trim('"')
+    if (-not $cmd) {
+        try { $cmd = [string](Resolve-BobiversePython -InstallRoot $InstallRoot -AllowMissing) } catch { $cmd = '' }
+    }
+    if (-not $cmd) { $cmd = 'python' }
+    $cfgDir = Join-Path $InstallRoot '.cursor'
+    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+    $cfgPath = Join-Path $cfgDir 'mcp.json'
+    $server = [ordered]@{
+        command = $cmd
+        args    = @($scriptPath, '--root', $skillsRoot)
+    }
+    $data = @{ mcpServers = @{} }
+    if (Test-Path -LiteralPath $cfgPath -PathType Leaf) {
+        try {
+            $existing = Get-Content -LiteralPath $cfgPath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($existing -and $existing.mcpServers) {
+                $servers = @{}
+                foreach ($p in @($existing.mcpServers.PSObject.Properties)) {
+                    $servers[$p.Name] = $p.Value
+                }
+                $data.mcpServers = $servers
+            }
+        } catch {
+            $data = @{ mcpServers = @{} }
+        }
+    }
+    $data.mcpServers['skill-dag'] = $server
+    $json = ($data | ConvertTo-Json -Depth 6)
+    [IO.File]::WriteAllText($cfgPath, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding $false))
+    return [pscustomobject]@{
+        Ok     = $true
+        Reason = 'wrote skill-dag mcp.json (FR #9136)'
+        Path   = $cfgPath
+    }
 }
 
 function Sync-BobiverseTipFile {
@@ -2813,8 +2992,10 @@ function Sync-BobiverseAllowlistedTipFiles {
         [string]$GitExe = ''
     )
     $match = @{
-        'bob/scripts/bob_worker.py'    = 'FR #7000|bob_worker'
-        'bob/scripts/skill_dag_mcp.py' = 'skill-dag-mcp|FR #7000'
+        'bob/scripts/bob_worker.py'     = 'FR #7000|bob_worker'
+        'bob/scripts/skill_dag_mcp.py'  = 'skill-dag-mcp|FR #7000'
+        'bob/scripts/skill_dag_index.py' = 'skill_dag_index|FR #7000'
+        'bob/scripts/skill_dag_bound.py' = 'skill_dag_bound|FR #7000'
     }
     $results = @()
     $ok = $true
@@ -4248,12 +4429,13 @@ function Assert-BobiversePlanCastIronSkillsVisionary {
 function Sync-BobiverseAgentFolders {
     <#
     .SYNOPSIS
-      Build/refresh the bob agent working folders <Destination>\worker and <Destination>\plan from the repo (bob-agents\<n> + shared skills).
+      Build/refresh the bob agent working folder <Destination>\worker from the repo (bob-agents\worker + shared skills).
     .DESCRIPTION
       Used by Pack-BobiverseRelease (Destination = the MSI stage), Install-Bob (repo installs) and Sync-BobiverseFromRepo (dev sync).
       Writes AGENTS.md + CLAUDE.md + GROK.md + .cursor\rules\bobiverse-<n>.mdc + .grok\skills\* (every skill carries the CAST IRON harvest rule) and
       NEVER deletes anything: plan\work\* (the plans' outputs) and a running worker\bob-worker.exe are left alone. The exe is built by Build-BobWorker.ps1.
-      FR #3667: after plan\ refresh, Assert-BobiversePlanCastIronSkillsVisionary soft-checks CAST IRON examples.
+      FR #8833: plan\ is no longer synced from bob/agents/plan (removed; pointer README only). Pack vendors PlanAgent.exe (FR #9354).
+      FR #3667: after sync, Assert-BobiversePlanCastIronSkillsVisionary soft-checks CAST IRON examples when plan\AGENTS.md exists.
     #>
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
@@ -4262,8 +4444,8 @@ function Sync-BobiverseAgentFolders {
     $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     $enc = New-Object System.Text.UTF8Encoding($false)
     $defs = @(
-        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-plan', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills', 'bob-setup-opencode') }, # FR #6159 OpenCode setup on worker seats
-        @{ Name = 'plan';   Shared = @('harvest', 'harvest-agent-skills') }
+        # FR #8833: drop bobiverse-bob-plan + plan agent folder (skills-visionary owns Plan).
+        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills', 'bob-setup-opencode') } # FR #6159 OpenCode setup on worker seats
     )
     $made = 0
     foreach ($d in $defs) {

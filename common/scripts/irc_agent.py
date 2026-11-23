@@ -402,6 +402,11 @@ def note_overlong_console_privmsg_reject(
 
 # FR #68: cap each outbox tick so chair +o and ChanServ sync cannot starve.
 OUTBOX_LINES_PER_TICK = 8
+# FR #9239: never path.read_bytes() the whole outbox — a multi-MB backlog OOMs
+# the ear (MemoryError in outbox_loop). Bounded seek+read per call.
+OUTBOX_READ_MAX_BYTES = int(
+    os.environ.get("BOB_OUTBOX_READ_MAX_BYTES", str(1 << 20)) or str(1 << 20)
+)
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
 # Safe default for PRIVMSG *text* when LINELEN/prefix unknown (~400 bytes of UTF-8 text).
 DEFAULT_PRIVMSG_TEXT_MAX = 400
@@ -574,7 +579,11 @@ def is_cred_seal_outbox_line(norm: str) -> bool:
 
 
 def take_outbox_records(
-    path: Path, last: int, max_lines: int | None = None
+    path: Path,
+    last: int,
+    max_lines: int | None = None,
+    *,
+    max_bytes: int | None = None,
 ) -> tuple[list[tuple[str, int, int, bytes]], int]:
     """Complete newline-terminated outbox records from byte offset `last`.
 
@@ -586,22 +595,45 @@ def take_outbox_records(
     FR #226 / FR #68 / FR #5826: same BOM/CRLF/max_lines rules as
     ``take_outbox_lines``; spans are the original file bytes so CRED-SEAL
     scrubbing can blank in place without rewriting unrelated records.
+
+    FR #9239: seek + bounded read (default ``OUTBOX_READ_MAX_BYTES``). Never
+    ``Path.read_bytes()`` the whole file — a huge backlog raised MemoryError
+    in ``outbox_loop``. Soft-return ``([], last)`` on MemoryError.
     """
     try:
-        data = path.read_bytes()
+        size = path.stat().st_size
     except OSError:
         return [], last
-    file_bom = 0
-    if data.startswith(_BOM_UTF8):
-        file_bom = len(_BOM_UTF8)
-    if last > len(data):
+    if size <= 0:
+        return [], last
+    if last > size:
         last = 0
-    if last < file_bom:
-        buf = data[file_bom:]
-        base = file_bom
-    else:
-        buf = data[last:]
-        base = last
+    cap = OUTBOX_READ_MAX_BYTES if max_bytes is None else max(0, int(max_bytes))
+    if cap <= 0:
+        return [], last
+    try:
+        with path.open("rb") as fh:
+            file_bom = 0
+            head = fh.read(len(_BOM_UTF8))
+            if head.startswith(_BOM_UTF8):
+                file_bom = len(_BOM_UTF8)
+            if last < file_bom:
+                base = file_bom
+            else:
+                base = last
+            if base >= size:
+                return [], base
+            fh.seek(base)
+            to_read = min(cap, size - base)
+            buf = fh.read(to_read)
+    except MemoryError:
+        info(
+            f"ERROR outbox take_outbox_records MemoryError path={path.name} "
+            f"size={size} last={last} cap={cap}"
+        )
+        return [], last
+    except OSError:
+        return [], last
     records: list[tuple[str, int, int, bytes]] = []
     consumed = 0
     limit = None if max_lines is None else max(0, int(max_lines))
@@ -729,26 +761,37 @@ def sweep_cred_seal_prefix(path: Path, upto: int) -> bool:
     """Blank CRED-SEAL records in ``[0, upto)`` (legacy / failed scrub; FR #5826).
 
     Returns True when the sweep completed with no write failures.
+
+    FR #9239: walk the prefix in ``OUTBOX_READ_MAX_BYTES`` chunks — never load
+    the whole consumed prefix when ``upto`` is multi-MB.
     """
     if upto <= 0 or not path.exists():
         return True
+    spans: list[tuple[int, int, bytes]] = []
+    offset = 0
     try:
-        records, _ = take_outbox_records(path, 0, max_lines=None)
+        while offset < upto:
+            chunk_cap = min(OUTBOX_READ_MAX_BYTES, upto - offset)
+            records, new_off = take_outbox_records(
+                path, offset, max_lines=None, max_bytes=chunk_cap
+            )
+            for norm, start, end, raw in records:
+                if end > upto:
+                    break
+                if is_cred_seal_outbox_line(norm):
+                    # Only blank if payload still has non-space content.
+                    payload = raw.rstrip(b"\r\n")
+                    if payload.strip(b" "):
+                        spans.append((start, end, raw))
+            if new_off <= offset:
+                break
+            offset = new_off
     except OSError as exc:
         info(
             "WARN outbox CRED-SEAL sweep read failed "
             f"{type(exc).__name__} path={path.name}"
         )
         return False
-    spans: list[tuple[int, int, bytes]] = []
-    for norm, start, end, raw in records:
-        if end > upto:
-            break
-        if is_cred_seal_outbox_line(norm):
-            # Only blank if payload still has non-space content (already scrubbed stay).
-            payload = raw.rstrip(b"\r\n")
-            if payload.strip(b" "):
-                spans.append((start, end, raw))
     _blanked, failures = blank_cred_seal_spans(path, spans, batch_end=upto)
     return failures == 0
 
@@ -4723,6 +4766,13 @@ class Client:
 
     def _finish_assign_result(self, src, wnick, repo, task, ident, status, res) -> None:
         if status != "ok" or not isinstance(res, dict):
+            why = str(res or "")
+            # FR #9347: presence refuse after NAMES also drops the ghost roster row.
+            if "not in the shop channel" in why.lower() or "names timeout" in why.lower():
+                with contextlib.suppress(Exception):
+                    gitclaim.drop_ghost_seat_after_names_miss(
+                        self.home, wnick, reason=why
+                    )
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
             info(
                 gitclaim.format_assign_refusal_log(
@@ -4770,6 +4820,12 @@ class Client:
             if now < float(job.get("deadline") or 0.0):
                 continue
             pend.pop(shop, None)
+            why = "NAMES timeout (seat still not in shop)"
+            # FR #9347: drop ghost from digest roster so auto-offer prefers live seats.
+            with contextlib.suppress(Exception):
+                gitclaim.drop_ghost_seat_after_names_miss(
+                    self.home, job["wnick"], reason=why
+                )
             self._finish_assign_result(
                 job["src"],
                 job["wnick"],
@@ -4777,7 +4833,7 @@ class Client:
                 job["task"],
                 job["ident"],
                 "refused",
-                "NAMES timeout (seat still not in shop)",
+                why,
             )
 
     def _maybe_cleargiveup(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
@@ -5157,6 +5213,11 @@ class Client:
                     info(f"WARN workers ack error {type(exc).__name__}")
             self._git_say(target, f"{src}: accepted {line}")
             info(f"INFO git-claim ack accepted {line} nick={src}")
+            return
+        # FR #9254: twin ACK while seat already accepted elsewhere — refuse, keep first.
+        if status == "twin" and isinstance(job, dict):
+            line = gitclaim.format_claimed(job)
+            info(f"INFO git-claim ack twin-refuse holding={line} nick={src}")
             return
         info(f"INFO git-claim ack no offer nick={src}")
 
@@ -6436,7 +6497,9 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
         include_listens=prior_irc.is_bob_builder_nick(nick),
     )
     if not result.scanned:
-        info("INFO prior-clean aborted connect")
+        # FR #9236: include attempt count so a restart-loop scan failure is diagnosable.
+        attempts = getattr(result, "scan_attempts", 0) or 0
+        info(f"INFO prior-clean aborted connect attempts={attempts}")
         raise SystemExit(1)
 
 

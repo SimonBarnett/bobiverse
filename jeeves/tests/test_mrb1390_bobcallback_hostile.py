@@ -29,11 +29,20 @@ def test_fresh_foreign_live_lock_is_kept(tmp_path, monkeypatch):
 
 
 def test_serve_source_binds_before_drain_call():
-    """Static order check: ThreadingHTTPServer constructed before drain thread start."""
+    """Static order check: HTTP server constructed before drain thread start.
+
+    FR #9238: serve() binds ``_BobCallbackHTTPServer`` (ThreadingHTTPServer subclass
+    that soft-closes peers on thread exhaustion). Accept either constructor token so
+    main (bare ThreadingHTTPServer) and tip (subclass) both pass the order pin.
+    """
     src = (Path(__file__).resolve().parents[2] / "common" / "scripts" / "bobcallback.py").read_text(
         encoding="utf-8"
     )
-    i_http = src.find("ThreadingHTTPServer(")
+    bind_token = "_BobCallbackHTTPServer("
+    i_http = src.find(bind_token)
+    if i_http < 0:
+        bind_token = "ThreadingHTTPServer("
+        i_http = src.find(bind_token)
     i_drain_thread = src.find('name="bobcallback-drain"')
     i_sync_drain = src.find("drain_pending(home, briefer_nick=briefer_nick, filer=use_filer)")
     assert i_http > 0
@@ -42,6 +51,6 @@ def test_serve_source_binds_before_drain_call():
     # Ensure there is no pre-bind synchronous drain_pending left in serve().
     serve_start = src.find("def serve(")
     serve_body = src[serve_start : src.find("\ndef assert_home_usable", serve_start)]
-    # Synchronous drain before httpd = ThreadingHTTPServer must be gone.
-    pre = serve_body.split("ThreadingHTTPServer(")[0]
+    # Synchronous drain before httpd = <bind_token> must be gone.
+    pre = serve_body.split(bind_token)[0]
     assert "drain_pending(" not in pre

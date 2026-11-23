@@ -45,18 +45,29 @@ function Restart-BobTrayService {
 
 function Invoke-BobTrayExitSequence {
     <#
-      Exit order (t798u): 1 close every dialog and dispose the tray icon IMMEDIATELY, 2 exit the UI loop,
-      3 only then start the service stop, detached. Each step is isolated: a failing step never skips the next.
+      Exit order (t798u / FR #9034): 1 close every dialog and dispose the tray icon IMMEDIATELY,
+      2 exit the UI loop. TipForm Exit must NOT stop ircBob (ear is a machine service).
+      -StopService is optional for legacy callers; when omitted or $null the step is skipped.
+      Each step is isolated: a failing step never skips the next.
       Returns the names of the steps in the order they ran.
     #>
     param(
         [Parameter(Mandatory)][scriptblock]$CloseDialogs,
         [Parameter(Mandatory)][scriptblock]$DisposeIcon,
         [Parameter(Mandatory)][scriptblock]$ExitUi,
-        [Parameter(Mandatory)][scriptblock]$StopService
+        [scriptblock]$StopService = $null
     )
     $ran = New-Object System.Collections.Generic.List[string]
-    foreach ($step in @(@('close-dialogs', $CloseDialogs), @('dispose-icon', $DisposeIcon), @('exit-ui', $ExitUi), @('stop-service', $StopService))) {
+    $steps = @(
+        @('close-dialogs', $CloseDialogs),
+        @('dispose-icon', $DisposeIcon),
+        @('exit-ui', $ExitUi)
+    )
+    # FR #9034: do not stop ircBob on TipForm Exit; optional legacy StopService only when passed.
+    if ($null -ne $StopService) {
+        $steps += ,@('stop-service', $StopService)
+    }
+    foreach ($step in $steps) {
         $ran.Add([string]$step[0])
         try { & $step[1] } catch { }
     }
@@ -136,6 +147,132 @@ function Test-BobTrayWatchdogSuppressed {
     catch {
         return $true
     }
+}
+
+function Test-BobTrayExeParked {
+    # FR #9011 / #9146: bob-tray.exe renamed aside while Watch TipForm owns the icon
+    # (clickfix-park / clickfalse-park / clicktrue-park). TipForm Exit under park must
+    # use a short watchdog suppress so Watch can recover TipForm within minutes.
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $tools = Join-Path $Root 'tools'
+    foreach ($name in @('bob-tray.exe.clickfix-park', 'bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        if ([IO.File]::Exists((Join-Path $tools $name))) { return $true }
+    }
+    return $false
+}
+
+function Test-BobTrayIntentionalExeParkPresent {
+    # FR #9199: clickfalse/clicktrue park means TipForm Watch owns the UI.
+    # Sync/ForceNew/hotpatch must not leave a live tools\bob-tray.exe beside it.
+    # Distinct from bob-tray.exe.clickfix-park (FR #9044 restore-when-missing).
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $tools = Join-Path $Root 'tools'
+    foreach ($leaf in @('bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        if ([IO.File]::Exists((Join-Path $tools $leaf))) { return $true }
+    }
+    return $false
+}
+
+function Remove-BobTrayLiveExeWhileParked {
+    # FR #9199: if intentional park is present and live bob-tray.exe exists, remove the live exe.
+    # Keeps the park file. Safe no-op when not parked or live already absent.
+    param([string]$Root)
+    $out = [pscustomobject]@{ Parked = $false; Removed = $false; Live = $null; Park = $null }
+    if (-not $Root) { return $out }
+    $tools = Join-Path $Root 'tools'
+    $live = Join-Path $tools 'bob-tray.exe'
+    $out.Live = $live
+    if (-not (Test-BobTrayIntentionalExeParkPresent -Root $Root)) { return $out }
+    $out.Parked = $true
+    foreach ($leaf in @('bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        $p = Join-Path $tools $leaf
+        if ([IO.File]::Exists($p)) { $out.Park = $p; break }
+    }
+    if (-not [IO.File]::Exists($live)) { return $out }
+    try {
+        [IO.File]::Delete($live)
+        $out.Removed = -not [IO.File]::Exists($live)
+    } catch {
+        try {
+            Remove-Item -LiteralPath $live -Force -ErrorAction Stop
+            $out.Removed = -not [IO.File]::Exists($live)
+        } catch {
+            $out.Removed = $false
+        }
+    }
+    return $out
+}
+
+function Test-BobTrayProcessHasSeatChildren {
+    # FR #9205: true when ParentProcessId has a child whose CommandLine looks like a TipForm seat
+    # (bob-worker.exe / bob_worker.py / seat-wrapper). Killing that parent drops OpenCode seats.
+    param([Parameter(Mandatory)][int]$ParentProcessId)
+    if ($ParentProcessId -le 0) { return $false }
+    try {
+        $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                [int]$_.ParentProcessId -eq $ParentProcessId -and $_.CommandLine -and (
+                    $_.CommandLine -match '(?i)bob-worker\.exe' -or
+                    $_.CommandLine -match '(?i)bob_worker\.py' -or
+                    $_.CommandLine -match '(?i)seat-wrapper' -or
+                    $_.CommandLine -match '(?i)opencode.*seat' -or
+                    ($_.Name -match '(?i)^bob-worker')
+                )
+            })
+        return ($kids.Count -gt 0)
+    } catch {
+        return $false
+    }
+}
+
+function Stop-BobTrayProcessesProtectingSeats {
+    # FR #9205: stop bob-tray.exe processes only when they do not parent live TipForm seats.
+    # Prefer file-delete of staged exe (Remove-BobTrayLiveExeWhileParked) over kill while seats run.
+    param([string]$Root = '')
+    $out = [pscustomobject]@{ Killed = 0; SkippedForSeats = 0; Examined = 0 }
+    $procs = @()
+    try { $procs = @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue) } catch { $procs = @() }
+    foreach ($pr in $procs) {
+        $out.Examined++
+        # Never assign $pid / $PID --- automatic read-only in WinPS 5.1 (MRB #9206 FAIL).
+        $trayPid = 0
+        try { $trayPid = [int]$pr.Id } catch { continue }
+        if ($trayPid -le 0) { continue }
+        if (Test-BobTrayProcessHasSeatChildren -ParentProcessId $trayPid) {
+            $out.SkippedForSeats++
+            continue
+        }
+        try {
+            Stop-Process -Id $trayPid -Force -ErrorAction SilentlyContinue
+            $out.Killed++
+        } catch { }
+    }
+    return $out
+}
+
+function Restore-BobTrayExeFromClickfixPark {
+    # FR #9044: tools\bob-tray.exe missing while tools\bob-tray.exe.clickfix-park remains.
+    # Test-Path is falsely False on that dotted name. File.Copy restores the live exe and keeps the park.
+    # FR #9199: never restore (or keep) live when clickfalse/clicktrue intentional park is present.
+    param([string]$Root)
+    if (-not $Root) { return $null }
+    $tools = Join-Path $Root 'tools'
+    $live = Join-Path $tools 'bob-tray.exe'
+    $park = Join-Path $tools 'bob-tray.exe.clickfix-park'
+    if (Test-BobTrayIntentionalExeParkPresent -Root $Root) {
+        [void](Remove-BobTrayLiveExeWhileParked -Root $Root)
+        return $null
+    }
+    if ([IO.File]::Exists($live)) { return $live }
+    if (-not [IO.File]::Exists($park)) { return $null }
+    try {
+        [IO.File]::Copy($park, $live, $false)
+    } catch {
+        return $null
+    }
+    if ([IO.File]::Exists($live) -and [IO.File]::Exists($park)) { return $live }
+    return $null
 }
 
 function Test-BobTrayProcessPresent {

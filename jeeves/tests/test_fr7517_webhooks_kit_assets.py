@@ -55,7 +55,10 @@ def test_fr7517_write_site_kit_includes_assets_and_hashes(tmp_path: Path):
     assert set(by_path) == disk
     docs = _webhook_doc_kit_paths()
     assert docs <= set(by_path)
+    # FR #8820: refresh lives on models.html; models-validate.html is a stub redirect (main).
+    assert "www/docs/webhooks/models.html" in docs
     assert "www/docs/webhooks/models-validate.html" in docs
+    assert "www/docs/webhooks/digest-local.html" in docs
     for src, kit_rel, _url in kit.KIT_ASSETS:
         assert kit_rel in by_path
         digest = hashlib.sha256((out / kit_rel).read_bytes()).hexdigest()
@@ -76,6 +79,7 @@ def test_fr8881_new_webhook_doc_is_in_manifest_without_count(tmp_path: Path):
     data = json.loads((out / "MANIFEST.json").read_text(encoding="utf-8"))
     paths = {e["path"] for e in data["files"]}
     assert "www/docs/webhooks/fr8881-extra.html" in paths
+    assert "www/docs/webhooks/models.html" in paths
     assert "www/docs/webhooks/models-validate.html" in paths
     disk = {
         p.relative_to(out).as_posix()
@@ -159,6 +163,7 @@ def test_fr7517_clean_kit_install_publishes_assets(tmp_path: Path):
             str(physical),
             "-Backend",
             "http://127.0.0.1:7700",
+            "-SkipBackendProbe",
         ],
         capture_output=True,
         text=True,

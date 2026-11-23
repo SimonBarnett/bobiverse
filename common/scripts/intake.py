@@ -377,7 +377,6 @@ SKILL_BOOK_PATHS: dict[str, str] = {
     "bobiverse-bob-job-uat": "bob/.grok/skills/bobiverse-bob-job-uat/SKILL.md",
     "bobiverse-bob-commands": "bob/.grok/skills/bobiverse-bob-commands/SKILL.md",
     "bobiverse-bob-troubleshooting": "bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md",
-    "bobiverse-bob-plan": "bob/.grok/skills/bobiverse-bob-plan/SKILL.md",
     "bobiverse-worker-seat": "bob/agents/worker/.grok/skills/bobiverse-worker-seat/SKILL.md",
     "bobiverse-jeeves": "jeeves/.grok/skills/bobiverse-jeeves/SKILL.md",
     "bobiverse-jeeves-commands": "jeeves/.grok/skills/bobiverse-jeeves-commands/SKILL.md",
@@ -405,7 +404,6 @@ _SKILL_BOOK_KEYWORD_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("jeeves", "monitor"), "bobiverse-jeeves-monitor"),
     (("jeeves",), "bobiverse-jeeves"),
     (("airc",), "bobiverse-airc"),
-    (("plan", "vision"), "bobiverse-bob-plan"),
 )
 # FR #3004: when source.skill_book is the soft default "harvest", only these strong cues
 # re-route. Bare "mrb"/"uat" appear in almost every job session summary and must not move
@@ -1448,6 +1446,402 @@ def apply_lessons_to_skill_md(
     return base.rstrip() + "\n\n" + heading + "\n\n" + bullets + "\n"
 
 
+_SKILL_TREE_PATH_RE = re.compile(
+    r"(?:^|/)(?:common/|bob/|jeeves/|airc/)?\.grok/skills/",
+    re.IGNORECASE,
+)
+
+
+def _norm_repo_rel_path(path: str) -> str:
+    """Normalize repo-relative path; keep leading ``.`` on ``.grok/...`` (FR #9180).
+
+    Do not use ``str.lstrip('./')`` - that strips every leading ``.`` / ``/`` char
+    and turns ``.grok/skills/...`` into ``grok/skills/...``.
+    """
+    p = str(path or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.lstrip("/")
+
+
+def is_skill_tree_path(path: str) -> bool:
+    """True when path is under a product ``.grok/skills/`` tree (FR #9180)."""
+    p = _norm_repo_rel_path(path)
+    if not p or ".." in p.split("/"):
+        return False
+    return bool(_SKILL_TREE_PATH_RE.search(p))
+
+
+def skill_file_base_for_path(
+    skill_path: str, payload_files: list[dict] | None
+) -> str | None:
+    """Return SkillFile content when payload targets the owning SKILL.md (FR #9180)."""
+    want = _norm_repo_rel_path(skill_path)
+    if not want:
+        return None
+    for item in payload_files or []:
+        p = _norm_repo_rel_path(str(item.get("path") or ""))
+        if p == want:
+            content = str(item.get("content") or "")
+            if content.strip():
+                return content
+    return None
+
+
+def merge_lesson_pr_files(
+    skill_path: str,
+    new_md: str,
+    payload_files: list[dict] | None = None,
+) -> list[dict[str, str]]:
+    """Build lesson PR ``files[]``: always patch skill_path; add skill-tree companions.
+
+    FR #9180: ``-SkillFile`` must land under the owning book path (not ``harvest/<name>``).
+    Non-skill-tree payload paths (e.g. ``harvest/orphan.md``) are dropped from the tip.
+    """
+    want = _norm_repo_rel_path(skill_path)
+    out: list[dict[str, str]] = [{"path": want, "content": str(new_md or "")}]
+    seen = {want}
+    for item in payload_files or []:
+        p = _norm_repo_rel_path(str(item.get("path") or ""))
+        if not p or p in seen:
+            continue
+        if not is_skill_tree_path(p):
+            continue
+        seen.add(p)
+        out.append({"path": p, "content": str(item.get("content") or "")})
+    return out
+
+
+# Product-root skill books (skills-visionary layout). Bobiverse uses bob/common prefixes.
+_PRODUCT_GROK_SKILL_RE = re.compile(
+    r"^\.grok/skills/([^/]+)/SKILL\.md$",
+    re.IGNORECASE,
+)
+_SKILLS_VISIONARY_REPO = "simonbarnett/skills-visionary"
+
+
+def mcp_catalog_mirror_path(skill_path: str) -> str | None:
+    """Map ``.grok/skills/<id>/SKILL.md`` -> ``apps/mcp-catalog/catalog/<id>/SKILL.md``.
+
+    FR #9303 / SV #198: skills-visionary tip filing must keep the mcp-catalog
+    mirror byte-equal to the skill book (intake has no tip worktree for
+    ``tools/build-skill-dag.py``). Returns None for bob/common/jeeves/airc trees.
+    """
+    p = _norm_repo_rel_path(skill_path)
+    m = _PRODUCT_GROK_SKILL_RE.fullmatch(p)
+    if not m:
+        return None
+    book_id = m.group(1)
+    if not book_id or ".." in book_id:
+        return None
+    return f"apps/mcp-catalog/catalog/{book_id}/SKILL.md"
+
+
+def with_mcp_catalog_mirror(
+    repo: str,
+    skill_path: str,
+    files: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Append mcp-catalog SKILL.md mirror for skills-visionary harvest tips (FR #9303).
+
+    Idempotent: existing catalog path is updated to match the skill-book content.
+    Other repos are returned unchanged.
+    """
+    out: list[dict[str, str]] = [
+        {"path": _norm_repo_rel_path(str(item.get("path") or "")), "content": str(item.get("content") or "")}
+        for item in (files or [])
+        if _norm_repo_rel_path(str(item.get("path") or ""))
+    ]
+    if (repo or "").strip().lower() != _SKILLS_VISIONARY_REPO:
+        return out
+    mirror = mcp_catalog_mirror_path(skill_path)
+    if not mirror:
+        return out
+    want = _norm_repo_rel_path(skill_path)
+    content = ""
+    for item in out:
+        if item["path"] == want:
+            content = item["content"]
+            break
+    if not content:
+        return out
+    kept = [item for item in out if item["path"] != mirror]
+    kept.append({"path": mirror, "content": content})
+    return kept
+
+
+# FR #9329 / SV #198 follow-up: build-skill-dag also writes catalog meta.json and
+# docs/skill-sources/skills-visionary/_dag/*. Intake has no tip worktree, so mirror
+# meta from frontmatter and patch the existing DAG when the filer can read it.
+_SV_SKILL_SOURCES_DAG = "docs/skill-sources/skills-visionary/_dag/dag.json"
+_SV_SKILL_SOURCES_DAG_INDEX = "docs/skill-sources/skills-visionary/_dag/dag-index.json"
+# Mirrors tools/build-skill-dag.py TOPIC (skills-visionary); unknown books fall back.
+_SV_SKILL_TOPIC = {
+    "visionary": "plan",
+    "plan-git-from-plan": "plan",
+    "plan-create-repo": "plan",
+    "plan-bob-webhooks": "plan",
+    "plan-enable-prs": "plan",
+    "plan-mcp-setup": "plan",
+    "harvest-skills-visionary": "harvest",
+    "harvest-agent-skills": "harvest",
+}
+
+
+def _sv_skill_book_id(skill_path: str) -> str | None:
+    m = _PRODUCT_GROK_SKILL_RE.fullmatch(_norm_repo_rel_path(skill_path))
+    if not m:
+        return None
+    book_id = m.group(1)
+    if not book_id or ".." in book_id:
+        return None
+    return book_id
+
+
+def parse_sv_skill_frontmatter(content: str) -> tuple[str, str, str]:
+    """Return ``(name, title, description_ascii)`` from a SKILL.md body (SV build-skill-dag)."""
+    text = str(content or "")
+    name_m = re.search(r"^name:\s*[\"']?([\w.-]+)", text, re.M)
+    name = name_m.group(1) if name_m else ""
+    desc = ""
+    dm = re.search(r"^description:\s*>\s*\n((?:[ \t].+\n)+)", text, re.M)
+    if dm:
+        desc = " ".join(x.strip() for x in dm.group(1).splitlines() if x.strip())
+    else:
+        dm2 = re.search(r"^description:\s*[\"']?(.+)", text, re.M)
+        if dm2:
+            desc = dm2.group(1).strip()
+    desc_ascii = desc.encode("ascii", "replace").decode("ascii")[:240]
+    if not name:
+        return "", "", desc_ascii
+    title = name.replace("-", " ")
+    return name, title, desc_ascii
+
+
+def mcp_catalog_meta_path(skill_path: str) -> str | None:
+    """``apps/mcp-catalog/catalog/<id>/meta.json`` beside the SKILL.md mirror (FR #9329)."""
+    book_id = _sv_skill_book_id(skill_path)
+    if not book_id:
+        return None
+    return f"apps/mcp-catalog/catalog/{book_id}/meta.json"
+
+
+def mcp_catalog_meta_content(skill_path: str, skill_content: str) -> str | None:
+    """JSON meta.json body matching skills-visionary ``tools/build-skill-dag.py``."""
+    book_id = _sv_skill_book_id(skill_path)
+    if not book_id:
+        return None
+    name, title, desc = parse_sv_skill_frontmatter(skill_content)
+    if not name:
+        name = book_id
+        title = book_id.replace("-", " ")
+    topic = _SV_SKILL_TOPIC.get(name, "harvest" if name.startswith("harvest") else "plan")
+    meta = {
+        "name": name,
+        "title": title,
+        "description": desc,
+        "version": "1.0.0",
+        "topic": topic,
+        "source": f".grok/skills/{name}/SKILL.md",
+    }
+    return json.dumps(meta, indent=2) + "\n"
+
+
+def with_mcp_catalog_meta(
+    repo: str,
+    skill_path: str,
+    files: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Append/update catalog ``meta.json`` for skills-visionary tips (FR #9329)."""
+    out: list[dict[str, str]] = [
+        {
+            "path": _norm_repo_rel_path(str(item.get("path") or "")),
+            "content": str(item.get("content") or ""),
+        }
+        for item in (files or [])
+        if _norm_repo_rel_path(str(item.get("path") or ""))
+    ]
+    if (repo or "").strip().lower() != _SKILLS_VISIONARY_REPO:
+        return out
+    meta_path = mcp_catalog_meta_path(skill_path)
+    if not meta_path:
+        return out
+    want = _norm_repo_rel_path(skill_path)
+    content = ""
+    for item in out:
+        if item["path"] == want:
+            content = item["content"]
+            break
+    if not content:
+        return out
+    meta_body = mcp_catalog_meta_content(skill_path, content)
+    if not meta_body:
+        return out
+    kept = [item for item in out if item["path"] != meta_path]
+    kept.append({"path": meta_path, "content": meta_body})
+    return kept
+
+
+def patch_sv_skill_sources_dag(
+    *,
+    skill_id: str,
+    title: str,
+    description: str,
+    topic: str,
+    dag_raw: str,
+    index_raw: str,
+    built: str,
+) -> tuple[str, str] | None:
+    """Patch existing SV ``_dag`` JSON for one skill (FR #9329).
+
+    Full rebuild needs every ``.grok/skills`` book (tip has no worktree). When the
+    filer can read current ``dag.json`` / ``dag-index.json``, update that skill's
+    summary/title and ``built`` stamp. Returns None when inputs are not usable JSON.
+    """
+    try:
+        dag = json.loads(dag_raw) if dag_raw else None
+        index = json.loads(index_raw) if index_raw else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(dag, dict) or not isinstance(index, dict):
+        return None
+    nodes = dag.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    sid = f"skill:{skill_id}"
+    catalog_path = f"apps/mcp-catalog/catalog/{skill_id}/SKILL.md"
+    found = False
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "") != sid:
+            continue
+        node["title"] = title
+        node["summary"] = (description or "")[:200]
+        node["topic"] = topic
+        node["path"] = catalog_path
+        found = True
+        break
+    if not found:
+        nodes.append(
+            {
+                "id": sid,
+                "type": "catalog-skill",
+                "title": title,
+                "path": catalog_path,
+                "topic": topic,
+                "summary": (description or "")[:200],
+                "triggers": [skill_id.replace("-", " "), skill_id],
+            }
+        )
+        edges = dag.get("edges")
+        if not isinstance(edges, list):
+            edges = []
+            dag["edges"] = edges
+        edges.append({"from": sid, "to": f"topic:{topic}", "rel": "loads_topic"})
+    dag["built"] = built
+    dag["nodeCount"] = len(nodes)
+    edges = dag.get("edges") if isinstance(dag.get("edges"), list) else []
+    dag["edgeCount"] = len(edges)
+    dag["lessonsRoot"] = "docs/skill-sources/skills-visionary"
+
+    idx_nodes = index.get("nodes")
+    if not isinstance(idx_nodes, list):
+        idx_nodes = []
+        index["nodes"] = idx_nodes
+    idx_found = False
+    for node in idx_nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "") != sid:
+            continue
+        node["title"] = title
+        node["type"] = "catalog-skill"
+        idx_found = True
+        break
+    if not idx_found:
+        idx_nodes.append({"id": sid, "type": "catalog-skill", "title": title})
+    index["built"] = built
+    index["nodeCount"] = len(idx_nodes)
+    return (
+        json.dumps(dag, indent=2) + "\n",
+        json.dumps(index, indent=2) + "\n",
+    )
+
+
+def with_sv_skill_sources_dag(
+    repo: str,
+    skill_path: str,
+    files: list[dict[str, str]] | None,
+    *,
+    filer: Any = None,
+    built: str | None = None,
+) -> list[dict[str, str]]:
+    """Append patched ``docs/skill-sources/.../_dag`` files when readable (FR #9329).
+
+    Intentional omit: when ``dag.json`` cannot be read from the filer, leave skill-sources
+    out of the tip (full rebuild still needs ``python tools/build-skill-dag.py`` on a
+    checkout). Catalog SKILL.md + meta.json still ship via the other helpers.
+    """
+    out: list[dict[str, str]] = [
+        {
+            "path": _norm_repo_rel_path(str(item.get("path") or "")),
+            "content": str(item.get("content") or ""),
+        }
+        for item in (files or [])
+        if _norm_repo_rel_path(str(item.get("path") or ""))
+    ]
+    if (repo or "").strip().lower() != _SKILLS_VISIONARY_REPO:
+        return out
+    book_id = _sv_skill_book_id(skill_path)
+    if not book_id:
+        return out
+    want = _norm_repo_rel_path(skill_path)
+    content = ""
+    for item in out:
+        if item["path"] == want:
+            content = item["content"]
+            break
+    if not content:
+        return out
+    name, title, desc = parse_sv_skill_frontmatter(content)
+    skill_id = name or book_id
+    if not title:
+        title = skill_id.replace("-", " ")
+    topic = _SV_SKILL_TOPIC.get(
+        skill_id, "harvest" if skill_id.startswith("harvest") else "plan"
+    )
+    dag_raw = _filer_get_file(filer, repo, _SV_SKILL_SOURCES_DAG) if filer is not None else ""
+    index_raw = (
+        _filer_get_file(filer, repo, _SV_SKILL_SOURCES_DAG_INDEX) if filer is not None else ""
+    )
+    if not dag_raw or not index_raw:
+        return out
+    from datetime import date as _date
+
+    built_s = (built or "").strip() or _date.today().isoformat()
+    patched = patch_sv_skill_sources_dag(
+        skill_id=skill_id,
+        title=title,
+        description=desc,
+        topic=topic,
+        dag_raw=dag_raw,
+        index_raw=index_raw,
+        built=built_s,
+    )
+    if not patched:
+        return out
+    dag_body, index_body = patched
+    kept = [
+        item
+        for item in out
+        if item["path"] not in (_SV_SKILL_SOURCES_DAG, _SV_SKILL_SOURCES_DAG_INDEX)
+    ]
+    kept.append({"path": _SV_SKILL_SOURCES_DAG, "content": dag_body})
+    kept.append({"path": _SV_SKILL_SOURCES_DAG_INDEX, "content": index_body})
+    return kept
+
+
 def _filer_get_file(filer: Any, repo: str, path: str) -> str:
     getter = getattr(filer, "get_file_content", None)
     if not callable(getter):
@@ -1471,6 +1865,17 @@ def _filer_create_pr(
     draft: bool,
 ) -> dict[str, Any]:
     """Prefer create_pr (non-draft) / create_draft_pr; Fake supports both (FR #2705)."""
+    # FR #9082: hold / on-hold are issues-only --- never stamp them on pull requests.
+    try:
+        from gitclaim import strip_issues_only_hold_labels
+
+        labels = strip_issues_only_hold_labels(labels)
+    except Exception:
+        labels = [
+            x
+            for x in (labels or [])
+            if str(x).strip().lower() not in {"hold", "on-hold"}
+        ]
     if draft:
         return filer.create_draft_pr(repo, title, body, branch, files, labels)
     create_pr = getattr(filer, "create_pr", None)
@@ -2674,6 +3079,10 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
+                # FR #9180: -SkillFile targeting the book path is the base content.
+                skill_file_base = skill_file_base_for_path(skill_path, files)
+                if skill_file_base is not None:
+                    existing_md = skill_file_base
                 # FR #8310: include harvest/lessons.md so archived bullets still dedupe.
                 covered_md = harvest_book_text_for_dedupe(
                     filer, repo, skill_path, existing_md
@@ -2699,7 +3108,15 @@ def file_submission(
                 new_md = apply_lessons_to_skill_md(
                     existing_md, new_lessons, covered_md=covered_md
                 )
-                lesson_files = [{"path": skill_path, "content": new_md}]
+                # FR #9180: SkillFile companions under .grok/skills join the tip files[].
+                # FR #9303 / SV #198: skills-visionary tips also mirror apps/mcp-catalog.
+                # FR #9329: catalog meta.json + docs/skill-sources _dag patch when readable.
+                lesson_files = merge_lesson_pr_files(skill_path, new_md, files)
+                lesson_files = with_mcp_catalog_mirror(repo, skill_path, lesson_files)
+                lesson_files = with_mcp_catalog_meta(repo, skill_path, lesson_files)
+                lesson_files = with_sv_skill_sources_dag(
+                    repo, skill_path, lesson_files, filer=filer
+                )
                 lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
                     book=book,
@@ -3274,6 +3691,142 @@ def report_should_use_intake(*, gh_available: bool, gh_authenticated: bool) -> b
     )
 
 
+def ensure_bobiverse_harvest_skill_pr(
+    home: Path,
+    *,
+    repo: str,
+    book: str,
+    skill_path: str,
+    lessons: list[str],
+    summary: str = "",
+    files: list[dict] | None = None,
+    seat: str = "",
+    filer: GitHubFiler | None = None,
+    intake_id: str | None = None,
+) -> dict[str, Any]:
+    """FR #9180: same-turn open/link a ``lesson(<book>)`` PR that patches SKILL.md.
+
+    Prefer this when ``gh`` is authenticated on the seat so builds/Sync/MSI ship
+    merged skill content. Twin / ExistingPrUrl / already-covered paths reuse
+    ``file_submission`` (linked_existing_pr / lesson_already_covered / filed).
+    Empty lessons -> ``state=noop`` (receipt-only stays receipt-only).
+    """
+    cleaned = [str(x).strip() for x in (lessons or []) if str(x).strip()]
+    cleaned = [
+        x
+        for x in cleaned
+        if x.lower() not in ("(no new playbook line)", "skip", "empty")
+    ]
+    if not cleaned:
+        return {
+            "state": "noop",
+            "url": None,
+            "queued": False,
+            "skill_book": str(book or "").strip() or "harvest",
+            "lesson_count": 0,
+        }
+    book_name = str(book or "").strip() or "harvest"
+    path = _norm_repo_rel_path(skill_path)
+    if not path:
+        _b, path = resolve_skill_book(
+            skill_book=book_name,
+            title=f"harvest: {summary}",
+            body="Lessons:\n- " + cleaned[0],
+            repo=str(repo or ""),
+        )
+        book_name = _b or book_name
+    tip_repo = rewrite_harvest_repo_for_skill_book(str(repo or ""), book_name)
+    title_stem = (summary or cleaned[0]).strip()
+    title = "harvest: " + title_stem[:80]
+    lesson_block = "\n".join(f"- {x}" for x in cleaned)
+    body = f"Session summary:\n{summary or title_stem}\n\nLessons:\n{lesson_block}\n"
+    src = {
+        "skill_book": book_name,
+        "skill_book_path": path,
+        "agent": "Ensure-BobiverseHarvestSkillPr",
+        "seat": str(seat or "")[:64],
+    }
+    payload: dict[str, Any] = {
+        "kind": "harvest",
+        "repo": tip_repo,
+        "title": title,
+        "body": body,
+        "source": src,
+        "files": list(files or []),
+    }
+    err, norm = validate_payload(payload)
+    if err:
+        return {
+            "state": "error",
+            "error": err,
+            "url": None,
+            "queued": False,
+            "skill_book": book_name,
+        }
+    active = filer
+    if active is None:
+        try:
+            from gh_filer import default_filer as _default_filer
+        except Exception:
+            _default_filer = None  # type: ignore[assignment]
+        active = _default_filer() if _default_filer else FakeGitHubFiler()
+    iid = intake_id or f"in_ens_{uuid.uuid4().hex[:12]}"
+    return file_submission(home, norm, active, intake_id=iid)
+
+
+def _cli_ensure_skill_pr(argv: list[str] | None = None) -> int:
+    """CLI: ``python intake.py ensure-skill-pr --home <path> --payload-file <json>``."""
+    import argparse
+
+    p = argparse.ArgumentParser(
+        prog="intake.py ensure-skill-pr",
+        description="FR #9180 same-turn lesson(book) skill PR when gh is authenticated",
+    )
+    p.add_argument("--home", required=True, help="Bobiverse home for intake records")
+    p.add_argument(
+        "--payload-file",
+        required=True,
+        help="JSON with repo, book, skill_path, lessons[], summary, files[], seat",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate only; use FakeGitHubFiler (no network)",
+    )
+    ns = p.parse_args(argv)
+    raw = Path(ns.payload_file).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        print(json.dumps({"state": "error", "error": "bad_payload"}))
+        return 2
+    lessons = data.get("lessons") or []
+    if isinstance(lessons, str):
+        lessons = [lessons]
+    files = data.get("files") or []
+    if not isinstance(files, list):
+        files = []
+    filer: GitHubFiler | None = FakeGitHubFiler() if ns.dry_run else None
+    if ns.dry_run:
+        path = str(data.get("skill_path") or "").replace("\\", "/")
+        if path:
+            filer.repo_files[path] = str(  # type: ignore[union-attr]
+                (data.get("existing_md") or f"# {data.get('book') or 'skill'}\n")
+            )
+    rec = ensure_bobiverse_harvest_skill_pr(
+        Path(ns.home),
+        repo=str(data.get("repo") or ""),
+        book=str(data.get("book") or "harvest"),
+        skill_path=str(data.get("skill_path") or ""),
+        lessons=[str(x) for x in lessons],
+        summary=str(data.get("summary") or ""),
+        files=files,
+        seat=str(data.get("seat") or ""),
+        filer=filer,
+    )
+    print(json.dumps(rec, indent=2))
+    return 0 if str(rec.get("state") or "") not in ("error",) else 2
+
+
 def build_report_payload(
     *,
     kind: str,
@@ -3386,11 +3939,15 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help"):
         print(
-            "usage: intake.py drain --home <path> [--limit N] [--dry-run] [--source-dir PATH]"
+            "usage: intake.py drain|ensure-skill-pr ...\n"
+            "  drain --home <path> [--limit N] [--dry-run] [--source-dir PATH]\n"
+            "  ensure-skill-pr --home <path> --payload-file <json> [--dry-run]"
         )
         return 0
     if args[0] == "drain":
         return _cli_drain(args[1:])
+    if args[0] == "ensure-skill-pr":
+        return _cli_ensure_skill_pr(args[1:])
     print(f"unknown command: {args[0]}", file=sys.stderr)
     return 2
 

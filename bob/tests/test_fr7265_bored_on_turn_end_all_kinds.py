@@ -95,18 +95,32 @@ def test_fr7265_open_turn_waits_for_turn_ended_not_clock(kind):
     e.stop()
 
 
-def test_fr7265_fallback_timer_logs_when_no_turn_ended():
+def test_fr7265_fallback_timer_logs_when_open_turn_misses_turn_ended():
+    """FR #9364: fallback timer applies when a turn was open and turn_ended never arrived.
+
+    DONE with no turn signal skips harvest immediately (see test_fr9364_*). The
+    harvest_hold_s fallback + log remains for the open-turn miss path capped by
+    turn_hold_max_s.
+    """
     clock = FakeClock(0.0)
-    e, sent, logs = _emitter(clock, kind="grok", harvest_hold_s=90.0)
+    e, sent, logs = _emitter(
+        clock, kind="grok", harvest_hold_s=5.0, turn_hold_max_s=8.0
+    )
     e.on_outbox("ACK FR o/r#7265")
     clock.advance(1.0)
+    e.turn_started(at=clock(), turn=1)
+    clock.advance(0.5)
     e.on_outbox("DONE FR o/r#7265 https://example.com/p/7265")
     n0 = len(sent)
-    clock.advance(91.0)
+    # Past harvest_hold_s: fallback log, but open-turn extension still blocks !bored.
+    clock.advance(6.0)
+    time.sleep(0.05)
+    assert any("fallback timer, no turn_ended seen" in m for m in logs)
+    assert len(sent) == n0
+    # Past turn_hold_max from hold_started → release.
+    clock.advance(5.0)
     assert _wait(lambda: len(sent) > n0, clock)
     assert e.sent[-1][1] == "done"
-    assert any("fallback timer, no turn_ended seen" in m for m in logs)
-    assert any("trigger=fallback-timer" in m for m in logs)
     e.stop()
 
 

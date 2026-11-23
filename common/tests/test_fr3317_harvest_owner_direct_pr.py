@@ -95,6 +95,10 @@ def test_fr3317_intake_skills_visionary_opens_pr_there(tmp_path: Path):
     assert pr["repo"] == "SimonBarnett/skills-visionary"
     paths = [f.get("path") for f in (pr.get("files") or [])]
     assert ".grok/skills/harvest-skills-visionary/SKILL.md" in paths
+    # FR #9303 / SV #198: intake tip must also ship the mcp-catalog mirror.
+    assert (
+        "apps/mcp-catalog/catalog/harvest-skills-visionary/SKILL.md" in paths
+    )
     assert not any(
         str(p).replace("\\", "/").endswith("common/.grok/skills/harvest/SKILL.md")
         for p in paths

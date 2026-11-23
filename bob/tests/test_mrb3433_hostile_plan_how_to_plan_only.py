@@ -1,4 +1,7 @@
-"""Hostile pins for MRB #3433: Plan harvest how-to-plan only (owner rule / #3097)."""
+"""Hostile pins for MRB #3433: Plan harvest how-to-plan only (owner rule / #3097).
+
+FR #8833: harvest-skills-visionary moved upstream; pin bob_worker + MRB + intake.
+"""
 from __future__ import annotations
 
 import sys
@@ -33,11 +36,10 @@ def test_mrb_checklist_item_5_and_plan_content_exit_contiguous():
     assert "unless** it is plan content (checklist 5)" in text
 
 
-def test_harvest_skills_visionary_different_product_test():
-    text = _read("bob/agents/plan/.grok/skills/harvest-skills-visionary/SKILL.md")
-    assert "## What belongs here (how-to-plan only)" in text
-    assert "would this line help a Plan seat plan a DIFFERENT product?" in text
-    assert "bobiverse#3097" in text
+def test_plan_readme_points_how_to_plan_home():
+    text = _read("bob/agents/plan/README.md")
+    assert "SimonBarnett/skills-visionary" in text
+    assert "releases/latest" in text
 
 
 def test_intake_lesson_instruction_plan_content_never_hold_open():

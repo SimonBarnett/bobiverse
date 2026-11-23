@@ -81,19 +81,22 @@ def test_no_giveup_while_a_turn_is_running():
 
 
 def test_giveup_releases_the_ack_and_bored_waits_for_the_harvest_hold():
+    """GIVEUP while turn open holds until turn_ended; ACK is cleared immediately."""
     clock = FakeClock(0.0)
     e, sent, logs = _emitter(clock, harvest_hold_s=90.0, turn_hold_max_s=600.0)
     e.set_ready(True)
     assert _wait(lambda: len(sent) == 1, clock)
+    e.turn_started(at=clock())
+    clock.advance(0.5)
     e.on_outbox("ACK MRB SimonBarnett/bobiverse#4505")
     assert e.ack_open is True
     n0 = len(sent)
     e.on_outbox(GIVEUP)
     assert e.ack_open is False
-    clock.advance(89.0)
+    clock.advance(20.0)
     time.sleep(0.05)
-    assert len(sent) == n0, "must not !bored before the harvest hold ends"
-    clock.advance(2.0)
+    assert len(sent) == n0, "must not !bored while turn still open after GIVEUP"
+    e.turn_ended(at=clock())
     assert _wait(lambda: len(sent) > n0, clock)
     assert e.sent[-1][1] == "free"
     assert any("free-rx matched (GIVEUP)" in m for m in logs)

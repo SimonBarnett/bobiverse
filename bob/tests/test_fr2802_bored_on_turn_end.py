@@ -71,27 +71,30 @@ def test_fr2802_turn_end_releases_hold_before_fallback():
     e.stop()
 
 
-def test_fr2802_no_turn_end_uses_fallback_hold():
+def test_fr2802_no_turn_end_skips_harvest_hold():
+    """FR #9364: watcher never saw turn_started → skip harvest_hold; !bored promptly."""
     clock = FakeClock(0.0)
-    e, sent, _ = _emitter(clock, harvest_hold_s=90.0)
+    e, sent, logs = _emitter(clock, harvest_hold_s=90.0)
     e.on_outbox("ACK FR o/r#1")
     clock.advance(1.0)
     e.on_outbox("DONE FR o/r#1 https://example.com/p/1")
     n0 = len(sent)
-    clock.advance(89.0)
-    time.sleep(0.05)
-    assert len(sent) == n0
-    clock.advance(2.0)
-    assert _wait(lambda: len(sent) > n0, clock)
-    assert e.sent[-1][1] == "done"
+    assert _wait(lambda: len(sent) > n0, clock, timeout=2.0)
+    # Catch the done !bored before FR #9365 post-harvest idle can overwrite last reason.
+    assert any(r == "done" for _, r in e.sent[n0:])
+    assert e.sent[n0][0] < 10.0
+    assert any("skip harvest hold (no open turn)" in m for m in logs)
     e.stop()
 
 
-def test_fr2802_outbox_extends_fallback_when_no_turn_end():
+def test_fr2802_outbox_extends_fallback_when_turn_open_misses_end():
+    """Outbox extends harvest_hold while turn is open; !bored after turn_ended (not at 90s)."""
     clock = FakeClock(0.0)
     e, sent, _ = _emitter(clock, harvest_hold_s=90.0)
     e.on_outbox("ACK FR o/r#2")
     clock.advance(1.0)
+    e.turn_started(at=clock())
+    clock.advance(0.5)
     e.on_outbox("DONE FR o/r#2 https://example.com/p/2")
     n0 = len(sent)
     clock.advance(60.0)
@@ -99,8 +102,10 @@ def test_fr2802_outbox_extends_fallback_when_no_turn_end():
     clock.advance(89.0)
     time.sleep(0.05)
     assert len(sent) == n0
-    clock.advance(5.0)
+    # Open-turn hold (FR #2834) still blocks; release on turn_ended.
+    e.turn_ended(at=clock())
     assert _wait(lambda: len(sent) > n0, clock, timeout=3.0)
+    assert e.sent[-1][1] == "done"
     e.stop()
 
 

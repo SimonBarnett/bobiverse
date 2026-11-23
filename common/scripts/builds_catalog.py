@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterable
 
 BUILDS_CATALOG_NAME = "builds-catalog.json"
 BUILDS_PATH = "/bob/v1/builds"
-DEFAULT_BUILDS_URL = "https://irc.ntsa.uk/bob/v1/builds"
+DEFAULT_BUILDS_URL = "https://bob.ntsa.uk/bob/v1/builds"
 BUILDS_URL_ENV = "BOB_BUILDS_URL"
 
 # owner/repo or owner/repo:relative/path

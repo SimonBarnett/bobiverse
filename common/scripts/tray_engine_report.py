@@ -137,7 +137,8 @@ def report(
     """File or comment one tray-engine failure/recovery. Never raises."""
     try:
         kind = (kind or "dead").strip().lower()
-        if kind not in ("dead", "relaunch-fail", "recovery", "status-stale"):
+        # FR #9280: starting-stuck / status-vs-alive are first-class (dedupe still per machine).
+        if kind not in ("dead", "relaunch-fail", "recovery", "status-stale", "starting-stuck", "status-vs-alive"):
             kind = "dead"
         mid = (machine or crash_report.machine_id() or "unknown").strip().lower() or "unknown"
         ver = version or crash_report.read_version()

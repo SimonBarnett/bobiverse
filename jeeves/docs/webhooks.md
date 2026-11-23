@@ -11,7 +11,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/bob/v1/report` | Public fleet digest JSON. `/bob/v1/digest` is the **same** webhook and **301**s here. |
-| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge|delete-worker|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. |
+| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
@@ -21,8 +21,8 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/summary?user=…&date=…` | Day totals: raw + de-overlapped minutes, overlaps |
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
-| GET | `/bob/v1/models` | Fleet Weights selections + per-CLI available model/context/effort catalog (BOB-01 / #8819); **open, no secret**. Weights form dropdowns are the validation — **no** `POST /models/validate`. |
-| PUT | `/bob/v1/models` | Persist Weights full replace (direct/LAN; IIS GET|HEAD only) |
+| GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
+| PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -46,7 +46,7 @@ Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_requ
 
 ### Digest lock watchdog (FR #1136 / FR #1388)
 
-BobCallback / `bobreport.digest_lock` self-heals a wedged `digest.lock` (empty, older than `BOB_DIGEST_LOCK_STALE_S` default 30s, dead holder PID, or a **foreign** live holder older than `BOB_DIGEST_LOCK_FOREIGN_S` default 12s — e.g. chair `irc_agent` leaving the lock while `:7700` needs it): logs `lock-broken age=… pid=… reason=…`, bounded acquire + one break-and-retry, then HTTP **503** instead of hanging. A daemon thread probes loopback `GET /health` every `BOB_CALLBACK_HEALTH_S` (default 30s) and breaks a stale/foreign lock on failure. Fresh locks held by **this** BobCallback PID are kept. `GET /health` reports `lock_pid` / `pid`. Startup binds `:7700` **before** `drain_pending` so a blocked drain cannot leave the process alive with no LISTEN. **FR #7618:** `serve_forever_guarded` reports and exits non-zero on accept/serve fatals (including `MemoryError`) so NSSM restarts instead of leaving the port bound but dead; the same health loop self-probes with budget `BOB_CALLBACK_LISTENER_PROBE_S` (default 10s) and exits after `BOB_CALLBACK_LISTENER_PROBE_FAILS` consecutive failures (default 2). FR #2595: `drain_intake_outbox` (used by startup `drain_pending` and `Drain-BobiverseIntakeOutbox.ps1` / `python intake.py drain`) is receipt-aware — drops `do-not-file` probes, records DONE/twin/GIVEUP harvest receipts without opening draft PRs, dedupes by idempotency key and existing `intake/<iid>` PRs, supports `--dry-run` counts, and only files remaining real playbooks/issues. FR #5359: `ChairJobs` also retries `intake/outbox` on a timer with backoff and immediately after a successful GitHub resync; `drain_intake_outbox_all` walks the whole queue in batches of 20 (not only the first 20). Digest GET exposes `intake_outbox.count` / `oldest_age_s` / `gh_cli`. Missing `gh` is a loud `--self-test` error (`check_gh_cli`) and is announced on `#bobiverse`.
+BobCallback / `bobreport.digest_lock` self-heals a wedged `digest.lock` (empty, older than `BOB_DIGEST_LOCK_STALE_S` default 30s, dead holder PID, or a **foreign** live holder older than `BOB_DIGEST_LOCK_FOREIGN_S` default 12s — e.g. chair `irc_agent` leaving the lock while `:7700` needs it): logs `lock-broken age=… pid=… reason=…`, bounded acquire + one break-and-retry, then HTTP **503** instead of hanging. A daemon thread probes loopback `GET /health` every `BOB_CALLBACK_HEALTH_S` (default 30s) and breaks a stale/foreign lock on failure. Fresh locks held by **this** BobCallback PID are kept. `GET /health` reports `lock_pid` / `pid`. Startup binds `:7700` **before** `drain_pending` so a blocked drain cannot leave the process alive with no LISTEN. **FR #7618 / #9236:** `serve_forever_guarded` reports and exits non-zero on accept/serve fatals (including `MemoryError`) so NSSM restarts instead of leaving the port bound but dead; the same health loop self-probes with budget `BOB_CALLBACK_LISTENER_PROBE_S` (default 10s) and exits after `BOB_CALLBACK_LISTENER_PROBE_FAILS` consecutive failures (default 2). Before any self-exit the process logs `free_mb=` and the last exception type. When free physical memory is below `BOB_CALLBACK_LOW_MEM_MB` (default 512), the self-probe backs off up to `BOB_CALLBACK_LOW_MEM_MAX_DEFER` times (`BOB_CALLBACK_LOW_MEM_BACKOFF_S`, default 15s) instead of crash-looping; a final low-memory exit raises a deduplicated intake issue (`http-listener-fault|self-probe-low-memory|…`). Prior-clean at reconnect retries each scan (`BOB_PRIOR_SCAN_ATTEMPTS` default 3, `BOB_PRIOR_SCAN_BACKOFF_S` default 2s) so the first restart after a self-exit can survive a transient CIM failure. FR #2595: `drain_intake_outbox` (used by startup `drain_pending` and `Drain-BobiverseIntakeOutbox.ps1` / `python intake.py drain`) is receipt-aware — drops `do-not-file` probes, records DONE/twin/GIVEUP harvest receipts without opening draft PRs, dedupes by idempotency key and existing `intake/<iid>` PRs, supports `--dry-run` counts, and only files remaining real playbooks/issues. FR #5359: `ChairJobs` also retries `intake/outbox` on a timer with backoff and immediately after a successful GitHub resync; `drain_intake_outbox_all` walks the whole queue in batches of 20 (not only the first 20). Digest GET exposes `intake_outbox.count` / `oldest_age_s` / `gh_cli`. Missing `gh` is a loud `--self-test` error (`check_gh_cli`) and is announced on `#bobiverse`.
 
 ### Task principal must match digest home (FR #1316)
 
@@ -76,25 +76,61 @@ Serves the validated JSON array from digest-home `builds-catalog.json` (missing 
 curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 ```
 
-### GET models / Weights rows (BOB-01 / FR #8707)
+### GET models / Weights rows (BOB-01 / FR #8707 / FR #8819 / FR #9258)
 
-Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (valid-combos BOB-03; seed values BOB-04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
+Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders.
+
+**FR #9258 (Grok-only context/effort):** context and effort apply only to the Grok CLI. Allowed contexts are `256` or `500`; allowed efforts are `high`, `medium`, or `low` (case-insensitive). Cursor and OpenCode catalog rows are valid with empty `contexts` / `efforts`, so the Weights form and tray start dialog offer those dropdowns only for Grok. Non-Grok stored `workerStartContext` / `workerStartEffort` values are ignored and dropped on the next write; pass status is `not-applicable`.
+
+`clis` is the nested allow-list for dropdowns (Si locked shape, FR #8819):
+
+```json
+{"clis":{"Grok":{"models":{"<model>":{"contexts":{"256":{"efforts":["high","medium","low"]},"500":{"efforts":["high","medium","low"]}}}}},"Cursor":{"models":{}},"Opencode":{"models":{}}},
+ "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":""}]}
+```
+
+Built from digest-home `models-valid-combos.json` (BOB-03/04). A CLI with no catalog entry returns `models: {}` (still 200 — no invented names). Each agent row's options are `clis[row.cli]`. Example agents seed: `common/defaults/models-catalog.example.json`.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/models"
 ```
 
-### PUT models / Weights rows (BOB-02 / FR #8708)
+### PUT models / Weights rows (BOB-02 / FR #8708 / FR #8819)
 
-Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS rewrites **GET|HEAD only**; PUT is direct listener / allowlisted LAN peer (same gate as other writes). Returns 204 when changed, 200 when unchanged.
+Full-replace fleet Weights in digest-home `models-catalog.json`. Public IIS `BobModelsWebhook` forwards **GET|HEAD|POST|PUT** (FR #9273 grouped `^(GET|HEAD|POST|PUT)$`); PATCH stays blocked at IIS (backend would 405). Peer allow-list still applies on the chair (`BOB_REPORT_ALLOW`). Returns 204 when changed, 200 when unchanged. Agent row **`cli` is read-only** (FR #8819): a body that changes `cli` for a known agent returns **400** and leaves the store unchanged. Primary validation of model/context/effort is the Weights form dropdowns from `clis[row.cli]` (no POST validate required for this FR).
 
 ```bash
 curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: application/json" --data-binary @weights.json
 ```
 
-### Models validation (form-only — Si 2026-11-22)
+### POST models refresh (FR #8820)
 
-There is **no** `POST /bob/v1/models/validate`. Available model / context / effort per CLI belong on **GET `/bob/v1/models`**. The Weights systray form shows current values and offers those options as dropdowns — that is the validation. A POST to `/bob/v1/models/validate` returns **404** `no_models_validate`.
+`POST /bob/v1/models/refresh` rebuilds the per-CLI `clis` catalog inside digest-home `models-catalog.json` from each CLI's official listing command (no scraping, no cloud API keys):
+
+| CLI | Command | Resolver order |
+|-----|---------|----------------|
+| Grok | `grok models` | `BOB_GROK_EXE`, PATH `grok`, `%USERPROFILE%\.grok\bin\grok.exe` |
+| Cursor | `agent models` | `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`) |
+| OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, PATH `opencode` |
+
+Vendor docs: [xAI CLI](https://docs.x.ai/docs/cli), Cursor agent changelog, [OpenCode CLI](https://opencode.ai). Captured fixture samples live under `common/tests/fixtures/models_refresh/` (dated headers).
+
+Rules:
+- A failed or empty listing leaves that CLI's existing catalog untouched and reports `status: failed` with a fixed reason (`not_installed`, `timeout`, `exit_nonzero`, `spawn_error`, `empty_listing`).
+- New models are stored with empty `contexts` / `efforts` (operator/seed enrich later). Existing listed rows keep their metadata.
+- Agent selections are never rewritten. GET `/bob/v1/models` adds response-only `stale: true` when a row's model is non-empty and absent from `clis[lower(cli)].models`.
+- Rate limit: one attempt per CLI per 60 s (in-memory; process restart resets). A second call inside the window returns **429** `rate_limited` with `retry_after_s` and changes nothing.
+- BOB-04 seeds (`models-valid-combos.json`) remain the starting allow-list until the first successful refresh writes `refreshed_at` on a CLI entry in `models-catalog.json`.
+- Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) forwards GET|HEAD|POST|PUT (FR #9224 / FR #9273); PATCH stays blocked at IIS.
+- Operator check: the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`.
+
+```bash
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh"
+```
+
+### Models validation (form-only — Si 2026-11-22 / FR #9258)
+
+There is **no** `POST /bob/v1/models/validate`. Available model / context / effort per CLI belong on **GET `/bob/v1/models`**. The Weights systray form shows current values and offers those options as dropdowns — that is the validation. Context and effort dropdowns are populated only for Grok (`256`|`500`, `high`|`medium`|`low`); Cursor/OpenCode rows have empty lists. A POST to `/bob/v1/models/validate` returns **404** `no_models_validate`.
 
 ### POST report (status / ops)
 
@@ -212,6 +248,8 @@ When the handler is offline, webhook intakes should be cached and processed on r
 
 When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening on 127.0.0.1:7700. See [fr-1014-intake-arr-restore.md](./fr-1014-intake-arr-restore.md). Assert: .\scripts\Assert-BobIntakeLocal.ps1.
 
+**FR #9246 / #9273 post-install probe:** `Install-BobWebhooks.ps1` GETs `$Backend/bob/v1/report` after writing rules, then sends a no-op `PUT /bob/v1/models` expecting a backend status (400/403/2xx), never an IIS HTML 404. Default is WARN when the backend is down or PUT is not forwarded; pass `-RequireBackend` to fail the install, or `-SkipBackendProbe` in unit tests. IIS `BobModelsWebhook` forwards GET|HEAD|POST|PUT.
+
 
 ## Jeeves appliance static assets (FR #7411)
 
@@ -221,7 +259,7 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 
 Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
 
-**Coverage rule (FR #8835):** every public route under `/bob/v1/*` served by Jeeves/BobCallback (plus local health/digest and outbound stall/wake) MUST have (1) a card in Webhooks & API on the home page, (2) a page under `docs/webhooks/`, and (3) a row on `docs/webhooks/index.html`. Registry: `common/scripts/bob_webhook_docs.py`. Route inventory: `common/scripts/bob_route_inventory.py`. Enforced by `common/tests/test_fr8835_webhook_docs_route_coverage.py` (also run from `pytest-ascii-bom`). Coming operations (models PUT/PATCH #8708, models/refresh #8820) use `DocEntry.status="coming"` until served.
+**Coverage rule (FR #8835):** every public route under `/bob/v1/*` served by Jeeves/BobCallback (plus local health/digest and outbound stall/wake) MUST have (1) a card in Webhooks & API on the home page, (2) a page under `docs/webhooks/`, and (3) a row on `docs/webhooks/index.html`. Registry: `common/scripts/bob_webhook_docs.py`. Route inventory: `common/scripts/bob_route_inventory.py`. Enforced by `common/tests/test_fr8835_webhook_docs_route_coverage.py` (also run from `pytest-ascii-bom`). Coming operations (models PATCH) use DocEntry.status="coming" until served. POST models/refresh (#8820) and PUT models (#8708 / #8819 / #9122 / #9273 IIS forward) are live.
 
 **Static-only content publish (FR #8835 / #8803):** for HTML/docs-only updates, copy `jeeves/www/irc-ntsa/**` to the IIS site physical path **excluding `web.config`**, `*.bak`, and `_backup-*`, and do **not** delete live files. Do **not** re-run `Install-BobWebhooks.ps1` for content-only changes --- that installer rewrites WebSocket rules (#8803). Use `Install-BobWebhooks.ps1` only when rewrite rules or site wiring must change. Regenerate pages with `python common/scripts/gen_bob_webhook_docs_html.py` after registry edits.
 

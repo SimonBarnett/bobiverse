@@ -20,6 +20,23 @@ PRODUCT_UAT_RELEASE: dict[str, str] = {
     "simonbarnett/agentic_fomprep": "Priority Agent",
 }
 
+# FR #9382 CAST IRON: only these repos (plus PRODUCT_UAT_RELEASE keys, env, and
+# optional chair-home uat_release_repos.txt) may enqueue / offer / assign UAT #0.
+# Customer / plan-only repos (wetherby, obw, ce-priority, …) stay out.
+DEFAULT_UAT_RELEASE_REPOS: frozenset[str] = frozenset(
+    {
+        "simonbarnett/bobiverse",
+        "simonbarnett/a-search",
+        "simonbarnett/skills-visionary",
+        "simonbarnett/priority-mcp",
+        "simonbarnett/agentic_fomprep",
+    }
+)
+
+UAT_RELEASE_REPOS_FILE = "uat_release_repos.txt"
+UAT_RELEASE_REPOS_ENV = "BOB_UAT_RELEASE_REPOS"
+NO_RELEASE_TO_BUILD = "no-release-to-build"
+
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _ANY_SEMVER = re.compile(r"v?(\d+)\.(\d+)\.(\d+)$")
 
@@ -81,6 +98,50 @@ def _repo_key(repo: str) -> str:
 
 def _product_for(repo: str) -> str | None:
     return PRODUCT_UAT_RELEASE.get(_repo_key(repo))
+
+
+def _parse_repo_lines(text: str) -> set[str]:
+    out: set[str] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # allow "owner/name" or trailing comments
+        line = line.split("#", 1)[0].strip()
+        key = _repo_key(line)
+        if key and "/" in key:
+            out.add(key)
+    return out
+
+
+def load_uat_release_repos(*, home: Path | None = None) -> frozenset[str]:
+    """Built-in allowlist + PRODUCT_UAT_RELEASE + env + optional chair file (FR #9382)."""
+    names: set[str] = set(DEFAULT_UAT_RELEASE_REPOS)
+    names.update(PRODUCT_UAT_RELEASE.keys())
+    import os
+
+    env_raw = (os.environ.get(UAT_RELEASE_REPOS_ENV) or "").strip()
+    if env_raw:
+        for part in env_raw.replace(";", ",").split(","):
+            key = _repo_key(part)
+            if key and "/" in key:
+                names.add(key)
+    if home is not None:
+        path = Path(home) / UAT_RELEASE_REPOS_FILE
+        try:
+            if path.is_file():
+                names |= _parse_repo_lines(path.read_text(encoding="utf-8-sig"))
+        except OSError:
+            pass
+    return frozenset(names)
+
+
+def repo_has_release_to_build(repo: str, *, home: Path | None = None) -> bool:
+    """True when UAT PASS for this repo is expected to build/publish a release (FR #9382)."""
+    key = _repo_key(repo)
+    if not key or "/" not in key:
+        return False
+    return key in load_uat_release_repos(home=home)
 
 
 def plan_uat_pass_release(

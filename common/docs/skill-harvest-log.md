@@ -1,5 +1,13 @@
 # Skill harvest log
 
+
+## 2026-11-23 - FR #9344 monitor D3 release + paid OC pin + airc not-op
+
+| Field | Value |
+|-------|-------|
+| Lesson | Until BOB-G1: unhold digest alone leaves Depends-on OPEN blocked under live D3 (close digest / clear Depends-on). TipForm OpenCode free unless BOB_OPENCODE_MODEL paid pin; free OC = FR/FIX only. Cross-machine ear airc -> exit=126 not-op (same-machine ear or RDP/WinRM). |
+| Evidence | MarchHare monitor session; assign refused depends-on open #9147 then ok after close; airc-replies.jsonl DONE exit=126 not-op. |
+| Refs | Closes SimonBarnett/bobiverse#9344; books bobiverse-jeeves-monitor / bobiverse-bob-worker / bobiverse-airc-commands |
 ## 2026-11-21 — Ergo/chair host cutover: walrus (ionos deprecated)
 
 | Field | Value |

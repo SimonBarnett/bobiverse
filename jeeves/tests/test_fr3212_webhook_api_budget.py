@@ -102,11 +102,17 @@ def test_bored_offer_makes_zero_api_calls_with_large_queue(tmp_path: Path):
         gitclaim.queue_path(tmp_path),
         {"v": 1, "unaccepted": rows, "accepted": [], "done": [], "workers": {}},
     )
-    calls: list[str] = []
+    budgeted_calls: list[str] = []
+    issue_open_calls: list[str] = []
 
     def boom(repo, num):
-        calls.append(f"{repo}#{num}")
-        raise AssertionError("live checker must not run on !bored")
+        budgeted_calls.append(f"{repo}#{num}")
+        raise AssertionError("budgeted live checker must not run on !bored")
+
+    def issue_open_ok(repo, num):
+        # FR #9411: unbudgeted CLOSED check (Depends-on-style) may dial issue_open.
+        issue_open_calls.append(f"{repo}#{num}")
+        return True
 
     # Local-only: no live checkers (FR #3212 item 3).
     st1, job1 = gitclaim.offer_focus_top(
@@ -119,14 +125,15 @@ def test_bored_offer_makes_zero_api_calls_with_large_queue(tmp_path: Path):
     )
     assert st1 == "ok" and job1 is not None
     assert st2 == "ok" and job2 is not None
-    assert calls == []
-    # Passing a live checker must still be budget-zero when BORED budget is 0.
+    assert budgeted_calls == []
+    # Budgeted pr_exists/is_pull stay at zero; issue_open may run for CLOSED (FR #9411).
     st3, job3 = gitclaim.offer_focus_top(
         tmp_path, "marchhare-99999", "#marchhare",
-        pr_exists=boom, is_pull=boom, issue_open=boom,
+        pr_exists=boom, is_pull=boom, issue_open=issue_open_ok,
     )
     assert st3 == "ok" and job3 is not None
-    assert calls == []  # budget 0: never dials out
+    assert budgeted_calls == []
+    assert len(issue_open_calls) >= 1
 
 
 # --------------------------------------------------------------------------- 3. ETag / 304
@@ -234,20 +241,27 @@ def test_rate_limit_exhausted_keeps_queue_and_logs_backoff_once(tmp_path: Path):
     assert REPO in (res.get("failed") or [])
     assert len(gitclaim.load_unaccepted(tmp_path)) == 5  # nothing purged
     assert any("backoff" in ln for ln in logs)
-    # !bored local-only also keeps every row.
-    boom_calls: list = []
+    # !bored: budgeted pr_exists/is_pull stay quiet; CLOSED issue_open is unbudgeted
+    # (FR #9411) and must fail-open on GitHubLookupUnknown (no purge).
+    budgeted_calls: list = []
+    issue_open_calls: list = []
 
     def boom(repo, num):
-        boom_calls.append(num)
+        budgeted_calls.append(num)
+        raise gitclaim.GitHubLookupUnknown("rate")
+
+    def issue_open_unknown(repo, num):
+        issue_open_calls.append(num)
         raise gitclaim.GitHubLookupUnknown("rate")
 
     st, job = gitclaim.offer_focus_top(
         tmp_path, "marchhare-1", "#marchhare",
-        pr_exists=boom, is_pull=boom, issue_open=boom,
+        pr_exists=boom, is_pull=boom, issue_open=issue_open_unknown,
     )
     assert st == "ok" and job is not None
     assert len(gitclaim.load_unaccepted(tmp_path)) == 5
-    assert boom_calls == []  # budget 0 on !bored
+    assert budgeted_calls == []
+    assert len(issue_open_calls) >= 1
 
 
 # --------------------------------------------------------------------------- 5. budget / backoff floor

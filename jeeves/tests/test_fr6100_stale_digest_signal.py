@@ -66,6 +66,8 @@ def test_fr6100_monitor_uses_iso_ts_not_mtime(tmp_path, monkeypatch):
     os.utime(path, (now, now))
     import stale_digest as sdg
 
+    # Isolate FR #8579 live-report soft-pass (fresh /bob/v1/report on CI/worker).
+    monkeypatch.setattr(sdg, "non_chair_overlay", lambda *a, **k: None)
     args = Namespace(chair_home=str(home), digest_home=str(home), dry_run=False)
     payload, code = sdg.check(args)
     assert code == 1
