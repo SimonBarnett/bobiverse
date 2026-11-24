@@ -1,4 +1,4 @@
-"""FR #9478: soft #9401 MRB machine-id (free other-machine) + cross-machine prefer."""
+"""FR #9478 / #9574: MRB exact-seat + cross-machine prefer (soft #9401 superseded)."""
 from __future__ import annotations
 
 import sys
@@ -64,7 +64,6 @@ def test_fr9478_busy_other_machine_allows_same_machine_sibling(tmp_path, monkeyp
     # Digest coerce resets worker_list state=busy; model busy via free= omit.
     free = {"flamingo-17068", "flamingo-17160"}
     assert "flamingo-17160" in free
-    # Soft free=: sibling allowed when other-machine seats are busy-only.
     assert (
         gitclaim.review_blocked_for_author(row, "flamingo-17068", live, free=free)
         is True
@@ -73,14 +72,15 @@ def test_fr9478_busy_other_machine_allows_same_machine_sibling(tmp_path, monkeyp
         gitclaim.review_blocked_for_author(row, "flamingo-17160", live, free=free)
         is False
     )
-    # Legacy free=None still treats live as free (busy counts) — call sites must pass free=.
+    # FR #9574: free=None is also exact-seat only for MRB (no machine sibling block).
     assert (
         gitclaim.review_blocked_for_author(row, "flamingo-17160", live, free=None)
-        is True
+        is False
     )
 
 
-def test_fr9478_free_other_machine_still_blocks_sibling(tmp_path, monkeypatch):
+def test_fr9478_free_other_machine_allows_sibling(tmp_path, monkeypatch):
+    """FR #9574: free other-machine no longer blocks same-machine MRB sibling."""
     _home(
         tmp_path,
         monkeypatch,
@@ -95,10 +95,14 @@ def test_fr9478_free_other_machine_still_blocks_sibling(tmp_path, monkeypatch):
     assert "redqueen-9" in free
     assert (
         gitclaim.review_blocked_for_author(row, "flamingo-17160", live, free=free)
-        is True
+        is False
     )
     assert (
         gitclaim.review_blocked_for_author(row, "redqueen-9", live, free=free) is False
+    )
+    assert (
+        gitclaim.review_blocked_for_author(row, "flamingo-17068", live, free=free)
+        is True
     )
 
 

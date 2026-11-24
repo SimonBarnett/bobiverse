@@ -67,10 +67,10 @@ def test_fr9480_two_machine_authors_sibling_on_either_machine_eligible(
     assert gitclaim.review_blocked_for_author(row, "redqueen-6564", live) is False
 
 
-def test_fr9480_single_machine_authors_sibling_still_blocked_when_other_live(
+def test_fr9480_single_machine_authors_sibling_allowed_exact_seat(
     tmp_path, monkeypatch
 ):
-    """FR #9401 unchanged when all author_seats share one machine id."""
+    """FR #9574: even when all author_seats share one machine, siblings are eligible."""
     _home(
         tmp_path,
         monkeypatch,
@@ -91,7 +91,8 @@ def test_fr9480_single_machine_authors_sibling_still_blocked_when_other_live(
     }
     live = gitclaim.live_seat_nicks(tmp_path)
     assert gitclaim.review_blocked_for_author(row, "flamingo-14096", live) is True
-    assert gitclaim.review_blocked_for_author(row, "flamingo-4120", live) is True
+    assert gitclaim.review_blocked_for_author(row, "flamingo-9999", live) is True
+    assert gitclaim.review_blocked_for_author(row, "flamingo-4120", live) is False
     assert gitclaim.review_blocked_for_author(row, "redqueen-1", live) is False
 
 

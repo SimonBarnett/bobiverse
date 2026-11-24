@@ -208,8 +208,7 @@ def test_fr3205_skips_seat_relative(home: Path):
 def test_fr3205_cant_mrb_gets_next_fr(home: Path):
     """Own PR as MRB #40 (self-review blocked) → !bored returns FR #8, never empty.
 
-    FR #9401: other-machine seat (flamingo) takes the MRB; same-machine sibling
-    would also be blocked while flamingo is live.
+    FR #9574: exact author skips MRB; other-machine (and same-machine siblings) may take it.
     """
     repo = "SimonBarnett/bobiverse"
     me, other = "marchhare-35600", "flamingo-9"
