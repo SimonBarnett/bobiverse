@@ -6528,10 +6528,16 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
         include_listens=prior_irc.is_bob_builder_nick(nick),
     )
     if not result.scanned:
-        # FR #9236: include attempt count so a restart-loop scan failure is diagnosable.
+        # FR #9236 logs attempt count. FR #9496: do not abort connect — a permanent
+        # CIM/WMI scan failure (marchhare class) previously SystemExit'd into an nssm
+        # restart loop with no IRC session. Prefer connect with a WARN; operators can
+        # still set BOB_IRC_SKIP_PRIOR_CLEAN=1 or fix process listing.
         attempts = getattr(result, "scan_attempts", 0) or 0
-        info(f"INFO prior-clean aborted connect attempts={attempts}")
-        raise SystemExit(1)
+        info(
+            f"WARN prior-clean scan-failed continuing connect attempts={attempts} "
+            "(FR #9496 fail-open)"
+        )
+        return
 
 
 def main() -> None:
