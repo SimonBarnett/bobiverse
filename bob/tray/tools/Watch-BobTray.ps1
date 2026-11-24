@@ -5259,6 +5259,13 @@ $poll.Add_Tick({
                                 Write-TrayLog ('FR #9471 ' + $stormAlert)
                             }
                         }
+                        if (Get-Command Get-BobTrayEngineWakeAlert -ErrorAction SilentlyContinue) {
+                            $wakeAlert = Get-BobTrayEngineWakeAlert -Root $RepoRoot
+                            if ($wakeAlert) {
+                                $alerts = @($alerts) + @($wakeAlert)
+                                Write-TrayLog ('FR #9513 ' + $wakeAlert)
+                            }
+                        }
                     }
                 } catch {
                     Write-TrayLog ('FR #9462 online_zero_workers: ' + $_.Exception.Message)

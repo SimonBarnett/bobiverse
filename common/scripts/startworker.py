@@ -8,7 +8,9 @@ The Bob ear (service, session 0, LocalSystem) can not open a window on the user'
           logged in with the tray up) -> worker cap -> cooldown -> write ``req-<id>.json`` -> reply ACK / NACK
   tray  : host writes ``tray.alive`` every ~2 s (FR #2697); engine writes ``engine.alive`` after each
           startworker queue tick (FR #4136). Ear NACKs ``engine_stale`` when tray.alive is fresh but
-          engine.alive is not. Consumes ``req-*.json`` on a UI tick -> ``res-<id>.json`` (audit only)
+          engine.alive is not. FR #9513: that NACK also writes ``run/tray-cmd.txt`` ``reload`` (FR #5111)
+          + ``engine.wake`` so HealEngine/watchdog can recover without a silent queue. Consumes
+          ``req-*.json`` on a UI tick -> ``res-<id>.json`` (audit only)
 
 No credentials cross this queue, only {id, mode, by, ts}. Everything here is pure / injectable so it is testable
 without IRC, a desktop or Windows.
@@ -45,6 +47,8 @@ QUEUE_SUBDIR = ("run", "startworker")
 ALIVE_FILE = "tray.alive"
 ENGINE_ALIVE_FILE = "engine.alive"  # FR #4136: PS engine queue-tick stamp
 ENGINE_ALIVE_MAX_AGE_S = 120.0     # aligned with bob-tray EngineAliveStamp.MaxAgeSeconds
+ENGINE_WAKE_FILE = "engine.wake"  # FR #9513: ear nudge after engine_stale NACK
+ENGINE_WAKE_MIN_INTERVAL_S = 60.0  # rate-limit tray-cmd reload storms
 DISABLE_FILE = "startworker.disabled"
 WORKER_EXE_RE = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 _MACHINE_RE = re.compile(r"^#?[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
@@ -243,6 +247,63 @@ def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_M
         return False
 
 
+
+def request_engine_wake(qdir, now: float | None = None, *, min_interval: float = ENGINE_WAKE_MIN_INTERVAL_S) -> bool:
+    """FR #9513: on engine_stale NACK, nudge TipForm ReloadEngine via tray-cmd.txt + engine.wake.
+
+    Keeps the NACK (operator still sees engine.alive stale). Rate-limited so repeated
+    !startworker does not storm ReloadEngine. Returns True when a wake was written.
+    """
+    now = time.time() if now is None else now
+    d = Path(qdir)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    wake = d / ENGINE_WAKE_FILE
+    try:
+        age = now - wake.stat().st_mtime
+        if age < 0:
+            age = 0.0
+        if age < float(min_interval):
+            return False
+    except OSError:
+        pass
+    try:
+        tmp = d / ("." + ENGINE_WAKE_FILE + ".tmp")
+        tmp.write_text(
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)) + " via=startworker-engine_stale\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, wake)
+        try:
+            os.utime(wake, (now, now))  # tests pass synthetic now; rate-limit uses mtime
+        except OSError:
+            pass
+    except OSError:
+        return False
+    # FR #5111: host consumes a lone "reload" line and calls ReloadEngine (seats untouched).
+    try:
+        run_dir = d.parent  # .../run/startworker -> .../run
+        cmd = run_dir / "tray-cmd.txt"
+        existing = ""
+        if cmd.is_file():
+            try:
+                existing = cmd.read_text(encoding="utf-8")
+            except OSError:
+                existing = ""
+        lines = [ln.strip() for ln in existing.splitlines() if ln.strip()]
+        if "reload" not in [ln.lower() for ln in lines]:
+            lines.append("reload")
+        body = "\n".join(lines) + "\n"
+        tmpc = run_dir / ".tray-cmd.tmp"
+        tmpc.write_text(body, encoding="utf-8")
+        os.replace(tmpc, cmd)
+    except OSError:
+        pass
+    return True
+
+
 def write_request(
     qdir,
     mode: str,
@@ -337,8 +398,11 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
                     "nobody is logged in with the Bob tray running (start the tray from the Start menu)", mode=mode, kind=kind)
     # FR #4136: tray.alive is host-written; a hung PS engine still looks "alive" without engine.alive.
     if not engine_alive(qdir, now):
+        # FR #9513: keep NACK; also wake tray watchdog / ReloadEngine (FR #5111 tray-cmd reload).
+        if write:
+            request_engine_wake(qdir, now=now)
         return nack("engine_stale",
-                    "Bob tray engine is not ticking (engine.alive stale); restart the tray or wait for watchdog", mode=mode, kind=kind)
+                    "Bob tray engine is not ticking (engine.alive stale); restart the tray or wait for watchdog (wake requested)", mode=mode, kind=kind)
     # FR #3181 / FR #4307: cap = IRC agent markers ∪ live agent bob-worker roots
     # (not Plan/maintenance/key-dialog). Markers alone undercount after tray restart.
     snap = (procs or snapshot_procs)()
