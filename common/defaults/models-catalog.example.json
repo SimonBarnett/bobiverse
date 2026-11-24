@@ -1,11 +1,60 @@
 {
   "agents": [
-    {"agent": "Plan", "cli": "Grok", "model": "", "context": "", "effort": ""},
-    {"agent": "Priority", "cli": "Grok", "model": "", "context": "", "effort": ""},
-    {"agent": "Jeeves", "cli": "Grok", "model": "", "context": "", "effort": ""},
-    {"agent": "Grok", "cli": "Grok", "model": "", "context": "", "effort": ""},
-    {"agent": "Cursor", "cli": "Cursor", "model": "", "context": "", "effort": ""},
-    {"agent": "Opencode", "cli": "Opencode", "model": "", "context": "", "effort": ""},
-    {"agent": "Opencode-Free", "cli": "Opencode", "model": "", "context": "", "effort": ""}
+    {
+      "agent": "Plan",
+      "cli": "Grok",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Priority",
+      "cli": "Grok",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Jeeves",
+      "cli": "Grok",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Grok",
+      "cli": "Grok",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Cursor",
+      "cli": "Cursor",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Opencode",
+      "cli": "Opencode",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Opencode-Free",
+      "cli": "Opencode",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Copilot",
+      "cli": "Copilot",
+      "model": "",
+      "context": "",
+      "effort": ""
+    }
   ]
 }
