@@ -24,7 +24,9 @@ if ($homeNorm) {
     if (-not $cl) { return $false }
     if ($cl -notmatch '(?i)(bob-ear\.exe|irc_agent\.py)') { return $false }
     $escaped = [regex]::Escape($homeNorm.TrimEnd('\'))
-    return $cl -match ("(?i)--home\s+[\"']?{0}[\"']?" -f $escaped)
+    # Single-quoted pattern: character class for optional " or ' (ParseFile-safe).
+    $homePat = ('(?i)--home\s+["'']?{0}["'']?' -f $escaped)
+    return $cl -match $homePat
   })
   if ($alive.Count -gt 0) {
     Write-Output ("ERROR ear already running for home=$Home pids={0} (FR #9861); refusing second start" -f (($alive | ForEach-Object { $_.ProcessId }) -join ','))

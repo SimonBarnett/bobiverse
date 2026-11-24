@@ -122,3 +122,27 @@ def test_once_skips_mutex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     ear.main()
     assert called["n"] == 0
+
+
+def test_fr9861_start_bob_ear_ps1_parses_winps():
+    """FIX #9866: home match pattern must ParseFile under WinPS 5.1."""
+    import subprocess
+
+    ps1 = Path(__file__).resolve().parents[2] / "bob" / "scripts" / "Start-BobEar.ps1"
+    assert ps1.is_file()
+    path = str(ps1).replace("'", "''")
+    cmd = (
+        "$errs = $null; "
+        "$null = [System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{path}', [ref]$null, [ref]$errs); "
+        "if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 2 }; "
+        "Write-Output 'PARSE_OK'"
+    )
+    r = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert "PARSE_OK" in (r.stdout or "")
