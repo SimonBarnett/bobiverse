@@ -31,6 +31,8 @@
     listed by that product's `git worktree list`. Pass `-RepoRoot` of the product.
   - FR #3717: before `git worktree remove`, delete `cdk.out*` under the job tree
     with `cmd rmdir /s /q`.
+  - FR #9500: Access denied on cmd rmdir (e.g. locked PYTEST~1 / .pytest_cache)
+    warns and continues; does not abort the Clear run (attrib -R retry once).
   - FR #4197: when a registered tree is missing or its `.git` is gone, warn, keep
     unverifiable dirs, prune metadata, and continue.
   - FR #4988: job trees also live under Get-BobiverseJobWorktreeBase.
@@ -363,14 +365,49 @@ function Remove-BobiverseDeepWorktreeDirs {
         ForEach-Object {
             $target = $_.FullName
             Write-Host ("FR #3717 pre-rmdir deep tree {0}" -f $target)
-            cmd.exe /c ('rmdir /s /q "' + $target + '"') | Out-Null
+            # FR #9500: Access denied must not abort Clear (same spirit as FR #4197).
+            try {
+                cmd.exe /c ('rmdir /s /q "' + $target + '"') 2>&1 | ForEach-Object {
+                    if ($_ -is [System.Management.Automation.ErrorRecord]) { [void]$_.ToString() } else { "$_" }
+                } | Out-Null
+            } catch {
+                Write-Warning ("FR #9500: cdk.out rmdir failed for {0}: {1}" -f $target, $_)
+            }
         }
 }
 
 function Remove-BobiversePathForce {
     param([Parameter(Mandatory)][string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
-    cmd.exe /c ('rmdir /s /q "' + $Path + '"') | Out-Null
+    # FR #9500: Access denied on PYTEST~1 / .pytest_cache must not abort Clear
+    # (StrictMode Stop + NativeCommandError from cmd stderr). Warn and continue
+    # like FR #4197 missing-.git; optional attrib -R retry once.
+    try {
+        cmd.exe /c ('rmdir /s /q "' + $Path + '"') 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { [void]$_.ToString() } else { "$_" }
+        } | Out-Null
+    } catch {
+        Write-Warning ("FR #9500: rmdir failed for {0}: {1}" -f $Path, $_)
+    }
+    if (Test-Path -LiteralPath $Path) {
+        try {
+            Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Name -match '(?i)^(PYTEST~1|\.pytest_cache)$' -or
+                    $_.FullName -match '(?i)[\\/](\.pytest_cache|PYTEST~1)([\\/]|$)'
+                } |
+                ForEach-Object {
+                    attrib.exe -R $_.FullName /S /D 2>$null | Out-Null
+                }
+        } catch { }
+        try {
+            cmd.exe /c ('rmdir /s /q "' + $Path + '"') 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { [void]$_.ToString() } else { "$_" }
+            } | Out-Null
+        } catch {
+            Write-Warning ("FR #9500: rmdir retry failed for {0}; leaving in place and continuing: {1}" -f $Path, $_)
+        }
+    }
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
     }
