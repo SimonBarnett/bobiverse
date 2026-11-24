@@ -1019,7 +1019,7 @@ function Invoke-ClearOneRepoRoot {
         }
 
         # FR #4988 / #9692: orphan dirs under job-worktree base and (when different)
-        # BOB_BRIDGE_HOME\worktrees — including trees with a leftover .git that are
+        # BOB_BRIDGE_HOME\worktrees - including trees with a leftover .git that are
         # no longer in `git worktree list` (flamingo C: filled with 457 such orphans).
         if ($lowDisk -and -not $PruneClosedJobs -and (Get-Command Get-BobiverseJobWorktreeBase -ErrorAction SilentlyContinue)) {
             $orphanBases = New-Object System.Collections.Generic.List[string]
@@ -1056,7 +1056,7 @@ function Invoke-ClearOneRepoRoot {
                         if ($stillListed) { return }
                         $gitFile = Join-Path $full '.git'
                         if (Test-Path -LiteralPath $gitFile) {
-                            # FR #9692: not listed by git worktree list — reclaim when clean.
+                            # FR #9692: not listed by git worktree list - reclaim when clean.
                             if (Test-WorktreeHasLocalWork -Path $full) {
                                 Write-Host ("FR #9692 keep unlist orphan with local work {0}" -f $full)
                                 $counts['kept-unverifiable']++

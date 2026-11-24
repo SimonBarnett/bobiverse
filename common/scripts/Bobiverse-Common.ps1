@@ -1611,7 +1611,7 @@ function Get-BobiverseJobWorktreeBase {
         2. env BOB_JOB_WORKTREE_BASE (dedicated; kept even on the system drive)
         3. -BridgeHome / env BOB_BRIDGE_HOME -> <bridge>\worktrees, but when that
            lands on the system drive and a data disk exists, prefer
-           <data drive>\ai\worktrees (FR #9692 — flamingo C: filled with bridge orphans)
+           <data drive>\ai\worktrees (FR #9692 - flamingo C: filled with bridge orphans)
         4. default <data drive>\ai\worktrees
       Never returns a drive root.
     #>
