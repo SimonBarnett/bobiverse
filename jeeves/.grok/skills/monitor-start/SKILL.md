@@ -20,6 +20,8 @@ description: >
 > 7. **CAST IRON â€” idle + open work is FAIL (#9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` chair-heals
 >    (`push_idle` / `offer_to_idle`); not report-only. Same-turn bridge still owes #9627.
 > 8. **CAST IRON â€” multi-FR batch needs Digest parent (#9652).** â‰¥2 related FRs in one batch: `fr-digest` Digest first;
+
+> 9. **CAST IRON --- Jeeves on IRC => webhooks up (#9826).** `Start-Service ircJeeves` / `Start-Jeeves.ps1` => same-turn local report 200 + heal; monitor `webhooks_up_with_chair`.
 >    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
@@ -41,6 +43,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Check | Script / name | Why |
 |---|---|---|
 | Health | `health` | ircJeeves / chair home / webhook surface |
+| Webhooks up with chair | webhooks_up_with_chair | FR #9826 CAST IRON: ircJeeves Running requires local /bob/v1/report HTTP 200; heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
 | Idle seats | `idle_seats` | seats idle while ungated work exists â€” EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
