@@ -4,6 +4,11 @@ CCA runs on GitHub cloud. Jeeves POSTs ``agents/repos/{owner}/{repo}/tasks``
 with a ``prompt`` field (not ``problem_statement``), tracks the task + PR
 webhooks instead of IRC ACK/DONE, and falls back to shop seats when allowance
 is exhausted.
+
+FR #9738: optional CCA ``model`` (``BOB_COPILOT_MODEL`` / allowance ``model``;
+omit = Auto) and ``base_ref`` (default ``main``). ``tick()`` dispatches one
+job per pass; concurrent in-flight Copilot seats equal ``copilot-jobs.json``
+length (ops refill / Haiku quota separately).
 """
 from __future__ import annotations
 
@@ -44,6 +49,8 @@ MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 # FR #7251 / #7255: same 60s cadence as EAR_POOL_FETCH_S / FLEET_POOL_FETCH_S.
 CACHE_S = float(bobreport.EAR_POOL_FETCH_S)
+# FR #9745: max concurrent live Copilot tasks to keep
+MAX_CONCURRENT_COPILOT = 2
 COPILOT_COOLDOWN_S = 7 * 86400.0
 MRB_FAST_GIVEUP_S = 120.0
 MRB_FAST_GIVEUP_LIMIT = 3
@@ -87,6 +94,7 @@ def _clear_copilot_cooldown(doc: dict) -> None:
     """Drop the legacy cooldown and the FR #5397 per-fuel copilot block."""
     doc.pop("exhausted_until", None)
     doc.pop("exhausted_until_utc", None)
+    doc.pop("exhausted_until_source", None)
     doc.pop("pause_announced_until", None)
     fuels = doc.get("fuels")
     if not isinstance(fuels, dict):
@@ -97,11 +105,38 @@ def _clear_copilot_cooldown(doc: dict) -> None:
     block = dict(block)
     block.pop("exhausted_until", None)
     block.pop("exhausted_until_utc", None)
+    block.pop("exhausted_until_source", None)
     if block:
         fuels["copilot"] = block
     else:
         fuels.pop("copilot", None)
     doc["fuels"] = fuels
+
+
+def _clear_sticky_allowance_exhaust_on_ok(home: Path) -> None:
+    """FR #9733: when observation shows ok/unlimited, drop sticky exhaust stamps.
+
+    Mirrors ``refresh_allowance`` clearing for ``state=ok``. Never creates
+    ``copilot-allowance.json`` when the file is absent.
+    """
+    path = _allow_path(home)
+    if not path.is_file():
+        return
+    doc = load_allowance(home)
+    sticky = bool(
+        doc.get("tasks_exhausted")
+        or doc.get("exhausted")
+        or doc.get("exhausted_until")
+        or str(doc.get("state") or "").lower() in ("exhausted", "quota_exhausted", "failed")
+    )
+    if not sticky:
+        return
+    doc["tasks_exhausted"] = False
+    doc["exhausted"] = False
+    if str(doc.get("state") or "").lower() in ("exhausted", "quota_exhausted", "failed"):
+        doc["state"] = "ok"
+    _clear_copilot_cooldown(doc)
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
 def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | None = None) -> None:
@@ -201,8 +236,13 @@ def observe_quota(
     (dispatch enabled, or explicit observation opt-in). Direct callers may still
     use it in tests.
 
-    Never creates or mutates copilot-allowance.json. Never calls mark_tokens_exhausted
+    Never creates ``copilot-allowance.json`` and never calls mark_tokens_exhausted
     or queue helpers. fetched_at advances only on a successful parse.
+
+    FR #9733: when a successful observation is ``state=ok`` (or unlimited), clear
+    sticky allowance exhaust stamps on an existing allowance file the same way
+    ``refresh_allowance`` does for ok — so systray/digest stop painting exhausted
+    after VS Code / API quota refresh.
     """
     now_f = time.time() if now is None else float(now)
     prev = load_observation(home)
@@ -271,6 +311,9 @@ def observe_quota(
         doc["attempted_epoch"] = now_f
         doc.pop("last_error", None)
         _write_observation(home, doc)
+        # FR #9733: sticky exhausted_until must not outlive a fresher ok observation.
+        if doc.get("state") == "ok" or bool(doc.get("unlimited")):
+            _clear_sticky_allowance_exhaust_on_ok(home)
         return doc
 
     # Failure or unknown-without-prior-success: keep last good fetched_at.
@@ -694,7 +737,7 @@ def prefer_public_pool(a: dict | None, b: dict | None) -> dict:
 
 
 def pool_for_digest(home: Path) -> dict:
-    """FR #5965 + FR #6148 + FR #7178: prefer freshest observation; never omit keys."""
+    """FR #5965 + FR #6148 + FR #7178 + FR #9733: prefer freshest observation; never omit keys."""
     allow = load_allowance(home)
     obs = load_observation(home)
     # Quota fields from the source with the newer successful fetched_at.
@@ -709,12 +752,25 @@ def pool_for_digest(home: Path) -> dict:
     if not quota:
         return empty_public_pool(error="unread")
     state = str(quota.get("state") or "unknown")
-    exhausted = bool(
-        allow.get("exhausted")
-        or allow.get("tasks_exhausted")
-        or state in ("exhausted", "quota_exhausted", "failed")
-        or str(allow.get("state") or "") in ("exhausted", "quota_exhausted", "failed")
+    # FR #9733: fresher observation ok/unlimited must not be overridden by sticky
+    # allowance exhausted_until / tasks_exhausted (systray painted 0% after refresh).
+    obs_wins_ok = (
+        quota is obs
+        and obs_ep > allow_ep
+        and (
+            str(obs.get("state") or "").lower() == "ok"
+            or bool(obs.get("unlimited"))
+        )
     )
+    if obs_wins_ok:
+        exhausted = state in ("exhausted", "quota_exhausted", "failed")
+    else:
+        exhausted = bool(
+            allow.get("exhausted")
+            or allow.get("tasks_exhausted")
+            or state in ("exhausted", "quota_exhausted", "failed")
+            or str(allow.get("state") or "") in ("exhausted", "quota_exhausted", "failed")
+        )
     if exhausted and state in ("", "unknown", "ok"):
         state = "exhausted"
     attempted = str(quota.get("attempted_at") or obs.get("attempted_at") or allow.get("attempted_at") or "")
@@ -744,8 +800,8 @@ def pool_for_digest(home: Path) -> dict:
         "fetched_at": quota.get("fetched_at") or "",
         "attempted_at": attempted,
         "state": state,
-        "resume_at": allow.get("exhausted_until_utc") or "",
-        "resume_source": allow.get("exhausted_until_source") or "",
+        "resume_at": "" if obs_wins_ok else (allow.get("exhausted_until_utc") or ""),
+        "resume_source": "" if obs_wins_ok else (allow.get("exhausted_until_source") or ""),
     }
     if max_rec is not None:
         out["max_recorded_usage"] = max_rec
@@ -829,6 +885,50 @@ def session_quota_error(task_info: dict | None) -> str | None:
                     text = str(err)
                 return text or "coding-agent quota exceeded"
     return None
+
+
+def session_infra_soft_error(task_info: dict | None) -> str | None:
+    """FR #9782: CCA infra soft-fail codes (retry/free slot; never exhaust).
+
+    ``missing_conclusion`` means the workflow finished without a usable
+    conclusion. Create still succeeded (not HTTP 429); do not stamp allowance
+    exhausted. Surface text for digest.copilot.tasks (#9748).
+    """
+    if not isinstance(task_info, dict):
+        return None
+    artifacts = [task_info] + [
+        s for s in (task_info.get("sessions") or []) if isinstance(s, dict)
+    ]
+    for info in artifacts:
+        for key in ("error", "failure", "last_error"):
+            err = info.get(key)
+            if err is None:
+                continue
+            text = _error_text(err if isinstance(err, dict) else {"message": err})
+            if "missing_conclusion" in text or "conclusion is not available" in text:
+                if isinstance(err, dict):
+                    code = str(err.get("code") or "missing_conclusion").strip()
+                    msg = str(err.get("message") or "").strip()
+                    if msg and code.lower() not in msg.lower():
+                        return f"{code}: {msg}"
+                    return msg or code or "missing_conclusion"
+                return str(err) or "missing_conclusion"
+    return None
+
+
+def _record_infra_soft_error(home: Path, message: str, *, now: float) -> None:
+    """Stamp last_infra_error on allowance for digest.copilot.tasks (#9748)."""
+    path = _allow_path(home)
+    try:
+        doc = load_allowance(home) or {}
+        doc["last_infra_error"] = str(message or "missing_conclusion")[:500]
+        doc["last_infra_error_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now))
+        )
+        Path(home).mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def extract_mrb_verdict_from_task(task_info: dict | None) -> str | None:
@@ -973,7 +1073,57 @@ def record_api_result(
             set_allowance(home, exhausted=False)
 
 
-def build_task_body(row: dict) -> dict:
+def resolve_copilot_model(*, home: Path | None = None) -> str:
+    """CCA ``model`` for ``agents/.../tasks`` (FR #9738).
+
+    Env ``BOB_COPILOT_MODEL`` wins (e.g. ``claude-haiku-4.5``). Else allowance
+    ``model``. Empty = omit from the POST body so GitHub uses Auto / default.
+    """
+    raw = (os.environ.get("BOB_COPILOT_MODEL") or "").strip()
+    if raw:
+        return raw
+    if home is not None:
+        try:
+            doc = load_allowance(home)
+        except Exception:  # noqa: BLE001
+            doc = {}
+        m = str(doc.get("model") or "").strip()
+        if m:
+            return m
+    return ""
+
+
+def resolve_copilot_base_ref(*, home: Path | None = None) -> str:
+    """CCA ``base_ref`` for task POST (FR #9738). Default ``main``.
+
+    Env ``BOB_COPILOT_BASE_REF`` wins when present (empty string omits the field).
+    Else allowance ``base_ref``, else ``main``.
+    """
+    if "BOB_COPILOT_BASE_REF" in os.environ:
+        return (os.environ.get("BOB_COPILOT_BASE_REF") or "").strip()
+    if home is not None:
+        try:
+            doc = load_allowance(home)
+        except Exception:  # noqa: BLE001
+            doc = {}
+        br = str(doc.get("base_ref") or "").strip()
+        if br:
+            return br
+    return "main"
+
+
+def build_task_body(
+    row: dict,
+    *,
+    home: Path | None = None,
+    model: str | None = None,
+    base_ref: str | None = None,
+) -> dict:
+    """Body for ``POST agents/repos/{owner}/{repo}/tasks`` (FR #5174 / #9738).
+
+    Always includes ``prompt``. Optional ``model`` when env/settings set (omit =
+    Auto). ``base_ref`` defaults to ``main`` unless explicitly cleared via env.
+    """
     task = str(row.get("task") or "FR").upper()
     repo = str(row.get("repo") or "")
     ident = str(row.get("id") or "")
@@ -1000,7 +1150,14 @@ def build_task_body(row: dict) -> dict:
             "Implement the issue. Open one PR whose body contains "
             f"Closes {repo}{ident if ident.startswith('#') else '#' + ident}."
         )
-    return {"prompt": "\n".join(prompt_lines)}
+    body: dict[str, str] = {"prompt": "\n".join(prompt_lines)}
+    model_s = resolve_copilot_model(home=home) if model is None else str(model or "").strip()
+    if model_s:
+        body["model"] = model_s
+    br = resolve_copilot_base_ref(home=home) if base_ref is None else str(base_ref or "").strip()
+    if br:
+        body["base_ref"] = br
+    return body
 
 
 def should_dispatch(
@@ -1223,7 +1380,7 @@ def dispatch_row(
         return {"status": "skip"}
     if gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK):
         return {"status": "skip"}
-    body = build_task_body(row)
+    body = build_task_body(row, home=home)
     path = tasks_api_path(str(row.get("repo") or ""))
     # FR #5174: never mark taken / announce without a real tasks POST + task id.
     if post is None:
@@ -1987,6 +2144,22 @@ def handle_timeout_or_fail(
                         bobreport.enqueue_chair_fleet_privmsg(home, line)
                         return {"status": "requeue", "reason": "no_verdict"}
                     # Non-MRB completed: fall through to existing-work / giveup paths.
+                # FR #9782: infra soft-fail before quota — free slot, never exhaust.
+                infra_msg = session_infra_soft_error(info)
+                if infra_msg:
+                    _record_infra_soft_error(home, infra_msg, now=now)
+                    _soft_release_copilot_row(
+                        home, repo=repo, task=task, ident=ident
+                    )
+                    _forget_job(home, repo, task, ident)
+                    log.info(
+                        "copilot infra soft-fail repo=%s %s%s reason=%s",
+                        repo,
+                        task,
+                        ident,
+                        (infra_msg or "")[:120],
+                    )
+                    return {"status": "infra_retry", "reason": infra_msg}
                 quota_msg = session_quota_error(info)
                 if quota_msg:
                     pause_lines: list[str] = []
@@ -2315,6 +2488,7 @@ def tick(
         "timed_out": 0,
         "failed": 0,
         "quota": 0,
+        "infra_retry": 0,
         "completed": 0,
         "dropped": int(settled.get("dropped") or 0),
         "released": int(settled.get("released") or 0),
@@ -2333,6 +2507,9 @@ def tick(
         st = str(r.get("status") or "")
         if st == "quota":
             out["quota"] += 1
+        elif st == "infra_retry":
+            # FR #9782: soft-fail frees slot; do not bump failed/quota.
+            out["infra_retry"] += 1
         elif st == "complete":
             out["completed"] += 1
         elif st == "giveup":
@@ -2356,6 +2533,9 @@ def tick(
             catalog = list(_sjs5847.load_open_catalog(home) or [])
         qdoc = gitclaim.load_queue(home)
         for row in gitclaim.ordered_unaccepted(home):
+            # FR #9745: fill up to MAX_CONCURRENT_COPILOT live slots
+            if len(active) >= MAX_CONCURRENT_COPILOT:
+                break
             if (row.get("repo"), row.get("task"), row.get("id")) in active:
                 continue
             if gitclaim.ledger_blocks(ledger, row, COPILOT_NICK):
@@ -2384,5 +2564,6 @@ def tick(
                 )
                 if r.get("status") == "dispatched":
                     out["dispatched"] += 1
-                break
+                    # Add to active set after successful dispatch
+                    active.add((row.get("repo"), row.get("task"), row.get("id")))
     return out
