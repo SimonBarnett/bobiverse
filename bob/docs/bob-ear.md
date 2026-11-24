@@ -57,6 +57,13 @@ Park drafts: `bob/docs/fr/digest-ear-publish/` (Refs, not Closes, for impl FRs).
 
 `GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (flat nick list) plus `airc_console_details` (`[{nick, machine, channel}]`) and per-machine `console_nicks`. Chair NAMES on **every** channel Jeeves sits in (registered shops and customer channels) record live `*_console` nicks; PART/QUIT clears them. No NickServ, no secrets. Priority Agent airc picker can verify presence without IRC credentials.
 
+## Single-instance (FR #9861 / #9743)
+
+- **OS named mutex** `Global\BobiverseBobEar-<hash(home|nick)>` is acquired in `irc_agent.main` **before** prior-clean / Client / outbox (FR #9861). A second process exits **3**.
+- File advisory `ear.<nick>.lock` (FR #9743) remains complementary when present; the mutex covers NSSM same-second twin starts that file locks can lose.
+- `Start-BobEar.ps1` refuses a second python/exe start when a process already has the same `--home`.
+- `--once` (smoke/UAT) skips the mutex.
+
 ## Outbox (send) â€” identical on every machine
 
 UTF-8 **no BOM**. Append one complete line per send to `<bob home>\outbox.txt`. Only lines starting with `PRIVMSG ` are sent raw (same interface on Ionos / MarchHare / Flamingo):
@@ -105,13 +112,13 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 | Running but no `inbound-transcript.log` | `Restart-BobEar.ps1` after this FR is deployed |
 | Running, socket ESTABLISHED, no transcript / deaf shop | FR #4980 keepalive; else `Restart-BobEar.ps1` |
 | Missing `outbox.txt` | Ear recreates home on start; ensure service ObjectName/home path |
-| **Paused** (NSSM AppThrottle after kill/crash) | **Never** `Stop-Process` bob-ear under NSSM (FR #9863). Use `Restart-Service ircBob` / `Restart-BobEar.ps1`. Monitor `ircbob_ear` heals Paused via Restart-Service. |
+| **Paused** (NSSM AppThrottle after kill/crash) | **Never** `Stop-Process` / `Start-Service` for Pause (FR #9863). Prefer `Resume-Service ircBob` when an ear child is still alive (FR #9902; Restart on redqueen NSSM can twin-spawn). Without a child, `Restart-Service ircBob` / `Restart-BobEar.ps1`. Monitor `ircbob_ear` follows the same Resume-then-Restart path. |
 | Twin / duplicate bob-ear | Prefer single-instance lock (FR #9743 / PR #9753). Do not prune with Stop-Process — Restart-Service instead. |
 
 
 ## Never Stop-Process the NSSM ear (FR #9863)
 
-Killing a `bob-ear.exe` / `irc_agent.py` child under **ircBob** with `Stop-Process` (or Task Manager End Task) can leave `Get-Service ircBob` as **Paused** (NSSM AppThrottle after unexpected exit). Outbox PRIVMSG then stops until Resume/Restart. Always heal with `Restart-Service ircBob` or Desktop **Restart ircBob** / `scripts\Restart-BobEar.ps1`. TipForm/monitor must Restart, never Pause-and-linger. Single-instance (FR #9743) removes the need to prune twins by hand.
+Killing a `bob-ear.exe` / `irc_agent.py` child under **ircBob** with `Stop-Process` (or Task Manager End Task) can leave `Get-Service ircBob` as **Paused** (NSSM AppThrottle after unexpected exit). Outbox PRIVMSG then stops until Resume/Restart. When the ear child is still alive, prefer `Resume-Service ircBob` (FR #9902) so NSSM does not respawn a twin; otherwise heal with `Restart-Service ircBob` or Desktop **Restart ircBob** / `scripts\Restart-BobEar.ps1`. TipForm/monitor must never Pause-and-linger or use `Start-Service` / `Stop-Process` for Pause. Single-instance (FR #9743) removes the need to prune twins by hand.
 ## Tray / recycle
 
 - Product Sync/ff runs on **ircBob Start-Bob** only â€” TipForm Start never updates the tree.

@@ -19,6 +19,9 @@ depends_on:
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. **CAST IRON FR #9906 - Never set GIT_ASKPASS to echo GH_TOKEN / GITHUB_TOKEN / `gh auth token`.**
+>    HTTPS push during harvest-lesson conflict folds must use `GH_TOKEN` env or `gh` credential helper / `gh auth setup-git`.
+>    An AskPass that echoes the token leaks into the seat terminal transcript. Rotate any exposed `github_pat_` / `ghp_`; never paste it into boards, skills, or PRs.
 
 **Job type `MRB`** (Material Review Board) - hostile, tests-first review of a pull request against the FR and the repo vision. Wire format and timing: `bobiverse-bob-job-irc`. The MRB is done by a **different seat or a fresh session** than the one that wrote the PR; the originating agent owns the review. An assigned MRB job authorises you to merge **that PR** (and its one docs/fix PR) - nothing else.
 

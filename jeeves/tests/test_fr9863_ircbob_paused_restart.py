@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""FR #9863: ircBob Paused (NSSM AppThrottle) must heal via Restart-Service, not Start-Service."""
+"""FR #9863 / #9902: ircBob Paused (NSSM AppThrottle) heal path.
+
+FR #9863: never Start-Service / Stop-Process for Pause; Restart when no child.
+FR #9902: Paused + live ear child prefers Resume-Service; Resume fail falls
+through to Restart-Service. Restart on redqueen NSSM can twin-spawn.
+"""
 from __future__ import annotations
 
 import json
@@ -14,6 +19,7 @@ PACK_SVC = ROOT.parents[0] / "bob" / "tray" / "tools" / "Invoke-BobTrayServiceCo
 HOVER = ROOT.parents[0] / "bob" / "tray" / "src" / "Public" / "Get-BobTrayHover.ps1"
 EAR_DOC = ROOT.parents[0] / "bob" / "docs" / "bob-ear.md"
 INSTALL_BOB = ROOT.parents[0] / "bob" / "scripts" / "Install-Bob.ps1"
+IRCBOB_EAR = ROOT / "tools" / "monitor" / "ircbob_ear.py"
 
 
 def _import_ircbob_ear():
@@ -47,20 +53,26 @@ class _Args:
         self.digest_home = str(tmp_path)
 
 
-def test_fr9863_paused_heals_via_restart_not_start(tmp_path: Path, monkeypatch):
+def test_fr9902_paused_with_child_prefers_resume(tmp_path: Path, monkeypatch):
+    """FR #9902: Paused + live child -> Resume-Service; no Restart / Start."""
     _fresh_digest(tmp_path)
     mod = _import_ircbob_ear()
     states = iter(["Paused", "Running"])
     starts: list[str] = []
+    resumes: list[str] = []
     restarts: list[str] = []
 
     monkeypatch.setattr(mod, "_service_state", lambda _n: next(states))
-    # After Restart-Service heal, child must be present (FR #9863 acceptance).
     monkeypatch.setattr(mod, "_ear_child_alive", lambda: True)
     monkeypatch.setattr(
         mod,
         "_start_service",
         lambda n: (starts.append(n) or False, "Paused"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_resume_service",
+        lambda n: (resumes.append(n) or True, "Running"),
     )
     monkeypatch.setattr(
         mod,
@@ -71,9 +83,83 @@ def test_fr9863_paused_heals_via_restart_not_start(tmp_path: Path, monkeypatch):
 
     payload, code = mod.check(_Args(tmp_path))
     assert starts == [], "Paused must not use Start-Service"
+    assert resumes == [mod.SERVICE_NAME]
+    assert restarts == [], "Paused+child must not Restart when Resume succeeds"
+    assert payload["heal"] == "resumed"
+    assert not any("FR #9863" in f for f in payload["findings"])
+    assert code == 0, payload
+
+
+def test_fr9902_paused_without_child_still_restarts(tmp_path: Path, monkeypatch):
+    """FR #9863 kept: Paused without ear child -> Restart-Service only."""
+    _fresh_digest(tmp_path)
+    mod = _import_ircbob_ear()
+    # First call: Paused; after Restart: Running. Child False before, True after.
+    states = iter(["Paused", "Running"])
+    child_calls = {"n": 0}
+    starts: list[str] = []
+    resumes: list[str] = []
+    restarts: list[str] = []
+
+    def _alive() -> bool:
+        child_calls["n"] += 1
+        # Before heal: no child. After Restart heal path re-checks: alive.
+        return child_calls["n"] > 1
+
+    monkeypatch.setattr(mod, "_service_state", lambda _n: next(states))
+    monkeypatch.setattr(mod, "_ear_child_alive", _alive)
+    monkeypatch.setattr(
+        mod,
+        "_start_service",
+        lambda n: (starts.append(n) or False, "Paused"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_resume_service",
+        lambda n: (resumes.append(n) or True, "Running"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_restart_service",
+        lambda n: (restarts.append(n) or True, "Running"),
+    )
+    monkeypatch.setattr(mod, "_scan_enospc_logs", lambda: [])
+
+    payload, code = mod.check(_Args(tmp_path))
+    assert starts == [], "Paused must not use Start-Service"
+    assert resumes == [], "Paused without child must not Resume"
     assert restarts == [mod.SERVICE_NAME]
     assert payload["heal"] == "restarted"
     assert not any("FR #9863" in f for f in payload["findings"])
+    assert code == 0, payload
+
+
+def test_fr9902_resume_fail_falls_through_to_restart(tmp_path: Path, monkeypatch):
+    """FR #9902: Resume fails -> fall through to Restart-Service."""
+    _fresh_digest(tmp_path)
+    mod = _import_ircbob_ear()
+    states = iter(["Paused", "Paused", "Running"])
+    resumes: list[str] = []
+    restarts: list[str] = []
+
+    monkeypatch.setattr(mod, "_service_state", lambda _n: next(states))
+    monkeypatch.setattr(mod, "_ear_child_alive", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "_resume_service",
+        lambda n: (resumes.append(n) or False, "Paused"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_restart_service",
+        lambda n: (restarts.append(n) or True, "Running"),
+    )
+    monkeypatch.setattr(mod, "_scan_enospc_logs", lambda: [])
+
+    payload, code = mod.check(_Args(tmp_path))
+    assert resumes == [mod.SERVICE_NAME]
+    assert restarts == [mod.SERVICE_NAME]
+    assert payload["heal"] == "restarted"
     assert code == 0, payload
 
 
@@ -82,6 +168,7 @@ def test_fr9863_paused_without_heal_is_finding(tmp_path: Path, monkeypatch):
     mod = _import_ircbob_ear()
     monkeypatch.setattr(mod, "_service_state", lambda _n: "Paused")
     monkeypatch.setattr(mod, "_ear_child_alive", lambda: False)
+    monkeypatch.setattr(mod, "_resume_service", lambda _n: (False, "dry"))
     monkeypatch.setattr(mod, "_restart_service", lambda _n: (False, "dry"))
     monkeypatch.setattr(mod, "_scan_enospc_logs", lambda: [])
 
@@ -106,3 +193,9 @@ def test_fr9863_pins_docs_and_nssm_throttle():
     assert "Never Stop-Process the NSSM ear (FR #9863)" in doc
     assert "Restart-Service ircBob" in doc
     assert "9743" in doc
+    # FR #9902: Paused row prefers Resume when child is up.
+    assert "Resume-Service" in doc or "Resume when" in doc
+    assert "9902" in doc
+    src = IRCBOB_EAR.read_text(encoding="utf-8")
+    assert "def _resume_service" in src
+    assert "FR #9902" in src

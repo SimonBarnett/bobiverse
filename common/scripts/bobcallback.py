@@ -333,6 +333,25 @@ def handle_health_get(home: Path) -> tuple[int, bytes]:
         "lock_break_count": bobreport.digest_lock_break_count(),
         "lock_hold_exception_count": bobreport.digest_lock_hold_exception_count(),
     }
+    # FR #9900: log freshness is separate from ok (digest write != AppStdout progress).
+    try:
+        import chair_log_freshness as _clf
+
+        prog = _clf.progress_snapshot(home)
+        doc.update(
+            {
+                "progress_ok": bool(prog.get("progress_ok")),
+                "progress_reason": prog.get("progress_reason"),
+                "progress_max_age_s": prog.get("progress_max_age_s"),
+                "stdout_age_s": prog.get("stdout_age_s"),
+                "cmd_trace_age_s": prog.get("cmd_trace_age_s"),
+                "stdout_path": prog.get("stdout_path"),
+                "cmd_trace_path": prog.get("cmd_trace_path"),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - health must still answer
+        doc["progress_ok"] = None
+        doc["progress_reason"] = f"error:{type(exc).__name__}"
     return (200 if ok else 503), json.dumps(doc, separators=(",", ":")).encode("utf-8")
 
 def _parse_json_body(body: bytes | str, *, scan_secret: bool = True) -> dict | None:

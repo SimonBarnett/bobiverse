@@ -1178,6 +1178,22 @@ function Set-BobiverseNssmAppExitRestart {
     }
 }
 
+function Set-BobiverseNssmAppRotate {
+    <#
+    FR #9896: pin NSSM AppRotate* so AppStdout/AppStderr cannot grow unbounded.
+    Walrus ircJeeves stdout.log hit ~64MB with rotation unset. Defaults match
+    airc Install-AircConsole (1 MiB) plus AppRotateOnline while Running.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Nssm,
+        [Parameter(Mandatory)][string]$ServiceName,
+        [int]$RotateBytes = 1048576
+    )
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRotateFiles', '1'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRotateBytes', ([string]$RotateBytes)))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRotateOnline', '1'))
+}
+
 function Test-BobiverseServiceDeletePending {
     param([Parameter(Mandatory)][string]$Name)
     $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"

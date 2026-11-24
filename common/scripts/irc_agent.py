@@ -6814,6 +6814,68 @@ class Client:
             backoff = next_reconnect_backoff_s(backoff)
 
 
+
+# --- FR #9861: OS named mutex (NSSM same-second twin) -----------------------------
+_EAR_INSTANCE_MUTEX_HANDLE = None
+_EAR_MUTEX_EXIT = 3  # same as FR #9743 duplicate-ear refuse
+
+
+def ear_instance_mutex_name(home: Path | str, nick: str) -> str:
+    """Global mutex name for one bob-ear per home+nick (FR #9861)."""
+    raw = f"{Path(home).expanduser().resolve()}|{str(nick or '').strip().lower()}"
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"Global\\BobiverseBobEar-{digest}"
+
+
+def try_acquire_ear_instance_mutex(home: Path | str, nick: str) -> bool:
+    """Windows named mutex; True if this process owns the ear instance (FR #9861).
+
+    File advisory locks (FR #9743) can lose a same-second NSSM double-start race.
+    CreateMutexW is atomic across processes. Non-Windows: always True (tests use
+    mocks). Fail-open only when the mutex API itself is unavailable.
+    """
+    global _EAR_INSTANCE_MUTEX_HANDLE
+    if os.name != "nt":
+        return True
+    home_s = str(home or "").strip()
+    nick_s = str(nick or "").strip()
+    if not home_s or not nick_s:
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        name = ear_instance_mutex_name(home_s, nick_s)
+        handle = kernel32.CreateMutexW(None, wintypes.BOOL(True), name)
+        if not handle:
+            return True  # fail-open: do not brick ear on CreateMutex failure
+        err = int(kernel32.GetLastError() or 0)
+        # ERROR_ALREADY_EXISTS = 183
+        if err == 183:
+            kernel32.CloseHandle(handle)
+            return False
+        _EAR_INSTANCE_MUTEX_HANDLE = handle
+        return True
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def release_ear_instance_mutex() -> None:
+    """Drop the FR #9861 named mutex (tests / orderly shutdown)."""
+    global _EAR_INSTANCE_MUTEX_HANDLE
+    if _EAR_INSTANCE_MUTEX_HANDLE is None or os.name != "nt":
+        _EAR_INSTANCE_MUTEX_HANDLE = None
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(_EAR_INSTANCE_MUTEX_HANDLE)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    _EAR_INSTANCE_MUTEX_HANDLE = None
+
+
 def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
     """Hard-kill hung same-nick / same-home priors before the first connect.
 
@@ -6957,6 +7019,18 @@ def main() -> None:
         )
     except Exception as e:  # pragma: no cover - never block connect on guard bugs
         info(f"WARN live-tree guard skipped {type(e).__name__}")
+    # FR #9861: OS mutex BEFORE prior-clean / Client / outbox so NSSM twin starts
+    # in the same second cannot both connect (file advisory lock alone can race).
+    if home and not bool(args.once):
+        if not try_acquire_ear_instance_mutex(home, args.nick):
+            info(
+                f"ERROR ear instance mutex busy home={home} nick={args.nick} "
+                f"(FR #9861); refusing duplicate bob-ear"
+            )
+            sys.exit(_EAR_MUTEX_EXIT)
+        import atexit
+
+        atexit.register(release_ear_instance_mutex)
     clean_crashed_priors(args.nick, home, once=bool(args.once))
     # FR #9743: single-instance lock per home/nick so a disconnected duplicate
     # cannot drain outbox.txt.pos ahead of the live ear.

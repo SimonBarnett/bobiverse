@@ -19,6 +19,12 @@
         "source": "opencode models",
         "cli_version": "1.19.5",
         "note": "Native opencode/* and opencode-go/* rows only (openrouter/* omitted from initial seed)"
+      },
+      "copilot": {
+        "source": "GitHub REST agents/repos tasks Start-a-task model allow-list (API 2026-03-10) plus ops-proven claude-haiku-4.5 (#9738; absent from REST list)",
+        "cli_version": "api-2026-03-10",
+        "fetched_at": "2026-11-24T00:00:00Z",
+        "note": "Availability depends on plan and organisation policy; haiku is ops-proven not REST-listed"
       }
     }
   },
@@ -303,6 +309,48 @@
       },
       {
         "model": "opencode-go/step-5-preview",
+        "contexts": [],
+        "efforts": []
+      }
+    ],
+    "copilot": [
+      {
+        "model": "claude-haiku-4.5",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "claude-sonnet-4.6",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "claude-opus-4.6",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "gpt-5.2-codex",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "gpt-5.3-codex",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "gpt-5.4",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "claude-sonnet-4.5",
+        "contexts": [],
+        "efforts": []
+      },
+      {
+        "model": "claude-opus-4.5",
         "contexts": [],
         "efforts": []
       }
