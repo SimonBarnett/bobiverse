@@ -789,6 +789,9 @@ def _bob_g1_digest_gate_for_pair(
     FR #9418 ``bob_g1_live_digest_absent_queue``: when the digest is not in
     unaccepted/accepted, ``issue_fetch`` (GitHub issue dict) still resolves labels /
     Kind so children are not wrongly blocked as ``depends-open``.
+
+    FR #9858: same held-digest skip for **foreign** ``owner/repo#N`` digests
+    (repo B child blocked while repo A digest still has ``hold``).
     """
     raw = str(oid or "").strip().lstrip("#")
     try:
