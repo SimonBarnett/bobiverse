@@ -187,6 +187,7 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
 - Bored-latency heal must count `!recycleseat` by **machine slot** in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever (harvest-lesson MRB #6812; keep the product gap here, not in harvest honesty-box).
 - **FR #9344 / live D3 before BOB-G1:** unhold of an fr-digest alone leaves children with `Depends-on` OPEN blocked under live D3. Close the digest (or clear Depends-on) to release assign. Prefer outbox file-edit + HTTPS digest when the chair-host shell/WinRM hangs.
+- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
 
 ## Harvested lessons
 
@@ -196,7 +197,3 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - **FR #9406 / #9402:** hold-labeled ops FR sticky `offered_to` must not leave a seat `busy (offered FR ...)` — clear sticky offer + drop the held FR from unaccepted (digest gate rows keep queue, lose offer pin) so gate MRB `!assign` can proceed.
 - **FR #9400:** never `Closes` ops/gate tracker issues while Depends-on / GateIssues still OPEN — tool-only PRs use `Refs` / `Toward`; reopen if GitHub auto-closed early.
 - FR #9376 / PR #9387: document and prefer `Install-JeevesWalrusWinRm.ps1` + check `walrus_jeeves_install_ready` (full playbook in `bobiverse-jeeves-agent-install`). DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only.
-
-## Harvested lessons (intake)
-
-- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).

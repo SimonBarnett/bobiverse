@@ -13042,6 +13042,7 @@ def purge_stale_offered_pins(
     now: float | None = None,
     live: set[str] | None = None,
     locked_doc: dict | None = None,
+    clear_aged_live_holds: bool = True,
 ) -> int:
     """FR #9402: clear aged/dead ``offered_to`` pins (same rules as ``offer_focus_top``).
 
@@ -13094,16 +13095,18 @@ def purge_stale_offered_pins(
                 else:
                     with contextlib.suppress(Exception):
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
-                # FR #9403: always drop seat-holds with the pin (parity with offer_focus_top).
-                # Keeping aged-but-live holds left idle seats busy (held FR …) after
-                # offer-timeout:idle-no-ack while ACC moved to another nick.
-                with contextlib.suppress(Exception):
-                    _clear_job_seat_holds_unlocked(
-                        home,
-                        str(cand.get("repo") or ""),
-                        str(cand.get("task") or ""),
-                        str(cand.get("id") or ""),
-                    )
+                # FR #9403: drop seat-holds with the pin (parity with offer_focus_top).
+                # FR #4089 / MRB #9561: seat_open_job passes clear_aged_live_holds=False
+                # so aged-live holds remain until the offer loop observes timeout.
+                # Dead pins always clear holds.
+                if clear_aged_live_holds or dead_pin:
+                    with contextlib.suppress(Exception):
+                        _clear_job_seat_holds_unlocked(
+                            home,
+                            str(cand.get("repo") or ""),
+                            str(cand.get("task") or ""),
+                            str(cand.get("id") or ""),
+                        )
                 cand.pop("offered_to", None)
                 cand.pop("offered_ts", None)
                 cand.pop("offered_channel", None)
@@ -13154,7 +13157,11 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 if isinstance(r, dict)
             ]
             cleared = purge_stale_offered_pins(
-                home, now=now_f, live=live, locked_doc=doc
+                home,
+                now=now_f,
+                live=live,
+                locked_doc=doc,
+                clear_aged_live_holds=False,
             )
             out = _seat_open_job_in(home, doc, nick, now_f, live)
             after_offers = [
