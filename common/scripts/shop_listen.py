@@ -979,8 +979,31 @@ def return_job_to_unaccepted(
             if reason and not console_closed_giveup:
                 with contextlib.suppress(Exception):
                     gitclaim.apply_depends_on_giveup_stamp(job, reason)
-            if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
+            # FR #9554 bob_host_heal_tipform_auto_pin: tipform/tray/engine.alive host-heal
+            # churn pins require_machine (counts infra-soft too) and never needs_human.
+            host_heal_pinned = ""
+            with contextlib.suppress(Exception):
+                host_heal_pinned = gitclaim.apply_host_heal_require_machine_stamp(
+                    job, reason or "", nick=gave_up_by or ""
+                )
+            if host_heal_pinned:
+                job.pop("needs_human", None)
+            elif (not seat_not_job_giveup) and count >= int(
+                gitclaim.GIVEUP_NEEDS_HUMAN_COUNT
+            ):
                 job["needs_human"] = True
+            if (
+                (not seat_not_job_giveup)
+                and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT)
+                and gitclaim.row_is_host_heal_tipform(job)
+            ):
+                # Divert late: tipform class must not park needs_human even if pin
+                # missed (no machine inferred yet).
+                job.pop("needs_human", None)
+                with contextlib.suppress(Exception):
+                    gitclaim.apply_host_heal_require_machine_stamp(
+                        job, reason or "", nick=gave_up_by or ""
+                    )
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so
             # recycled OpenCode nicks do not keep re-taking the same job.
             # FR #8008 still records the agent class. FR #8375: that must not
