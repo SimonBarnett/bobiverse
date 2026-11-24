@@ -59,8 +59,9 @@ if (Test-Path -LiteralPath $nsFile) {
 
 # t781u/t782u start-up update order (dev path first, release path second):
 #   1. repo fast-forward: <InstallRoot> is a sparse git work tree (bob + common) -> fetch + ff-only origin/main, flat runtime files
-#      recomposed from it (Sync-BobiverseFromRepo.ps1). Never destroys local edits/commits, never blocks the start, falls back to the
-#      installed version on any failure. BOBIVERSE_REPO (explicit dev override) syncs from that clone instead.
+#      recomposed from it (Sync-BobiverseFromRepo.ps1). Never destroys local edits/commits. FR #9508: out-of-process with
+#      BOB_START_SYNC_TIMEOUT_SEC (default 90s) so a hung git fetch cannot block bob-ear under nssm. Falls back to the
+#      installed version on any failure/timeout. BOBIVERSE_REPO (explicit dev override) syncs from that clone instead.
 #   2. release self-update (Update-BobiverseService.ps1): only when a GitHub release is newer than the VERSION now installed (the
 #      ff'd tree counts), so the MSI path stays the safety net for boxes where git is unavailable.
 #   Opt out of BOTH with BOBIVERSE_NO_UPDATE=1 (FR #6259: trim Process+Machine via Get-BobiverseNoUpdateReason;
@@ -70,19 +71,63 @@ if ($noUpdateReason) {
     Write-Host ("INFO no-update-guard seen=1 effective=1 reason={0} sync=suppressed updater=suppressed" -f $noUpdateReason)
 } else {
     Write-Host "INFO no-update-guard seen=0 effective=0 sync=allowed updater=allowed"
-    $sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
-    if (Test-Path -LiteralPath $sync) {
-        try { & $sync -Product bob -InstallRoot $InstallRoot }
-        catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
+    # FR #9508: never call Sync/Update in-process under nssm. A hung git fetch left
+    # Start-Bob with zero children while Status=Running (marchhare #9496 class).
+    # Out-of-process + WaitForExit + taskkill /T (same spirit as FR #9350/#9435 monitor).
+    $syncTimeoutSec = 90
+    if ($env:BOB_START_SYNC_TIMEOUT_SEC -match '^\d+$') {
+        $syncTimeoutSec = [int]$env:BOB_START_SYNC_TIMEOUT_SEC
     }
+    if ($syncTimeoutSec -lt 15) { $syncTimeoutSec = 15 }
+    if ($syncTimeoutSec -gt 300) { $syncTimeoutSec = 300 }
+    $psExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+    function Invoke-BobStartTimedScript {
+        param(
+            [Parameter(Mandatory)][string]$Label,
+            [Parameter(Mandatory)][string]$FilePath,
+            [Parameter(Mandatory)][string[]]$ArgumentList
+        )
+        if (-not (Test-Path -LiteralPath $FilePath)) { return }
+        $outLog = Join-Path $env:TEMP ("bob-start-{0}-{1}.out.log" -f $Label, $PID)
+        $errLog = Join-Path $env:TEMP ("bob-start-{0}-{1}.err.log" -f $Label, $PID)
+        $argList = @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-File', $FilePath
+        ) + $ArgumentList
+        $p = $null
+        try {
+            $p = Start-Process -FilePath $psExe -ArgumentList $argList `
+                -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+            $ms = [Math]::Max(5000, $syncTimeoutSec * 1000)
+            if (-not $p.WaitForExit($ms)) {
+                try {
+                    if (-not $p.HasExited) {
+                        Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" `
+                            -ArgumentList @('/PID', [string]$p.Id, '/T', '/F') `
+                            -Wait -WindowStyle Hidden | Out-Null
+                    }
+                } catch {
+                    try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+                }
+                Write-Host ("WARN FR #9508 {0} timeout after {1}s; proceeding to bob-ear" -f $Label, $syncTimeoutSec)
+            } elseif ($p.ExitCode -ne 0) {
+                Write-Host ("WARN FR #9508 {0} exit={1}; proceeding to bob-ear" -f $Label, $p.ExitCode)
+            }
+        } catch {
+            Write-Host ("WARN FR #9508 {0}: {1}" -f $Label, $_.Exception.Message)
+        } finally {
+            if ($p) { try { $p.Dispose() } catch { } }
+        }
+    }
+    $sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+    Invoke-BobStartTimedScript -Label 'sync-from-repo' -FilePath $sync `
+        -ArgumentList @('-Product', 'bob', '-InstallRoot', $InstallRoot)
     # v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
     # helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
     # Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
     $updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
-    if (Test-Path -LiteralPath $updater) {
-        try { & $updater -Product bob -InstallRoot $InstallRoot -ServiceName ircBob }
-        catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
-    }
+    Invoke-BobStartTimedScript -Label 'self-update' -FilePath $updater `
+        -ArgumentList @('-Product', 'bob', '-InstallRoot', $InstallRoot, '-ServiceName', 'ircBob')
 }
 
 # FR #1481 / MRB #1488: prefer bob-ear.exe *after* sync/self-update so a just-staged exe is seen.
