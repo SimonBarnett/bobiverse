@@ -333,11 +333,14 @@ function Get-BobTrayPriorProcessHits {
     try {
         foreach ($p in @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue)) {
             if ([int]$p.Id -eq $ExcludePid) { continue }
+            # WinPS 5.1: try/catch is not a valid hashtable-value expression (blocks ForceNew after #9528).
+            $exePath = ''
+            try { $exePath = [string]$p.Path } catch { $exePath = '' }
             $hits.Add([pscustomobject]@{
                     ProcessId      = [int]$p.Id
                     Name           = 'bob-tray.exe'
                     CommandLine    = ''
-                    ExecutablePath = try { [string]$p.Path } catch { '' }
+                    ExecutablePath = $exePath
                     Source         = 'get-process'
                 })
         }
