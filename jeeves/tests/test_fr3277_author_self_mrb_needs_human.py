@@ -78,10 +78,11 @@ def test_assign_allows_needs_human_fr4336(tmp_path, monkeypatch):
             "done": [],
         },
     )
-    # AUTHOR is in giveup_seats (exact) → still refused on that exact nick.
+    # AUTHOR is author/implementer → refused self-MRB (FR #9634 clears giveup_seats on
+    # !assign, so the durable refuse is no-self-MRB, not "gave this row up").
     st_a, why_a = gitclaim.assign_row(home, AUTHOR, ASEARCH, "MRB", "#501")
-    assert st_a == "refused" and "gave" in str(why_a).lower()
-    # OTHER is not in giveup_seats; needs_human does not block !assign.
+    assert st_a == "refused" and "self-mrb" in str(why_a).lower()
+    # OTHER is not author; needs_human does not block !assign (FR #4336).
     st_b, job_b = gitclaim.assign_row(home, OTHER, ASEARCH, "MRB", "#501")
     assert st_b == "ok" and job_b and job_b["id"] == "#501"
 
