@@ -323,27 +323,10 @@ def _list_posix() -> list[tuple[int, str]]:
     return rows
 
 
-def _list_windows() -> list[tuple[int, str]]:
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Where-Object { $_.CommandLine -and "
-        "($_.CommandLine -like '*irc_agent.py*' -or $_.CommandLine -like '*irc_listen.py*' "
-        "-or $_.CommandLine -like '*bob-ear.exe*' -or $_.CommandLine -like '*\\bob-ear *' "
-        "-or $_.CommandLine -like '*\\bob-ear\"*') } | "
-        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-    )
-    # FR #9236: capture stderr so TimeoutExpired / CalledProcessError carry a diagnosable tail.
-    out = subprocess.check_output(
-        ["powershell", "-NoProfile", "-Command", script],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        stderr=subprocess.PIPE,
-    )
+def _parse_windows_process_json(text: str) -> list[tuple[int, str]]:
     import json
 
-    text = (out or "").strip()
+    text = (text or "").strip()
     if not text:
         return []
     try:
@@ -363,6 +346,89 @@ def _list_windows() -> list[tuple[int, str]]:
             continue
         rows.append((pid, cmd))
     return rows
+
+
+def _list_windows_wmic() -> list[tuple[int, str]]:
+    """FR #9496: WMIC fallback when Get-CimInstance powershell hangs/times out."""
+    out = subprocess.check_output(
+        [
+            "wmic",
+            "process",
+            "where",
+            "CommandLine is not null",
+            "get",
+            "ProcessId,CommandLine",
+            "/FORMAT:LIST",
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        stderr=subprocess.PIPE,
+    )
+    rows: list[tuple[int, str]] = []
+    cmd = ""
+    pid: int | None = None
+    for raw in (out or "").splitlines():
+        line = raw.strip()
+        if not line:
+            if pid is not None and cmd:
+                low = cmd.casefold()
+                if (
+                    "irc_agent.py" in low
+                    or "irc_listen.py" in low
+                    or "bob-ear.exe" in low
+                    or "\\bob-ear " in low
+                    or "\\bob-ear\"" in low
+                ):
+                    rows.append((pid, cmd))
+            cmd = ""
+            pid = None
+            continue
+        if line.lower().startswith("commandline="):
+            cmd = line.split("=", 1)[1]
+        elif line.lower().startswith("processid="):
+            try:
+                pid = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                pid = None
+    if pid is not None and cmd:
+        low = cmd.casefold()
+        if (
+            "irc_agent.py" in low
+            or "irc_listen.py" in low
+            or "bob-ear.exe" in low
+            or "\\bob-ear " in low
+            or "\\bob-ear\"" in low
+        ):
+            rows.append((pid, cmd))
+    return rows
+
+
+def _list_windows() -> list[tuple[int, str]]:
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.CommandLine -and "
+        "($_.CommandLine -like '*irc_agent.py*' -or $_.CommandLine -like '*irc_listen.py*' "
+        "-or $_.CommandLine -like '*bob-ear.exe*' -or $_.CommandLine -like '*\\bob-ear *' "
+        "-or $_.CommandLine -like '*\\bob-ear\"*') } | "
+        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    # FR #9236: capture stderr so TimeoutExpired / CalledProcessError carry a diagnosable tail.
+    # FR #9496: on CIM timeout/failure fall back to WMIC (marchhare WinRM/CIM class).
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", script],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            stderr=subprocess.PIPE,
+        )
+        return _parse_windows_process_json(out)
+    except (OSError, subprocess.SubprocessError):
+        print("INFO prior-clean windows-list fallback=wmic", flush=True)
+        return _list_windows_wmic()
 
 
 def _prior_scan_attempts() -> int:
