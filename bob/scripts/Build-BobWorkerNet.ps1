@@ -3,7 +3,7 @@
 .SYNOPSIS
   Publish bob/worker/dotnet into bob-worker-net.exe (.NET 8 SDK, self-contained win-x64).
 .DESCRIPTION
-  FR #9800 Phase 0 scaffold. Uses ``dotnet publish`` — not Framework 4 ``csc.exe``.
+  FR #9800 Phase 0 scaffold. Uses ``dotnet publish`` - not Framework 4 ``csc.exe``.
   Airc min-spec / no-SDK floor does **not** apply. Requires .NET 8 SDK on the build machine.
 .OUTPUTS
   Full path of the published bob-worker-net.exe.
