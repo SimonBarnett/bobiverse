@@ -87,6 +87,7 @@ def _clear_copilot_cooldown(doc: dict) -> None:
     """Drop the legacy cooldown and the FR #5397 per-fuel copilot block."""
     doc.pop("exhausted_until", None)
     doc.pop("exhausted_until_utc", None)
+    doc.pop("exhausted_until_source", None)
     doc.pop("pause_announced_until", None)
     fuels = doc.get("fuels")
     if not isinstance(fuels, dict):
@@ -97,11 +98,38 @@ def _clear_copilot_cooldown(doc: dict) -> None:
     block = dict(block)
     block.pop("exhausted_until", None)
     block.pop("exhausted_until_utc", None)
+    block.pop("exhausted_until_source", None)
     if block:
         fuels["copilot"] = block
     else:
         fuels.pop("copilot", None)
     doc["fuels"] = fuels
+
+
+def _clear_sticky_allowance_exhaust_on_ok(home: Path) -> None:
+    """FR #9733: when observation shows ok/unlimited, drop sticky exhaust stamps.
+
+    Mirrors ``refresh_allowance`` clearing for ``state=ok``. Never creates
+    ``copilot-allowance.json`` when the file is absent.
+    """
+    path = _allow_path(home)
+    if not path.is_file():
+        return
+    doc = load_allowance(home)
+    sticky = bool(
+        doc.get("tasks_exhausted")
+        or doc.get("exhausted")
+        or doc.get("exhausted_until")
+        or str(doc.get("state") or "").lower() in ("exhausted", "quota_exhausted", "failed")
+    )
+    if not sticky:
+        return
+    doc["tasks_exhausted"] = False
+    doc["exhausted"] = False
+    if str(doc.get("state") or "").lower() in ("exhausted", "quota_exhausted", "failed"):
+        doc["state"] = "ok"
+    _clear_copilot_cooldown(doc)
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
 def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | None = None) -> None:
@@ -201,8 +229,13 @@ def observe_quota(
     (dispatch enabled, or explicit observation opt-in). Direct callers may still
     use it in tests.
 
-    Never creates or mutates copilot-allowance.json. Never calls mark_tokens_exhausted
+    Never creates ``copilot-allowance.json`` and never calls mark_tokens_exhausted
     or queue helpers. fetched_at advances only on a successful parse.
+
+    FR #9733: when a successful observation is ``state=ok`` (or unlimited), clear
+    sticky allowance exhaust stamps on an existing allowance file the same way
+    ``refresh_allowance`` does for ok — so systray/digest stop painting exhausted
+    after VS Code / API quota refresh.
     """
     now_f = time.time() if now is None else float(now)
     prev = load_observation(home)
@@ -271,6 +304,9 @@ def observe_quota(
         doc["attempted_epoch"] = now_f
         doc.pop("last_error", None)
         _write_observation(home, doc)
+        # FR #9733: sticky exhausted_until must not outlive a fresher ok observation.
+        if doc.get("state") == "ok" or bool(doc.get("unlimited")):
+            _clear_sticky_allowance_exhaust_on_ok(home)
         return doc
 
     # Failure or unknown-without-prior-success: keep last good fetched_at.
@@ -694,7 +730,7 @@ def prefer_public_pool(a: dict | None, b: dict | None) -> dict:
 
 
 def pool_for_digest(home: Path) -> dict:
-    """FR #5965 + FR #6148 + FR #7178: prefer freshest observation; never omit keys."""
+    """FR #5965 + FR #6148 + FR #7178 + FR #9733: prefer freshest observation; never omit keys."""
     allow = load_allowance(home)
     obs = load_observation(home)
     # Quota fields from the source with the newer successful fetched_at.
@@ -709,12 +745,25 @@ def pool_for_digest(home: Path) -> dict:
     if not quota:
         return empty_public_pool(error="unread")
     state = str(quota.get("state") or "unknown")
-    exhausted = bool(
-        allow.get("exhausted")
-        or allow.get("tasks_exhausted")
-        or state in ("exhausted", "quota_exhausted", "failed")
-        or str(allow.get("state") or "") in ("exhausted", "quota_exhausted", "failed")
+    # FR #9733: fresher observation ok/unlimited must not be overridden by sticky
+    # allowance exhausted_until / tasks_exhausted (systray painted 0% after refresh).
+    obs_wins_ok = (
+        quota is obs
+        and obs_ep > allow_ep
+        and (
+            str(obs.get("state") or "").lower() == "ok"
+            or bool(obs.get("unlimited"))
+        )
     )
+    if obs_wins_ok:
+        exhausted = state in ("exhausted", "quota_exhausted", "failed")
+    else:
+        exhausted = bool(
+            allow.get("exhausted")
+            or allow.get("tasks_exhausted")
+            or state in ("exhausted", "quota_exhausted", "failed")
+            or str(allow.get("state") or "") in ("exhausted", "quota_exhausted", "failed")
+        )
     if exhausted and state in ("", "unknown", "ok"):
         state = "exhausted"
     attempted = str(quota.get("attempted_at") or obs.get("attempted_at") or allow.get("attempted_at") or "")
@@ -744,8 +793,8 @@ def pool_for_digest(home: Path) -> dict:
         "fetched_at": quota.get("fetched_at") or "",
         "attempted_at": attempted,
         "state": state,
-        "resume_at": allow.get("exhausted_until_utc") or "",
-        "resume_source": allow.get("exhausted_until_source") or "",
+        "resume_at": "" if obs_wins_ok else (allow.get("exhausted_until_utc") or ""),
+        "resume_source": "" if obs_wins_ok else (allow.get("exhausted_until_source") or ""),
     }
     if max_rec is not None:
         out["max_recorded_usage"] = max_rec
