@@ -499,3 +499,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - ircJeeves AppStdout without AppRotateFiles/Bytes/Online grows unbounded; pin rotate on Install and re-assert on Update for Product=jeeves
 - After MRB FAIL+FIX tip push (FR #5142), re-review the new head SHA and PASS when the prior finding is fixed; do not FAIL again for the same ascii-bom finding.
 - FR #8781 class: /health ok and last_digest_write do not prove AppStdout progress; expose progress_ok ages on /health and EXIT 1 via chair_progress when logs stale
+- gh REST 0 remaining: load C:\passwords\gitPAT.txt into GH_TOKEN without printing; wait for core reset then pr create; GraphQL may still have budget
