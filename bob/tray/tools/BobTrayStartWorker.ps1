@@ -399,7 +399,8 @@ function Format-BobTrayOnlineZeroCaption {
 function Get-BobTrayEngineWakeAlert {
     <#
     FR #9513: ear wrote engine.wake after engine_stale NACK (tray-cmd reload also queued).
-    TipForm-only alert sibling of engine_restart_storm (no auto intervene).
+    FR #9522: TipForm host TakeWake consumes engine.wake -> ReloadEngine (alert clears when taken).
+    TipForm-only alert sibling of engine_restart_storm while the stamp is still present.
     #>
     param(
         [string]$Root = '',

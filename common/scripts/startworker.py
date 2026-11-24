@@ -8,9 +8,10 @@ The Bob ear (service, session 0, LocalSystem) can not open a window on the user'
           logged in with the tray up) -> worker cap -> cooldown -> write ``req-<id>.json`` -> reply ACK / NACK
   tray  : host writes ``tray.alive`` every ~2 s (FR #2697); engine writes ``engine.alive`` after each
           startworker queue tick (FR #4136). Ear NACKs ``engine_stale`` when tray.alive is fresh but
-          engine.alive is not. FR #9513: that NACK also writes ``run/tray-cmd.txt`` ``reload`` (FR #5111)
-          + ``engine.wake`` so HealEngine/watchdog can recover without a silent queue. Consumes
-          ``req-*.json`` on a UI tick -> ``res-<id>.json`` (audit only)
+          engine.alive is not. FR #9513 / #9522: that NACK also writes ``run/tray-cmd.txt`` ``reload``
+          (FR #5111) + ``engine.wake``; TipForm TakeWake/TakeReload call ReloadEngine. NACK says
+          ``wake requested`` or ``wake pending`` (tip-lag hint). Consumes ``req-*.json`` on a UI tick
+          -> ``res-<id>.json`` (audit only)
 
 No credentials cross this queue, only {id, mode, by, ts}. Everything here is pure / injectable so it is testable
 without IRC, a desktop or Windows.
@@ -249,10 +250,10 @@ def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_M
 
 
 def request_engine_wake(qdir, now: float | None = None, *, min_interval: float = ENGINE_WAKE_MIN_INTERVAL_S) -> bool:
-    """FR #9513: on engine_stale NACK, nudge TipForm ReloadEngine via tray-cmd.txt + engine.wake.
+    """FR #9513 / #9522: on engine_stale NACK, nudge TipForm ReloadEngine via tray-cmd + engine.wake.
 
-    Keeps the NACK (operator still sees engine.alive stale). Rate-limited so repeated
-    !startworker does not storm ReloadEngine. Returns True when a wake was written.
+    TipForm TakeWake consumes engine.wake (beside TakeReload on tray-cmd). Keeps the NACK.
+    Rate-limited so repeated !startworker does not storm ReloadEngine. Returns True when a wake was written.
     """
     now = time.time() if now is None else now
     d = Path(qdir)
@@ -398,11 +399,18 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
                     "nobody is logged in with the Bob tray running (start the tray from the Start menu)", mode=mode, kind=kind)
     # FR #4136: tray.alive is host-written; a hung PS engine still looks "alive" without engine.alive.
     if not engine_alive(qdir, now):
-        # FR #9513: keep NACK; also wake tray watchdog / ReloadEngine (FR #5111 tray-cmd reload).
+        # FR #9513 / #9522: keep NACK; wake TipForm via tray-cmd reload + engine.wake.
+        # TipForm TakeWake consumes engine.wake -> ReloadEngine (belt beside TakeReload).
+        woke = False
         if write:
-            request_engine_wake(qdir, now=now)
+            woke = request_engine_wake(qdir, now=now)
+        if woke:
+            hint = "wake requested"
+        else:
+            # Rate-limited or write skipped: host may still be on pre-wake tip (merge != host heal).
+            hint = "wake pending; recycle ear + Reload engine if host tip lags"
         return nack("engine_stale",
-                    "Bob tray engine is not ticking (engine.alive stale); restart the tray or wait for watchdog (wake requested)", mode=mode, kind=kind)
+                    "Bob tray engine is not ticking (engine.alive stale); restart the tray or wait for watchdog (" + hint + ")", mode=mode, kind=kind)
     # FR #3181 / FR #4307: cap = IRC agent markers ∪ live agent bob-worker roots
     # (not Plan/maintenance/key-dialog). Markers alone undercount after tray restart.
     snap = (procs or snapshot_procs)()
