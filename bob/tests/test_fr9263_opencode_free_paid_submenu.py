@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""FR #9263 / BOB-TRAY-UI-03: Workers > Open Code is Free|Paid only; Weights model at click."""
+"""FR #9263 / BOB-TRAY-UI-03 (superseded shape by FR #9588): Free|Paid fuel slots; Weights model at click.
+
+FR #9588 flattens the Open Code submenu into top-level OpenCode Free / OpenCode Paid.
+This file keeps the Free|Paid + webhook pins and follows the new menu shape.
+"""
 from __future__ import annotations
 
 from repo_layout import REPO
@@ -10,23 +14,24 @@ FIXTURE = REPO / "bob" / "tests" / "fixtures" / "models-catalog-opencode.json"
 DOCS = REPO / "bob" / "docs" / "bob-tray-ui-03-opencode-free-paid.md"
 
 
-def test_fr9263_tipform_submenu_free_paid_only():
+def test_fr9263_tipform_free_paid_only():
     cs = TRAY.read_text(encoding="utf-8-sig")
-    assert "void AddOpencodeModelSubmenu" in cs
-    assert 'string freeText = "Free"' in cs
-    assert 'string paidText = "Paid"' in cs
-    assert 'AddAgentChoice(oc, "opencode|free", freeText' in cs
-    assert 'AddAgentChoice(oc, "opencode|paid", paidText' in cs
-    assert "Start free model" not in cs.split("void AddOpencodeModelSubmenu", 1)[1].split("void OnAgentChoiceClick", 1)[0]
+    assert "void AddOpencodeTopLevelChoices" in cs
+    assert 'string freeText = "OpenCode Free"' in cs
+    assert 'string paidText = "OpenCode Paid"' in cs
+    assert 'AddAgentChoice(parent, "opencode|free", freeText' in cs
+    assert 'AddAgentChoice(parent, "opencode|paid", paidText' in cs
+    block = cs.split("void AddOpencodeTopLevelChoices", 1)[1].split("void OnAgentChoiceClick", 1)[0]
+    assert "Start free model" not in block
     assert 'OpencodeWebhookModel(catalog, "Opencode-Free")' in cs
-    assert "submenu Free|Paid" in cs
+    assert "top-level Free|Paid" in cs
 
 
-def test_fr9263_watch_builds_free_paid_submenu():
+def test_fr9263_watch_builds_free_paid_rows():
     ps = WATCH.read_text(encoding="utf-8-sig")
-    assert "submenu Free|Paid (FR #9263)" in ps
+    assert "top-level Free|Paid (FR #9588)" in ps
     assert "opencode|{0}" in ps
-    assert "'Free'" in ps and "'Paid'" in ps
+    assert "'OpenCode Free'" in ps and "'OpenCode Paid'" in ps
     assert "EndsWith('|paid')" in ps
     assert "Get-BobTrayOpencodeWebhookModel" in ps
     assert "'Opencode-Free'" in ps
@@ -46,3 +51,4 @@ def test_fr9263_docs_pin():
     text = DOCS.read_text(encoding="utf-8")
     assert "Free" in text and "Paid" in text
     assert "9263" in text
+    assert "9588" in text

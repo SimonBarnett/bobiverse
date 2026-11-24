@@ -151,7 +151,7 @@ def test_fr6301_agent_start_entries_have_no_fuel_text():
 
 
 def test_fr6301_opencode_models_submenu_replaced_by_fr6429():
-    """FR #6429 replaces the FR #6301 flat OpenCode row with a free/paid submenu.
+    """FR #6429 / FR #9588: free/paid slots as top-level Workers rows (child-only env).
 
     Fuel list still has no per-row models array; tray never SetEnvironmentVariable
     for BOB_OPENCODE_MODEL on the tray process (child-only CreateProcessW env).
@@ -161,7 +161,7 @@ def test_fr6301_opencode_models_submenu_replaced_by_fr6429():
     assert 'row["models"]' not in chunk
     assert "opencode_model_menu_rows(fuel)" not in chunk
     tray = TRAY_CS.read_text(encoding="utf-8")
-    assert "AddOpencodeModelSubmenu" in tray
+    assert "AddOpencodeTopLevelChoices" in tray
     assert "opencode|free" in tray
     assert "opencode|paid" in tray
     click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 1200]
