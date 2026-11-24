@@ -12989,9 +12989,10 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return ""
-            # FR #9402: drop aged/dead pins before the any-age busy check so
-            # !assign matches offer_focus_top timeout behaviour. Aged live seats
-            # keep seat-holds (FR #4089) until the offer loop observes timeout.
+            # FR #9402 / #9403: drop aged/dead pins (and their seat-holds) before
+            # the any-age busy check so !assign matches offer_focus_top timeout
+            # behaviour. FR #9403 always clears holds with the pin — keeping
+            # aged-but-live holds left idle seats busy after idle-no-ack.
             before_n = len(doc.get("unaccepted") or [])
             before_offers = [
                 str(r.get("offered_to") or "")

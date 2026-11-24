@@ -163,21 +163,25 @@ def test_free_seat_gets_one_offer_after_done(home: Path):
 def test_old_offer_stays_busy_until_timeout_then_frees_row(home: Path):
     """Offer made 10 min ago and never ACKed.
 
-    FR #4089: until the offer loop observes the timeout, the seat hold still
-    blocks a second job. FR #7966: that observation clears the hold and the
-    pin. Another seat can take the freed row (FR #4260). The old expectation
-    that offer_focus_top(ME) stays empty is dropped: ME would be handed the
-    row again, which is the second of three silences, not a permanent block.
+    FR #4089 / #7966: an observed offer timeout clears the hold and pin so
+    another seat can take the freed row (FR #4260). The old expectation that
+    offer_focus_top(ME) stays empty forever is dropped: ME can be handed a
+    different row after the timeout is observed.
 
     FR #9402: ``seat_open_job`` clears aged ``offered_to`` pins (so ``!assign``
-    matches offer timeout) but keeps seat-holds for live seats. Clock ``now``
-    must stay inside ``SEAT_HOLD_MAX_S`` of the hold ts so the hold is not
-    reaped before the offer loop observes the timeout.
+    matches offer timeout).
+
+    FR #9403 / #9565: purge also clears seat-holds with the pin. Aged-but-live
+    holds left idle seats busy (held FR …) after offer-timeout:idle-no-ack.
+    ``seat_open_job`` is therefore the observation that frees the seat — it
+    returns '' after the window expires, not ``held`` / ``offered``.
     """
     _queue(home, [_row("FR", 10), _row("FR", 11)])
     sent, say = _say_sink()
     n, job = gitclaim.offer_after_done(home, ME, SHOP, say=say)
     assert n == 1 and job["id"] == "#10"
+    # Fresh offer still counts as an open job (FR #4089).
+    assert gitclaim.seat_open_job(home, ME).startswith(("offered", "held"))
     # Age the pin and the hold by 10 minutes.
     with gitclaim._lock(home):
         doc = gitclaim._load_queue_unlocked(home)
@@ -189,13 +193,10 @@ def test_old_offer_stays_busy_until_timeout_then_frees_row(home: Path):
         holds[ME]["ts"] = _ts(600)
         gitclaim._save_seat_holds_unlocked(home, holds)
     assert gitclaim.seat_pending_offer(home, ME) is None  # row window expired
-    assert gitclaim.seat_open_job(home, ME).startswith(("offered", "held"))
-    now = time.time() + 1
-    # Stay inside SEAT_HOLD_MAX_S of the 600s-old hold (do not use now+10_000).
-    assert gitclaim.bored_gate(home, ME, SHOP, now) == "busy"
-    assert gitclaim.offer_after_done(home, ME, SHOP, say=say) == (0, None)
-    assert gitclaim.offer_after_giveup(home, ME, SHOP, say=say) == (0, None)
-    # OTHER observes the timeout, so the row is not pinned back onto ME.
+    # FR #9403: seat_open_job purge clears pin + hold together.
+    assert gitclaim.seat_open_job(home, ME) == ""
+    assert gitclaim._seat_key(ME) not in gitclaim._load_seat_holds_unlocked(home)
+    # OTHER takes the freed row; ME is free for the next one.
     st2, job2 = gitclaim.offer_focus_top(home, OTHER, SHOP)
     assert st2 == "ok" and job2["id"] == "#10"
     assert gitclaim.seat_open_job(home, ME) == ""
