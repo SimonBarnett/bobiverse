@@ -3015,6 +3015,9 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # FR #6229 / #6144: live MarchHare source->digest->tray gate (mis-offered to redqueen
     # while covering merges already on main; bobiverse soft cues never pin per FR #4512).
     ("simonbarnett/bobiverse", "#6144"): "marchhare",
+    # FR #9543 / #9526: host-heal TipForm on marchhare — body pin added after enqueue;
+    # hard pin until living residual closes (issues.edited refresh is the durable path).
+    ("simonbarnett/bobiverse", "#9526"): "marchhare",
     # FR #4599: do NOT hard-pin bobiverse #4340 to ionos (Simon: bobiverse work never
     # pinned to ionos). See _REQUIRE_MACHINE_ISSUE_UNPINS.
 }
@@ -4046,7 +4049,8 @@ def claim_from_payload(
 ) -> GitClaim | None:
     """Build a claim from the GitHub webhook body. None if not a queue-driving event.
 
-    issues opened/reopened -> FR (skipped for skill/harvest/safe-to-close/umbrella/closed ΓÇö FR #180)
+    issues opened/reopened/edited -> FR (edited refreshes body/require_machine — FR #9543;
+    skipped for skill/harvest/safe-to-close/umbrella/closed — FR #180)
     pull_request opened/ready_for_review -> MRB (with refs to linked issues)
     pull_request closed -> MRB row used for supersede (merged flag set)
     issues closed -> FR/UAT removal via apply_queue_event (task FR id)
@@ -4066,12 +4070,15 @@ def claim_from_payload(
     if enqueue_action and repo_archived_for_queue(repo, payload=payload):
         return None
 
-    if ev == "issues" and action in ("opened", "reopened"):
+    # FR #9543: include edited so a late ``require_machine:`` body pin refreshes
+    # the queued FR (class of #9526 — pin stamped after enqueue, chair kept offering
+    # non-pin shops until the next full resync).
+    if ev == "issues" and action in ("opened", "reopened", "edited"):
         ident = _payload_number(ev, payload)
         if ident is None:
             return None
         issue = _issue_blob(payload)
-        # FR #838 / #846: issue payloads for pulls include ``pull_request`` ΓÇö never FR.
+        # FR #838 / #846: issue payloads for pulls include ``pull_request`` — never FR.
         if issue.get("pull_request"):
             return None
         title = str(issue.get("title") or "")
@@ -4080,7 +4087,12 @@ def claim_from_payload(
         state = str(issue.get("state") or "open")
         # FR #180 / #2340: closed issues must never become FR rows (opened/reopened
         # with state=closed, or backfill synthesising opened for a closed issue).
-        if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
+        # edited on a closed issue is a no-op claim (apply path ignores / closed wins).
+        if action != "edited" and issue_skip_fr_reason(
+            title=title, body=body, labels=labels, state=state
+        ):
+            return None
+        if action == "edited" and str(state).strip().lower() == "closed":
             return None
         return GitClaim(
             repo=repo,
@@ -4714,6 +4726,9 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                     row["refs"] = normalize_row_refs(claim.refs)
                 if claim.title:
                     row["title"] = claim.title
+                # FR #9543 / #2312: refresh body so late require_machine pin lines land.
+                if claim.body:
+                    row["body"] = _body_for_queue(claim.body)
                 if claim.action in ("labeled", "unlabeled") or claim.labels:
                     row["labels"] = list(claim.labels)
                 if claim.state:
@@ -19108,7 +19123,8 @@ def resync_from_github(
                         if claim.title:
                             r["title"] = claim.title
                         if claim.body:
-                            r["body"] = claim.body
+                            # FR #9543 / #2312: keep dedicated require_machine pin lines.
+                            r["body"] = _body_for_queue(claim.body)
                         if claim.labels:
                             r["labels"] = list(claim.labels)
                         if claim.harvest_lesson:
