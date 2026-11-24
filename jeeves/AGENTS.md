@@ -29,6 +29,10 @@
 >    makes that feed deterministic (#9628 offer_to_idle and siblings). Gated-only queues (credential needs_human,
 >    require_machine with zero workers, Depends-on OPEN) are different gates — not a free pass to leave seats idle when
 >    ungated work exists.
+> 8. **CAST IRON — multi-FR batch needs Digest parent (FR #9652).** Filing ≥2 related FRs in one turn/batch requires a
+>    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>`. Never leave a
+>    multi-FR batch free-floating. Same-turn repair if already filed without a digest. Last open child close closes the
+>    digest (#9552). One issue per issue inside the digest.
 
 ## First turn (FR #954) â€” do this NOW
 

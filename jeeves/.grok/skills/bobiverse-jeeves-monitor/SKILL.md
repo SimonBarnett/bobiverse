@@ -33,6 +33,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 > 7. **CAST IRON — idle + open FRs/PRs = FAIL (FR #9644).** Digest `idle` seats while open FRs/PRs remain that the chair
 >    should dispatch is a fail: intervene same turn **and** FR/de-dup the deterministic chair path (#9628 and siblings).
 >    Gated-only queues are separate; ungated idle+work is never “wait and see”.
+> 8. **CAST IRON — multi-FR batch needs Digest parent (FR #9652).** Filing ≥2 related FRs in one turn/batch: file
+>    `Digest: …` with label `fr-digest` first; each child starts with `Depends-on: #<digest>`. Never leave free-floating
+>    multi-FR batches. Same-turn repair if already filed without a digest. Last open child close closes the digest (#9552).
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 

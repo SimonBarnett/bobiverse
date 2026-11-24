@@ -19,6 +19,8 @@ description: >
 >    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
 > 7. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
 >    chair path same turn (#9628). Never leave idle+ungated work as report-only.
+> 8. **CAST IRON — multi-FR batch needs Digest parent (#9652).** ≥2 related FRs in one batch: `fr-digest` Digest first;
+>    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
