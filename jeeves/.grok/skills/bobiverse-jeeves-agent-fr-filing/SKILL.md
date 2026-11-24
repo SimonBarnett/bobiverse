@@ -24,9 +24,11 @@ depends_on: []
    issues go to `SimonBarnett/bobiverse`. Intake: `Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>`.
 3. **One issue per issue.** One root cause, one acceptance row. Split anything with "and also".
 4. **Body:** what / where / evidence / fix. Evidence block = exact log lines, run ids, SHAs, timestamps with
-   zone, and how to reproduce. Separate observed facts from guesses. Add `require_machine: <machine>` only
-   when it truly must run there.
+   zone, and how to reproduce. Separate observed facts from guesses. Prefer GitHub `needs-<machine>` labels
+   over a body `require_machine:` line on bobiverse (FR #9637: body alone does not pin).
 5. **Label** `feature-request` for FRs. Add `hold` only for parked/phase-gated work.
+   **Walrus-action / chair-host children (CAST IRON #9669 / FR #9679):** also label `needs-walrus` (or
+   title `chair-host: …`) so the chair does not offer them to flamingo/redqueen.
 6. **Report** the URL. Do not assign or pin it yourself.
 
 ## Twins
