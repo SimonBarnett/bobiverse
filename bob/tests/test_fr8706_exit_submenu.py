@@ -44,6 +44,10 @@ def test_exit_submenu_in_bob_tray_cs():
     # Handler mapping: Restart -> Restart(); Reload Engine -> ReloadEngine()
     assert 'miRestart.Click += delegate { Restart(); }' in chunk
     assert "miReloadEngine.Click += delegate { ReloadEngine(); }" in chunk
+    # Parent Exit has no Click; dump-menu walks real tree paths.
+    assert "miExitMenu.Click" not in chunk
+    assert "DumpMenuTree" in src
+    assert "Exit > Restart" in src or 'prefix + " > "' in src
 
 
 def test_tipform_exit_submenu_in_watch_bob_tray():

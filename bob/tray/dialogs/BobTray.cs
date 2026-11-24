@@ -1254,6 +1254,29 @@ namespace BobDialogs
             ToolStripMenuItem mi = new ToolStripMenuItem(text); mi.Click += h; menu.Items.Add(mi); MenuItems.Add(text); return mi;
         }
 
+        // FR #8706 / BOB-07: --dump-menu walks the real ContextMenuStrip tree (paths like Exit > Restart).
+        // Do not open DropDowns (that starts background refreshes). Separators emit as "-".
+        public List<string> DumpMenuTree()
+        {
+            List<string> lines = new List<string>();
+            WalkMenuItems(menu.Items, "", lines);
+            return lines;
+        }
+
+        static void WalkMenuItems(ToolStripItemCollection items, string prefix, List<string> lines)
+        {
+            if (items == null) return;
+            foreach (ToolStripItem it in items)
+            {
+                string label = (it is ToolStripSeparator) ? "-" : (it.Text ?? "");
+                string path = prefix.Length == 0 ? label : (prefix + " > " + label);
+                lines.Add(path);
+                ToolStripMenuItem mi = it as ToolStripMenuItem;
+                if (mi != null && mi.HasDropDownItems)
+                    WalkMenuItems(mi.DropDownItems, path, lines);
+            }
+        }
+
         // ---- engine (hidden PowerShell: all slow data work) ----
         // FR #7505: log every relaunch attempt + result; report fail via tray_engine_report.
         // FR #7508: log every launch attempt / miss / fail; never silent-return.
@@ -3483,7 +3506,8 @@ namespace BobDialogs
             Environment.SetEnvironmentVariable("BOB_MACHINE_ID", machine);
             Environment.SetEnvironmentVariable("BOB_AI_ROOT", Environment.GetEnvironmentVariable("BOB_AI_ROOT") ?? (string.Equals(Path.GetFileName(root.TrimEnd('\\')), "bob", StringComparison.OrdinalIgnoreCase) ? Path.GetDirectoryName(root.TrimEnd('\\')) : ""));
             TrayContext ctx = new TrayContext(root, machine, Common.Flag(args, "--no-engine") || timing || dumpMenu.Length > 0, args);
-            if (dumpMenu.Length > 0) { File.WriteAllText(dumpMenu, string.Join("\r\n", ctx.MenuItems.ToArray()), new UTF8Encoding(false)); return 0; }
+            // FR #8706: dump real tree paths (Exit > Restart), not the flat MenuItems recording.
+            if (dumpMenu.Length > 0) { File.WriteAllText(dumpMenu, string.Join("\r\n", ctx.DumpMenuTree().ToArray()), new UTF8Encoding(false)); return 0; }
             TrayLifecycle.Write("tray-up", "via", "bob-tray.exe", "machine", machine);
             Application.Run(ctx);
             string reason = string.IsNullOrEmpty(ctx.ExitReason) ? "unexpected" : ctx.ExitReason;

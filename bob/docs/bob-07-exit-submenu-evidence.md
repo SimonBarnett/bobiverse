@@ -23,8 +23,8 @@ Parent Exit has no Click handler (opens submenu only). PowerShell fallback nesti
 
 1. `bob/tray/dialogs/BobTray.cs` builds Exit DropDownItems: Restart, Reload Engine, separator, Exit.
 2. TipForm mirrors the same tree.
-3. `--dump-menu` / `test_tray_dialogs_828` expects Exit then Restart / Reload Engine / - / Exit.
-4. Tests: `bob/tests/test_fr8706_exit_submenu.py`.
+3. `--dump-menu` walks the real ContextMenuStrip and emits paths `Exit > Restart`, `Exit > Reload Engine`, `Exit > -`, `Exit > Exit` (no top-level Restart / Reload Engine).
+4. Tests: `bob/tests/test_fr8706_exit_submenu.py` + `test_tray_dialogs_828` dump pin.
 
 ## Fail-when
 

@@ -308,27 +308,33 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
     items = out.read_text(encoding="utf-8").splitlines()
     # FR #9263: Free|Paid labels may append " [running]" when a live slot exists on the box.
     items = [re.sub(r" \[running\]$", "", x) for x in items]
-    # FR #8713 / BOB-06 menu, then FR #8706 / BOB-07: Exit > Restart / Reload Engine / - / Exit.
+    # FR #8713 / BOB-06 menu, then FR #8706 / BOB-07: dump-menu walks real tree paths.
     assert items == [
         "Status",
         "Agents",
-        "Plan",
-        "Priority",
-        "Jeeves",
+        "Agents > Plan",
+        "Agents > Priority",
+        "Agents > Jeeves",
         "Workers",
-        "Grok",
-        "Cursor",
-        "OpenCode Free",
-        "OpenCode Paid",
+        "Workers > Grok",
+        "Workers > Cursor",
+        "Workers > OpenCode Free",
+        "Workers > OpenCode Paid",
         "Weights",
         "About",
         "-",
         "Exit",
-        "Restart",
-        "Reload Engine",
-        "-",
-        "Exit",
+        "Exit > Restart",
+        "Exit > Reload Engine",
+        "Exit > -",
+        "Exit > Exit",
     ]
+    # FR #8706: lifecycle leaves only under Exit; Exit is last top-level row.
+    top = [x for x in items if " > " not in x]
+    assert top[-1] == "Exit"
+    assert "Restart" not in top
+    assert "Reload Engine" not in top
+    assert items.index("Exit > Restart") < items.index("Exit > Reload Engine") < items.index("Exit > Exit")
     # FR #9261: no top-level Seats: / Open log. FR #9264: OpenCode keys on About only.
     assert "Seats: on" not in items
     assert "Open log" not in items
