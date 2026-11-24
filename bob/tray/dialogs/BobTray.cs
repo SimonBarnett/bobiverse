@@ -1879,11 +1879,11 @@ namespace BobDialogs
         {
             parent.DropDownItems.Clear();
             // FR #6301: start entries carry no fuel/quota state text.
-            // FR #6429: OpenCode is a free/paid model submenu (replaces the FR #6301 flat OpenCode row).
-            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/Open Code only.
+            // FR #9588: OpenCode Free / OpenCode Paid are top-level Workers siblings (was FR #9263 submenu).
+            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/OpenCode Free|Paid.
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
-            AddOpencodeModelSubmenu(parent, true, record);
+            AddOpencodeTopLevelChoices(parent, true, record);
         }
 
         // FR #9270 / BOB-TRAY-UI-09: Jeeves butler from bob.ntsa.uk (cache) or jeeves/assets fallback.
@@ -2066,17 +2066,10 @@ namespace BobDialogs
             if (record) MenuItems.Add(text);
         }
 
-        void AddOpencodeModelSubmenu(ToolStripMenuItem parent, bool enabled, bool record)
+        void AddOpencodeTopLevelChoices(ToolStripMenuItem parent, bool enabled, bool record)
         {
-            // FR #6429 / FR #9263: Workers > Open Code > Free|Paid only (child-only BOB_OPENCODE_MODEL).
-            // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
-            ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
-            oc.Enabled = enabled;
-            // FR #8728 / BOB-31 + FR #9267: opencode.ai favicon from install assets\.
-            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "source", "https://opencode.ai/favicon-v3.ico");
-            TryApplyTrayMenuIcon(oc, root, "opencode-favicon.ico", "workers-opencode");
-            // FR #9263 / BOB-TRAY-UI-03: submenu is Free and Paid only (no model picker).
-            // Model id comes from Weights/models webhook at click (OpencodeWebhookModel); tip label stays Free|Paid.
+            // FR #9588: Workers siblings OpenCode Free / OpenCode Paid (not nested under Open Code).
+            // Tags stay opencode|free / opencode|paid; Weights model at click (FR #8732); child-only BOB_OPENCODE_MODEL (FR #6429).
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
             // FR #9586: tip labels prefer live GET /bob/v1/models (catalog file is fallback only).
@@ -2086,24 +2079,35 @@ namespace BobDialogs
             if (whPaid.Length > 0) paidModel = whPaid;
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
             string paidRun; bool paidAlive = WorkerLauncher.OpencodeSlotRunning("paid", out paidRun);
-            string freeText = "Free";
+            string freeText = "OpenCode Free";
             if (freeAlive) freeText += " [running]";
-            string paidText = "Paid";
+            string paidText = "OpenCode Paid";
             if (paidAlive) paidText += " [running]";
-            AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
-            AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
+            AddAgentChoice(parent, "opencode|free", freeText, enabled, record);
+            AddAgentChoice(parent, "opencode|paid", paidText, enabled, record);
+            // FR #8728 / BOB-31 + FR #9267: opencode.ai favicon on both top-level rows.
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "source", "https://opencode.ai/favicon-v3.ico");
             try
             {
-                if (oc.DropDownItems.Count >= 2)
+                int n = parent.DropDownItems.Count;
+                if (n >= 2)
                 {
-                    oc.DropDownItems[0].ToolTipText = freeModel;
-                    oc.DropDownItems[1].ToolTipText = paidModel;
+                    ToolStripMenuItem freeMi = parent.DropDownItems[n - 2] as ToolStripMenuItem;
+                    ToolStripMenuItem paidMi = parent.DropDownItems[n - 1] as ToolStripMenuItem;
+                    if (freeMi != null)
+                    {
+                        freeMi.ToolTipText = freeModel;
+                        TryApplyTrayMenuIcon(freeMi, root, "opencode-favicon.ico", "workers-opencode");
+                    }
+                    if (paidMi != null)
+                    {
+                        paidMi.ToolTipText = paidModel;
+                        TryApplyTrayMenuIcon(paidMi, root, "opencode-favicon.ico", "workers-opencode");
+                    }
                 }
             }
             catch { }
-            TrayLifecycle.Write("workers-opencode", "action", "submenu Free|Paid", "free", freeModel, "paid", paidModel);
-            parent.DropDownItems.Add(oc);
-            if (record) MenuItems.Add("Open Code");
+            TrayLifecycle.Write("workers-opencode", "action", "top-level Free|Paid", "free", freeModel, "paid", paidModel);
         }
 
 
@@ -2371,7 +2375,7 @@ namespace BobDialogs
                 string reason = grey ? ((err ?? "").Length > 0 ? err : WorkerLauncher.RebuildListReason) : "";
                 AddAgentChoice(parent, "grok", grey ? "Grok - " + reason : "Grok", !grey, false);
                 AddAgentChoice(parent, "cursor", grey ? "Cursor - " + reason : "Cursor", !grey, false);
-                AddOpencodeModelSubmenu(parent, !grey, false);
+                AddOpencodeTopLevelChoices(parent, !grey, false);
                 return;
             }
             parent.DropDownItems.Clear();
@@ -2388,7 +2392,7 @@ namespace BobDialogs
                 if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
                 {
-                    AddOpencodeModelSubmenu(parent, available, false);
+                    AddOpencodeTopLevelChoices(parent, available, false);
                     continue;
                 }
                 AddAgentChoice(parent, id, label, available, false);

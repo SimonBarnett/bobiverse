@@ -4,7 +4,7 @@
 
 ## S1
 
-Workers menu lists Grok, Cursor, and Open Code only. There is no Automatic row and no `auto` menu id.
+Workers menu lists Grok, Cursor, OpenCode Free, and OpenCode Paid only (FR #9588). There is no Automatic row and no `auto` menu id.
 
 | Surface | Change |
 |---------|--------|

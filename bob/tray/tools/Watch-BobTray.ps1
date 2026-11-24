@@ -4458,7 +4458,7 @@ function Show-BobTrayCard {
 function Get-BobTrayWorkerAgentChoices {
     <#
       Workers submenu rows from bob-worker.exe --list-agents.
-      FR #9262 / BOB-TRAY-UI-02: no Automatic/auto row; Grok/Cursor/Open Code only.
+      FR #9262 / BOB-TRAY-UI-02: no Automatic/auto row; Grok/Cursor/OpenCode Free|Paid (FR #9588).
       Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
       The child is killed at 8s. read_fuel can otherwise block for 90s.
@@ -4642,27 +4642,25 @@ function Update-BobTrayWorkerAgentsMenu {
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
-        # FR #9263 / BOB-TRAY-UI-03: Open Code expands Free|Paid only (Weights model at click).
+        # FR #9588: OpenCode Free / OpenCode Paid are top-level Workers siblings (was FR #9263 submenu).
         if ($id -eq 'opencode') {
-            $oc = New-Object System.Windows.Forms.ToolStripMenuItem $text
-            $oc.Enabled = $available
             # FR #8728 / BOB-31 + FR #9267: install assets\ then bob\tray\assets\.
             $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
             if (-not (Test-Path -LiteralPath $ocIcon)) {
                 $ocIcon = Join-Path $RepoRoot 'bob\tray\assets\opencode-favicon.ico'
             }
             Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
-            if (Test-Path -LiteralPath $ocIcon) {
-                try { $oc.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
-                catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
-            } else {
-                Write-TrayLog ('menu-icon MISSING file=opencode-favicon.ico path=' + $ocIcon)
-            }
             foreach ($slot in @('free', 'paid')) {
-                $slotLabel = if ($slot -eq 'free') { 'Free' } else { 'Paid' }
+                $slotLabel = if ($slot -eq 'free') { 'OpenCode Free' } else { 'OpenCode Paid' }
                 $child = New-Object System.Windows.Forms.ToolStripMenuItem $slotLabel
                 $child.Tag = ('opencode|{0}' -f $slot)
                 $child.Enabled = $available
+                if (Test-Path -LiteralPath $ocIcon) {
+                    try { $child.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
+                    catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
+                } else {
+                    Write-TrayLog ('menu-icon MISSING file=opencode-favicon.ico path=' + $ocIcon)
+                }
                 $child.Add_Click({
                         param($sender, $e)
                         $picked = ''
@@ -4688,10 +4686,9 @@ function Update-BobTrayWorkerAgentsMenu {
                         Write-TrayLog 'Workers Open Code: opencode CLI start'
                         Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Context $ocContext -Effort $ocEffort -Trigger 'workers-opencode'
                     })
-                [void]$oc.DropDownItems.Add($child)
+                [void]$MenuItem.DropDownItems.Add($child)
             }
-            Write-TrayLog 'Workers Open Code: submenu Free|Paid (FR #9263)'
-            [void]$MenuItem.DropDownItems.Add($oc)
+            Write-TrayLog 'Workers Open Code: top-level Free|Paid (FR #9588)'
             continue
         }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
@@ -4779,7 +4776,7 @@ function Update-BobTrayWorkerAgentsMenu {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model -Context $context -Effort $effort
                 }
                 elseif ($picked -eq 'opencode' -or $picked -match '^opencode\|(free|paid)$') {
-                    # FR #9263: Free|Paid submenu tags opencode|free / opencode|paid.
+                    # FR #9588 / FR #9263: top-level tags opencode|free / opencode|paid.
                     # Legacy flat Tag=opencode keeps free-first (BOB-27) for older dumps.
                     $ocSlot = 'free'
                     if ($picked -match '^opencode\|(free|paid)$') { $ocSlot = $Matches[1] }
