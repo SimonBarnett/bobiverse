@@ -496,6 +496,54 @@ namespace BobDialogs
             return r;
         }
 
+        /// <summary>FR #9586: find Weights agent row by agent / id / name (case-insensitive).</summary>
+        public static Dictionary<string, string> FindAgentRow(
+            IList<Dictionary<string, string>> rows,
+            string agentName)
+        {
+            string want = (agentName ?? "").Trim();
+            if (want.Length == 0 || rows == null) return null;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                Dictionary<string, string> row = rows[i];
+                if (row == null) continue;
+                string agent = Get(row, "agent");
+                if (agent.Length == 0) agent = Get(row, "id");
+                if (agent.Length == 0) agent = Get(row, "name");
+                if (string.Equals(agent, want, StringComparison.OrdinalIgnoreCase))
+                    return row;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// FR #9586: live GET /bob/v1/models row for seat start (model/context/effort).
+        /// Optional BOB_MODELS_CATALOG file is a fixture/offline fallback only when GET fails.
+        /// </summary>
+        public static Dictionary<string, string> ResolveAgentLaunchRow(
+            string installRoot,
+            string agentName)
+        {
+            BobModelsResult live = Get(installRoot);
+            if (live != null && live.Ok && live.Rows != null)
+            {
+                Dictionary<string, string> hit = FindAgentRow(live.Rows, agentName);
+                if (hit != null) return hit;
+            }
+            string catalog = (Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG") ?? "").Trim();
+            if (catalog.Length == 0 || !File.Exists(catalog)) return null;
+            try
+            {
+                string text = File.ReadAllText(catalog, Encoding.UTF8);
+                List<Dictionary<string, string>> rows = ParseAgents(text);
+                return FindAgentRow(rows, agentName);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         public static BobModelsResult Save(string installRoot, List<Dictionary<string, string>> rows)
         {
             BobModelsResult r = new BobModelsResult();

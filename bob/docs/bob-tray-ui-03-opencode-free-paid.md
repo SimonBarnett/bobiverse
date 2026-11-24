@@ -6,8 +6,8 @@ Workers > Open Code expands **Free** and **Paid** only (no model picker). Start 
 
 ## Surfaces
 
-- TipForm `BobTray.cs` `AddOpencodeModelSubmenu` — labels Free / Paid; tooltip holds model id; click path already used `OpencodeWebhookModel` (FR #8732).
-- Watch `Watch-BobTray.ps1` `Update-BobTrayWorkerAgentsMenu` — Open Code is a submenu with Free|Paid tags `opencode|free` / `opencode|paid` (was a flat single click).
+- TipForm `BobTray.cs` `AddOpencodeModelSubmenu` — labels Free / Paid; tooltip holds model id; click path uses `WeightsLaunchField` / live GET `/bob/v1/models` (FR #8732 / FR #9586).
+- Watch `Watch-BobTray.ps1` `Update-BobTrayWorkerAgentsMenu` — Open Code is a submenu with Free|Paid tags `opencode|free` / `opencode|paid`; start uses `Get-BobTrayWeightsLaunchField` with `source=models-webhook`.
 
 ## Evidence
 
