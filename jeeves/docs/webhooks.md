@@ -78,7 +78,7 @@ curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 
 ### GET models / Weights rows (BOB-01 / FR #8707 / FR #8819 / FR #9258)
 
-Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders.
+Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free, Copilot with empty `model` / `context` / `effort` placeholders (FR #9746: Copilot empty model = omit / GitHub auto).
 
 **FR #9258 (Grok-only context/effort):** context and effort apply only to the Grok CLI. Allowed contexts are `256` or `500`; allowed efforts are `high`, `medium`, or `low` (case-insensitive). Cursor and OpenCode catalog rows are valid with empty `contexts` / `efforts`, so the Weights form and tray start dialog offer those dropdowns only for Grok. Non-Grok stored `workerStartContext` / `workerStartEffort` values are ignored and dropped on the next write; pass status is `not-applicable`.
 

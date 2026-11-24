@@ -1,8 +1,8 @@
-"""BOB-01 / FR #8707: fleet agent Weights rows (GET /bob/v1/models).
+"""BOB-01 / FR #8707 / FR #9746: fleet agent Weights rows (GET /bob/v1/models).
 
 Public GET JSON shape (FR #8819 nested + FR #8820 stale)::
 
-    {"clis":{"Grok":{"models":{...}},"Cursor":{"models":{...}},"Opencode":{"models":{...}}},
+    {"clis":{"Grok":{"models":{...}},"Cursor":{"models":{...}},"Opencode":{"models":{...}},"Copilot":{"models":{...}}},
      "agents":[{"agent":"Plan","cli":"Grok","model":"","context":"","effort":"","stale":true?}, ...]}
 
 ``clis`` nests model -> context -> efforts from digest-home
@@ -42,15 +42,17 @@ MODELS_VALID_COMBOS_NAME = "models-valid-combos.json"
 MODELS_VALIDATE_PATH = "/bob/v1/models/validate"
 MODELS_REFRESH_PATH = "/bob/v1/models/refresh"
 
-# Worker-launchable CLI keys (bob-worker --agent). Not the Weights display labels.
-VALID_CLI_KEYS = frozenset({"grok", "cursor", "opencode"})
+# Catalog CLI keys (Weights / valid-combos). Grok/Cursor/Opencode are worker-launchable;
+# Copilot is catalog-only for GitHub agent-task model pick (FR #9746; not REFRESH_CLIS).
+VALID_CLI_KEYS = frozenset({"grok", "cursor", "opencode", "copilot"})
 
 # GET /bob/v1/models public CLI keys (Weights / FR #8819). Map from VALID_CLI_KEYS.
-CLI_PUBLIC_KEYS: tuple[str, ...] = ("Grok", "Cursor", "Opencode")
+CLI_PUBLIC_KEYS: tuple[str, ...] = ("Grok", "Cursor", "Opencode", "Copilot")
 CLI_KEY_TO_PUBLIC: dict[str, str] = {
     "grok": "Grok",
     "cursor": "Cursor",
     "opencode": "Opencode",
+    "copilot": "Copilot",
 }
 
 ERROR_UNKNOWN_CLI = "unknown_cli"
@@ -68,6 +70,7 @@ class CatalogUnavailable(Exception):
 
 
 # Agent / CLI pairs from Weights mock (BOB-01 placeholders for model/context/effort).
+# FR #9746: blank Copilot row last (empty model = omit / GitHub auto).
 _DEFAULT_ROWS: tuple[tuple[str, str], ...] = (
     ("Plan", "Grok"),
     ("Priority", "Grok"),
@@ -76,6 +79,7 @@ _DEFAULT_ROWS: tuple[tuple[str, str], ...] = (
     ("Cursor", "Cursor"),
     ("Opencode", "Opencode"),
     ("Opencode-Free", "Opencode"),
+    ("Copilot", "Copilot"),
 )
 
 _ROW_KEYS = ("agent", "cli", "model", "context", "effort")
@@ -250,12 +254,37 @@ def agents_public_with_stale(
     return agents
 
 
+def _maybe_backfill_copilot_row(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """FR #9746: append blank Copilot when saved rows are the full pre-Copilot set.
+
+    Partial subsets stay as written (test_fr8707 one-row pin). Does not write disk.
+    """
+    if not rows:
+        return rows
+    names = {r["agent"] for r in rows}
+    if "Copilot" in names:
+        return rows
+    legacy = {agent for agent, _cli in _DEFAULT_ROWS if agent != "Copilot"}
+    if not legacy.issubset(names):
+        return rows
+    blank = {
+        "agent": "Copilot",
+        "cli": "Copilot",
+        "model": "",
+        "context": "",
+        "effort": "",
+    }
+    by_name = {r["agent"]: r for r in rows}
+    by_name["Copilot"] = blank
+    return [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
+
+
 def load_catalog_file(home: Path | str) -> list[dict[str, str]]:
     """Load agent rows from home file, or built-in defaults when missing/empty."""
     doc = load_catalog_document(home, for_write=False)
     rows = _rows_from_payload(doc)
     if rows:
-        return rows
+        return _maybe_backfill_copilot_row(rows)
     return default_agent_rows()
 
 
@@ -769,12 +798,38 @@ def validate_put_agents(raw: Any) -> tuple[list[dict[str, str]] | None, str]:
         seen.add(row["agent"])
         out.append(row)
     missing = [a for a, _ in _DEFAULT_ROWS if a not in seen]
-    if missing:
+    # FR #9746: legacy seven-row PUT may omit only Copilot (merged in replace).
+    if missing and missing != ["Copilot"]:
         return None, "missing agents: " + ",".join(missing)
-    # Stable order matching defaults.
+    # Stable order matching defaults (Copilot may be absent until replace merge).
     by_name = {r["agent"]: r for r in out}
-    ordered = [by_name[a] for a, _ in _DEFAULT_ROWS]
+    ordered = [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
     return ordered, ""
+
+
+def _merge_omitted_copilot_row(
+    home: Path | str,
+    rows: list[dict[str, str]],
+    doc: dict[str, Any],
+) -> list[dict[str, str]]:
+    """FR #9746: when PUT omits Copilot, keep stored row or blank default."""
+    names = {r["agent"] for r in rows}
+    if "Copilot" in names:
+        by_name = {r["agent"]: r for r in rows}
+        return [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
+    stored = _rows_from_payload(doc)
+    copilot = next((r for r in stored if r.get("agent") == "Copilot"), None)
+    if copilot is None:
+        copilot = {
+            "agent": "Copilot",
+            "cli": "Copilot",
+            "model": "",
+            "context": "",
+            "effort": "",
+        }
+    by_name = {r["agent"]: r for r in rows}
+    by_name["Copilot"] = copilot
+    return [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
 
 
 def replace_catalog_file(home: Path | str, rows: list[dict[str, str]]) -> bool:
@@ -786,6 +841,7 @@ def replace_catalog_file(home: Path | str, rows: list[dict[str, str]]) -> bool:
         doc = empty_catalog_document()
     if not isinstance(doc, dict):
         doc = empty_catalog_document()
+    rows = _merge_omitted_copilot_row(home, rows, doc)
     old_bytes = b""
     if path.is_file():
         try:
