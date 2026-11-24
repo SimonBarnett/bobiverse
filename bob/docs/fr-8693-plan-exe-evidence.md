@@ -7,4 +7,12 @@ Agents > Plan starts the vendored Plan seat exe.
 - TipForm + Watch-BobTray both resolve that path; missing exe shows a dialog naming `vendor\plan\PlanAgent.exe` (no silent no-op)
 - FR #9661: argv includes `--root <install>\plan` and child env `PLAN_AGENT_ROOT`; missing `plan\AGENTS.md` shows a clear dialog (same class as missing exe). Bare vendor exe without `--root` FATAL "plan-agent tree not found".
 
+`python -m pytest -q bob/tests/test_fr8693_plan_exe.py bob/tests/test_fr9271_plan_click_starts.py bob/tests/test_fr9605_plan_starts_vendor_planagent.py`
+
+## FR #9641
+Agents > Plan remains `StartPlanExe` -> `vendor\plan\PlanAgent.exe`; Pack `Assert-BobiversePlanAgentNotBobWorker` refuses identical bob-worker bytes under PlanAgent.
+
+## FR #9661
+TipForm/Watch pass `--root <install>\plan` + `PLAN_AGENT_ROOT`; MessageBox when `plan\AGENTS.md` missing.
+
 `python -m pytest -q bob/tests/test_fr8693_plan_exe.py bob/tests/test_fr9271_plan_click_starts.py bob/tests/test_fr9605_plan_starts_vendor_planagent.py bob/tests/test_fr9661_planagent_root_argv.py`

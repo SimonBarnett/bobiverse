@@ -14,7 +14,7 @@ def test_fr9661_tipform_passes_root_and_guards_agents():
     body = cs.split("void StartPlanExe()", 1)[1].split("void StartWorker(", 1)[0]
     assert 'Path.Combine(root, "plan")' in body
     assert 'Path.Combine(planRoot, "AGENTS.md")' in body
-    assert 'psi.Arguments = "--root " + Quote(planRoot)' in body
+    assert 'psi.Arguments = "--root "" + planRoot.Replace' in body
     assert 'EnvironmentVariables["PLAN_AGENT_ROOT"]' in body
     assert "Plan - missing AGENTS.md" in body
     assert "start plan root missing" in body

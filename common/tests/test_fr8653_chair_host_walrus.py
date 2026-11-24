@@ -5,18 +5,28 @@ import gitclaim
 
 
 def test_needs_walrus_and_legacy_ionos_pin_to_walrus():
+    # FR #9637: bobiverse body require_machine: alone does not pin.
     assert (
         gitclaim.infer_require_machine(
             title="Sync ircJeeves allowlist",
             body="require_machine: walrus\n",
             repo="SimonBarnett/bobiverse",
         )
-        == "walrus"
+        == ""
     )
     assert (
         gitclaim.infer_require_machine(
             title="old pin",
             body="require_machine: ionos\n",
+            repo="SimonBarnett/bobiverse",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="Sync ircJeeves allowlist",
+            body="require_machine: walrus\n",
+            labels=("needs-walrus",),
             repo="SimonBarnett/bobiverse",
         )
         == "walrus"

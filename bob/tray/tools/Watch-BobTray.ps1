@@ -5156,7 +5156,8 @@ $miJeeves.Add_Click({
         Write-TrayLog 'jeeves-mcp path=J:\.grok\skills'
         Write-TrayLog 'cwd J:'
         Write-TrayLog 'Jeeves: grok start'
-        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
+        # FR #9640: --mode jeeves is uncapped (Agents > Jeeves outside Workers MaxWorkers=2).
+        Start-BobTrayWorkerExe -Mode 'jeeves' -Agent 'grok' -Trigger 'jeeves-menu'
     })
 $miWeights.Add_Click({
         Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'

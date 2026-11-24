@@ -47,15 +47,37 @@ def test_fr2525_body_for_queue_preserves_backtick_pin():
         repo="SimonBarnett/bobiverse",
         ident="#999925",
     )
-    assert mid == "walrus"
+    # FR #9637: preserved body pin line alone does not stamp; needs label.
+    assert mid == ""
+    mid_lab = gitclaim.infer_require_machine(
+        title=_FR2522_TITLE,
+        body=stored,
+        labels=["feature-request", "needs-walrus"],
+        repo="SimonBarnett/bobiverse",
+        ident="#999925",
+    )
+    assert mid_lab == "walrus"
 
 
 def test_fr2525_infer_backtick_line_with_trailing_note():
+    # FR #9637: body pin alone no longer stamps bobiverse (needs label).
     assert (
         gitclaim.infer_require_machine(
             title="maintenance butler",
             body="Relates #2412\n\n`require_machine: ionos` (hotpatch verify)\n",
             labels=["feature-request"],
+            repo="SimonBarnett/bobiverse",
+            ident="#999927",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="maintenance butler",
+            body="Relates #2412\n\n`require_machine: ionos` (hotpatch verify)\n",
+            labels=["feature-request", "needs-walrus"],
+            repo="SimonBarnett/bobiverse",
+            ident="#999927",
         )
         == "walrus"
     )
@@ -86,7 +108,7 @@ def test_fr2525_append_unaccepted_stamps_2522_shaped(tmp_path=None):
         line="",
         title=_FR2522_TITLE,
         body=body,
-        labels=["feature-request"],
+        labels=["feature-request", "needs-walrus"],
         state="open",
     )
     assert gitclaim._append_unaccepted(doc, claim) == "added"
