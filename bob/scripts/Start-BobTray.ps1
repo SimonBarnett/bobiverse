@@ -118,7 +118,7 @@ if (-not $env:BOBIVERSE_BOB_VERSION) {
 }
 
 # One TipForm only: stop other Watch-BobTray / seat wrappers (and legacy minimal Start-BobTray hosts).
-# FR #9509: never bare Get-CimInstance Win32_Process here — hung CIM stalls ForceNew with no bob-tray.exe.
+# FR #9509: never bare Get-CimInstance Win32_Process here - hung CIM stalls ForceNew with no bob-tray.exe.
 if (-not (Get-Command Get-BobTrayPriorProcessHits -ErrorAction SilentlyContinue)) {
     # Lifecycle may be missing in sparse trees; define a minimal timed+fallback copy.
     function Get-BobTrayPriorProcessHits {

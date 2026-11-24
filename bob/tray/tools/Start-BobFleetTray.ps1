@@ -210,7 +210,7 @@ function Invoke-BobSystrayTidy {
 
 # FR #2928: dot-source (tests loading Ensure-BobSystraySeatWrapper) must define
 # functions only. Never reach Invoke-BobSystrayTidy / Stop-BobSystrayPriorAgents /
-# Cleanup-OrphanAgents / tray start — that kills Grok Bot and every python/pwsh.
+# Cleanup-OrphanAgents / tray start - that kills Grok Bot and every python/pwsh.
 if ($MyInvocation.InvocationName -eq '.') {
     return
 }
@@ -224,7 +224,7 @@ $hits = @(Get-BobSystrayTrayProcesses)
 
 if ($ForceNew -and $hits.Count -gt 0) {
     # FR #453 / FR #2943: announce into the *service* ear home (InstallRoot\home) that
-    # LocalSystem ircBob drains — not %USERPROFILE%\.bobiverse (orphan undrained outbox).
+    # LocalSystem ircBob drains - not %USERPROFILE%\.bobiverse (orphan undrained outbox).
     try {
         $commonFn = Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1'
         if (-not (Test-Path -LiteralPath $commonFn)) {
@@ -262,7 +262,7 @@ if ($ForceNew -and $hits.Count -gt 0) {
                 }
             }
             # FR #9496: process match only. Never treat Get-Service ircBob=Running alone as
-            # ear-up — nssm can report Running with zero bob-ear.exe / irc_agent children.
+            # ear-up - nssm can report Running with zero bob-ear.exe / irc_agent children.
             $agentStillUp = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                     $_.CommandLine -and (
                         ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
@@ -270,7 +270,7 @@ if ($ForceNew -and $hits.Count -gt 0) {
                         ($_.Name -match '(?i)^bob-ear')
                     )
                 }).Count -gt 0
-            # Skip if Restart already logged out (agent gone) — avoid orphan announce for next join.
+            # Skip if Restart already logged out (agent gone) - avoid orphan announce for next join.
             if ($needAnnounce -and $agentStillUp) {
                 if (Test-Path -LiteralPath $obFn) {
                     $lenFn = 0
