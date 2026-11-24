@@ -2052,8 +2052,13 @@ def handle_timeout_or_fail(
                 create=stall_filer.default_create,
             )
             if not actions:
-                title = f"stall:all-gave-up:{repo}{ident if str(ident).startswith('#') else '#' + ident}"
-                stall_filer.default_create(title, f"Repeated Copilot {reason}")
+                # FR #9602: class key is owner/repo (not #N); row id stays in body.
+                title = f"stall:all-gave-up:{repo}"
+                body = (
+                    f"Repeated Copilot {reason}\n"
+                    f"row=`{repo}{ident if str(ident).startswith('#') else '#' + ident}`\n"
+                )
+                stall_filer.default_create(title, body)
     jobs = _load_jobs(home)
     jobs["jobs"] = [
         j
