@@ -20,7 +20,7 @@ LOCKED
 
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
-| S1 | Vision pack validates | `validate-vision-pack.py` exits 0 with `--mocks-dir` pointing at the front-door mocks | `python bob/agents/plan/tools/validate-vision-pack.py jeeves/docs/feature-request-bob-ntsa-public-front-door-2026-11-15.md --mocks-dir jeeves/docs/mocks/bob-ntsa-public-front-door` | non-zero exit or missing Shape/Success/mocks |
+| S1 | Vision pack validates | `validate-vision-pack.py` exits 0 with `--mocks-dir` pointing at the front-door mocks | `python jeeves/tools/validate-vision-pack.py jeeves/docs/feature-request-bob-ntsa-public-front-door-2026-11-15.md --mocks-dir jeeves/docs/mocks/bob-ntsa-public-front-door` | non-zero exit or missing Shape/Success/mocks |
 | S10 | Shared tokens + required mocks + nav | `site.css` defines `--ink`, `--gold`, `--charcoal`; mocks dir has `home.html`, `empty.html`, `error.html`; `home.html` nav links Downloads, Jeeves, MCP, GitHub | file content checks / `Select-String` / pytest pin `test_fr7408_public_front_door_mocks.py` | missing token, missing mock, or nav href absent |
 
 ## Shape

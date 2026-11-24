@@ -1,4 +1,4 @@
-﻿// t828u: Acknowledge (About) dialog as a fast compiled exe. Same content as the old PowerShell dialog (Get-BobInstallInfo +
+// t828u: Acknowledge (About) dialog as a fast compiled exe. Same content as the old PowerShell dialog (Get-BobInstallInfo +
 // Format-BobInstallInfo): ntsa badge, "by Simon Barnett", bob version + machine, and one block per install of bob/jeeves/airc/ergo
 // (version, build date, commit, path, service state). The window shows at once; the install scan runs on a worker thread.
 using System;
@@ -208,7 +208,10 @@ namespace BobDialogs
     {
         readonly TextBox box;
 
-        public AboutForm(string root)
+        // FR #9264 / BOB-TRAY-UI-04: optional OpenCode keys action (TipForm wires it; standalone bob-about hides the button).
+        public AboutForm(string root) : this(root, null) { }
+
+        public AboutForm(string root, Action<Control> openOpencodeKeys)
         {
             Text = "Bobiverse systray - about";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -236,7 +239,7 @@ namespace BobDialogs
             box = new TextBox();
             box.Multiline = true; box.ReadOnly = true; box.ScrollBars = ScrollBars.Vertical; box.Font = new Font("Consolas", 9f);
             box.Text = "reading installs..."; box.Location = new Point(16, 148); box.Size = new Size(548, 236);
-            // FR #8677 / BOB-09: Show logs at bottom opens the tray watch log (same path as menu Open log).
+            // FR #8677 / BOB-09 / FR #9261: Show logs at bottom opens the tray watch log (top-level Open log removed).
             Button logs = new Button();
             logs.Text = "Show logs"; logs.Location = new Point(350, 398); logs.Size = new Size(100, 23);
             logs.Click += delegate {
@@ -247,10 +250,19 @@ namespace BobDialogs
                 }
                 catch { }
             };
+            // FR #9264 / BOB-TRAY-UI-04: OpenCode keys set/select/remove moved here from the top tray menu.
+            Button keys = new Button();
+            keys.Name = "opencodeKeys";
+            keys.Text = "OpenCode keys"; keys.Location = new Point(230, 398); keys.Size = new Size(110, 23);
+            keys.Visible = openOpencodeKeys != null;
+            keys.Enabled = openOpencodeKeys != null;
+            keys.Click += delegate {
+                try { if (openOpencodeKeys != null) openOpencodeKeys(keys); } catch { }
+            };
             Button ok = new Button();
             ok.Text = "Close"; ok.Location = new Point(474, 398);
             ok.Click += delegate { Close(); };
-            Controls.AddRange(new Control[] { logo, title, by, ver, agents, box, logs, ok });
+            Controls.AddRange(new Control[] { logo, title, by, ver, agents, box, keys, logs, ok });
             AcceptButton = ok;
             Shown += delegate {
                 ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();

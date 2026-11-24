@@ -67,8 +67,10 @@ def test_fr1993_wp2_self_test_queue_and_offer(tmp_path):
                 "task": "FR",
                 "id": "1993",
                 "url": "https://github.com/SimonBarnett/bobiverse/issues/1993",
-                "require_machine": "ionos",
+                # FR #9637: bobiverse pin via needs-walrus (body alone does not pin).
+                "require_machine": "walrus",
                 "body": "require_machine: ionos\n",
+                "labels": ["feature-request", "needs-walrus"],
             },
             {
                 "repo": "SimonBarnett/other",
@@ -201,8 +203,10 @@ def test_fr1993_wp2_summarize_empty_offer(tmp_path):
                 "repo": "SimonBarnett/bobiverse",
                 "task": "FR",
                 "id": "1993",
-                "require_machine": "ionos",
+                # FR #9637: needs-walrus label (body alone does not pin bobiverse).
+                "require_machine": "walrus",
                 "body": "require_machine: ionos\n",
+                "labels": ["feature-request", "needs-walrus"],
             },
             {"repo": "SimonBarnett/other", "task": "FR", "id": "2"},
         ],

@@ -6,6 +6,7 @@ Modes
   --mode plan    plan agent: cwd <install>\plan, no IRC, fire-and-forget launch
   --mode monitor Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
+  --mode jeeves  Agents > Jeeves (FR #9640): IRC agent-like, outside Workers MaxWorkers=2 hard cap
 
 Rules (CAST IRON, Simon t762u-t765u)
   * Agent choice is ALWAYS automatic by token availability (FR #3997 / #6120): Grok (local weekly > 0 or unknown read)
@@ -3384,7 +3385,13 @@ def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> 
     return out
 
 
-_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance")
+# FR #9640: jeeves = Agents > Jeeves (IRC agent-like; outside Workers hard cap).
+_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance", "jeeves")
+
+
+def is_irc_agent_like_mode(mode: str) -> bool:
+    """True for Workers agent seats and Agents > Jeeves (FR #9640)."""
+    return str(mode or "").strip().lower() in ("agent", "jeeves")
 
 
 def describe_worker_exe_launch(
@@ -3445,6 +3452,10 @@ def describe_worker_exe_launch(
     elif mode_l == "plan":
         cwd = root / "plan"
         title = "Bob plan - starting (closing this window ends the agent)"
+    elif mode_l == "jeeves":
+        # FR #9640: Agents > Jeeves shares worker cwd / IRC path; uncapped.
+        cwd = root / "worker"
+        title = "Bob jeeves - starting (closing this window ends the agent)"
     else:
         cwd = root / "worker"
         title = "Bob agent - starting (closing this window ends the agent)"
@@ -3495,7 +3506,8 @@ def describe_agent_child_launch(
     launch_folder = folder
     install_worker = folder
     bound_meta: dict = {}
-    if kind_l == "grok" and mode_l == "agent":
+    # FR #9640: jeeves is IRC agent-like (bound grok cwd) but outside Workers hard cap.
+    if kind_l == "grok" and is_irc_agent_like_mode(mode_l):
         try:
             import skill_dag_bound as _sdb
 
@@ -3527,6 +3539,7 @@ def describe_agent_child_launch(
                     f"Harness cwd is {bound_meta['bound_cwd']} (FR #6891 skill catalog bound; "
                     f"only skill-dag-core is listed). Install worker tree: {install_worker}. "
                 ) + prompt
+    # build_launch knows agent|plan|monitor; map jeeves -> agent for the child argv.
     launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
     spec = build_launch(
         kind, launch_mode, launch_folder, prompt, agent_exe, rd,
@@ -5082,6 +5095,30 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "opencode-freeze-recycle"}
+    # FR #9656: console-closed / signal with no ACKed job is free-idle recycle after an
+    # intentional GIVEUP (e.g. require_machine=walrus). Tray may restart the seat; do not
+    # file "agent console closed" / crash twins. Keep filing when job_key is set (ACK open;
+    # FR #8154 WIP GIVEUP path).
+    _job_pending = str(job_key or "").strip()
+    _console_u = None
+    if exit_code is not None:
+        try:
+            _console_u = int(exit_code) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            _console_u = None
+    if not _job_pending and (
+        _fuel_reason in ("console-closed", "signal")
+        or (_console_u is not None and _console_u == CONSOLE_CLOSE_EXIT)
+    ):
+        if log:
+            try:
+                log(
+                    "worker: console-closed with no ACKed job; "
+                    "no console-close intake (FR #9656 free-idle after GIVEUP)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "console-closed-free-idle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -5151,7 +5188,9 @@ def report_agent_cli_nonzero_exit(
             "recycled the seat (FR #7593).\n"
         )
     elif end == "console-close":
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: class key is machine+end (nick stays in body only) so twin seats
+        # on the same host collapse to one tip (class of closed #9606/#9607).
+        key = f"seat-silent-end|{mid}|{end}"[:128]
         title = "bug: agent console closed (FR #7881)"
         what = (
             "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
@@ -5160,7 +5199,8 @@ def report_agent_cli_nonzero_exit(
         )
     elif exit_code is None:
         # FR #7978: recycled while still running — a hang/ack-miss, not a CLI exit.
-        key = f"seat-no-progress|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: nick out of class key (body still has nick/job/pid).
+        key = f"seat-no-progress|{mid}|{end}"[:128]
         title = "bug: seat stopped making progress"
         what = (
             "What: the worker recycled the seat while the agent process was still running "
@@ -5168,7 +5208,8 @@ def report_agent_cli_nonzero_exit(
         )
     else:
         # silent external kill, or an operator/tray recycle after the process ended.
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: seat-silent-end|{mid}|{end} — nick in body only.
+        key = f"seat-silent-end|{mid}|{end}"[:128]
         title = "bug: seat ended with no CLI stderr (FR #7724)"
         what = (
             "What: the seat process ended and there was no CLI stderr. "
@@ -5196,7 +5237,8 @@ def report_agent_cli_nonzero_exit(
         # FR #8148: do not rebrand console-close / signal as "stopped making progress".
         if reason != "agent-exited" and end not in ("console-close", "recycle", "external-kill"):
             title = "bug: seat stopped making progress"
-            key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
+            # FR #9609: no nick in seat-no-progress class key.
+            key = f"seat-no-progress|{mid}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
         what
         + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
@@ -5231,6 +5273,156 @@ def report_agent_cli_nonzero_exit(
         return {"ok": True, "key": key}
     except Exception:
         return {"ok": False, "key": key}
+
+
+def probe_create_pseudoconsole_hresult(
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """FR #9612: host CreatePseudoConsole smoke; log HRESULT; fail closed on error.
+
+    Grok Build's run_terminal_command uses ConPTY. After FR #7593 recycle the host
+    ConPTY stack can be dead while file tools still work. This probe does not fix
+    Grok's internal PTY; it fails fast when the *host* CreatePseudoConsole fails.
+    """
+    if sys.platform != "win32":
+        return {"ok": True, "skipped": True, "reason": "non-windows"}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class COORD(ctypes.Structure):
+            _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+        HPCON = wintypes.HANDLE
+        k32.CreatePipe.argtypes = [
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        k32.CreatePipe.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        # HRESULT CreatePseudoConsole(COORD, HANDLE, HANDLE, DWORD, HPCON*)
+        k32.CreatePseudoConsole.argtypes = [
+            COORD,
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(HPCON),
+        ]
+        k32.CreatePseudoConsole.restype = wintypes.HRESULT
+        k32.ClosePseudoConsole.argtypes = [HPCON]
+        k32.ClosePseudoConsole.restype = None
+
+        h_input_r = wintypes.HANDLE()
+        h_input_w = wintypes.HANDLE()
+        h_output_r = wintypes.HANDLE()
+        h_output_w = wintypes.HANDLE()
+        if not k32.CreatePipe(ctypes.byref(h_input_r), ctypes.byref(h_input_w), None, 0):
+            err = ctypes.get_last_error()
+            if log:
+                log(f"conpty-smoke: CreatePipe input failed winerr={err} (FR #9612)")
+            return {"ok": False, "hresult": None, "winerr": err, "step": "CreatePipe-input"}
+        if not k32.CreatePipe(ctypes.byref(h_output_r), ctypes.byref(h_output_w), None, 0):
+            err = ctypes.get_last_error()
+            k32.CloseHandle(h_input_r)
+            k32.CloseHandle(h_input_w)
+            if log:
+                log(f"conpty-smoke: CreatePipe output failed winerr={err} (FR #9612)")
+            return {"ok": False, "hresult": None, "winerr": err, "step": "CreatePipe-output"}
+        hpc = HPCON()
+        size = COORD(80, 25)
+        # ConPTY wants the opposite ends: input write for host→console, output read console→host
+        hr = int(
+            k32.CreatePseudoConsole(
+                size, h_input_r, h_output_w, 0, ctypes.byref(hpc)
+            )
+        )
+        # Close our unused ends after create attempt
+        k32.CloseHandle(h_input_r)
+        k32.CloseHandle(h_output_w)
+        if hr == 0 and hpc:
+            try:
+                k32.ClosePseudoConsole(hpc)
+            except Exception:
+                pass
+        k32.CloseHandle(h_input_w)
+        k32.CloseHandle(h_output_r)
+        ok = hr == 0
+        if log:
+            log(
+                f"conpty-smoke: CreatePseudoConsole hresult=0x{hr & 0xFFFFFFFF:08X} "
+                f"ok={ok} (FR #9612)"
+            )
+        return {"ok": ok, "hresult": hr, "hresult_hex": f"0x{hr & 0xFFFFFFFF:08X}"}
+    except AttributeError as e:
+        # Older Windows without ConPTY exports
+        if log:
+            log(f"conpty-smoke: API missing {e} (FR #9612)")
+        return {"ok": True, "skipped": True, "reason": "api-missing"}
+    except Exception as e:
+        if log:
+            log(f"conpty-smoke: failed {type(e).__name__}: {e} (FR #9612)")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def detect_grok_empty_terminal_calls(
+    session_dir: str | Path,
+    *,
+    min_age_s: float = 25.0,
+    now: Optional[Callable[[], float]] = None,
+) -> Optional[dict]:
+    """FR #9612: empty terminal/call-*.log after run_terminal_command → shell hung.
+
+    Returns a detail dict when hung, else None.
+    """
+    root = Path(session_dir)
+    terminal = root / "terminal"
+    events = root / "events.jsonl"
+    if not terminal.is_dir():
+        return None
+    clock = now or time.time
+    wall = float(clock())
+    empty: list[str] = []
+    for p in terminal.glob("call-*.log"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size > 0:
+            continue
+        age = wall - float(st.st_mtime)
+        if age >= float(min_age_s):
+            empty.append(p.name)
+    if not empty:
+        return None
+    # Require evidence the session actually tried a shell tool recently.
+    tried_shell = False
+    if events.is_file():
+        try:
+            # Tail last ~256 KiB for tool names (cheap; sessions can be large).
+            raw = events.read_bytes()
+            if len(raw) > 262144:
+                raw = raw[-262144:]
+            text = raw.decode("utf-8", errors="replace").lower()
+            tried_shell = (
+                "run_terminal_command" in text
+                or "run_terminal" in text
+                or '"name":"bash"' in text
+                or '"name": "bash"' in text
+            )
+        except Exception:
+            tried_shell = False
+    if not tried_shell:
+        return None
+    return {
+        "empty_calls": empty[:20],
+        "count": len(empty),
+        "min_age_s": float(min_age_s),
+    }
 
 
 def restart_skill_dag_mcp_stdio_children(
@@ -9031,21 +9223,42 @@ class GrokTurnWatcher:
                 pass
 
     def run(self) -> None:
+        missing_logged = False
+        none_logged = False
         while not self._stop.is_set():
             path = self._resolve()
             if path is None:
+                # FR #9364 diagnosis: session dir not resolved yet (sid / grok-home lag).
+                if self._log and not none_logged:
+                    none_logged = True
+                    try:
+                        self._log(
+                            "bored: turn watcher waiting for session events path "
+                            "(no events.jsonl yet)"
+                        )
+                    except Exception:
+                        pass
                 self._stop.wait(self.poll_s)
                 continue
             try:
                 if self._cur != path:
                     self._cur = path
                     self._offset = 0
+                    missing_logged = False
                     if self._log:
                         try:
                             self._log(f"bored: turn watcher following {path}")
                         except Exception:
                             pass
                 if not path.is_file():
+                    if self._log and not missing_logged:
+                        missing_logged = True
+                        try:
+                            self._log(
+                                f"bored: turn watcher path missing (waiting): {path}"
+                            )
+                        except Exception:
+                            pass
                     self._stop.wait(self.poll_s)
                     continue
                 size = path.stat().st_size
@@ -11832,7 +12045,24 @@ class Relay:
             self._last_line = line
             if self._inject is None:
                 pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
-                ack_first = bool(assign_job_ref(line)) and pending_assigns == 0
+                is_assign = bool(assign_job_ref(line))
+                ack_first = is_assign and pending_assigns == 0
+                # FR #9403: second+ assign while agent has no inject target must not
+                # sit silent (chair offered_to / seat-holds, seat idle-no-ack).
+                if is_assign and pending_assigns > 0:
+                    key = assign_job_key(line) or assign_job_ref(line) or "job"
+                    nack = f"NACK {key} agent-not-ready"
+                    self.log(
+                        "relay: dispatch-dropped agent-not-ready "
+                        f"job={key} pending={pending_assigns}"
+                    )
+                    self._persist_last_from(line)
+                    if self.write_outbox:
+                        try:
+                            self.write_outbox(nack)
+                        except Exception:
+                            pass
+                    return "agent_not_ready"
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
@@ -11841,6 +12071,12 @@ class Relay:
                     self.log("relay: held nothing-queued (agent not ready)")
                     self._persist_last_from(line)
                     ack_first = False
+                elif is_assign:
+                    key = assign_job_key(line) or assign_job_ref(line) or "job"
+                    self.log(
+                        "relay: dispatch-held agent-not-ready "
+                        f"job={key} (ACK then wait for inject target)"
+                    )
             else:
                 now = self.clock()
                 self._sent = [t for t in self._sent if now - t < self.window_s]
@@ -12037,8 +12273,28 @@ class Relay:
         if nq:
             self.log("relay: inject failed for nothing-queued (persisted last-from); holding " + line[:80])
             self._persist_last_from(line)
-        else:
-            self.log("relay: inject failed, holding " + line[:80])
+            with self._lock:
+                self._pending.append(line)
+                if len(self._pending) > self.max_pending:
+                    del self._pending[0]
+            return "inject_failed"
+        # FR #9403: assign inject miss must NACK so chair clears offered_to / seat-holds
+        # (silent hold left seats idle while busy (offered|held)).
+        key = assign_job_key(line) or assign_job_ref(line)
+        if key:
+            nack = f"NACK {key} inject failed"
+            self.log(
+                "relay: dispatch-dropped inject-failed "
+                f"job={key} line={line[:80]}"
+            )
+            self._persist_last_from(line)
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "inject_failed"
+        self.log("relay: inject failed, holding " + line[:80])
         with self._lock:
             self._pending.append(line)
             if len(self._pending) > self.max_pending:
@@ -12705,13 +12961,15 @@ class IrcSeat:
             if params and params[0].lower() == self.shop.lower():
                 self.joined.set()
                 self.log("irc: joined " + self.shop)
-                if getattr(self, "mode", "agent") == "agent" and write_seat_irc is not None:
+                # FR #9640: agent + jeeves write markers; CapRefusal counts mode=agent only.
+                if is_irc_agent_like_mode(getattr(self, "mode", "agent")) and write_seat_irc is not None:
                     try:
                         write_seat_irc(
                             nick=self.nick,
                             pid=os.getpid(),
                             machine=getattr(self, "machine", "") or "",
                             shop=self.shop,
+                            mode=getattr(self, "mode", "agent") or "agent",
                         )
                     except OSError as e:
                         self.log("irc: seat marker write failed: %s" % e)
@@ -15195,10 +15453,12 @@ class BoredEmitter:
     """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
-        * FR #2802 / #6157 / #7265: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
+        * FR #2802 / #6157 / #7265 / #9364: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
         Cursor chat-store, or Aider process-idle ``turn_ended`` releases (or skips) the harvest
-        hold; idle turn end -> reason ``turn``. ``harvest_hold_s`` is fallback only when
-        turn end cannot be seen (log ``bored: fallback timer, no turn_ended seen``);
+        hold; idle turn end -> reason ``turn``. DONE/NACK/GIVEUP with **no open turn** skips
+        ``harvest_hold_s`` immediately (and flushes parked assigns). ``harvest_hold_s`` is
+        fallback only while a turn is still open and ``turn_ended`` is missing (log
+        ``bored: fallback timer, no turn_ended seen``);
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
@@ -15221,6 +15481,9 @@ class BoredEmitter:
         per incident so 3/3 is reachable; unknown fuel readings still do not count as exhausted (#3923);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
+      * FR #9365: after harvest clears, skip the first idle_s quiet (2s debounce) so the seat
+        !boreds again within seconds when no chained offer; harvest follow-up outbox must not
+        reset that first idle clock;
       * FR #5505: ACK-on-receipt for a still-parked assign must not clear harvest_hold; when harvest
         expires (or held-assign watchdog fires), always release_held_assigns even if free/done !bored
         is still pending, so an ACKed hold cannot sit idle forever;
@@ -15348,6 +15611,9 @@ class BoredEmitter:
         self._turn_hold_cap_logged = False
         self._harvest_saw_turn_ended = False
         self._harvest_used_fallback = False
+        # FR #9365: after harvest clears (DONE/GIVEUP/NACK or turn_ended release), skip the
+        # first idle_s quiet so the seat !boreds again within seconds when no chained offer.
+        self._post_harvest_skip_idle = False
         # FR #2811: assign parked in Relay during harvest — blocks !bored, not turn_ended release.
         self._held_assign = False
         # FR #2875: turn_ended with ACK open and no DONE/NACK/GIVEUP.
@@ -15684,6 +15950,12 @@ class BoredEmitter:
             return
         if now < float(self._done_miss_armed_at) + float(self.done_miss_grace_s):
             return
+        # FR #9277: activity stamped after arm means the turn_ended was stale while streaming.
+        active = self._agent_active_at
+        armed = self._done_miss_armed_at
+        if active is not None and armed is not None and float(active) > float(armed):
+            self._cancel_done_miss_for_progress(now, why="progress after arm before remind")
+            return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._done_miss_reminded = True
         self._done_miss_reply_until = now + float(self.done_miss_reply_s)
@@ -15948,11 +16220,30 @@ class BoredEmitter:
                 self._idle_since = now
             self._hb_notify_all()
 
+    def _cancel_done_miss_for_progress(self, now: float, *, why: str) -> bool:
+        """FR #9277: progress after a false turn_ended cancels armed (pre-remind) done-miss.
+
+        Caller holds ``_cv``. Returns True when an arm was cleared.
+        """
+        if not self._ack_open:
+            return False
+        if self._done_miss_armed_at is None or self._done_miss_reminded:
+            return False
+        key = self._done_miss_key or (self._ack_job_key or "job")
+        self._clear_done_miss()
+        self.log(f"done-miss: cancelled ({why}) key={key}")
+        return True
+
     def note_agent_active(self, at: float | None = None) -> None:
-        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s."""
+        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s.
+
+        FR #9277: progress / I/O on the same ACK also cancels an armed done-miss so a
+        false ``turn_ended`` while the seat is still streaming cannot remind/GIVEUP.
+        """
         with self._cv:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
+            self._cancel_done_miss_for_progress(now, why="agent still active / progress")
             self._hb_notify_all()
 
     def note_agent_active_nb(self, at: float | None = None, *, timeout: float = 0.05) -> bool:
@@ -15967,6 +16258,7 @@ class BoredEmitter:
         try:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
+            self._cancel_done_miss_for_progress(now, why="progress heartbeat")
             self._hb_notify_all()
             return True
         finally:
@@ -16043,10 +16335,12 @@ class BoredEmitter:
             self._hb_notify_all()
 
     def _begin_harvest_hold(self, now: float) -> None:
-        """FR #1611 / #7265: after DONE/NACK/GIVEUP, hold !bored only while a turn is still open.
+        """FR #1611 / #7265 / #9364: after DONE/NACK/GIVEUP, hold !bored only while a turn is open.
 
-        Harvest belongs inside the agent turn. If the watcher already saw ``turn_ended``,
-        skip the clock. ``harvest_hold_s`` remains the fallback when no turn end is seen.
+        Harvest belongs inside the agent turn. When no turn is live (watcher already saw
+        ``turn_ended``, or never saw ``turn_started``), skip the clock and flush any
+        parked assigns immediately. ``harvest_hold_s`` remains the fallback only while
+        a turn is still open and ``turn_ended`` has not arrived yet.
         """
         self._inject_pending = False
         self._inject_at = None
@@ -16057,18 +16351,26 @@ class BoredEmitter:
         self._turn_hold_cap_logged = False
         self._harvest_saw_turn_ended = False
         self._harvest_used_fallback = False
-        skip_clock = (
-            bored_on_turn_end_enabled()
-            and self._turn_watcher_armed
-            and (not self._turn_live())
-            and self._turn_gen > 0
-        )
+        # FR #9364: do not require _turn_watcher_armed / _turn_gen > 0. A GrokTurnWatcher
+        # miss (no turn_started / turn_ended ever) used to force the full harvest_hold_s
+        # wait (~90s+) before the next assign could inject.
+        skip_clock = bored_on_turn_end_enabled() and (not self._turn_live())
+        # FR #9365: arm fast first-idle whether we skip the clock or wait the fallback.
+        self._post_harvest_skip_idle = True
         if skip_clock:
             self._harvest_until = None
             self._idle_since = now
             self._release_gen = self._turn_gen
             self._harvest_saw_turn_ended = True
-            self.log("bored: skip harvest hold (turn already ended)")
+            why = (
+                "turn already ended"
+                if (self._turn_watcher_armed and self._turn_gen > 0)
+                else "no open turn"
+            )
+            self.log(f"bored: skip harvest hold ({why})")
+            # FR #9364: release assigns already parked (ACK-on-receipt) without waiting
+            # for harvest_hold_s / fallback timer.
+            self._flush_held_on_harvest_expiry(now, why=f"skip harvest hold ({why})")
             return
         if self.harvest_hold_s > 0:
             self._harvest_until = now + self.harvest_hold_s
@@ -16396,6 +16698,7 @@ class BoredEmitter:
                     self._idle_since = now
                     self._release_gen = self._turn_gen
                     self._harvest_saw_turn_ended = True
+                    self._post_harvest_skip_idle = True  # FR #9365
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
@@ -16413,6 +16716,7 @@ class BoredEmitter:
                     # Prior release was cancelled by turn_started; this end re-arms fire.
                     self._release_gen = self._turn_gen
                     self._idle_since = now
+                    self._post_harvest_skip_idle = True  # FR #9365
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
@@ -16424,6 +16728,7 @@ class BoredEmitter:
                     self._release_gen = self._turn_gen
                     self._arm_skip = True
                     self._hold_release_at = now
+                    self._post_harvest_skip_idle = True  # FR #9365
                     if self._idle_since is None:
                         self._idle_since = now
                 self._hb_notify_all()
@@ -16453,6 +16758,7 @@ class BoredEmitter:
                 else:
                     self._ack_open, self._ack_at, self._idle_since = True, now, None
                     self._ack_job_key = job
+                    self._post_harvest_skip_idle = False  # FR #9365: new job owns the seat
                     if job:
                         self._failed_turn_retries.pop(job, None)
                     # FR #3189: persist offered repo so Invoke-BobiverseHarvest targets the product.
@@ -16551,6 +16857,10 @@ class BoredEmitter:
             elif self._harvest_until is not None and now < self._harvest_until:
                 # Harvest / follow-up outbox (intake, comments) extends the hold.
                 self._harvest_until = now + self.harvest_hold_s
+            elif self._post_harvest_skip_idle:
+                # FR #9365: harvest follow-up lines must not push the first post-harvest
+                # idle !bored out by another full idle_s after DONE/GIVEUP.
+                pass
             else:
                 self._idle_since = now
             self._hb_notify_all()
@@ -16682,6 +16992,7 @@ class BoredEmitter:
         if self._harvest_until is not None and now >= self._harvest_until:
             pending = self._pending_harvest_fire()
             self._harvest_until = None
+            self._post_harvest_skip_idle = True  # FR #9365
             if (
                 pending
                 and bored_on_turn_end_enabled()
@@ -16765,6 +17076,13 @@ class BoredEmitter:
         if self._nak_due is not None and now >= self._nak_due:
             return "nak"
         since = (now - self._last_bored) if self._last_bored is not None else 1e12
+        # FR #9365: after harvest cleared, skip the first idle_s quiet (keep a short
+        # debounce so we do not double-fire in the same second as done/free).
+        if self._post_harvest_skip_idle:
+            debounce = 2.0
+            if since >= debounce:
+                return "idle"
+            return None
         thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
         if now - self._idle_since >= self.idle_s and since >= thr:
             return "idle"
@@ -16839,6 +17157,14 @@ class BoredEmitter:
                 or self._turn_idle_pending
             ):
                 return now
+        # FR #9365: wake soon for the first post-harvest idle (debounce after done/free).
+        if self._post_harvest_skip_idle:
+            due_fast = now
+            if self._last_bored is not None:
+                due_fast = max(due_fast, float(self._last_bored) + 2.0)
+            if self._nak_due is not None:
+                due_fast = min(due_fast, self._nak_due)
+            return due_fast
         base = self._idle_since if self._idle_since is not None else now
         thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
         due = base + self.idle_s
@@ -16899,6 +17225,7 @@ class BoredEmitter:
             self._retry_at = now + self.retry_s
             self.log(f"bored: not sent ({reason}) - retry in {self.retry_s:.0f}s")
             return
+        was_post_harvest = bool(self._post_harvest_skip_idle)
         self._last_dedupe, self._last_bored, self._last_reason, self._idle_since = key, now, reason, now
         self._nak_due = None  # any !bored satisfies a pending NAK timer
         if reason == "start":
@@ -16906,11 +17233,18 @@ class BoredEmitter:
         if reason == "done":
             self._last_done_key = self._done_key
             self._hold_started_at = None
+            # Keep skip-idle armed so a follow-up idle !bored is not delayed by idle_s.
+            self._post_harvest_skip_idle = True
         if reason == "free":
             self._last_free_key = self._free_key
             self._hold_started_at = None
+            self._post_harvest_skip_idle = True
         if reason == "turn":
             self._turn_idle_pending = False
+            self._post_harvest_skip_idle = True
+        if reason == "idle":
+            # FR #9365: first post-harvest idle consumed; later idles use idle_s / repeat_s.
+            self._post_harvest_skip_idle = False
         if reason == "done-miss":
             self._done_miss_release_pending = False
             self._clear_done_miss()
@@ -16923,6 +17257,8 @@ class BoredEmitter:
             trigger = "turn_ended"
         elif reason in ("done", "free") and self._harvest_used_fallback:
             trigger = "fallback-timer"
+        elif reason == "idle" and was_post_harvest:
+            trigger = "post-harvest"
         else:
             trigger = reason
         self.log(f"bored -> shop reason={reason} kind={kind} trigger={trigger}")
@@ -17554,8 +17890,18 @@ class Supervisor:
             return lost
         if kind == "opencode":
             lost = fuel_explicitly_exhausted(fuel, "opencode", start_model=start_model)
-            self.log(f"out-of-fuel: mid-job reading {snap}")
-            return lost
+            known = fuel_reading_known(fuel, "opencode", start_model=start_model)
+            # FR #9277: paid/go mid-job with unknown pool (go=None, free=0 noise) is not
+            # out-of-fuel. Do not spam ``out-of-fuel: mid-job reading`` every poll.
+            if lost or known:
+                self.log(f"out-of-fuel: mid-job reading {snap}")
+                self._last_midjob_fuel_snap = snap
+                return lost
+            prev = getattr(self, "_last_midjob_fuel_snap", None)
+            if prev != snap:
+                self.log(f"fuel: mid-job reading {snap} (unknown pool; not exhausted)")
+                self._last_midjob_fuel_snap = snap
+            return False
         return False
 
     def _clear_watchdogs_for_out_of_fuel(self) -> None:
@@ -19919,8 +20265,52 @@ class Supervisor:
             # FR #3623: ask_user_question Pending (alive process, ACK held) - Enter then recycle.
             if self._check_ask_user_pending(proc):
                 continue
+            # FR #9612: Grok empty terminal/call-*.log after run_terminal_command → shell-hung.
+            if self._check_grok_shell_hung():
+                continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
+
+    def _check_grok_shell_hung(self) -> bool:
+        """FR #9612: empty ConPTY call logs while shell tools ran → GIVEUP shell-hung + recycle."""
+        if (self.kind or "").strip().lower() != "grok":
+            return False
+        if not (self.bored and getattr(self.bored, "_ack_open", False)):
+            return False
+        path = self._ask_user_events_path()
+        if path is None:
+            return False
+        session_dir = path.parent
+        detail = detect_grok_empty_terminal_calls(session_dir)
+        if not detail:
+            return False
+        job_key = ""
+        try:
+            job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            job_key = ""
+        self.log(
+            f"agent: shell-hung empty call logs count={detail.get('count')} "
+            f"files={detail.get('empty_calls')} job={job_key or '-'} (FR #9612)"
+        )
+        if job_key:
+            try:
+                if self.bored is not None:
+                    self.bored._ack_open = False
+                    self.bored._ack_job_key = None
+            except Exception:
+                pass
+            try:
+                self._release_seat_giveup_job(job_key, "shell-hung")
+            except Exception as e:
+                self.log(f"agent: shell-hung GIVEUP failed {type(e).__name__}")
+        # Recycle once; host ConPTY smoke runs on agent-cli-nonzero-exit path when applicable.
+        try:
+            self.restart_agent("shell-hung")
+        except Exception as e:
+            self.log(f"agent: shell-hung restart failed {type(e).__name__}")
+            self.shutdown("shell-hung", EXIT_GAVE_UP)
+        return True
 
     def _progress_hb_skip(self, reason: str, *, now_mono: float) -> None:
         """Rate-limited skip log so a missing heartbeat can be attributed (FR #8249)."""
@@ -20678,6 +21068,28 @@ class Supervisor:
             pending = self.relay.last_unacked
         if pending:
             self.relay.hold(pending)  # the message in flight when the old agent hung is re-delivered to the NEW one once it is ready
+        # FR #9612: after FR #7593 recycle, smoke host CreatePseudoConsole before relaunch.
+        # Fail fast with shell-hung-conpty when HRESULT is nonzero (Grok file tools can still work).
+        if (
+            (self.kind or "").strip().lower() == "grok"
+            and reason == "agent-cli-nonzero-exit"
+        ):
+            smoke = probe_create_pseudoconsole_hresult(log=self.log)
+            if smoke.get("ok") is False and not smoke.get("skipped"):
+                self.log(
+                    "agent: ConPTY smoke failed after recycle; "
+                    f"hresult={smoke.get('hresult_hex') or smoke.get('hresult')} "
+                    f"step={smoke.get('step')} (FR #9612 shell-hung)"
+                )
+                if pending:
+                    try:
+                        key = (assign_job_key(pending) or "").strip()
+                        if key:
+                            self._release_seat_giveup_job(key, "shell-hung")
+                    except Exception as e:
+                        self.log(f"agent: shell-hung GIVEUP failed {type(e).__name__}")
+                self.shutdown("shell-hung-conpty", EXIT_GAVE_UP)
+                return
         if not self.start_agent(note="(restarted after a hang; the previous session was discarded)"):
             self.shutdown("restart-launch-failed", EXIT_LAUNCH_FAIL)
 
@@ -21872,6 +22284,8 @@ def run_agent(args, log: Log) -> int:
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
         sasl = (os.environ["BOB_IRC_SASL_USER"], os.environ["BOB_IRC_SASL_PASSWORD"])
     irc = IrcSeat(args.host, args.port, nick, machine, pw, sasl, tls=not args.no_tls, log=log)
+    # FR #9640: jeeves seats register mode=jeeves markers (excluded from Workers cap).
+    irc.mode = str(getattr(args, "mode", "agent") or "agent").strip().lower() or "agent"
     relay = Relay(log, persist_dir=run_dir)
     irc.on_message = relay.deliver
     try:
@@ -22251,8 +22665,8 @@ except ImportError:
 HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
 # FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use
 # worker_seat_roots / recycle_to_cap / excess_worker_seat_roots (never flat PID Skip-N).
-CAPPED_MODES = ("agent",)     # modes refused when 2 agent seats are already live
-UNCAPPED_MODES = ("plan", "monitor", "maintenance")
+CAPPED_MODES = ("agent",)     # Workers only; plan/monitor/maintenance/jeeves uncapped (FR #2522 / #9640)
+UNCAPPED_MODES = ("plan", "monitor", "maintenance", "jeeves")
 _WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 
 
@@ -22397,9 +22811,9 @@ def recycle_to_cap(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list
 
 
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
-    """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap.
+    """'' = free to start. Plan/monitor/maintenance/jeeves are never refused by the worker cap.
 
-    FR #3181 / FR #4307: IRC agent markers union live agent process roots.
+    FR #3181 / FR #4307 / FR #9640: IRC agent markers union live agent process roots.
     """
     if str(for_mode).lower() not in CAPPED_MODES:
         return ""
@@ -22417,7 +22831,11 @@ def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> 
 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")
-    p.add_argument("--mode", choices=("agent", "plan", "monitor", "maintenance"), default="agent")
+    p.add_argument(
+        "--mode",
+        choices=("agent", "plan", "monitor", "maintenance", "jeeves"),
+        default="agent",
+    )
     p.add_argument(
         "--agent",
         default="",

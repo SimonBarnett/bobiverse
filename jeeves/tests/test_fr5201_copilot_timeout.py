@@ -184,7 +184,8 @@ def test_repeated_timeout_files_existing_all_gave_up_stall(chair, monkeypatch):
     timeout(chair)
     assert len(chair["posts"]) == 1
     assert len(created) == 1
-    assert created[0][0] == f"stall:all-gave-up:{REPO}#5201"
+    # FR #9602: all-gave-up tip title keys the repo class, not #N.
+    assert created[0][0] == f"stall:all-gave-up:{REPO}"
     assert gitclaim.load_unaccepted(home)[0]["giveup_count"] == 2
     chair["chair"]._copilot_tick()
     assert len(created) == 1

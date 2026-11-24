@@ -139,6 +139,24 @@ def test_fr9236_clean_crashed_priors_recovers_after_one_fail(monkeypatch):
     assert calls["n"] >= 2
 
 
+def test_fr9236_persistent_scan_still_scanned_false_at_clean_priors(monkeypatch):
+    """FR #9236 clean_priors stays fail-closed (scanned=False); FR #9496 opens connect."""
+    monkeypatch.setenv("BOB_PRIOR_SCAN_ATTEMPTS", "2")
+    monkeypatch.setenv("BOB_PRIOR_SCAN_BACKOFF_S", "0")
+
+    def always_fail():
+        raise OSError("cim unavailable")
+
+    result = prior_irc.clean_priors(
+        "bob-test",
+        str(Path.home() / ".bobiverse-fr9236"),
+        wait_s=0,
+        list_processes=always_fail,
+        sleeper=lambda _s: None,
+    )
+    assert result.scanned is False
+
+
 def test_fr9236_source_has_no_machine_names():
     root = Path(__file__).resolve().parents[2]
     src = (root / "common" / "scripts" / "prior_irc.py").read_text(encoding="utf-8")

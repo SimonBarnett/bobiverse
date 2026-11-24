@@ -59,6 +59,7 @@ Close notices (FR #6391) also keep `text` / `brief` / `kind` / `state` / `title`
 - Daily `heartbeat` around 06:00 UTC once per day.
 - No change when the wake URL is unset.
 - Sources: `stall_callbacks.emit_findings` from `chair_health._stall_scan`; `emit_giveup` from shop `GIVEUP`; detectors map `idle-with-work`, `ack-stale`->`offer_timeout`, `all-gave-up`->`giveup`, `self-review-deadlock`, `bored-latency`->`seat_down`, `resync-fail` (->`rate_limited` on HTTP 429), `stale-digest`->`chair_degraded`.
+- **FR #9374:** `idle_with_work` and stuck-sweep `unaccepted_starved` skip FRs blocked by open Depends-on / digest (same gates as offer). Digest `stuck` shows those as `held` with rule `depends_on_open` (not starved).
 
 Build: `Build-Jeeves.ps1` also hidden-imports `stall_callbacks`, `stall_detectors`, `stall_filer`.
 

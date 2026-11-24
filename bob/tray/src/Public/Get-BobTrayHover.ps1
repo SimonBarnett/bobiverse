@@ -696,13 +696,25 @@ function Test-BobTrayDigestEarOffline {
 function Get-BobTrayIrcBobServiceStatus {
     <#
     .SYNOPSIS
-      FR #9144: local ircBob service Status (Running/Stopped/missing/skipped). Token-free.
+      FR #9144 / #9496: local ircBob Status (Running/Running-no-child/Stopped/missing/skipped).
+      Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
     #>
     if ($env:OS -notmatch 'Windows') { return 'skipped' }
     try {
         $svc = Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue
         if (-not $svc) { return 'missing' }
-        return [string]$svc.Status
+        $st = [string]$svc.Status
+        if ($st -ieq 'Running') {
+            $child = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                    $_.CommandLine -and (
+                        ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
+                        ($_.CommandLine -match 'bob-ear\.exe') -or
+                        ($_.Name -match '(?i)^bob-ear')
+                    )
+                }).Count
+            if ($child -lt 1) { return 'Running-no-child' }
+        }
+        return $st
     } catch {
         return 'error'
     }
@@ -711,7 +723,8 @@ function Get-BobTrayIrcBobServiceStatus {
 function Resolve-BobTrayDigestFailNote {
     <#
     .SYNOPSIS
-      FR #9144: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      FR #9144 / #9496: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      Running-no-child (nssm Running, no bob-ear process) paints ear-offline.
     #>
     param(
         [string]$DigestErr,
@@ -722,6 +735,7 @@ function Resolve-BobTrayDigestFailNote {
     $err = [string]$DigestErr
     if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
     $svc = ([string]$IrcBobStatus).Trim()
+    # Exact Running/skipped/missing/error stay non-offline; Running-no-child and Stopped paint ear-offline.
     if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
         return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
     }
@@ -1376,6 +1390,7 @@ function Get-BobTrayAlertKind {
     )
     foreach ($a in @($Alerts)) {
         if (-not $a) { continue }
+        if ($a -match 'online_zero_workers') { return 'online_zero_workers' }
         if ($a -match 'watcher_down') { return 'watcher' }
         if ($a -match 'agent_stall') { return 'stall' }
         if ($a -match 'ACTION_REQUIRED') { return 'stall' }
@@ -5232,8 +5247,33 @@ function Get-BobTrayHover {
         if ($jobsText) { $jobsText = $jobsText + "`n  " + $queueIdleCaption }
         else { $jobsText = '  ' + $queueIdleCaption }
     }
+    # FR #9462: durable caption when online machine(s) have zero workers + offerable work.
+    $onlineZeroCaption = $null
+    $onlineZeroAlerts = @()
+    $fleetOfferable = 0
+    try {
+        if ($reportDigest -and $reportDigest.queue -and $null -ne $reportDigest.queue.offerable_count) {
+            $fleetOfferable = [int]$reportDigest.queue.offerable_count
+        }
+    } catch { $fleetOfferable = 0 }
+    try {
+        $ozMachines = $null
+        if ($reportDigest -and $reportDigest.machines) { $ozMachines = $reportDigest.machines }
+        elseif ($tiles) { $ozMachines = $tiles }
+        $onlineZeroAlerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $ozMachines -OfferableCount $fleetOfferable)
+        $onlineZeroCaption = Format-BobTrayOnlineZeroCaption -Machines $ozMachines -OfferableCount $fleetOfferable
+    } catch {
+        $onlineZeroAlerts = @()
+        $onlineZeroCaption = $null
+    }
+    if ($onlineZeroCaption) {
+        $lines.Add(('  {0}' -f $onlineZeroCaption))
+        if ($jobsText) { $jobsText = $jobsText + "`n  " + $onlineZeroCaption }
+        else { $jobsText = '  ' + $onlineZeroCaption }
+    }
     # FR #8987: short uses xAI label helper + same remainPct as Status xAI weekly.
-    $short = Format-BobTrayHoverXaiShort -TierLabel $tier -RemainingPct $remainPct -RunningCount @($running).Count -IdleCaption $(if ($queueIdleCaption) { [string]$queueIdleCaption } else { '' })
+    $idleForShort = $(if ($onlineZeroCaption) { [string]$onlineZeroCaption } elseif ($queueIdleCaption) { [string]$queueIdleCaption } else { '' })
+    $short = Format-BobTrayHoverXaiShort -TierLabel $tier -RemainingPct $remainPct -RunningCount @($running).Count -IdleCaption $idleForShort
 
     return [pscustomobject]@{
         title          = $title
@@ -5248,6 +5288,8 @@ function Get-BobTrayHover {
         job_count      = @($running).Count
         queued         = $queued
         queue_idle_caption = $queueIdleCaption
+        online_zero_caption = $onlineZeroCaption
+        online_zero_alerts = @($onlineZeroAlerts)
         jobs           = @($jobs)
         machines       = $tiles
         peer_peek      = $peerPeek

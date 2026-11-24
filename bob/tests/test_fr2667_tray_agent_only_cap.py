@@ -95,7 +95,8 @@ def test_fr2667_startworker_queue_writes_reason_cap():
     assert "Get-BobTrayWorkerCapRefusal" in src
     watch = WATCH_PS1.read_text(encoding="utf-8")
     i = watch.index("function Start-BobTrayWorkerExe")
-    body = watch[i : i + 2500]
+    # FR #9640: comments grew; take enough of the function body to reach CapRefusal.
+    body = watch[i : i + 8000]
     assert "Get-BobTrayWorkerCapRefusal -Mode" in body or "Get-BobTrayWorkerCapRefusal -Mode $Mode" in body
 
 

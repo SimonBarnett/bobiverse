@@ -204,13 +204,31 @@ def test_observe_independent_of_dispatch_disabled(tmp_path):
 
 
 def test_observe_independent_of_cooldown(tmp_path):
+    """Observer still runs under cooldown; FR #9733 clears sticky exhaust when obs is ok."""
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW)
     cd.mark_tokens_exhausted(tmp_path, now=NOW, reset_date="2099-01-01T00:00:00Z")
     assert cd.cooldown_active(tmp_path, now=NOW + 10) is True
-    allow_before = cd._allow_path(tmp_path).read_text(encoding="utf-8")
     cd.observe_quota(tmp_path, fetch_user=lambda: LIMITED, now=NOW + 400)
     assert cd.load_observation(tmp_path)["remaining"] == 140
+    # LIMITED parses as state=ok — sticky exhaust must clear (FR #9733).
+    allow = cd.load_allowance(tmp_path)
+    assert allow.get("tasks_exhausted") is False
+    assert allow.get("exhausted") is False
+    assert cd.cooldown_active(tmp_path, now=NOW + 410) is False
+
+
+def test_observe_failure_does_not_clear_sticky_exhaust(tmp_path):
+    """Failed observe must leave sticky exhausted_until alone (FR #9733 / FR #6148)."""
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW)
+    cd.mark_tokens_exhausted(tmp_path, now=NOW, reset_date="2099-01-01T00:00:00Z")
+    allow_before = cd._allow_path(tmp_path).read_text(encoding="utf-8")
+
+    def boom():
+        raise RuntimeError("http_503")
+
+    cd.observe_quota(tmp_path, fetch_user=boom, now=NOW + 400)
     assert cd._allow_path(tmp_path).read_text(encoding="utf-8") == allow_before
+    assert cd.cooldown_active(tmp_path, now=NOW + 410) is True
 
 
 def test_pool_for_digest_prefers_newer_observation(tmp_path):

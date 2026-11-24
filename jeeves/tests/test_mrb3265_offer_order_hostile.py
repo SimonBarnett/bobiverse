@@ -190,11 +190,16 @@ def test_mrb3265_rebuild_after_offer_keeps_fresh(home: Path):
     assert st == "ok" and job["id"] == "#5"
     # Remaining unaccepted is FR #3 only; fingerprint should be fresh for next !bored.
     assert gitclaim.offer_precompute_fresh(home) is True
-    calls = {"n": 0}
+    calls = {"budgeted": 0, "issue_open": 0}
 
     def boom(*_a, **_k):
-        calls["n"] += 1
-        raise AssertionError("fresh post-offer precompute must not call GitHub")
+        calls["budgeted"] += 1
+        raise AssertionError("fresh post-offer precompute must not call budgeted GitHub")
+
+    def issue_open_ok(*_a, **_k):
+        # FR #9411: unbudgeted CLOSED check may still call issue_open.
+        calls["issue_open"] += 1
+        return True
 
     st2, job2 = gitclaim.offer_focus_top(
         home,
@@ -202,7 +207,8 @@ def test_mrb3265_rebuild_after_offer_keeps_fresh(home: Path):
         "#marchhare",
         pr_exists=boom,
         is_pull=boom,
-        issue_open=boom,
+        issue_open=issue_open_ok,
     )
     assert st2 == "ok" and job2["id"] == "#3"
-    assert calls["n"] == 0
+    assert calls["budgeted"] == 0
+    assert calls["issue_open"] >= 1

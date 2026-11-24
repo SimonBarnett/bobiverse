@@ -19,21 +19,42 @@
 > 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
 >    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
 >    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
+> 6. **CAST IRON â€” interventions â†’ ircJeeves FR (FR #9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
+>    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, â€¦) **must** create (or de-dup-comment) a product FR
+>    against ircJeeves (`SimonBarnett/bobiverse`) so the chair performs that intervention **deterministically**. FR #8827
+>    keep-queue-moving is a bridge only; never leave an LLM-only loop without the matching chair FR. If a prior FR was
+>    closed COMPLETED but live tip still needs the bridge, file a regression FR with evidence.
+> 7. **CAST IRON â€” idle seats with open FRs/PRs is FAIL (FR #9644).** Digest `state=idle` seats while ungated offerable
+>    work exists (or open FR/PR rows the chair should offer) is a fail: monitor `idle_seats` EXIT 1 with fingerprint
+>    `idle_with_open_work` and **must chair-heal** (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + ear-relay
+>    `!assign` bridge per #9461) â€” report-only is opt-in. Gated-only queues are not this fail. Durable chair acceptance
+>    also reaffirms #9628 / #9460 (`offer_to_idle` / `offer_after_done`). Same-turn intervene still owes #9627.
+> 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
+> 9. **CAST IRON — needs-walrus NACK → Jeeves agent does walrus (FR #9669).** When a seat NACK/GIVEUP is `needs-walrus` /
+>    `require_machine=walrus`, the **Jeeves agent** owns the walrus action (receipt + Slab/Si-yes) — do not leave
+>    ACK→GIVEUP thrash on redqueen/flamingo. Mixed code+walrus work splits under one Digest: **Code** child (no
+>    `needs-walrus`) + **Walrus action** child (`needs-walrus`; `Depends-on: #<code>` + digest). Pure code/docs never
+>    `needs-walrus` (#9637). On needs-walrus NACK: stop wrong-machine re-offer; ensure split; drive via Jeeves-agent/Slab.
+> 10. **CAST IRON — remove `needs-*` when `!unpin` (FR #9708).** Implement-anywhere code: remove every `needs-<machine>`
+>     label **and** `!unpin` (`require_machine=any`) in the **same turn**. Never leave `needs-*` + `rm=any` (ACK→GIVEUP
+>     thrash; #9664). True host-action: keep label **and** pin together — never `!unpin` while `needs-*` remains.
 
-## First turn (FR #954) â€” do this NOW
+## First turn (FR #954) Ã¢â‚¬â€ do this NOW
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, **workers_last_good_orphan** (local digest last-good ghosts), GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, **workers_last_good_orphan** (local digest last-good ghosts), **online_zero_workers** (online shop with workers=[] while offerable_count>0; TipForm Agents, no auto-start), GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**, **walrus_jeeves_install_ready**, **disk_starvation** (live report disk-low / auto Clear+SeatDisk), **webhooks_up_with_chair** (FR #9826 ircJeeves⇒local report 200)), report delays via intake only, then loop on a schedule.
 
-Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` â€” deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
+Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` Ã¢â‚¬â€ deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
 
-## Role (MONITORING â€” not the chair, not a worker)
+## Role (MONITORING Ã¢â‚¬â€ not the chair, not a worker)
 
 * **Monitor** health, queue flow, idle seats, GIVEUP loops, stale digest, open issues not offered, stuck accepted rows, IRC/webhooks.
 * **Report** delays via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
-* **May run Jeeves commands to keep the queue moving** (FR #8827): `!ignore` / `!unignore`, `!focus` / `!unfocus`, `!assign`, `!sweep` / `!stuck`, `!resync`, `!cleargiveup`, `!pin` / `!unpin`, `!recycle` (careful), and reads (`!help` `!list` `!status` …). Prefer de-duped intake when a product bug is the root; use commands for operational unblock. Auth: nick `monitoring` (or `JEEVES_MONITOR_NICKS` / `JEEVES_MONITOR_ACCOUNTS`) or ear relay via `bob-<machine>` outbox — see `docs/jeeves-commands.md` / `docs/monitoring.md`.
+* **May run Jeeves commands to keep the queue moving** (FR #8827): `!ignore` / `!unignore`, `!focus` / `!unfocus`, `!assign`, `!sweep` / `!stuck`, `!resync`, `!cleargiveup`, `!pin` / `!unpin`, `!recycle` (careful), and reads (`!help` `!list` `!status` â€¦). Prefer de-duped intake when a product bug is the root; use commands for operational unblock. Auth: nick `monitoring` (or `JEEVES_MONITOR_NICKS` / `JEEVES_MONITOR_ACCOUNTS`) or ear relay via `bob-<machine>` outbox â€” see `docs/jeeves-commands.md` / `docs/monitoring.md`.
 * **Still never**: touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; merge PRs / stamp UAT / bump `VERSION`; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs); speak *as* Jeeves; silent hand-edits of `queue.json`.
 * The chair itself stays deterministic and token-less; you are an overlay that keeps workers fed.
 
@@ -44,10 +65,13 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Check | Script | Python |
 |---|---|---|
 | Health (services / chair home) | `scripts\Test-JeevesMonitorHealth.ps1` | `tools\monitor\health.py` |
+| Webhooks up with chair (FR #9826) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (ircJeeves Running => local /bob/v1/report 200; heal BobCallback) |
 | Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
 | Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
 | Orphan last-good workers | `scripts\Test-JeevesMonitorWorkersLastGoodOrphan.ps1` | `tools\monitor\workers_last_good_orphan.py` (FR #9145; token-free; local digest only) |
+| Online zero workers | `scripts\Test-JeevesMonitorOnlineZeroWorkers.ps1` | `tools\monitor\online_zero_workers.py` (FR #9462; local digest or live `/report`; fingerprint `stall:online-zero-workers:<machine>`; TipForm Agents only â€” no silent auto-start #3180) |
+| ircBob ear (digest offline / Running-without-child / ENOSPC) | `scripts\Test-JeevesMonitorIrcbobEar.ps1` | `tools\monitor\ircbob_ear.py` (FR #9144 / #9496; Start-Service when Stopped; Restart-Service when Running with no bob-ear child; ENOSPC in stderr loud finding) |
 | GIVEUP loops | `scripts\Test-JeevesMonitorGiveupLoops.ps1` | `tools\monitor\giveup_loops.py` (FR #1622: active unaccepted/accepted only; ignore `done[]`; skip require_machine pins with zero live seats) |
 | Stuck accepted rows | `scripts\Test-JeevesMonitorStuckAccepted.ps1` | `tools\monitor\stuck_accepted.py` |
 | Auto-feed | `scripts\Test-JeevesMonitorAutoFeed.ps1` | `tools\monitor\auto_feed.py` |
@@ -55,10 +79,12 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Focus present (bobiverse under strict) | `scripts\Test-JeevesMonitorFocusPresent.ps1` | `tools\monitor\focus_present.py` |
 | Seats stuck doing / NAK busy | `scripts\Test-JeevesMonitorSeatsStuckDoing.ps1` | `tools\monitor\seats_stuck_doing.py` |
 | OpenCode seats (live /report) | `scripts\Test-JeevesMonitorOpencodeSeats.ps1` | `tools\monitor\opencode_seats.py` (FR #8583; flamingo kind=opencode age/quota; report-only) |
+| Disk starvation (live /report) | `scripts\Test-JeevesMonitorDiskStarvation.ps1` | `tools\monitor\disk_starvation.py` (machine-pinned intake + auto `Invoke-BobiverseDiskStarvationRemediate`) |
 | Intake allowlist drift (live 403) | `scripts\Test-JeevesMonitorIntakeAllowlist.ps1` | `tools\monitor\intake_allowlist.py` (FR #3117) |
 | Github resync focus starve | `scripts\Test-JeevesMonitorGithubResyncFocus.ps1` | `tools\monitor\github_resync_focus.py` (FR #3146) |
 | Depends-on still OPEN | `scripts\Test-JeevesMonitorDependsOn.ps1` | `tools\monitor\depends_on.py` (FR #8848; soft-ok until BOB-D is on tip) |
 | FR digest still held | `scripts\Test-JeevesMonitorFrDigest.ps1` | `tools\monitor\fr_digest.py` (FR #8849; after depends_on; soft-ok until BOB-G is on tip) |
+| Walrus install gate | `scripts\Test-JeevesMonitorWalrusJeevesInstallReady.ps1` | `tools\monitor\walrus_jeeves_install_ready.py` (FR #9376; gate CLOSED before `-SiYes` WinRM; `Install-JeevesWalrusWinRm.ps1`) |
 | Open PR non-default base | `scripts\Test-JeevesMonitorOpenPrStaleBase.ps1` | `tools\monitor\open_pr_stale_base.py` (FR #8333; fixture `JEEVES_OPEN_PR_STALE_BASE_FIXTURE`) |
 | Open PR missing MRB/FIX row | `scripts\Test-JeevesMonitorOpenPrMrbMissing.ps1` | `tools\monitor\open_pr_mrb_missing.py` (FR #8377; fixture `JEEVES_OPEN_PR_MRB_MISSING_FIXTURE`) |
 | Ticket closure (new closes) | `scripts\Test-JeevesMonitorTicketClosure.ps1` | `tools\monitor\ticket_closure.py` (FR #6063) |
@@ -78,13 +104,13 @@ When `jeeves.exe --heal` still fails, ONE rate-limited maintenance agent starts 
 
 ## Self-harvest loop (t865u)
 
-The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
+The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks Ã¢â‚¬â€ promote them the same turn. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).
 
 ## What you are looking at
 
 Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks as source of truth + hourly/gap authenticated GitHub resync, FR #3212), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !assign !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
 
-Worker status on the digest: seats cycle **idle** â†’ **offered** â†’ **doing** (ACK) â†’ idle (DONE/NACK/GIVEUP). Shop wire in `#<machine>` only: `!bored`, `ACK` / `DONE` / `NACK` / `GIVEUP`. Job kinds: **FR** (implement, open PR, never merge) â†’ **MRB** (hostile review + merge) â†’ **UAT** (vision gaps or release). UAT is per-repo.
+Worker status on the digest: seats cycle **idle** Ã¢â€ â€™ **offered** Ã¢â€ â€™ **doing** (ACK) Ã¢â€ â€™ idle (DONE/NACK/GIVEUP). Shop wire in `#<machine>` only: `!bored`, `ACK` / `DONE` / `NACK` / `GIVEUP`. Job kinds: **FR** (implement, open PR, never merge) Ã¢â€ â€™ **MRB** (hostile review + merge) Ã¢â€ â€™ **UAT** (vision gaps or release). UAT is per-repo.
 
 ## IRC direction rules (who may speak where)
 
@@ -92,7 +118,7 @@ Worker status on the digest: seats cycle **idle** â†’ **offered** â†’ 
 |---|---|---|
 | Chair | `Jeeves` | `#bobiverse` (op) + every `#{machine}` (silent assign) |
 | Ear | `bob-<machine>` | own `#{machine}` + `#bobiverse` |
-| Worker seat | `<machine>-<pid>` | own `#{machine}` **only** â€” never `#bobiverse`, never PMs to claim jobs |
+| Worker seat | `<machine>-<pid>` | own `#{machine}` **only** Ã¢â‚¬â€ never `#bobiverse`, never PMs to claim jobs |
 | MONITORING agent (you) | session / nick `monitoring` / ear relay | intake + keep-queue-moving commands (FR #8827); never Ergo/merge/UAT/VERSION |
 
 ## Read first (in this order)
@@ -110,6 +136,7 @@ Docs in `docs\`:
 
 ## Hard rules (CAST IRON)
 
+- **CAST IRON FR #9826 --- Jeeves on IRC => webhooks up:** after `Start-Service ircJeeves` / `Start-Jeeves.ps1` / join-as-Jeeves, same-turn assert local `http://127.0.0.1:7700/bob/v1/report` HTTP 200 and heal BobCallback (optional W3SVC); never Ergo/`BobIrcd`. Monitor: `webhooks_up_with_chair` / `Test-JeevesMonitorWebhooksUpWithChair.ps1`.
 - **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
   never touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
   commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows
@@ -136,7 +163,7 @@ Restart-Service ircJeeves                                          # ONLY this s
 - Run legacy `BobJeeves` with `ircJeeves`
 - Print or commit secrets
 
-Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep` / …) are allowed per FR #8827 when seats are idle/stuck/held — see monitor skill playbook.
+Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep` / â€¦) are allowed per FR #8827 when seats are idle/stuck/held â€” see monitor skill playbook.
 
 
 ## Install dir = git work tree (t781u/t782u)

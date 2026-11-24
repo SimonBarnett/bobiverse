@@ -64,11 +64,12 @@ def _row_labels(row: dict) -> set[str]:
     return {str(x).strip().lower() for x in labs if str(x).strip()}
 
 
-def _gate_bucket(row: dict) -> str:
+def _gate_bucket(row: dict, doc: dict | None = None) -> str:
     """First gate reason for an unaccepted row (FR #1518). Does not change SKIP_FR semantics.
 
     FR #1523 / #1526: ``needs-mrb1`` is not an offer gate (intake hallucination). Leftover
     labels are reported via notes, not this bucket.
+    FR #9553: pass ``doc`` so Depends-on OPEN parents in the same queue gate children.
     """
     if row.get("ignored"):
         return "ignored"
@@ -87,6 +88,17 @@ def _gate_bucket(row: dict) -> str:
             hold = gc.row_fr_hold_reason(row)
         if hold:
             return "hold"
+        # FR #9553: Depends-on gated rows are not ungated offerable (match !assign/stuck).
+        with contextlib.suppress(Exception):
+            qdoc = doc if isinstance(doc, dict) else None
+            open_keys = gc.open_fr_issue_keys(qdoc) if qdoc is not None else None
+            dep = gc.depends_gate_reason(row, qdoc, open_keys=open_keys)
+            if dep:
+                if dep == gc.DEPENDS_HELD_REASON:
+                    return "depends_held"
+                if dep == gc.DEPENDS_UNRESOLVED_REASON:
+                    return "depends_unresolved"
+                return "depends_open"
         # Global human gate (empty nick): per-seat giveup still counts as needs-human for breakdown.
         if gc.row_needs_human(row, ""):
             return "needs-human"
@@ -294,10 +306,13 @@ def check(args):
         "needs-mrb1": 0,
         "require_machine": 0,
         "ignored": 0,
+        "depends_open": 0,
+        "depends_held": 0,
+        "depends_unresolved": 0,
         "ungated": 0,
     }
     for r in unaccepted:
-        bucket = _gate_bucket(r)
+        bucket = _gate_bucket(r, queue if isinstance(queue, dict) else None)
         gated_counts[bucket] = gated_counts.get(bucket, 0) + 1
 
     # Seat-aware ungated offerable for IDLE shop seats only (FR #1116 / #1625 / #1652).
@@ -366,6 +381,13 @@ def check(args):
             )
             notes.append(
                 "skill/harvest intakes are offerable promote FRs (FR #1682); if gated empty, check other gates - open skill count may still be in unaccepted"
+            )
+        # FR #9347: needs_human walls after giveup_count>=2 — surface recycle path.
+        nh = int(gated_counts.get("needs-human") or 0)
+        if nh:
+            notes.append(
+                f"needs_human={nh}: !cleargiveup owner/repo#N [seat] or !recycle "
+                "(giveup_count>=2 walls; !bored will not take these; FR #9347)"
             )
     elif offerable_n > 0 and idle_seat_count > 0:
         findings.append(
@@ -439,6 +461,24 @@ def check(args):
             f"row missing pull url: {repo}{ident if str(ident).startswith('#') else '#' + str(ident)}"
         )
 
+    # FR #9347: phase-gated MRB PASS tips are held-pass (not undispatched).
+    held_pass_n = 0
+    with contextlib.suppress(Exception):
+        from _common import ensure_script_dir_on_path
+
+        ensure_script_dir_on_path("mrb_merge_on_green.py")
+        import mrb_merge_on_green as _mog
+
+        led = _mog.load_ledger(qpath.parent)
+        for row in led.get("pending") or []:
+            if isinstance(row, dict) and str(row.get("status") or "").lower() == "skip_hold":
+                held_pass_n += 1
+        if held_pass_n:
+            notes.append(
+                f"held-pass={held_pass_n}: MRB PASS merge-on-green skip_hold "
+                "(phase-gated; not undispatched; FR #9347)"
+            )
+
     ok = not findings
     return (
         {
@@ -453,6 +493,7 @@ def check(args):
             "idle_seat_count": idle_seat_count,
             "pending_offer_count": pending_offers,
             "gated_counts": gated_counts,
+            "held_pass_count": held_pass_n,
             "missing_pull_url_count": len(missing_url),
             "empty_offer_starve_age_s": int(age_s) if pin_starve else 0,
             "notes": notes,

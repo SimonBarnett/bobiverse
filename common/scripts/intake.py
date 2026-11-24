@@ -377,7 +377,6 @@ SKILL_BOOK_PATHS: dict[str, str] = {
     "bobiverse-bob-job-uat": "bob/.grok/skills/bobiverse-bob-job-uat/SKILL.md",
     "bobiverse-bob-commands": "bob/.grok/skills/bobiverse-bob-commands/SKILL.md",
     "bobiverse-bob-troubleshooting": "bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md",
-    "bobiverse-bob-plan": "bob/.grok/skills/bobiverse-bob-plan/SKILL.md",
     "bobiverse-worker-seat": "bob/agents/worker/.grok/skills/bobiverse-worker-seat/SKILL.md",
     "bobiverse-jeeves": "jeeves/.grok/skills/bobiverse-jeeves/SKILL.md",
     "bobiverse-jeeves-commands": "jeeves/.grok/skills/bobiverse-jeeves-commands/SKILL.md",
@@ -405,7 +404,6 @@ _SKILL_BOOK_KEYWORD_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("jeeves", "monitor"), "bobiverse-jeeves-monitor"),
     (("jeeves",), "bobiverse-jeeves"),
     (("airc",), "bobiverse-airc"),
-    (("plan", "vision"), "bobiverse-bob-plan"),
 )
 # FR #3004: when source.skill_book is the soft default "harvest", only these strong cues
 # re-route. Bare "mrb"/"uat" appear in almost every job session summary and must not move
@@ -2008,6 +2006,9 @@ class GitHubFiler(Protocol):
     def reopen_issue(self, repo: str, number: int) -> None:
         """Reopen a closed issue. May raise GitHubDown."""
 
+    def close_issue(self, repo: str, number: int, comment: str = "") -> None:
+        """FR #9552: close an issue (optional comment). May raise GitHubDown."""
+
     def get_issue_state(self, repo: str, number: int) -> str:
         """Return 'open' or 'closed'. May raise GitHubDown."""
 
@@ -2061,6 +2062,18 @@ class FakeGitHubFiler:
         for row in self.issues:
             if str(row.get("repo") or "") == repo and int(row.get("number") or 0) == int(number):
                 row["state"] = "open"
+                return
+
+    def close_issue(self, repo: str, number: int, comment: str = "") -> None:
+        """FR #9552: mark issue closed; optional comment stored in comments list."""
+        if self.down:
+            raise GitHubDown("github unreachable")
+        body = str(comment or "").strip()
+        if body:
+            self.comments.append({"repo": repo, "number": int(number), "body": body})
+        for row in self.issues:
+            if str(row.get("repo") or "") == repo and int(row.get("number") or 0) == int(number):
+                row["state"] = "closed"
                 return
 
     def get_issue_state(self, repo: str, number: int) -> str:
@@ -2507,6 +2520,19 @@ def _labels_for(norm: dict, *, quarantine: bool) -> list[str]:
     # blocked !bored offers (FR #1363) while open counts climbed on skill/ops FRs.
     if quarantine:
         labels.append("via-intake-untriaged")
+    # FR #9821: Digest parents are created with fr-digest + digest + hold so
+    # children that Depends-on them stay gated until the digest is unheld.
+    if kind in ("issue", "fr"):
+        try:
+            import fr_digest_gate as _fdg
+
+            labels = _fdg.ensure_digest_hold_labels(
+                labels,
+                title=str(norm.get("title") or ""),
+                body=str(norm.get("body") or ""),
+            )
+        except Exception:
+            pass
     return labels
 
 

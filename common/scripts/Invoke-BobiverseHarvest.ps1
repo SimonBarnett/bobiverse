@@ -496,6 +496,37 @@ if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Les
     return
 }
 
+# FR #9627: CAST IRON - intervention harvest without a linked product ircJeeves FR fails closed.
+# MONITORING !assign/!sweep/heal bridges must cite #N / FR #N / bobiverse#N the same turn.
+function Test-HarvestInterventionMissingFr([string]$SummaryText, [string[]]$LessonLines) {
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    $isIntervention = (
+        ($joined -match '(?i)!assign\b') -or
+        ($joined -match '(?i)!sweep\b') -or
+        ($joined -match '(?i)!cleargiveup\b') -or
+        ($joined -match '(?i)!focus\b') -or
+        ($joined -match '(?i)!ignore\b') -or
+        ($joined -match '(?i)!pin\b') -or
+        ($joined -match '(?i)!recycle\b') -or
+        ($joined -match '(?i)keep[- ]queue[- ]moving') -or
+        ($joined -match '(?i)LLM\s+!assign') -or
+        ($joined -match '(?i)manual\s+!assign')
+    )
+    if (-not $isIntervention) { return $false }
+    $hasFr = (
+        ($joined -match '(?i)\bFR\s*#\d+\b') -or
+        ($joined -match '(?i)\b(?:SimonBarnett/)?bobiverse#\d+\b') -or
+        ($joined -match '(?i)\bCloses\s+(?:SimonBarnett/bobiverse)?#\d+\b') -or
+        ($joined -match '(?i)\bproduct\s+FR\s*#\d+\b') -or
+        ($joined -match '(?<![A-Za-z0-9_/])#\d{3,}\b')
+    )
+    return -not $hasFr
+}
+if (Test-HarvestInterventionMissingFr -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Error "FAILED harvest intervention missing product FR (FR #9627): cite ircJeeves FR #N in -Summary/-Lesson when recording !assign/!sweep/heal bridges. FR #8827 is bridge-only. Summary: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    exit 1
+}
+
 
 # FR #4357: PASS of a harvest-lesson / docs/mrb tip already lands (or arms) the durable
 # lesson. Harvesting the MRB *process* playbook (merge origin/main, re-arm, DONE PASS)
@@ -988,7 +1019,7 @@ $namedBook = $null
 foreach ($candidate in @(
         'bobiverse-bob-job-irc', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-fr',
         'bobiverse-bob-job-uat', 'bobiverse-bob-worker', 'bobiverse-bob-commands',
-        'bobiverse-bob-troubleshooting', 'bobiverse-bob-plan', 'bobiverse-worker-seat',
+        'bobiverse-bob-troubleshooting', 'bobiverse-worker-seat',
         'bobiverse-fleet-ops', 'bobiverse-bob', 'bobiverse-jeeves-commands',
         'bobiverse-jeeves-monitor', 'bobiverse-jeeves-troubleshooting', 'bobiverse-jeeves',
         'bobiverse-airc-commands', 'bobiverse-airc-troubleshooting', 'bobiverse-airc',

@@ -8,16 +8,6 @@ import intake
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "common" / "scripts"
 HARVEST = ROOT / "common" / ".grok" / "skills" / "harvest" / "SKILL.md"
-PLAN = (
-    ROOT
-    / "bob"
-    / "agents"
-    / "plan"
-    / ".grok"
-    / "skills"
-    / "plan-git-from-plan"
-    / "SKILL.md"
-)
 MONITOR = ROOT / "jeeves" / "tools" / "monitor" / "intake_allowlist.py"
 WEBHOOKS = ROOT / "jeeves" / "docs" / "webhooks.md"
 
@@ -63,11 +53,8 @@ def test_mrb3136_harvest_skill_documents_owner_gate_not_per_repo_churn():
     assert "To allow a new product repo, add it to `DEFAULT_ALLOW_REPOS`" not in text
 
 
-def test_mrb3136_plan_git_and_webhooks_pin_3135():
-    plan = PLAN.read_text(encoding="utf-8")
-    assert "3135" in plan
-    assert "SimonBarnett/" in plan
-    assert "no per-repo" in plan.lower()
+def test_mrb3136_webhooks_pin_3135():
+    # FR #8833: plan-git-from-plan moved to skills-visionary; webhooks doc remains.
     doc = WEBHOOKS.read_text(encoding="utf-8-sig")
     assert "3135" in doc
     assert "SimonBarnett/" in doc

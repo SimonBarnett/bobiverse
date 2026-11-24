@@ -48,6 +48,7 @@ def test_ok_without_fixture(monkeypatch, tmp_path):
 
 
 def test_finding_when_open_pr_has_no_row(monkeypatch, tmp_path):
+    """Report-only (--no-heal): EXIT 1 when the open PR has no MRB/FIX row."""
     (tmp_path / "queue.json").write_text(
         json.dumps({"v": 1, "unaccepted": [], "accepted": [], "done": []}),
         encoding="utf-8",
@@ -57,7 +58,9 @@ def test_finding_when_open_pr_has_no_row(monkeypatch, tmp_path):
         json.dumps({"repo": REPO_NAME, "pulls": [_pr(8353)]}), encoding="utf-8"
     )
     monkeypatch.setenv("JEEVES_OPEN_PR_MRB_MISSING_FIXTURE", str(fixture))
-    args = SimpleNamespace(chair_home=str(tmp_path), digest_home="", dry_run=False)
+    args = SimpleNamespace(
+        chair_home=str(tmp_path), digest_home="", dry_run=False, heal=False
+    )
     payload, code = opmm.check(args)
     assert code == 1
     assert payload["ok"] is False

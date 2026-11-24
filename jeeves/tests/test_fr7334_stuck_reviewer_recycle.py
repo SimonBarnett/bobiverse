@@ -64,11 +64,16 @@ def test_fr7334_three_idle_authors_one_recycle_and_fresh_offer(tmp_path, monkeyp
     )
     assert not any("recycleseat=" in x for x in lines), lines
     assert any(x.startswith("no_eligible_reviewer ") for x in lines)
-    fresh = "flamingo-1"
-    live = set(SEATS) | {fresh}
+    # FR #9480: author_seats already span 3 machines → exact-seat only (soft
+    # #9401/#9478 same-machine sibling block skipped). Exact author stays blocked;
+    # flamingo-1 sibling and walrus-99 are eligible; prefer cross-machine offer.
+    same_machine = "flamingo-1"
+    fresh = "walrus-99"
+    live = set(SEATS) | {same_machine, fresh}
     assert gitclaim.review_blocked_for_author(row, "flamingo-12296", live) is True
+    assert gitclaim.review_blocked_for_author(row, same_machine, live) is False
     assert gitclaim.review_blocked_for_author(row, fresh, live) is False
-    assert gitclaim.mrb_offer_nick(row, [fresh, *SEATS], live) == fresh
+    assert gitclaim.mrb_offer_nick(row, [fresh, same_machine, *SEATS], live) == fresh
 
 
 def test_fr7334_busy_author_is_not_recycled(tmp_path, monkeypatch):

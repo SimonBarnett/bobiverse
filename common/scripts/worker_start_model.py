@@ -237,19 +237,44 @@ def normalize_context(raw: object) -> str:
     return ""
 
 
-def configured_start_effort(cli: str, cfg: dict[str, Any] | None) -> str:
-    """Saved effort for Grok, else lowest. Non-Grok: empty (not applicable)."""
+def configured_start_effort(
+    cli: str,
+    cfg: dict[str, Any] | None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Saved effort for Grok, else lowest. Non-Grok: empty (not applicable).
+
+    FR #9586: child env ``BOB_GROK_EFFORT`` / ``BOB_WORKER_START_EFFORT`` from
+    Weights GET ``/bob/v1/models`` wins over tray-models.json.
+    """
     if _cli(cli) != "grok":
         return ""
+    e = os.environ if env is None else env
+    for key in ("BOB_GROK_EFFORT", "BOB_WORKER_START_EFFORT"):
+        pinned = normalize_effort((e or {}).get(key))
+        if pinned:
+            return pinned
     efforts = (cfg or {}).get("workerStartEffort") or {}
     got = normalize_effort(efforts.get("grok"))
     return got or DEFAULT_EFFORT
 
 
-def configured_start_context(cli: str, cfg: dict[str, Any] | None) -> str:
-    """Saved context for Grok only (256|500); else empty."""
+def configured_start_context(
+    cli: str,
+    cfg: dict[str, Any] | None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Saved context for Grok only (256|500); else empty.
+
+    FR #9586: child env ``BOB_GROK_CONTEXT`` / ``BOB_WORKER_START_CONTEXT`` wins.
+    """
     if _cli(cli) != "grok":
         return ""
+    e = os.environ if env is None else env
+    for key in ("BOB_GROK_CONTEXT", "BOB_WORKER_START_CONTEXT"):
+        pinned = normalize_context((e or {}).get(key))
+        if pinned:
+            return pinned
     contexts = (cfg or {}).get("workerStartContext") or {}
     return normalize_context(contexts.get("grok"))
 
@@ -683,14 +708,26 @@ def resolved_start_settings(
     contexts = (c or {}).get("workerStartContext") or {}
     sources = (c or {}).get("settings_source") or {}
     if cli == "grok":
-        effort = normalize_effort(efforts.get("grok")) or configured_start_effort("grok", c)
-        context = normalize_context(contexts.get("grok"))
+        effort = configured_start_effort("grok", c, env=env)
+        context = configured_start_context("grok", c, env=env)
+        if not effort:
+            effort = normalize_effort(efforts.get("grok")) or DEFAULT_EFFORT
+        if not context:
+            context = normalize_context(contexts.get("grok"))
     else:
         effort = ""
         context = ""
     source = str(sources.get(cli) or "local")
     if env_model_pin(cli, env):
         source = "env-pin"
+    e = os.environ if env is None else env
+    if cli == "grok" and (
+        normalize_effort((e or {}).get("BOB_GROK_EFFORT"))
+        or normalize_effort((e or {}).get("BOB_WORKER_START_EFFORT"))
+        or normalize_context((e or {}).get("BOB_GROK_CONTEXT"))
+        or normalize_context((e or {}).get("BOB_WORKER_START_CONTEXT"))
+    ):
+        source = "models-webhook"
     args, status = cli_settings_args(cli, model=model, effort=effort, context=context)
     return {
         "kind": cli,

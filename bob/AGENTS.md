@@ -26,7 +26,7 @@ The Bob ear is this box's presence on IRC (`#bobiverse` + `#wonderland` + `#<mac
 - `.grok/skills/bobiverse-bob-troubleshooting/SKILL.md` - restart loops (--host), SASL, outbox BOM, tray
 - `.grok/skills/bobiverse-bob-worker/SKILL.md` - the tray **Agent** item / `bob-worker.exe`: how a worker seat starts (Grok > Cursor > OpenCode > key prompt), ONE window, `!bored`, IRC relay, IRC-loss exit, hang restarts, logs
 - `.grok/skills/bobiverse-bob-job-irc/SKILL.md` (+ `-fr`, `-mrb`, `-uat`) - exact ACK / DONE / NACK / GIVEUP lines and the FR / MRB / UAT job processes (with diagrams) a worker follows. MRB seats follow assign-line `coderabbit=`/`review=` stamps (FR #5317/#5865): light triage only when `coderabbit=ready` and `review=light`; full review otherwise (including sensitive paths); then vision/tests/docs.
-- `.grok/skills/bobiverse-bob-plan/SKILL.md` - the tray **Plan** item: `bob-worker.exe --mode plan` in `<ai root>\bob\plan` (visionary / plan skills)
+- `agents/plan/README.md` - Plan agent moved to https://github.com/SimonBarnett/skills-visionary (FR #8833); MSI vendors `plan\PlanAgent.exe`
 - `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
 - `.grok/skills/harvest/SKILL.md` - harvest + intake
 
@@ -38,8 +38,8 @@ Docs in `docs\`:
 - The tray has **Agents** (a submenu) and **Plan** (one click). Each start runs `bob-worker.exe` (`<ai root>\bob\worker`) which starts a **NEW** agent
   every time - it NEVER resumes, continues or attaches to an existing agent session, window or process (no `--resume`/`--continue`).
 - **Automatic** keeps Grok, then Cursor, then OpenCode (FR #3997 / #6120). **Grok**, **Cursor**, and **OpenCode** pass `--agent` and start only that agent. A missing command or unusable OpenCode fuel refuses. It does not start a different agent. The compiled `bob-tray.exe` owns this menu. Rebuild it with `scripts\Build-BobDialogs.ps1` together with `bob-worker.exe`.
-- Agent CWD is `<ai root>\bob\worker`; Plan CWD is `<ai root>\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
-- Full start / troubleshooting guide: `bobiverse-bob-worker` and `bobiverse-bob-plan`.
+- Agent CWD is `<ai root>\bob\worker` (AGENTS.md + skills, CAST IRON on top). Plan CWD is `<ai root>\bob\plan` with vendored `PlanAgent.exe` from skills-visionary (FR #8833 / #9354).
+- Full start / troubleshooting guide: `bobiverse-bob-worker`; Plan home is skills-visionary (`agents/plan/README.md`).
 
 ## Hard rules (CAST IRON)
 
@@ -86,4 +86,4 @@ Exit 0 only when every item is ok; otherwise non-zero with the missing item name
 
 ## Install dir = git work tree (t781u/t782u)
 
-`<ai root>\bob` is a sparse git work tree of the bobiverse repo holding only `bob/` + `common/`. Every service start fetches and fast-forwards it (ff-only, only while it is on `main`, never touching your edits/commits/branches, never blocking the start) and recomposes the flat runtime files from it. You can: file intake issues (`scripts\Report-BobiverseIntakeIssue.ps1`), work on the repo right here (`git switch -c fix/x`, edit `bob\...` / `common\...`, commit, `git push -u origin fix/x`, PR) and new commits on `main` arrive on the next service restart. Edit the tracked folders, not the flat copies. Opt out: `BOBIVERSE_NO_UPDATE=1`. Details: README "The install dir is a git work tree".
+`<ai root>\bob` is a sparse git work tree of the bobiverse repo holding only `bob/` + `common/`. Every service start runs Sync-BobiverseFromRepo and Update-BobiverseService out of process with a hard timeout (FR #9508 / PR #9510: default 90s via `BOB_START_SYNC_TIMEOUT_SEC`, clamped 15-300) so a hung git fetch cannot block bob-ear under nssm; on timeout or nonzero exit Start-Bob WARNs and proceeds to bob-ear. Sync is ff-only while on `main`, never touching your edits/commits/branches. Flat runtime files are recomposed from the tree. You can: file intake issues (`scripts\Report-BobiverseIntakeIssue.ps1`), work on the repo right here (`git switch -c fix/x`, edit `bob\...` / `common\...`, commit, `git push -u origin fix/x`, PR) and new commits on `main` arrive on the next service restart. Edit the tracked folders, not the flat copies. Opt out of both sync and self-update: `BOBIVERSE_NO_UPDATE=1`. Details: README "The install dir is a git work tree".

@@ -13,8 +13,10 @@ never merge or close):
 * silent or dead-holder ``accepted`` → release (prior ACK void) and re-offer
   (FR #8195: digest ``last_progress`` within ``SILENT_ACCEPTED_S`` counts as
   activity so a live seat mid-tool is not released)
+* FR #9402: unaccepted ``offered_to`` ghost — held/skip row, or idle seat past
+  ``OFFER_TIMEOUT_S`` with no ACK → clear pin (drop held rows); ``released_offers``
 * ``untracked`` offerable → enqueue
-* held past its window → report only
+* held past its window → report only (unless an offered_to pin remains — then clear)
 * FR #5581: digest ``doing`` tile for an MRB PR that already has a PASS/FAIL
   verdict (done[] or merge-on-green park), with no ``updated`` for
   ``VERDICTED_DOING_S`` (15 min) → ``clear_seat_doing`` (bookkeeping; still
@@ -23,6 +25,9 @@ never merge or close):
   (120s) while ungated offerable work exists → digest rule
   ``idle_quiet_offerable`` + shop nudge (distinct from ``unaccepted_starved``;
   recycleseat heal stays on bored-latency at 240s)
+* FR #9460: each act sweep also calls ``push_idle_offers_via_chair_outbox``
+  (chair_health also ticks that every 30s) so idle+offerable does not wait for
+  ``!bored`` or BobAutoFeed
 
 Report: ``stuck-report.json`` + digest ``stuck`` section + ``!stuck`` + one
 #bobiverse line when the stuck set fingerprint changes.
@@ -293,15 +298,31 @@ def ungated_unaccepted_count(
     rows: list | None,
     *,
     now: float | None = None,
+    doc: dict | None = None,
 ) -> int:
-    """Rows that are not held for a human, a machine pin, or an active cooldown.
+    """Rows that are not held for a human, a machine pin, cooldown, or Depends-on.
 
     MRB #8445: use ``gitclaim.row_needs_human`` / ``row_on_cooldown`` so an
     expired ``cooldown_until`` string does not suppress empty-shop findings.
+    FR #9553: share ``depends_gate_reason`` with !assign / !stuck / !list so
+    digest ``offerable_count`` does not count depends-open / unresolved rows.
     """
     import gitclaim
 
     now_f = float(time.time() if now is None else now)
+    qdoc = doc if isinstance(doc, dict) else {
+        "v": 1,
+        "unaccepted": [r for r in (rows or []) if isinstance(r, dict)],
+        "accepted": [],
+        "done": [],
+    }
+    try:
+        open_keys = gitclaim.open_fr_issue_keys(qdoc)
+    except Exception:
+        open_keys = set()
+    # FR #9821 / #9553: pass issue_fetch so held fr-digest parents missing from
+    # the local queue still suppress offerable_count (parity with offer/assign).
+    _offer_fetch = gitclaim.depends_issue_fetch_checker()
     n = 0
     for row in rows or []:
         if not isinstance(row, dict):
@@ -311,6 +332,14 @@ def ungated_unaccepted_count(
         if str(row.get("require_machine") or "").strip():
             continue
         if gitclaim.row_on_cooldown(row, now_f, nick="", live=None):
+            continue
+        # FR #9821 / BOB-G3: digest gate records are not offerable work.
+        if gitclaim.digest_issue_reason(row):
+            continue
+        # FR #9553 / #9455 / #9821: same Depends-on gate as offer/assign/stuck.
+        if gitclaim.depends_gate_reason(
+            row, qdoc, open_keys=open_keys, issue_fetch=_offer_fetch
+        ):
             continue
         n += 1
     return n
@@ -351,6 +380,116 @@ def classify_empty_online_machines(
             "ungated_unaccepted": int(ungated_count),
             "rule": "online_zero_workers",
         })
+    return out
+
+
+
+def is_tray_session_missing_machine(ent: dict | None) -> bool:
+    """FR #9556: machine digest / report cue for TipForm session missing."""
+    if not isinstance(ent, dict):
+        return False
+    if ent.get("tray_session_missing") in (True, 1, "1", "true", "yes"):
+        return True
+    reason = str(ent.get("startworker_nack_reason") or ent.get("tray_nack_reason") or "").strip()
+    text = str(ent.get("startworker_nack_text") or ent.get("tray_nack_text") or "").strip()
+    try:
+        import startworker as sw
+
+        return bool(sw.is_tray_session_missing_nack(reason, text))
+    except Exception:
+        blob = f"{reason}\n{text}".lower()
+        return reason.lower() in {
+            "no_interactive_session",
+            "tray_session_missing",
+            "tray-not-logged-in",
+        } or "nobody is logged in with the bob tray" in blob
+
+
+def classify_tray_session_missing(
+    machines: dict | None,
+    *,
+    nacks: list | None = None,
+) -> list[dict]:
+    """FR #9556: online shop TipForm/tray session missing (startworker NACK).
+
+    More specific than ``online_zero_workers``. Holder is the machine id.
+    Never stamps needs_human.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(mid: str, *, evidence: str = "") -> None:
+        mid_s = str(mid or "").strip()
+        if not mid_s:
+            return
+        key = mid_s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({
+            "machine": mid_s,
+            "repo": mid_s,
+            "number": "",
+            "task": "MACHINE",
+            "state": "machine",
+            "holder": mid_s,
+            "stuck": True,
+            "stuck_reason": "tray_session_missing",
+            "rule": "tray_session_missing",
+            "evidence": evidence or "startworker NACK tray-not-logged-in",
+            "needs_human": False,
+        })
+
+    if isinstance(nacks, list):
+        for row in nacks:
+            if not isinstance(row, dict):
+                continue
+            reason = str(row.get("reason") or "")
+            text = str(row.get("text") or row.get("line") or "")
+            try:
+                import startworker as sw
+
+                hit = sw.is_tray_session_missing_nack(reason, text)
+            except Exception:
+                hit = "nobody is logged in with the bob tray" in f"{reason}\n{text}".lower()
+            if not hit:
+                continue
+            mid = str(row.get("machine") or row.get("holder") or "").strip()
+            _add(mid, evidence=text or reason or "nack")
+
+    if isinstance(machines, dict):
+        for mid, ent in sorted(machines.items(), key=lambda kv: str(kv[0])):
+            if not isinstance(ent, dict):
+                continue
+            if not is_tray_session_missing_machine(ent):
+                continue
+            if ent.get("online") is False:
+                continue
+            _add(str(mid), evidence=str(ent.get("startworker_nack_text") or "digest cue"))
+    return out
+
+
+def suppress_online_zero_when_tray_missing(
+    online_zero: list[dict],
+    tray_missing: list[dict],
+) -> list[dict]:
+    """FR #9556: tray_session_missing supersedes vague online_zero_workers for same mid."""
+    miss = {
+        str(r.get("machine") or r.get("holder") or "").strip().lower()
+        for r in (tray_missing or [])
+        if isinstance(r, dict)
+    }
+    miss.discard("")
+    if not miss:
+        return list(online_zero or [])
+    out = []
+    for r in online_zero or []:
+        if not isinstance(r, dict):
+            continue
+        mid = str(r.get("machine") or r.get("holder") or "").strip().lower()
+        if mid in miss:
+            continue
+        out.append(r)
     return out
 
 
@@ -592,22 +731,87 @@ def classify_queue_row(
     if gitclaim.row_needs_human(row, ""):
         base["state"] = "held"
         base["rule"] = "needs_human"
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
     mid = str(gitclaim.row_require_machine(row) or "").strip()
     if mid:
         base["state"] = "held"
         base["rule"] = f"require_machine:{mid}"
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
     skip = gitclaim.row_skip_fr_reason(row) if task == "FR" else None
     if skip:
         base["state"] = "held"
         base["rule"] = f"skip:{skip}"
+        # FR #9402: skip/ops-tracker row with offered_to is a ghost pin — act.
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
     hold = gitclaim.row_fr_hold_reason(row) if task == "FR" else None
     if hold:
         base["state"] = "held"
         base["rule"] = f"hold:{hold}"
+        # FR #9402: held row that still has offered_to is a ghost pin — act.
+        if str(row.get("offered_to") or "").strip():
+            base["stuck"] = True
+            base["stuck_reason"] = "offered_on_held"
+            base["holder"] = str(row.get("offered_to") or "").strip()
         return base
+    # FR #9374: same Depends-on / digest gates as offer — do not mark
+    # unaccepted_starved (or fire idle-with-work) for blocked FRs.
+    if task == "FR":
+        digest_why = gitclaim.digest_issue_reason(row)
+        if digest_why:
+            base["state"] = "held"
+            base["rule"] = "digest"
+            return base
+        doc: dict = {}
+        open_keys: set = set()
+        issue_open = None
+        issue_fetch = None
+        if home is not None:
+            try:
+                doc = gitclaim.load_queue(home) or {}
+            except Exception:
+                doc = {}
+            if not isinstance(doc, dict):
+                doc = {}
+            try:
+                open_keys = gitclaim.open_fr_issue_keys(doc)
+            except Exception:
+                open_keys = set()
+            with contextlib.suppress(Exception):
+                issue_open = gitclaim.depends_issue_open_checker()
+            # FR #9434 / #9418: G1 needs issue dict when digests are absent from
+            # the local queue; issue_open alone still yields depends_on_open.
+            with contextlib.suppress(Exception):
+                issue_fetch = gitclaim.depends_issue_fetch_checker()
+        # FR #9455: same depends_gate_reason as offer/!assign (no path fork).
+        dep_why = gitclaim.depends_gate_reason(
+            row,
+            doc or None,
+            open_keys=open_keys,
+            issue_open=issue_open,
+            issue_fetch=issue_fetch,
+        )
+        if dep_why:
+            base["state"] = "held"
+            # Digest / !stuck surface: depends_on_open (acceptance FR #9374).
+            if dep_why == gitclaim.DEPENDS_HELD_REASON:
+                base["rule"] = "depends_held"
+            elif dep_why == gitclaim.DEPENDS_UNRESOLVED_REASON:
+                base["rule"] = "depends_unresolved"
+            else:
+                base["rule"] = "depends_on_open"
+            return base
     if task == "MRB" and home is not None:
         awaiting = ""
         line = str(row.get("line") or "")
@@ -640,6 +844,34 @@ def classify_queue_row(
     # no_eligible_reviewer (already returned above) or a quiet author seat.
     age = _row_age_s(row, now)
     offered_to = str(row.get("offered_to") or "").strip()
+    # FR #9402: aged offered_to on an idle (or gone) seat with no ACK → ghost pin.
+    if offered_to:
+        base["holder"] = offered_to
+        offer_age = age
+        with contextlib.suppress(Exception):
+            offer_age = float(gitclaim._offer_age_s(row, now))
+        timeout = float(gitclaim.offer_timeout_s(row))
+        idle_l = {
+            (gitclaim.canonical_worker_nick(n) or n or "").strip().lower()
+            for n in (idle or set())
+            if str(n).strip()
+        }
+        live_l = {
+            (gitclaim.canonical_worker_nick(n) or n or "").strip().lower()
+            for n in (live or set())
+            if str(n).strip()
+        }
+        to_c = (
+            gitclaim.canonical_worker_nick(offered_to) or offered_to
+        ).strip().lower()
+        seat_idle = bool(to_c) and to_c in idle_l
+        seat_gone = bool(to_c) and bool(live_l) and to_c not in live_l
+        if offer_age >= timeout and (seat_idle or seat_gone):
+            base["stuck"] = True
+            base["stuck_reason"] = (
+                "offered_holder_gone" if seat_gone else "offered_idle_no_ack"
+            )
+            return base
     if not offered_to and age >= UNACCEPTED_STARVE_S and idle:
         led = ledger if ledger is not None else (gitclaim.ledger_load(home) if home else {})
         live_for_block = set(live or set()) | set(idle or set())
@@ -665,7 +897,10 @@ def classify_queue_row(
             if not n:
                 continue
             if task == "MRB":
-                if gitclaim._mrb_idle_block_reason(row_eff, n, live_for_block, led):
+                # FR #9478: pass free= so soft machine-id matches !bored offer.
+                if gitclaim._mrb_idle_block_reason(
+                    row_eff, n, live_for_block, led, free=free_idle
+                ):
                     continue
             else:
                 if gitclaim.review_blocked_for_author(
@@ -1131,6 +1366,89 @@ def settle_copilot_fr_with_open_prs(
     return {"settled": settled, "enqueued": enqueued}
 
 
+def release_ghost_offers(
+    home: Path,
+    *,
+    now: float,
+    live: set[str],
+    idle: set[str],
+    log: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """FR #9402: clear stuck unaccepted offered_to pins; drop held/skip rows.
+
+    Returns the classified infos that were acted on.
+    """
+    import gitclaim
+
+    acted: list[dict] = []
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            kept: list[dict] = []
+            dirty = False
+            for row in list(doc.get("unaccepted") or []):
+                if not isinstance(row, dict):
+                    continue
+                info = classify_queue_row(
+                    row,
+                    bucket="unaccepted",
+                    now=now,
+                    live=live,
+                    idle=idle,
+                    home=home,
+                )
+                reason = str(info.get("stuck_reason") or "")
+                if reason not in (
+                    "offered_on_held",
+                    "offered_idle_no_ack",
+                    "offered_holder_gone",
+                ):
+                    kept.append(row)
+                    continue
+                offered = str(row.get("offered_to") or "").strip()
+                with contextlib.suppress(Exception):
+                    gitclaim._clear_job_seat_holds_unlocked(
+                        home,
+                        str(row.get("repo") or ""),
+                        str(row.get("task") or ""),
+                        str(row.get("id") or ""),
+                    )
+                for k in (
+                    "offered_to",
+                    "offered_ts",
+                    "offered_channel",
+                    "offered_via",
+                ):
+                    row.pop(k, None)
+                dirty = True
+                if reason == "offered_on_held":
+                    # Drop held/skip/ops-tracker rows so they cannot re-pin.
+                    if log:
+                        log(
+                            f"stuck-sweep release_offer drop {row.get('repo')}"
+                            f"{_norm_id(row.get('id'))} holder={offered} "
+                            f"reason={reason}"
+                        )
+                    acted.append(info)
+                    continue
+                kept.append(row)
+                if log:
+                    log(
+                        f"stuck-sweep release_offer clear {row.get('repo')}"
+                        f"{_norm_id(row.get('id'))} holder={offered} "
+                        f"reason={reason}"
+                    )
+                acted.append(info)
+            if dirty:
+                doc["unaccepted"] = kept
+                gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return []
+    with contextlib_suppress():
+        gitclaim.rebuild_offer_precompute(home)
+    return acted
+
+
 def release_silent_accepted(
     home: Path,
     *,
@@ -1340,22 +1658,48 @@ def run_stuck_sweep(
     ungated_rows = [
         r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)
     ]
+    online_zero = classify_empty_online_machines(
+        machines,
+        ungated_unaccepted_count(ungated_rows, now=now_f),
+    )
+    tray_missing = classify_tray_session_missing(machines)
+    classified.extend(tray_missing)
     classified.extend(
-        classify_empty_online_machines(
-            machines,
-            ungated_unaccepted_count(ungated_rows, now=now_f),
-        )
+        suppress_online_zero_when_tray_missing(online_zero, tray_missing)
     )
 
     actions = {
         "released": 0,
+        "released_offers": 0,
         "enqueued": 0,
         "cleared_doing": 0,
         "copilot_settled": 0,
         "nudged": 0,
+        "idle_offers": 0,
+        "orphan_holds": 0,
+        "sticky_holds": 0,
     }
     cleared_doing: list[dict] = []
     if act:
+        # FR #9558: drop offer holds when ACC/offered_to moved to another nick.
+        with contextlib_suppress():
+            n_orphan = int(
+                gitclaim.purge_orphan_seat_holds(home, now=now_f) or 0
+            )
+            actions["orphan_holds"] = n_orphan
+            if n_orphan and log:
+                log(f"stuck-sweep orphan-seat-holds cleared={n_orphan} (FR #9558)")
+        # FR #9783: clear stale via=offer holds past offer timeout (pin may
+        # already be gone; SEAT_HOLD_MAX_S otherwise leaves busy held for 1h).
+        with contextlib_suppress():
+            n_sticky = int(
+                gitclaim.release_stale_via_offer_holds(home, now=now_f) or 0
+            )
+            actions["sticky_holds"] = n_sticky
+            if n_sticky and log:
+                log(
+                    f"stuck-sweep sticky-via-offer-holds cleared={n_sticky} (FR #9783)"
+                )
         # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
         # accepted_holder_gone release can re-dispatch them.
         copilot_stats = settle_copilot_fr_with_open_prs(
@@ -1371,7 +1715,18 @@ def run_stuck_sweep(
             log=log,
             open_items=catalog,
         )
-        actions["released"] = len(released)
+        # Count sticky via=offer hold releases in released so announce
+        # released=N is not stuck at 0 for this class (FR #9783).
+        actions["released"] = len(released) + int(actions.get("sticky_holds") or 0)
+        # FR #9402: clear ghost offered_to on held rows / idle no-ACK seats.
+        ghost = release_ghost_offers(
+            home,
+            now=now_f,
+            live=live_set,
+            idle=idle_set,
+            log=log,
+        )
+        actions["released_offers"] = len(ghost)
         enq = enqueue_untracked(home, untracked_infos, log=log)
         actions["enqueued"] = int(actions["enqueued"]) + len(enq)
         # FR #5581: clear stale digest doing tiles for already-verdicted MRBs.
@@ -1380,7 +1735,15 @@ def run_stuck_sweep(
         actions["cleared_doing"] = len(cleared_doing)
         for info in cleared_doing:
             classified.append(info)
-        # FR #5920: shop-nudge quiet idle seats (rate-limited).
+        # FR #9460: push real offers to digest-idle seats (no !bored / BobAutoFeed).
+        # Runs even when quiet_findings is empty so a 10-min sweep still feeds idle.
+        with contextlib_suppress():
+            pushed = int(gitclaim.push_idle_offers_via_chair_outbox(home, now=now_f) or 0)
+            actions["idle_offers"] = pushed
+            if pushed and log:
+                log(f"stuck-sweep idle-offer-push sent={pushed} (FR #9460)")
+        # FR #5920: shop-nudge quiet idle seats (rate-limited) when push alone
+        # did not clear the starve (still ask !bored as a last resort).
         nudged = nudge_quiet_idle_offerable(
             home, quiet_findings, now=now_f, log=log
         )
@@ -1483,7 +1846,8 @@ def run_stuck_sweep(
             f"held={len(held)} released={actions['released']} "
             f"enqueued={actions['enqueued']} "
             f"cleared_doing={actions.get('cleared_doing', 0)} "
-            f"nudged={actions.get('nudged', 0)}"
+            f"nudged={actions.get('nudged', 0)} "
+            f"sticky_holds={actions.get('sticky_holds', 0)}"
         )
     return report
 
@@ -1527,7 +1891,7 @@ def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
     lines = [head]
     for row in (stuck + held)[:limit]:
         rule = row.get("stuck_reason") or row.get("rule") or ""
-        if rule == "online_zero_workers" or row.get("state") == "machine":
+        if rule in ("online_zero_workers", "tray_session_missing") or row.get("state") == "machine":
             mid = row.get("machine") or row.get("holder") or row.get("repo") or "?"
             ungated = row.get("ungated_unaccepted")
             lines.append(

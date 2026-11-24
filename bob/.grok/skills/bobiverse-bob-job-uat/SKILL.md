@@ -82,6 +82,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 ## Rules
 
 * **UAT is per repo, never per PR / issue**; there is no UAT of a single PR. A seat that implemented a merged PR of the cycle does not run the repo UAT (unless the chair offered it because every live seat implemented something).
+* **CAST IRON (FR #9382): only UAT repos that have a release to build.** Chair enqueue/offer/`!assign` require `uat_release.repo_has_release_to_build` (built-in allowlist + `PRODUCT_UAT_RELEASE` + optional chair `uat_release_repos.txt` / `BOB_UAT_RELEASE_REPOS`). Customer/plan-only repos (wetherby, obw, ce-priority, …) never get `UAT #0`. If offered anyway: ACK then `GIVEUP UAT owner/repo#0` with reason `no-release-to-build` on its own line.
 * Evidence before stamp; never stamp from the PR diff alone. * **Gaps => no release, ever**; a release exists only after a UAT with zero gaps. * One FR per gap, filed through the intake (explicit `-Repo`), never a bundle.
 * No Ergo changes, PowerShell only, never print or commit secrets (no tokens in release notes, evidence or FRs). * The release is created only inside an assigned UAT job (the general "no release / no VERSION bump" rule is lifted for that case only).
 * **FR #147:** never dump `nssm get <svc> AppEnvironmentExtra` values into the transcript — print env **key names only** (split on first `=`; see `bobiverse-fleet-ops`).

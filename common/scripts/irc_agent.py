@@ -2417,6 +2417,18 @@ class Client:
         if dec.dry_run:
             return
         mid = dec.machine
+        # FR #9784: drop digest ghosts + free offered/held/accepted for recycled seats
+        # before the wire/local restart so the chair cannot PRIVMSG pre-recycle PIDs.
+        if mid.lower() not in {"jeeves", "ircjeeves"}:
+            with contextlib.suppress(Exception):
+                cleared = gitclaim.clear_after_machine_recycle(
+                    self._digest_home(),
+                    "fleet" if dec.scope == "fleet" else mid,
+                )
+                info(
+                    "INFO recycle clear-ghosts machine=%s machines=%s"
+                    % (mid, ",".join(cleared.get("machines") or []) or mid)
+                )
         # !recycle jeeves → restart chair (MSI self-update on start).
         if mid.lower() in {"jeeves", "ircjeeves"}:
             try:
@@ -3329,10 +3341,38 @@ class Client:
             )
         except Exception as e:  # never let a command kill the reader
             info(f"WARN startworker decide failed: {type(e).__name__}: {e}")
+            # FR #9471: never silent when this ear owns the target machine (marchhare class).
+            if startworker.targets_local(body, local, chan):
+                line = (
+                    f"NACK startworker: decide failed ({type(e).__name__}); "
+                    "restart the tray or wait for watchdog"
+                )
+                info(f"INFO startworker nick={who} ok=False reason=decide_failed machine={local} chan={chan or 'pm'}")
+                try:
+                    if to_channel and chan:
+                        self.send_privmsg_lines("PRIVMSG " + chan + " :" + line)
+                        time.sleep(FLOOD_S)
+                    else:
+                        self.whisper(who, line)
+                except Exception as send_exc:
+                    info(f"WARN startworker NACK send failed: {type(send_exc).__name__}: {send_exc}")
             return True
         if dec is None:
             return True
         info(f"INFO startworker nick={who} kind={dec.kind or '-'} ok={dec.ok} reason={dec.reason} mode={dec.mode} machine={local} chan={chan or 'pm'}")
+        # FR #9556: surface tray_session_missing on digest / !stuck (no needs_human).
+        try:
+            if (not dec.ok) and startworker.is_tray_session_missing_nack(dec.reason, dec.line):
+                bobreport.set_machine_tray_session_missing(
+                    self.home,
+                    local,
+                    reason=dec.reason,
+                    text=dec.line,
+                )
+            elif dec.ok and local:
+                bobreport.clear_machine_tray_session_missing(self.home, local)
+        except Exception as stamp_exc:
+            info(f"WARN startworker tray_session_missing stamp failed: {type(stamp_exc).__name__}: {stamp_exc}")
         if dec.reason == "unverified":
             try:
                 self._whois_hint(who)
@@ -4766,6 +4806,13 @@ class Client:
 
     def _finish_assign_result(self, src, wnick, repo, task, ident, status, res) -> None:
         if status != "ok" or not isinstance(res, dict):
+            why = str(res or "")
+            # FR #9347: presence refuse after NAMES also drops the ghost roster row.
+            if "not in the shop channel" in why.lower() or "names timeout" in why.lower():
+                with contextlib.suppress(Exception):
+                    gitclaim.drop_ghost_seat_after_names_miss(
+                        self.home, wnick, reason=why
+                    )
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
             info(
                 gitclaim.format_assign_refusal_log(
@@ -4813,6 +4860,12 @@ class Client:
             if now < float(job.get("deadline") or 0.0):
                 continue
             pend.pop(shop, None)
+            why = "NAMES timeout (seat still not in shop)"
+            # FR #9347: drop ghost from digest roster so auto-offer prefers live seats.
+            with contextlib.suppress(Exception):
+                gitclaim.drop_ghost_seat_after_names_miss(
+                    self.home, job["wnick"], reason=why
+                )
             self._finish_assign_result(
                 job["src"],
                 job["wnick"],
@@ -4820,7 +4873,7 @@ class Client:
                 job["task"],
                 job["ident"],
                 "refused",
-                "NAMES timeout (seat still not in shop)",
+                why,
             )
 
     def _maybe_cleargiveup(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
@@ -4887,7 +4940,20 @@ class Client:
         repo, ident = parsed
         out = gitclaim.set_require_machine_job(self.home, repo, ident, "any")
         if not out.get("ok"):
-            err = out.get("error") or "lock"
+            err = str(out.get("error") or "lock")
+            # FR #9708 CAST IRON: never leave needs-* + require_machine=any.
+            if err.startswith("needs_labels:"):
+                labs = err.split(":", 1)[1]
+                self._cmd_reply(
+                    src,
+                    "unpin",
+                    [
+                        f"unpin: refused - needs-* still present ({labs}); "
+                        f"remove labels then !unpin (FR #9708 CAST IRON)"
+                    ],
+                )
+                info(f"INFO unpin refused needs_labels={labs} {repo}{ident} by={src}")
+                return True
             self._cmd_reply(src, "unpin", [f"unpin: refused - {err}"])
             return True
         self._cmd_reply(
@@ -5062,6 +5128,17 @@ class Client:
                 f"INFO seat-hold cleared nick={src} reason=duplicate-after-done "
                 f"job={_freed}"
             )
+            with contextlib.suppress(Exception):
+                self._workers().on_done(src, target)
+        # FR #9633: sticky offered-but-not-ACKed — clear before busy gate so !bored
+        # can re-offer instead of NAK busy (offered …) while digest paints idle.
+        try:
+            _sticky = gitclaim.release_sticky_offer_on_bored(self.home, src, now) or ""
+        except Exception as exc:  # noqa: BLE001
+            _sticky = ""
+            info(f"WARN git-claim sticky-offer bored {type(exc).__name__}")
+        if _sticky:
+            info(f"INFO git-claim sticky-offer cleared via=!bored nick={src} job={_sticky}")
             with contextlib.suppress(Exception):
                 self._workers().on_done(src, target)
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
@@ -5392,6 +5469,15 @@ class Client:
                             except Exception:  # noqa: BLE001
                                 _detail = f"{src}: nothing queued"
                             info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
+                        # FR #9460: same tick, feed other digest-idle seats.
+                        with contextlib.suppress(Exception):
+                            n_idle = gitclaim.push_idle_offers_via_chair_outbox(
+                                self._digest_home()
+                            )
+                            if n_idle:
+                                info(
+                                    f"INFO git-claim idle-offer-after-giveup sent={n_idle}"
+                                )
                     except Exception as offer_exc:  # noqa: BLE001
                         info(f"WARN giveup-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status in ("ok", "missing"):
@@ -5428,6 +5514,13 @@ class Client:
                     except Exception:  # noqa: BLE001
                         _detail = f"{src}: nothing queued"
                     info(f"INFO git-claim done-offer empty nick={src} {_detail}")
+                # FR #9460: same tick, feed other digest-idle seats (no !bored wait).
+                with contextlib.suppress(Exception):
+                    n_idle = gitclaim.push_idle_offers_via_chair_outbox(
+                        self._digest_home()
+                    )
+                    if n_idle:
+                        info(f"INFO git-claim idle-offer-after-done sent={n_idle}")
             except Exception as offer_exc:  # noqa: BLE001
                 info(f"WARN done-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status not in ("ok", "missing"):
@@ -6484,10 +6577,16 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
         include_listens=prior_irc.is_bob_builder_nick(nick),
     )
     if not result.scanned:
-        # FR #9236: include attempt count so a restart-loop scan failure is diagnosable.
+        # FR #9236 logs attempt count. FR #9496: do not abort connect — a permanent
+        # CIM/WMI scan failure (marchhare class) previously SystemExit'd into an nssm
+        # restart loop with no IRC session. Prefer connect with a WARN; operators can
+        # still set BOB_IRC_SKIP_PRIOR_CLEAN=1 or fix process listing.
         attempts = getattr(result, "scan_attempts", 0) or 0
-        info(f"INFO prior-clean aborted connect attempts={attempts}")
-        raise SystemExit(1)
+        info(
+            f"WARN prior-clean scan-failed continuing connect attempts={attempts} "
+            "(FR #9496 fail-open)"
+        )
+        return
 
 
 def main() -> None:

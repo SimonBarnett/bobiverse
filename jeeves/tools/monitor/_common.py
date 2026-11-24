@@ -85,11 +85,14 @@ def chair_home(env: Optional[dict] = None) -> Path:
 
 def digest_home(env: Optional[dict] = None) -> Path:
     env = os.environ if env is None else env
-    override = env.get("BOB_DIGEST_HOME")
-    if override:
-        cand = Path(override)
-        if not _is_ephemeral_test_home(cand):
-            return cand
+    # FR #9557: monitor hosts may point at the chair digest (UNC / shared home)
+    # via JEEVES_MONITOR_DIGEST_HOME before the seat-local BOB_DIGEST_HOME.
+    for key in ("JEEVES_MONITOR_DIGEST_HOME", "BOB_DIGEST_HOME"):
+        override = env.get(key)
+        if override:
+            cand = Path(override)
+            if not _is_ephemeral_test_home(cand):
+                return cand
     return Path(env.get("USERPROFILE") or Path.home()) / ".bobiverse"
 
 
@@ -310,7 +313,7 @@ def row_has_pull_url(row: dict) -> bool:
     return bool(str(row.get("pr_id") or row.get("pr") or "").strip())
 # --- FR #8579: non-chair monitor overlay (live /bob/v1/report) -----------------
 
-DEFAULT_LIVE_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_LIVE_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 LIVE_REPORT_USER_AGENT = "Bobiverse-jeeves-monitor/1.0"
 LIVE_REPORT_MAX_AGE_SEC = 900  # align with stale_digest default
 
@@ -400,6 +403,158 @@ def live_report_is_fresh(
 def local_queue_absent(chair: Path, digest: Path) -> bool:
     """True when neither chair nor digest home has queue.json (non-chair seat)."""
     return not resolve_queue_path(chair, digest).is_file()
+
+
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.is_file():
+            return None
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _queue_bucket_len(doc: dict[str, Any] | None, name: str) -> int:
+    if not isinstance(doc, dict):
+        return 0
+    raw = doc.get(name)
+    if isinstance(raw, list):
+        return len(raw)
+    if isinstance(raw, dict):
+        return len(raw)
+    return 0
+
+
+def _report_queue_bucket_len(report: dict[str, Any] | None, name: str) -> int:
+    if not isinstance(report, dict):
+        return 0
+    queue = report.get("queue")
+    if not isinstance(queue, dict):
+        return 0
+    return _queue_bucket_len(queue, name)
+
+
+def _local_digest_worker_nicks(digest: Path) -> set[str]:
+    doc = _load_json_file(Path(digest) / "digest.json") or {}
+    nicks: set[str] = set()
+    machines = doc.get("machines")
+    if not isinstance(machines, dict):
+        return nicks
+    for mid, ent in machines.items():
+        if not isinstance(ent, dict):
+            continue
+        for key in ("workers", "worker_list"):
+            raw = ent.get(key)
+            if isinstance(raw, dict):
+                rows = list(raw.values())
+            elif isinstance(raw, list):
+                rows = raw
+            else:
+                continue
+            for w in rows:
+                if not isinstance(w, dict):
+                    continue
+                nick = str(w.get("nick") or "").strip().lower()
+                if not nick:
+                    pid = str(w.get("pid") or "").strip()
+                    if pid:
+                        nick = f"{mid}-{pid}".lower()
+                if nick:
+                    nicks.add(nick)
+    return nicks
+
+
+def _report_doing_nicks(report: dict[str, Any] | None) -> set[str]:
+    """Seat nicks that look busy/doing on the live report (FR #9557)."""
+    out: set[str] = set()
+    if not isinstance(report, dict):
+        return out
+    machines = report.get("machines")
+    if not isinstance(machines, dict):
+        return out
+    for mid, ent in machines.items():
+        if not isinstance(ent, dict):
+            continue
+        for key in ("workers", "worker_list"):
+            raw = ent.get(key)
+            if isinstance(raw, dict):
+                rows = [(pid, w) for pid, w in raw.items()]
+            elif isinstance(raw, list):
+                rows = [(None, w) for w in raw]
+            else:
+                continue
+            for pid, w in rows:
+                if not isinstance(w, dict):
+                    continue
+                state = str(w.get("state") or w.get("status") or "").strip().lower()
+                work = str(w.get("work") or w.get("working_on") or "").strip()
+                busy = state in {"doing", "running", "busy", "working"} or bool(work)
+                if not busy:
+                    continue
+                nick = str(w.get("nick") or "").strip().lower()
+                if not nick and pid is not None:
+                    nick = f"{mid}-{pid}".lower()
+                if nick:
+                    out.add(nick)
+    # Accepted queue holders are also "doing" for monitor purposes.
+    queue = report.get("queue") if isinstance(report.get("queue"), dict) else {}
+    for row in queue.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        nick = str(
+            row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+        ).strip().lower()
+        if nick:
+            out.add(nick)
+    return out
+
+
+def local_ops_stale_vs_live_report(
+    chair: Path,
+    digest: Path,
+    report: dict[str, Any] | None,
+    *,
+    max_age_sec: float = LIVE_REPORT_MAX_AGE_SEC,
+) -> str:
+    """FR #9557: reason when local ops home is empty/stale vs a fresh live report.
+
+    Returns '' when local looks authoritative (or report is not fresh). Non-chair
+    hosts often have an empty ``~/.jeeves`` / ``~/.bobiverse`` that still has a
+    ``queue.json`` file, so missing-queue alone (FR #8866) is not enough.
+    """
+    if not live_report_is_fresh(report, max_age_sec=max_age_sec):
+        return ""
+    assert report is not None
+    chair = Path(chair)
+    digest = Path(digest)
+    qpath = resolve_queue_path(chair, digest)
+    local_q = _load_json_file(qpath) if qpath.is_file() else None
+    local_unacc = _queue_bucket_len(local_q, "unaccepted")
+    local_acc = _queue_bucket_len(local_q, "accepted")
+    live_unacc = _report_queue_bucket_len(report, "unaccepted")
+    live_acc = _report_queue_bucket_len(report, "accepted")
+    if qpath.is_file() and local_unacc == 0 and local_acc == 0 and (live_unacc > 0 or live_acc > 0):
+        return "empty_local_queue"
+    if not qpath.is_file() and (live_unacc > 0 or live_acc > 0):
+        return "missing_local_queue"
+    dig_path = digest / "digest.json"
+    local_nicks = _local_digest_worker_nicks(digest) if dig_path.is_file() else set()
+    doing = _report_doing_nicks(report)
+    if doing and not dig_path.is_file():
+        return "missing_local_digest"
+    # Live ACC/doing seats absent from local digest → local paint is wrong only
+    # when the local home itself is empty/thin (FR #9557 empty ~/.jeeves class).
+    # Do NOT trip on live_acc > local_acc alone: a healthy chair/local test queue
+    # with unaccepted rows is still authoritative even when the live report has
+    # extra ACC seats (MRB #9566: that branch poisoned idle_seats unit tests and
+    # would hijack non-empty locals whenever the fleet had more ACC).
+    missing = {n for n in doing if n not in local_nicks}
+    if missing and (
+        not dig_path.is_file() or local_unacc + local_acc == 0 or len(local_nicks) == 0
+    ):
+        return "seat_state_mismatch"
+    return ""
 
 
 def non_chair_overlay(

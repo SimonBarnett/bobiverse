@@ -67,7 +67,7 @@ def _seed_live(home, machines: dict[str, list[str]]):
 
 
 def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
-    """MRB exact-seat (FR #2604) frees the sibling; needs-ionos pin excludes marchhare.
+    """Pinned-out marchhare does not trigger FR #9401; walrus sibling stays offerable.
 
     FR #4512: bobiverse rows need a supported pin cue (label), not a bare stamp.
     FR #8697: ionos pin folds to walrus — sibling seats are walrus-*, not win-mpre.
@@ -117,8 +117,8 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     assert job.get("offered_to") == "walrus-7764"
 
 
-def test_hostile_mrb_sibling_ok_when_other_machine_live(_home):
-    """FR #2604: MRB exact-seat only — same-machine sibling may take MRB while flamingo is live."""
+def test_hostile_mrb_sibling_allowed_when_other_machine_live(_home):
+    """FR #9574: same-machine sibling eligible while flamingo is live (exact-seat only)."""
     row = _row(
         "SimonBarnett/bobiverse",
         "MRB",

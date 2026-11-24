@@ -2943,6 +2943,68 @@ def _digest_locked(fn):
 
 
 @_digest_locked
+
+def set_machine_tray_session_missing(
+    home: Path,
+    mid: str,
+    *,
+    reason: str = "no_interactive_session",
+    text: str = "",
+    now: float | None = None,
+) -> dict:
+    """FR #9556: mark digest machine TipForm/tray session missing (no needs_human)."""
+    import time as _time
+
+    mid_s = str(mid or "").strip()
+    if not mid_s:
+        return {}
+    doc = load_digest(home)
+    machines = doc.setdefault("machines", {})
+    if not isinstance(machines, dict):
+        machines = {}
+        doc["machines"] = machines
+    ent = machines.get(mid_s)
+    if not isinstance(ent, dict):
+        ent = _empty_machine(mid_s)
+        machines[mid_s] = ent
+    ts = float(_time.time() if now is None else now)
+    ent["tray_session_missing"] = True
+    ent["startworker_nack_reason"] = str(reason or "no_interactive_session")
+    if text:
+        ent["startworker_nack_text"] = str(text)
+    ent["tray_session_missing_ts"] = ts
+    # never a needs_human cue
+    ent.pop("needs_human", None)
+    save_digest(home, doc)
+    return ent
+
+
+def clear_machine_tray_session_missing(home: Path, mid: str) -> None:
+    """FR #9556: clear tray_session_missing cue when TipForm is back."""
+    mid_s = str(mid or "").strip()
+    if not mid_s:
+        return
+    doc = load_digest(home)
+    machines = doc.get("machines")
+    if not isinstance(machines, dict):
+        return
+    ent = machines.get(mid_s)
+    if not isinstance(ent, dict):
+        return
+    changed = False
+    for k in (
+        "tray_session_missing",
+        "startworker_nack_reason",
+        "startworker_nack_text",
+        "tray_session_missing_ts",
+    ):
+        if k in ent:
+            ent.pop(k, None)
+            changed = True
+    if changed:
+        save_digest(home, doc)
+
+
 def set_machine_console_nicks(home: Path, mid: str, nicks: object) -> list[str]:
     """Persist shop ``*_console`` presence for GET /bob/v1/report."""
     cid = fold_machine_id(normalize_machine_id(mid) or mid)
@@ -3815,6 +3877,81 @@ def clear_seat_doing(
     _note_event(doc, "worker-idle-purge", machine=mid, nick=nick, pid=pid_s)
     save_digest(home, doc)
     return PresenceOutcome(ok=True, machine_id=mid)
+
+
+@_digest_locked
+def clear_machine_workers_after_recycle(
+    home: Path,
+    machine_id: str,
+    *,
+    briefer_nick: str = "",
+) -> dict:
+    """FR #9784: wipe digest workers for a machine right after a successful recycle route.
+
+    Pre-recycle seat nicks must not stay offerable (live_seat_nicks) or paint TipForm
+    as idle/doing while ``bob-worker.exe`` count is 0. Also drop ``workers_last_good``
+    so FR #8513 restore cannot resurrect the ghosts.
+    """
+    mid = fold_machine_id(machine_id) or normalize_machine_id(machine_id) or str(
+        machine_id or ""
+    ).strip().lower()
+    out = {"cleared": False, "machine": mid, "nicks": []}
+    if not mid or mid in {"jeeves", "ircjeeves", "fleet"}:
+        return out
+    doc = load_digest(home)
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid)
+    if not isinstance(ent, dict):
+        # Try unfolder / alias keys.
+        for key, cand in list(machines.items()):
+            if fold_machine_id(key) == mid and isinstance(cand, dict):
+                ent = cand
+                mid = fold_machine_id(key) or mid
+                break
+    if not isinstance(ent, dict):
+        return out
+    nicks: list[str] = []
+    for row in _coerce_worker_list(ent.get("worker_list")):
+        n = str((row or {}).get("nick") or "").strip()
+        if n:
+            nicks.append(n)
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    for pid, w in workers.items():
+        if not str(pid).isdigit():
+            continue
+        if isinstance(w, dict):
+            n = str(w.get("nick") or "").strip()
+            if n:
+                nicks.append(n)
+            else:
+                nicks.append(f"{mid}-{pid}")
+        else:
+            nicks.append(f"{mid}-{pid}")
+    # Dedupe preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for n in nicks:
+        k = n.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(n)
+    out["nicks"] = uniq
+    ent["worker_list"] = []
+    ent["workers"] = {}
+    ent["working_on"] = ""
+    ent.pop("workers_last_good", None)
+    ent.pop("workers_last_good_at", None)
+    ent.pop("workers_stale", None)
+    ent.pop("workers_stale_age_s", None)
+    _refresh_machine_activity_from_worker_list(ent)
+    if briefer_nick:
+        doc["briefer"] = briefer_nick
+    doc["ts"] = _utc_now_iso()
+    _note_event(doc, "recycle-clear-workers", machine=mid, nicks=",".join(uniq[:12]))
+    save_digest(home, doc)
+    out["cleared"] = True
+    return out
 
 
 @_digest_locked
@@ -5624,9 +5761,22 @@ def _public_queue(home: Path) -> dict:
     doc = gitclaim.load_queue(home)
     unaccepted = [r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)]
     accepted = list(doc.get("accepted") or [])
+    # FR #9347: phase-gated MRB PASS tips live on merge-on-green skip_hold.
+    held_pass_n = 0
+    with contextlib.suppress(Exception):
+        import mrb_merge_on_green as _mog
+
+        led = _mog.load_ledger(home)
+        for row in led.get("pending") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "").strip().lower() == "skip_hold":
+                held_pass_n += 1
     # FR #8536: TipForm / monitor need fleet queue summary so healthy idle
     # (offerable empty / needs_human-only) is not mistaken for hung seats.
-    summary = summarize_public_queue(unaccepted, accepted)
+    summary = summarize_public_queue(
+        unaccepted, accepted, held_pass_count=held_pass_n
+    )
     summary["unaccepted"] = unaccepted
     summary["accepted"] = accepted
     return summary
@@ -5635,8 +5785,15 @@ def _public_queue(home: Path) -> dict:
 def summarize_public_queue(
     unaccepted: list | None,
     accepted: list | None = None,
+    *,
+    held_pass_count: int | None = None,
 ) -> dict:
-    """FR #8536: fleet queue counts for digest / TipForm (no I/O)."""
+    """FR #8536: fleet queue counts for digest / TipForm (no I/O).
+
+    FR #9347: ``needs_human_hint`` names the recycle path; ``held_pass_count``
+    (optional) surfaces phase-gated MRB PASS tips so ops do not chase them as
+    undispatched.
+    """
     import gitclaim
 
     rows = [r for r in (unaccepted or []) if isinstance(r, dict)]
@@ -5652,16 +5809,33 @@ def summarize_public_queue(
     try:
         import stuck_job_sweep
 
-        offerable_n = int(stuck_job_sweep.ungated_unaccepted_count(rows))
+        # FR #9553: pass accepted so Depends-on OPEN parents in accepted[] gate children.
+        qdoc = {
+            "v": 1,
+            "unaccepted": rows,
+            "accepted": [r for r in (accepted or []) if isinstance(r, dict)],
+            "done": [],
+        }
+        offerable_n = int(stuck_job_sweep.ungated_unaccepted_count(rows, doc=qdoc))
     except Exception:
         offerable_n = max(0, len(rows) - needs_human_n)
-    return {
+    out = {
         "unaccepted_count": len(rows),
         "needs_human_count": needs_human_n,
         "offerable_count": offerable_n,
         "queue_needs_human_only": bool(rows) and needs_human_n == len(rows),
         "accepted_count": len([r for r in (accepted or []) if isinstance(r, dict)]),
+        # FR #9347: operator path when giveup_count walls block !bored.
+        "needs_human_hint": (
+            "!cleargiveup owner/repo#N [seat] or !recycle "
+            "(needs_human after giveup_count>=2; !bored will not take these)"
+            if needs_human_n
+            else ""
+        ),
     }
+    if held_pass_count is not None:
+        out["held_pass_count"] = int(held_pass_count)
+    return out
 
 
 def _digest_fleet_pools(doc: dict | None) -> dict:

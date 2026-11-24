@@ -21,6 +21,7 @@ Three different gates. Do not collapse them.
 | What | One **digest** issue per target repo parks a batch. Labels: `digest`/`fr-digest` and `hold`. Children stamp `Depends-on: #digest` (plus any intra-batch Depends-on). |
 | Release | **Unhold alone** (remove `hold`). Digest may stay OPEN. Close is optional. |
 | Offer path | BOB-G1: depend with `hold` -> skip reason `depends-held` (`bob_g1_skip_held_digest`). Unheld digest -> `ok-fr-digest` while still OPEN (does not trip depends-open). |
+| Shared gate | **FR #9455** `depends_gate_reason` / `bob_g1_shared_gate` — offer, `!assign`, and stuck/report use **one** helper. Digests absent from the local queue still resolve via `issue_fetch` (FR #9418 / #9434). |
 | Plan | VIS-G3: visionary skill parks the digest with those labels; children are not assignable until unhold. |
 | Monitor | `fr_digest` (FR #8849): EXIT 1 when an offered/accepted child still Depends-on a local held digest row. |
 
@@ -29,8 +30,8 @@ Three different gates. Do not collapse them.
 | | |
 |---|---|
 | What | Label `hold` / `on-hold` on an **issue/FR** (never on a PR — FR #9082). Also `HOLD:` body stamps. |
-| Effect | Blocks **that** FR from offer (FR #4009 `row_fr_hold_reason`). Does not by itself mean "digest go-gate". |
-| Distinct | A lone `hold` without Digest flag is not the digest check. Ops watchers that only look for `hold` are not VIS-G3 / BOB-G1. |
+| Effect | Blocks **that** FR from offer (FR #4009 `row_fr_hold_reason`). Does not by itself mean "digest go-gate". **FR #9402:** labeling `hold` (webhook) also drops the unaccepted row and clears `offered_to` / seat-holds so an idle seat is not stuck `busy (offered FR …)`. Digests stay queued (BOB-G3). |
+| Distinct | A lone `hold` without Digest flag is not the digest check. Ops watchers that only look for `hold` are not VIS-G3 / BOB-G1. Ops/MONITORING rebuild-install trackers are skip_fr `ops_monitor_tracker` (not feature-request shop work) — see `monitoring.md` FR #9402. |
 
 ## 3. Depends-on CLOSED (ordinary backlog)
 
@@ -57,6 +58,9 @@ Architecture (theme LOCKED): `hold label | fr-digest Depends-on | parent CLOSED 
 
 - Index: `bob/docs/fr-index-fr-digest-go-gate-2026-11-21.md` (docs branch park)
 - BOB-G1 offer path: FR #8837 / `bob_g1_skip_held_digest`
+- FR #9418 / #9420: live digest when go-gate row absent from queue
+- FR #9434 / #9444: stuck/report + Depends-on annotations share `issue_fetch`
+- FR #9455: `depends_gate_reason` (`bob_g1_shared_gate`) — offer = assign = stuck
 - VIS-G3 Plan skill: SimonBarnett/skills-visionary VIS-G3
 - BOB-G3 Digest flag recognition: FR #9108
 - Product Depends-on vs hold docs theme (BOB-D8 #8812) is the D* track; this note is the G* digest go-gate track

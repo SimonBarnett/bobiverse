@@ -56,6 +56,9 @@ def test_fr2811_assign_held_during_harvest_until_turn_ended():
     relay.hold_assigns_while = lambda: bored.holding_incoming_assigns
     relay.on_hold_assign = lambda line: bored.note_held_assign()
 
+    # FR #9364: hold only while a turn is open (no open turn → skip harvest).
+    bored.turn_started(at=clock())
+    clock.advance(0.5)
     # drain_outbox passes the colon body (not the PRIVMSG wrapper) into on_outbox.
     bored.on_outbox("GIVEUP MRB SimonBarnett/bobiverse#1 self-MRB")
     assert bored.holding_incoming_assigns is True
@@ -96,6 +99,9 @@ def test_fr2811_nothing_queued_still_skipped_during_hold():
     bored.start()
     bored.set_ready(True)
     assert _wait(lambda: any(r == "start" for _, r in bored.sent), clock)
+    # FR #9364: open turn required for harvest hold after free-rx.
+    bored.turn_started(at=clock())
+    clock.advance(0.5)
     bored.on_outbox("GIVEUP FR SimonBarnett/bobiverse#1")
     assert bored.holding_incoming_assigns is True
     relay.hold_assigns_while = lambda: bored.holding_incoming_assigns
@@ -141,6 +147,9 @@ def test_fr2811_harvest_fallback_flushes_held_assign_before_bored():
     relay.hold_assigns_while = lambda: bored.holding_incoming_assigns
     relay.on_hold_assign = lambda line: bored.note_held_assign()
 
+    # Open turn so harvest_hold arms; miss turn_ended so harvest expiry flushes.
+    bored.turn_started(at=clock())
+    clock.advance(0.5)
     bored.on_outbox("GIVEUP FR SimonBarnett/bobiverse#1")
     st = relay.deliver(
         "Jeeves",
@@ -150,6 +159,10 @@ def test_fr2811_harvest_fallback_flushes_held_assign_before_bored():
     assert st == "held_until_turn_end"
     assert injected == []
 
+    # Close the turn without going through BoredEmitter.turn_ended so harvest
+    # expiry (not turn_ended) is the flush path. Clear open-turn bookkeeping.
+    with bored._cv:
+        bored._turn_open = False
     clock.advance(6.0)
     assert _wait(lambda: len(injected) >= 1, clock)
     assert "bobiverse#9" in injected[0].lower()

@@ -77,6 +77,11 @@ def test_all_gave_up_fires_and_healthy_silent():
     found = sd.detect_all_gave_up(bad)
     assert len(found) == 1
     assert found[0]["id"] == sd.ALL_GAVE_UP_ID
+    # FR #9602: stable repo class key (not #N).
+    assert found[0]["key"] == "SimonBarnett/a-search"
+    assert found[0]["title"] == "stall:all-gave-up:SimonBarnett/a-search"
+    assert found[0]["evidence"]["row"] == "SimonBarnett/a-search#5058"
+    assert found[0]["evidence"]["repo"] == "SimonBarnett/a-search"
     assert found[0]["evidence"]["giveup_seats"] == ["flamingo-1", "marchhare-1"]
     assert found[0]["evidence"]["needs_human"] is False
     healthy = {
@@ -144,9 +149,10 @@ def test_stamp_needs_human_for_all_gave_up(tmp_path):
     findings = [
         {
             "id": sd.ALL_GAVE_UP_ID,
-            "key": "SimonBarnett/a-search#5139",
-            "fingerprint": "stall:all-gave-up:SimonBarnett/a-search#5139",
-            "evidence": {"row": "SimonBarnett/a-search#5139"},
+            # FR #9602: key is repo class; row id stays in evidence for stamp match.
+            "key": "SimonBarnett/a-search",
+            "fingerprint": "stall:all-gave-up:SimonBarnett/a-search",
+            "evidence": {"row": "SimonBarnett/a-search#5139", "repo": "SimonBarnett/a-search"},
         }
     ]
     n = sd.stamp_needs_human_for_all_gave_up(tmp_path, findings)

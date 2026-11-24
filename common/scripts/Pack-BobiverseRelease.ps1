@@ -22,6 +22,8 @@ param(
     # Tests only (needs -SkipMsi): skip bob-ear.exe (FR #1481 PyInstaller, ~40 s).
     [switch]$SkipEarExe,
     [switch]$SkipPriorityExe,
+    # Tests only (needs -SkipMsi): skip skills-visionary PlanAgent.exe download (FR #9354); MZ stub / fixture.
+    [switch]$SkipPlanAgentExe,
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
     [switch]$SkipJeevesExe,
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
@@ -38,6 +40,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
+. (Join-Path $PSScriptRoot 'Bobiverse-FetchHelpers.ps1')
 # t773u: the repo is split per service (common\ jeeves\ bob\ airc\); this script lives in common\scripts. The STAGE stays flat.
 if (-not $RepoRoot) {
     $RepoRoot = Get-BobiverseRepoRoot -ScriptDir $PSScriptRoot
@@ -69,6 +72,8 @@ $null = & $fetchNssm -OutDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_
 
 if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
+if ($SkipPlanAgentExe -and -not $SkipMsi) { throw '-SkipPlanAgentExe is only allowed together with -SkipMsi (an MSI without PlanAgent.exe must never ship; FR #9354)' }
+if ($SkipPriorityExe -and -not $SkipMsi) { throw '-SkipPriorityExe is only allowed together with -SkipMsi (an MSI without PriorityAgent.exe must never ship; FR #8701)' }
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
 if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
@@ -91,74 +96,205 @@ function Resolve-WatchAgentHealthSrc {
 }
 
 function Stage-BobAgentFolders([string]$Stage) {
-    # t762u: bob MSI payload gains worker\ (bob-worker.exe + AGENTS/skills) and plan\ (plan-mode skills); built by the shared Common function.
+    # t762u: bob MSI payload gains worker\ (bob-worker.exe + AGENTS/skills); plan\ is vendored (FR #8833 / #9354).
     # FR #1481: also stage scripts\bob-ear.exe (frozen irc_agent) so ircBob does not need system Python for the ear.
     $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
-    if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
-    # FR #8700 / BOB-49: bob-ear (bob product) MSI must include Plan agent build (plan\ layout).
+    if ($made -lt 1) { throw 'bob pack requires bob-agents\worker' }
+    # FR #8700 / BOB-49: bob-ear (bob product) MSI must include Plan agent.
+    # FR #9354: vendor PlanAgent.exe from SimonBarnett/skills-visionary releases (sha256 fail-closed).
+    # FR #8833: bob/agents/plan source tree removed; ensure plan\ + pointer AGENTS.md for the stage.
     $planDir = Join-Path $Stage 'plan'
+    New-Item -ItemType Directory -Force -Path $planDir | Out-Null
     $planAgents = Join-Path $planDir 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $planAgents -PathType Leaf)) {
+        $enc = New-Object System.Text.UTF8Encoding($false)
+        $stub = @(
+            '# Plan agent (vendored)'
+            ''
+            'Plan lives in https://github.com/SimonBarnett/skills-visionary (FR #8833).'
+            'This folder is filled at pack time with PlanAgent.exe from the skills-visionary release (FR #9354 / BOB-49).'
+            'Tray Plan starts a NEW plan agent every time (never resume).'
+            ''
+            '> **CAST IRON RULE - HARVEST AND FILE EVERYTHING**'
+            '> File via intake webhook (`POST https://bob.ntsa.uk/bob/v1/intake`; offline queued/retried):'
+            '> `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary -Kind issue -Title t -Body b`'
+            '> `..\scripts\Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/skills-visionary -Summary s -Lesson l`'
+            ''
+        ) -join [Environment]::NewLine
+        [IO.File]::WriteAllText($planAgents, $stub + [Environment]::NewLine, $enc)
+    }
     if (-not (Test-Path -LiteralPath $planDir -PathType Container)) {
         throw 'BOB-49: bob MSI stage missing plan\ (Plan agent build)'
     }
     if (-not (Test-Path -LiteralPath $planAgents -PathType Leaf)) {
         throw 'BOB-49: bob MSI stage plan\ missing AGENTS.md'
     }
+    $planExe = Join-Path $planDir 'PlanAgent.exe'
+    $planVendor = $null
+    $planSrc = $null
+    foreach ($c in @(
+            [string]$env:BOB_PLAN_AGENT_EXE,
+            (Join-Path $OutDir 'PlanAgent.exe')
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { $planSrc = $c; break }
+    }
+    if ($SkipPlanAgentExe) {
+        $fix = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\PlanAgent.exe'
+        if ($planSrc) {
+            Copy-Item -LiteralPath $planSrc -Destination $planExe -Force
+        } elseif (Test-Path -LiteralPath $fix -PathType Leaf) {
+            Copy-Item -LiteralPath $fix -Destination $planExe -Force
+        } else {
+            [IO.File]::WriteAllBytes($planExe, [byte[]](0x4D, 0x5A))
+        }
+        $planVendor = @{
+            tag = 'skip-test'
+            sha256 = (Get-BobiverseFileSha256 -Path $planExe)
+            bytes = [int64](Get-Item -LiteralPath $planExe).Length
+            repo = 'local-skip'
+            asset = 'PlanAgent.exe'
+            url = ''
+            path = $planExe
+        }
+        Write-Host 'WARN bob pack: -SkipPlanAgentExe (test stage PlanAgent.exe stub)'
+    } elseif ($planSrc) {
+        Copy-Item -LiteralPath $planSrc -Destination $planExe -Force
+        $planVendor = @{
+            tag = 'local'
+            sha256 = (Get-BobiverseFileSha256 -Path $planExe)
+            bytes = [int64](Get-Item -LiteralPath $planExe).Length
+            repo = 'local'
+            asset = 'PlanAgent.exe'
+            url = $planSrc
+            path = $planExe
+        }
+        Write-Host ("INFO bob staged plan\PlanAgent.exe from {0}" -f $planSrc)
+    } else {
+        $planTag = [string]$env:BOB_PLAN_AGENT_RELEASE_TAG
+        $cache = Join-Path $OutDir 'vendor\skills-visionary'
+        $planVendor = Save-BobiverseGhReleaseVerifiedExe `
+            -Repo 'SimonBarnett/skills-visionary' `
+            -AssetName 'PlanAgent.exe' `
+            -Destination $planExe `
+            -Tag $planTag `
+            -CacheDir $cache `
+            -TimeoutSec 900
+    }
+    if (-not (Test-Path -LiteralPath $planExe -PathType Leaf)) {
+        throw 'BOB-49 / FR #9354: bob MSI stage missing plan\PlanAgent.exe'
+    }
+    $planMan = Join-Path $planDir 'PlanAgent.MANIFEST.json'
+    # Capture void: helper must not pollute Stage-Product success stream (MRB #9358 / FR #6969).
+    $null = Write-BobiverseVendoredExeManifest -Path $planMan -Info $planVendor -Fr '9354' -Bob 'BOB-49'
     $marker = Join-Path $Stage 'plan\BOB-49-PLAN-IN-MSI.txt'
     $markerBody = @(
         'bob=BOB-49'
         'fr=8700'
+        'fr_vendor=9354'
         'slice=bob-ear-msi-include-plan'
         'path=plan\'
+        'plan_agent=plan\PlanAgent.exe'
+        ('plan_agent_repo={0}' -f $planVendor.repo)
+        ('plan_agent_tag={0}' -f $planVendor.tag)
+        ('plan_agent_sha256={0}' -f $planVendor.sha256)
+        ('plan_agent_bytes={0}' -f $planVendor.bytes)
         'heat=include-plan'
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($marker, $markerBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
-    Write-Host 'INFO bob staged plan\ for bob-ear MSI (BOB-49 / FR #8700)'
+    Write-Host ("INFO bob staged plan\ + PlanAgent.exe for bob-ear MSI (BOB-49 / FR #8700 / #9354 tag={0})" -f $planVendor.tag)
     # FR #8675 / BOB-10: stamp plan\VERSION from MSI-aligned pack identity.
     $planCommit = ''
     try { $planCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
     Write-BobiversePlanIdentity -Destination $Stage -Version $msiVersion -Commit $planCommit.Trim()
-    # FR #8701 / BOB-55: bob-ear MSI must include PriorityAgent.exe (PRI-06 supplies the real build).
+    # FR #8701 / BOB-55: bob-ear MSI must include PriorityAgent.exe.
+    # FR #9354: prefer SimonBarnett/priority-mcp release download+sha256 (env/OutDir override; Skip for tests).
     $priDir = Join-Path $Stage 'priority'
     New-Item -ItemType Directory -Force -Path $priDir | Out-Null
     $priExe = Join-Path $priDir 'PriorityAgent.exe'
+    $priVendor = $null
     $priSrc = $null
     foreach ($c in @(
             [string]$env:BOB_PRIORITY_AGENT_EXE,
-            (Join-Path $OutDir 'PriorityAgent.exe'),
-            (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\PriorityAgent.exe')
+            (Join-Path $OutDir 'PriorityAgent.exe')
         )) {
         if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { $priSrc = $c; break }
     }
     if ($SkipPriorityExe) {
-        # Test stage: ensure file list still includes PriorityAgent.exe
-        if (-not $priSrc) {
-            $priSrc = Join-Path $priDir 'PriorityAgent.exe'
-            [IO.File]::WriteAllBytes($priSrc, [byte[]](0x4D, 0x5A))  # minimal MZ stub for layout tests
+        $fix = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\PriorityAgent.exe'
+        if ($priSrc) {
+            Copy-Item -LiteralPath $priSrc -Destination $priExe -Force
+        } elseif (Test-Path -LiteralPath $fix -PathType Leaf) {
+            Copy-Item -LiteralPath $fix -Destination $priExe -Force
+        } else {
+            [IO.File]::WriteAllBytes($priExe, [byte[]](0x4D, 0x5A))
         }
-        Copy-Item -LiteralPath $priSrc -Destination $priExe -Force
+        $priVendor = @{
+            tag = 'skip-test'
+            sha256 = (Get-BobiverseFileSha256 -Path $priExe)
+            bytes = [int64](Get-Item -LiteralPath $priExe).Length
+            repo = 'local-skip'
+            asset = 'PriorityAgent.exe'
+            url = ''
+            path = $priExe
+        }
         Write-Host 'WARN bob pack: -SkipPriorityExe (test stage PriorityAgent.exe stub)'
-    }
-    else {
-        if (-not $priSrc) {
-            throw 'BOB-55: PriorityAgent.exe missing (set BOB_PRIORITY_AGENT_EXE or build PRI-06; or pass -SkipPriorityExe for test stage)'
-        }
+    } elseif ($priSrc) {
         Copy-Item -LiteralPath $priSrc -Destination $priExe -Force
+        $priVendor = @{
+            tag = 'local'
+            sha256 = (Get-BobiverseFileSha256 -Path $priExe)
+            bytes = [int64](Get-Item -LiteralPath $priExe).Length
+            repo = 'local'
+            asset = 'PriorityAgent.exe'
+            url = $priSrc
+            path = $priExe
+        }
         Write-Host ("INFO bob staged priority\PriorityAgent.exe from {0}" -f $priSrc)
+    } else {
+        $priTag = [string]$env:BOB_PRIORITY_AGENT_RELEASE_TAG
+        $cache = Join-Path $OutDir 'vendor\priority-mcp'
+        $priVendor = Save-BobiverseGhReleaseVerifiedExe `
+            -Repo 'SimonBarnett/priority-mcp' `
+            -AssetName 'PriorityAgent.exe' `
+            -Destination $priExe `
+            -Tag $priTag `
+            -CacheDir $cache `
+            -TimeoutSec 900
     }
     if (-not (Test-Path -LiteralPath $priExe -PathType Leaf)) {
         throw 'BOB-55: bob MSI stage missing priority\PriorityAgent.exe'
     }
+    $priMan = Join-Path $priDir 'PriorityAgent.MANIFEST.json'
+    $null = Write-BobiverseVendoredExeManifest -Path $priMan -Info $priVendor -Fr '9354' -Bob 'BOB-55'
     $priMarker = Join-Path $priDir 'BOB-55-PRIORITY-IN-MSI.txt'
     $priBody = @(
         'bob=BOB-55'
         'fr=8701'
+        'fr_vendor=9354'
         'slice=bob-ear-msi-include-priority'
         'path=priority\PriorityAgent.exe'
+        ('priority_agent_repo={0}' -f $priVendor.repo)
+        ('priority_agent_tag={0}' -f $priVendor.tag)
+        ('priority_agent_sha256={0}' -f $priVendor.sha256)
+        ('priority_agent_bytes={0}' -f $priVendor.bytes)
         'heat=include-PriorityAgent'
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
-    Write-Host 'INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701)'
+    Write-Host ("INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701 / #9354 tag={0})" -f $priVendor.tag)
+    # FR #9468 / #9598: mirror PlanAgent + PriorityAgent into vendor\; never stage bob-plan.exe.
+    # TipForm Agents > Plan uses vendor\plan\PlanAgent.exe (FR #9605 / #9641). Release sources:
+    # skills-visionary plan-* / priority-mcp launcher-*.
+    $null = Copy-BobTrayVendorExes -Root $Stage -Require
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\PlanAgent.exe') -PathType Leaf)) {
+        throw 'FR #9468/#9598: bob MSI stage missing vendor\plan\PlanAgent.exe'
+    }
+    if (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\bob-plan.exe') -PathType Leaf) {
+        throw 'FR #9598: bob MSI stage must not include vendor\plan\bob-plan.exe (PlanAgent.exe only)'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\priority\PriorityAgent.exe') -PathType Leaf)) {
+        throw 'FR #9468: bob MSI stage missing vendor\priority\PriorityAgent.exe'
+    }
+
 
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
@@ -174,6 +310,8 @@ function Stage-BobAgentFolders([string]$Stage) {
         New-Item -ItemType Directory -Force -Path $shipDest | Out-Null
         Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
+        # FR #9641: after worker lands, refuse identical bytes under PlanAgent (Workers seat via Agents > Plan).
+        Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
     }
     if ($SkipEarExe) {
         Write-Host 'WARN bob pack: -SkipEarExe (test stage; no bob-ear.exe)'
@@ -356,16 +494,29 @@ function Stage-Product([string]$Name) {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
     }
     # FR #9211: OpenCode seat console icon (find_window_icon kind=opencode + launch-opencode.ps1).
-    $ocIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico')
-    if (-not $ocIcoSrc -or -not (Test-Path -LiteralPath $ocIcoSrc)) {
-        $ocIcoSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
-    }
-    if ($ocIcoSrc -and (Test-Path -LiteralPath $ocIcoSrc)) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
-        Copy-Item -LiteralPath $ocIcoSrc -Destination (Join-Path $stage 'assets\opencode-favicon.ico') -Force
-        Write-Host 'INFO FR #9211 staged assets\opencode-favicon.ico'
-    } else {
-        Write-Host 'WARN FR #9211 opencode-favicon.ico missing - OpenCode consoles keep default icon until staged'
+    # FR #9267: stage all non-Cursor tray menu glyphs under assets\ for TipForm / Watch-BobTray.
+    $stageAssets = Join-Path $stage 'assets'
+    New-Item -ItemType Directory -Force -Path $stageAssets | Out-Null
+    foreach ($menuIco in @(
+            'opencode-favicon.ico',
+            'grok-favicon.ico',
+            'plan-gantt.ico',
+            'priority.ico',
+            'jeeves-butler.ico'
+        )) {
+        $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("bob\tray\assets\$menuIco")
+        if (-not $srcIco -or -not (Test-Path -LiteralPath $srcIco)) {
+            $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("third_party\bob-tray\assets\$menuIco")
+        }
+        if ($menuIco -eq 'opencode-favicon.ico' -and (-not $srcIco -or -not (Test-Path -LiteralPath $srcIco))) {
+            $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico'
+        }
+        if ($srcIco -and (Test-Path -LiteralPath $srcIco)) {
+            Copy-Item -LiteralPath $srcIco -Destination (Join-Path $stageAssets $menuIco) -Force
+            Write-Host ("INFO FR #9267/#9211 staged assets\{0}" -f $menuIco)
+        } else {
+            Write-Host ("WARN FR #9267 menu icon missing: {0}" -f $menuIco)
+        }
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
