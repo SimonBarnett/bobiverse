@@ -13210,10 +13210,10 @@ def purge_stale_offered_pins(
                 else:
                     with contextlib.suppress(Exception):
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
-                # FR #9403: drop seat-holds with the pin (parity with offer_focus_top).
-                # FR #4089 / MRB #9561: seat_open_job passes clear_aged_live_holds=False
-                # so aged-live holds remain until the offer loop observes timeout.
-                # Dead pins always clear holds.
+                # FR #9403 / #9565 / #9614: drop seat-holds with the pin (parity with
+                # offer_focus_top). Dead pins always clear holds. seat_open_job passes
+                # clear_aged_live_holds=True so aged-but-live holds do not leave idle
+                # seats busy after offer-timeout:idle-no-ack.
                 if clear_aged_live_holds or dead_pin:
                     with contextlib.suppress(Exception):
                         _clear_job_seat_holds_unlocked(
@@ -13262,10 +13262,10 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return ""
-            # FR #9402 / #9403: drop aged/dead pins (and their seat-holds) before
-            # the any-age busy check so !assign matches offer_focus_top timeout
-            # behaviour. FR #9403 always clears holds with the pin — keeping
-            # aged-but-live holds left idle seats busy after idle-no-ack.
+            # FR #9402 / #9403 / #9565 / #9614: drop aged/dead pins AND their
+            # seat-holds before the any-age busy check so !assign matches
+            # offer_focus_top timeout behaviour. clear_aged_live_holds must be
+            # True here — False left idle seats reporting held FR after purge.
             before_n = len(doc.get("unaccepted") or [])
             before_offers = [
                 str(r.get("offered_to") or "")
@@ -13277,7 +13277,7 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 now=now_f,
                 live=live,
                 locked_doc=doc,
-                clear_aged_live_holds=False,
+                clear_aged_live_holds=True,
             )
             # FR #9558: drop offer holds left when ACC/offered_to moved to another nick.
             with contextlib.suppress(Exception):
