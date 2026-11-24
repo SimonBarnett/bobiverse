@@ -2006,6 +2006,9 @@ class GitHubFiler(Protocol):
     def reopen_issue(self, repo: str, number: int) -> None:
         """Reopen a closed issue. May raise GitHubDown."""
 
+    def close_issue(self, repo: str, number: int, comment: str = "") -> None:
+        """FR #9552: close an issue (optional comment). May raise GitHubDown."""
+
     def get_issue_state(self, repo: str, number: int) -> str:
         """Return 'open' or 'closed'. May raise GitHubDown."""
 
@@ -2059,6 +2062,18 @@ class FakeGitHubFiler:
         for row in self.issues:
             if str(row.get("repo") or "") == repo and int(row.get("number") or 0) == int(number):
                 row["state"] = "open"
+                return
+
+    def close_issue(self, repo: str, number: int, comment: str = "") -> None:
+        """FR #9552: mark issue closed; optional comment stored in comments list."""
+        if self.down:
+            raise GitHubDown("github unreachable")
+        body = str(comment or "").strip()
+        if body:
+            self.comments.append({"repo": repo, "number": int(number), "body": body})
+        for row in self.issues:
+            if str(row.get("repo") or "") == repo and int(row.get("number") or 0) == int(number):
+                row["state"] = "closed"
                 return
 
     def get_issue_state(self, repo: str, number: int) -> str:
