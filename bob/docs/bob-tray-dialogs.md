@@ -181,3 +181,10 @@ Install the rebuilt `scripts\bob-ear.exe`, pinned `scripts\bobreport.py` (this h
 
 * **FR #9471 HealEngine storm:** after 3 relaunch attempts / 5 min, host writes `run/startworker/engine.storm`, CrashHook once, then one forced **Reload engine** so `!startworker` can leave `engine_stale` silence. TipForm shows `engine_restart_storm` while the stamp is fresh; operator may also use menu **Reload engine**.
 * **FR #9513 / #9522 engine.wake:** on `engine_stale` NACK the ear writes `run/startworker/engine.wake` and queues `reload` in `tray-cmd.txt`. TipForm host **TakeWake** (FR #9522) consumes `engine.wake` beside **TakeReload** and calls **ReloadEngine** once. TipForm paints `engine_stale_wake` while the stamp remains. **Merge closing an FR ≠ host healed** — recycle the ear (new `startworker` tip) and **Reload engine** / rebuild tray on the shop until `!startworker` ACKs and workers>0; a NACK that still lacks `wake requested` / `wake pending` means the ear tip lags.
+
+## FR #9750 Copilot task lines
+
+TipForm paints live CCA jobs from `digest.copilot.tasks` **once** under the
+Copilot pool UsageRow (model + working_on via `Format-BobCopilotTaskLines`).
+Jobs are not painted under `machines.*` / no synthetic `machines.copilot` seat.
+Soft-allow after digest export FR #9748; empty `tasks` paints nothing.
