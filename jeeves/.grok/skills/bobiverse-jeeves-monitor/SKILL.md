@@ -192,6 +192,7 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
 - Bored-latency heal must count `!recycleseat` by **machine slot** in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever (harvest-lesson MRB #6812; keep the product gap here, not in harvest honesty-box).
 - **FR #9344 / live D3 before BOB-G1:** unhold of an fr-digest alone leaves children with `Depends-on` OPEN blocked under live D3. Close the digest (or clear Depends-on) to release assign. Prefer outbox file-edit + HTTPS digest when the chair-host shell/WinRM hangs.
+- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
 
 ## Harvested lessons
 
