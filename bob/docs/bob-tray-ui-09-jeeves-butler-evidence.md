@@ -4,19 +4,19 @@
 
 ## S1
 
-Jeeves menu item uses the butler icon.
+Jeeves menu item uses the butler icon (16x16; loud `menu-icon MISSING` when resolve fails — FR #9587).
 
 | Source | Path |
 |--------|------|
 | Online cache (preferred) | `<install>/assets/jeeves-butler.ico` filled from `https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico` on first online load |
-| Offline fallback | `jeeves/assets/jeeves-butler.ico` beside the install/repo root |
+| Offline fallback (FR #9587) | `bob/tray/assets/jeeves-butler.ico` beside Plan GANTT, then `jeeves/assets/jeeves-butler.ico` beside the install/repo root |
 
-TipForm (`ResolveJeevesButlerIcon`) and PowerShell (`Resolve-BobTrayJeevesButlerIcon` in `BobTrayJeevesButler.ps1`) share that order. Fetch uses a short HttpWebRequest timeout; `BOB_JEEVES_BUTLER_SKIP_FETCH=1` or `-SkipFetch` skips the network (tests). `BOB_JEEVES_BUTLER_URL` overrides the download URL.
+TipForm (`ResolveJeevesButlerIcon` / `JeevesButlerFallbackPath`) and PowerShell (`Resolve-BobTrayJeevesButlerIcon` in `BobTrayJeevesButler.ps1`) share that order. Fetch uses a short HttpWebRequest timeout; `BOB_JEEVES_BUTLER_SKIP_FETCH=1` or `-SkipFetch` skips the network (tests). `BOB_JEEVES_BUTLER_URL` overrides the download URL.
 
 ## How measured
 
-- Tests: `bob/tests/test_fr9270_jeeves_butler_bob_ntsa.py`
-- Offline: `Test-Path` / ICO magic on `jeeves/assets/jeeves-butler.ico`
+- Tests: `bob/tests/test_fr9270_jeeves_butler_bob_ntsa.py`, `bob/tests/test_fr9587_plan_jeeves_agent_icons.py`
+- Offline: `Test-Path` / ICO magic on tray + `jeeves/assets/jeeves-butler.ico`
 - Cache preference harness with `-SkipFetch`
 
 ## Out of scope
