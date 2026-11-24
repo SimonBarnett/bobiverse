@@ -442,3 +442,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - ConPTY twins: keep oldest #9612 as canonical, close Depends-on companions as Duplicate after merging acceptance; tray recycleseat stays its own FR
 - Seat-end intake class keys omit nick so twin seats on one machine share one tip; nick/job/pid stay in the body (FR #9609).
 - Any !assign/sweep/heal bridge must same-turn FR ircJeeves for deterministic chair behaviour; closed-COMPLETED but still bridged => regression FR
+- After FR #7593 grok recycle, probe CreatePseudoConsole before relaunch and GIVEUP shell-hung when terminal/call-*.log stays empty after run_terminal_command (FR #9612).
