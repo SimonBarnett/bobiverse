@@ -496,7 +496,7 @@ if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Les
     return
 }
 
-# FR #9627: CAST IRON — intervention harvest without a linked product ircJeeves FR fails closed.
+# FR #9627: CAST IRON - intervention harvest without a linked product ircJeeves FR fails closed.
 # MONITORING !assign/!sweep/heal bridges must cite #N / FR #N / bobiverse#N the same turn.
 function Test-HarvestInterventionMissingFr([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
