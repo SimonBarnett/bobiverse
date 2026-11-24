@@ -118,9 +118,11 @@ curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: applicat
 
 | CLI | Command | Resolver order (chair listing only) |
 |-----|---------|--------------------------------------|
-| Grok | `grok models` | `BOB_GROK_EXE`, PATH `grok`, `%USERPROFILE%\.grok\bin\grok.exe` |
-| Cursor | `agent models` | `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`) |
-| OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, PATH `opencode` |
+| Grok | `grok models` | `BOB_GROK_EXE`, `%USERPROFILE%\.grok\bin\grok.exe` (preferred), PATH `grok` (skip `WindowsApps`) |
+| Cursor | `agent models` | `BOB_CURSOR_AGENT`, `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`; `.cmd` via `cmd.exe /c`) |
+| OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, `%LOCALAPPDATA%\Programs\opencode\opencode.exe`, WinGet Links, PATH (skip `WindowsApps`) |
+
+FR #9589: discover drains stderr (no pipe deadlock), does not redirect stdin, default timeout 45s (`BOB_MODELS_DISCOVER_TIMEOUT_MS`), and Weights status shows per-CLI reasons (`timeout` / `auth_required` / `not_installed`).
 
 Vendor docs: [xAI CLI](https://docs.x.ai/docs/cli), Cursor agent changelog, [OpenCode CLI](https://opencode.ai). Captured fixture samples live under `common/tests/fixtures/models_refresh/` (dated headers).
 
