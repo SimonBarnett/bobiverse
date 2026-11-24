@@ -33,6 +33,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/ce-priority",  # FR #4830: dayworks-launcher park; never invent-harvest
         "SimonBarnett/rees",  # FR #4970: priority-customer topic (docs; not the lookup list)
         "SimonBarnett/euroflo",
+        "SimonBarnett/jeeves-mcp",  # FR #9690: MCP server for Jeeves
     }
 )
 _ALLOW_OWNER = "simonbarnett"  # FR #3135: case-insensitive owner gate
