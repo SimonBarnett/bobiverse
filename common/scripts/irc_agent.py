@@ -2417,6 +2417,18 @@ class Client:
         if dec.dry_run:
             return
         mid = dec.machine
+        # FR #9784: drop digest ghosts + free offered/held/accepted for recycled seats
+        # before the wire/local restart so the chair cannot PRIVMSG pre-recycle PIDs.
+        if mid.lower() not in {"jeeves", "ircjeeves"}:
+            with contextlib.suppress(Exception):
+                cleared = gitclaim.clear_after_machine_recycle(
+                    self._digest_home(),
+                    "fleet" if dec.scope == "fleet" else mid,
+                )
+                info(
+                    "INFO recycle clear-ghosts machine=%s machines=%s"
+                    % (mid, ",".join(cleared.get("machines") or []) or mid)
+                )
         # !recycle jeeves → restart chair (MSI self-update on start).
         if mid.lower() in {"jeeves", "ircjeeves"}:
             try:
