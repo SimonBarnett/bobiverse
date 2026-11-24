@@ -1,7 +1,7 @@
 """MRB #6381 hostile pin: FR #6379 require_machine bullet in jeeves-commands.md.
 
-Repaired garbled control escapes; documents dedicated body-line pin
-(require_machine: / =) that gitclaim keeps when shortening the body.
+Repaired garbled control escapes; pins FR #9637 bobiverse label-only
+require_machine contract (body line is ops note; not a bobiverse pin).
 """
 from __future__ import annotations
 
@@ -38,9 +38,12 @@ def test_mrb6381_require_machine_bullet_one_clean_line():
     assert "CE-PRIORITY-DEV1 is retired" in line
     assert "!unpin" in line
     assert "!pin" in line
-    assert "A dedicated body line" in line
+    # FR #9637: bobiverse body require_machine: alone does not pin; docs pin the
+    # label-only contract + ops-note trailing body line (not "A dedicated body line" pin).
+    assert "FR #9637" in line
+    assert "do not pin" in line
     assert "`require_machine: <machine>`" in line or "require_machine: <machine>" in line
-    assert "(or `=`)" in line or "(or =)" in line
+    assert "ops note" in line or "ops notes" in line
     assert "shorten the body" in line
     # Must not still be the mangled split across lines (CR/BEL ate leading letters).
     bad_starts = (

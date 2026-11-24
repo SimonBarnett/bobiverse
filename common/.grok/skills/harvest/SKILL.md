@@ -40,6 +40,11 @@ depends_on: []
 >    Closed-COMPLETED but still bridged live ⇒ regression FR with evidence.
 > 8. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
 >    chair path same turn. Ungated idle+work is never report-only.
+> 9. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
+>    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>` (plain grammar).
+>    Never leave a multi-FR batch free-floating. Digests stay useful when unheld; `hold` parks the whole batch. Same-turn
+>    repair: if ≥2 related FRs already filed without a digest, file the digest immediately and add Depends-on on children.
+>    Last open child close closes the digest (#9552). One issue per issue inside the digest.
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -251,6 +256,7 @@ The bullet archive is `lessons.md` beside this file (FR #8310). skill-dag refuse
 Do not land a second copy of a harvest-lesson MRB playbook in this book. Those playbooks belong in `bobiverse-bob-job-mrb`.
 - CAST IRON point 5 (Jeeves MONITORING): prefer deterministic fixes; when tested, FR them into the Jeeves token-less service (tools/monitor, jeeves/checks, common/scripts, chair helpers) so learnings become chair behaviour without an LLM. Skills are interim; durable home is the deterministic product. Same turn: skill harvest and product FR when the path is clear (PR #8851).
 - CAST IRON idle + open FRs/PRs = FAIL (#9644): intervene same turn and FR/de-dup deterministic chair feed (#9628); ungated idle+work is never report-only.
+- CAST IRON multi-FR batch needs Digest parent (#9652): file `fr-digest` Digest first; children `Depends-on: #<digest>`; last-child close closes digest (#9552).
 - skill-dag index preference: over-cap seat copy yields to a later root at or under SKILL_RESOLVE_CAP_BYTES; an under-cap seat copy still wins (FR #7076 / #8323).
 - Any per-seat click state must persist the launch model next to the kind and every restart path must read it; a saved model that cannot start must refuse and report, never fall through to the free default.
 - When IRC _ssl_recv starts polling settimeout, run test_fr8120_ear_ssl_send_serialize.py and test_fr4980_ear_idle_keepalive.py with the new registration test before PASS.
@@ -456,3 +462,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After bobiverse body require_machine stop pinning, update every pin expect to needs-<machine> or assert empty; keep _body_for_queue preserve asserts separate from infer stamps
 - TipForm Plan must start vendor\plan\PlanAgent.exe --root <install>\plan (or PLAN_AGENT_ROOT); bare vendor PlanAgent FATAL plan-agent tree not found; ops workaround --root C:\ai\bob\plan
 - gitclaim must not hard-code LIVE_CHAIR_HOST=walrus --- resolve via BOB_CHAIR_MACHINE/JEEVES_CHAIR_HOST; needs-walrus/ionos fold onto configured host (FR #9680)
+- Present empty local ops home is not authoritative: detect vs fresh /report (empty_local_queue/seat_state_mismatch), prefer live seats or EXIT 0 skipped=stale_local_home; JEEVES_MONITOR_DIGEST_HOME overrides BOB_DIGEST_HOME
+- bob_git_hook announce_seen must match Ergo nick case-insensitively (:jeeves! and :Jeeves!); seed ~/.grok/ergo/connect.password from bob config\ergo.password before Start-BobiverseGitAnnounceListen
+- When flamingo authors dominate the MRB queue, prefer no-flamingo-author MERGEABLE rows for flamingo seats (exact-nick self-MRB is tip #9574/#9579; host lag may still false-refuse — #9672). Sticky assign-sent + digest-idle is #9633.
+- TrayContext cannot call WorkerLauncher.Quote - inline ProcessStartInfo Arguments path quoting for PlanAgent --root (CS0103 on build-bob-tray); companion fix #9684
+- CAST IRON FR #9669: needs-walrus / require_machine=walrus NACK->GIVEUP is a hand-off to the Jeeves agent on walrus (Slab/Si-yes); split mixed work into code FR (no pin) + walrus FR (needs-walrus, Depends-on code) under one Digest; stop wrong-machine re-offer thrash
