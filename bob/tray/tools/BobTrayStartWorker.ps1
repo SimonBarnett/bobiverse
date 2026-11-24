@@ -395,6 +395,28 @@ function Format-BobTrayOnlineZeroCaption {
     return ('online_zero_workers={0} offerable={1} - TipForm Agents (no auto-start)' -f (($ids | Select-Object -Unique) -join ','), $OfferableCount)
 }
 
+
+function Get-BobTrayEngineWakeAlert {
+    <#
+    FR #9513: ear wrote engine.wake after engine_stale NACK (tray-cmd reload also queued).
+    FR #9522: TipForm host TakeWake consumes engine.wake -> ReloadEngine (alert clears when taken).
+    TipForm-only alert sibling of engine_restart_storm while the stamp is still present.
+    #>
+    param(
+        [string]$Root = '',
+        [double]$MaxAgeSeconds = 300
+    )
+    try {
+        if (-not $Root) { return $null }
+        $wake = Join-Path (Join-Path (Join-Path $Root 'run') 'startworker') 'engine.wake'
+        if (-not (Test-Path -LiteralPath $wake)) { return $null }
+        $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $wake).LastWriteTimeUtc).TotalSeconds
+        if ($age -lt 0) { $age = 0 }
+        if ($age -gt $MaxAgeSeconds) { return $null }
+        return ('engine_stale_wake age={0:0}s - ReloadEngine requested (FR #9513)' -f $age)
+    } catch { return $null }
+}
+
 function Get-BobTrayEngineStormAlert {
     <#
     FR #9471: TipForm alert while HealEngine storm stamp run/startworker/engine.storm is fresh.
@@ -766,11 +788,12 @@ function Get-BobTrayWorkerSeatMode {
     if (-not $cl) {
         try { $cl = [string]$Proc.mode } catch { $cl = '' }
     }
-    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance)\b') {
+    # FR #9640: jeeves = Agents > Jeeves (parsed so Measure/CapRefusal never treat it as agent).
+    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance|jeeves)\b') {
         return $Matches[1].ToLowerInvariant()
     }
     $low = ($cl).Trim().ToLowerInvariant()
-    if ($low -in @('agent', 'plan', 'monitor', 'maintenance')) { return $low }
+    if ($low -in @('agent', 'plan', 'monitor', 'maintenance', 'jeeves')) { return $low }
     return 'unknown'
 }
 
@@ -843,7 +866,7 @@ function Measure-BobTrayWorkerSeats {
 function Get-BobTrayWorkerCapRefusal {
     <#
     '' when another worker may start, else the short refusal text (tray dialog / log).
-    FR #2667: -Mode plan|monitor|maintenance never refused; only agent starts are capped.
+    FR #2667 / FR #9640: -Mode plan|monitor|maintenance|jeeves never refused; only agent (Workers) starts are capped.
     Count agent seat roots only (same as startworker.count_workers / bob_worker.worker_cap_refusal).
     -Procs is for tests.
     #>

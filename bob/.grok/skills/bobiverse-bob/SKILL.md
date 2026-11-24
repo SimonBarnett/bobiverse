@@ -135,3 +135,4 @@ Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepte
 ## Harvested lessons (intake)
 
 - When flamingo seat is idle but chair offered_to is set, file tray agent-watcher dispatch delivery under BOB-TRAY-UI digest (#9259 / #9403); pair with chair offered_to ghost (#9402).
+- Redqueen tray test-install: Install-BobTrayRedqueen.ps1 -WorkflowRunId <green> -Install. Pair with hash-verified bob-worker (#9547 dispatch NACK) + bob-ear; stop ircBob before ear exe swap. Existing seats keep prior bob-worker run-copy until !recycleseat/new Agents click.

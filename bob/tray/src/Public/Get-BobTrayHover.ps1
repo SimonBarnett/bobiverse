@@ -696,13 +696,25 @@ function Test-BobTrayDigestEarOffline {
 function Get-BobTrayIrcBobServiceStatus {
     <#
     .SYNOPSIS
-      FR #9144: local ircBob service Status (Running/Stopped/missing/skipped). Token-free.
+      FR #9144 / #9496: local ircBob Status (Running/Running-no-child/Stopped/missing/skipped).
+      Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
     #>
     if ($env:OS -notmatch 'Windows') { return 'skipped' }
     try {
         $svc = Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue
         if (-not $svc) { return 'missing' }
-        return [string]$svc.Status
+        $st = [string]$svc.Status
+        if ($st -ieq 'Running') {
+            $child = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                    $_.CommandLine -and (
+                        ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
+                        ($_.CommandLine -match 'bob-ear\.exe') -or
+                        ($_.Name -match '(?i)^bob-ear')
+                    )
+                }).Count
+            if ($child -lt 1) { return 'Running-no-child' }
+        }
+        return $st
     } catch {
         return 'error'
     }
@@ -711,7 +723,8 @@ function Get-BobTrayIrcBobServiceStatus {
 function Resolve-BobTrayDigestFailNote {
     <#
     .SYNOPSIS
-      FR #9144: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      FR #9144 / #9496: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      Running-no-child (nssm Running, no bob-ear process) paints ear-offline.
     #>
     param(
         [string]$DigestErr,
@@ -722,6 +735,7 @@ function Resolve-BobTrayDigestFailNote {
     $err = [string]$DigestErr
     if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
     $svc = ([string]$IrcBobStatus).Trim()
+    # Exact Running/skipped/missing/error stay non-offline; Running-no-child and Stopped paint ear-offline.
     if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
         return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
     }

@@ -25,7 +25,7 @@ def test_seed_agent_choices_omits_auto():
     assert 'AddAgentChoice(parent, "auto"' not in seed
     assert 'AddAgentChoice(parent, "grok"' in seed
     assert 'AddAgentChoice(parent, "cursor"' in seed
-    assert "AddOpencodeModelSubmenu" in seed
+    assert "AddOpencodeTopLevelChoices" in seed
 
 
 def test_apply_agent_list_fallback_omits_auto():

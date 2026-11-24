@@ -241,8 +241,9 @@ namespace BobDialogs
 
             if (total <= 0)
             {
+                // FR #9589: surface per-CLI discover reasons (timeout/auth/not_installed), not only empty.
                 status.ForeColor = Color.Firebrick;
-                status.Text = "Refresh failed: no local CLI models discovered";
+                status.Text = FormatDiscoverFailureStatus(discovered);
                 refresh.Enabled = true;
                 save.Enabled = grid.Rows.Count > 0;
                 return;
@@ -497,6 +498,47 @@ namespace BobDialogs
         public static string DumpRefreshButton()
         {
             return "weightsRefresh\tRefresh models\r\n";
+        }
+
+        /// <summary>FR #9589: status text when discover returns 0 models.</summary>
+        public static string FormatDiscoverFailureStatus(BobModelsDiscoverResult discovered)
+        {
+            string grok = ReasonOf(discovered, "grok");
+            string cursor = ReasonOf(discovered, "cursor");
+            string opencode = ReasonOf(discovered, "opencode");
+            return "Refresh failed: no local CLI models"
+                + " (grok=" + grok
+                + " cursor=" + cursor
+                + " opencode=" + opencode + ")";
+        }
+
+        static string ReasonOf(BobModelsDiscoverResult discovered, string cli)
+        {
+            if (discovered == null || discovered.Reasons == null) return "unknown";
+            string v;
+            if (!discovered.Reasons.TryGetValue(cli, out v) || string.IsNullOrEmpty(v))
+                return "unknown";
+            return v;
+        }
+
+        /// <summary>FR #9589: headless discover summary (total + per-CLI reason/count).</summary>
+        public static string DumpDiscoverSummary(BobModelsDiscoverResult discovered)
+        {
+            StringBuilder sb = new StringBuilder();
+            int total = discovered != null ? discovered.TotalCount : 0;
+            sb.Append("total\t").Append(total).Append("\r\n");
+            string[] clis = new string[] { "grok", "cursor", "opencode" };
+            for (int i = 0; i < clis.Length; i++)
+            {
+                string cli = clis[i];
+                string reason = ReasonOf(discovered, cli);
+                int n = 0;
+                if (discovered != null && discovered.Models != null && discovered.Models.ContainsKey(cli)
+                    && discovered.Models[cli] != null)
+                    n = discovered.Models[cli].Count;
+                sb.Append(cli).Append('\t').Append(reason).Append('\t').Append(n).Append("\r\n");
+            }
+            return sb.ToString();
         }
 
         public static string DumpValidOptions(Dictionary<string, List<BobModelsComboRow>> clis)

@@ -24,15 +24,16 @@ def test_fr6429_default_json_has_opencode_free_and_paid():
 
 def test_fr6429_tray_submenu_tags_and_labels():
     tray = TRAY_CS.read_text(encoding="utf-8")
-    assert "AddOpencodeModelSubmenu" in tray
+    # FR #9588: top-level OpenCode Free|Paid (was AddOpencodeModelSubmenu under Open Code).
+    assert "AddOpencodeTopLevelChoices" in tray
     assert "opencode|free" in tray
     assert "opencode|paid" in tray
-    assert "Free" in tray  # FR #9263: Free|Paid labels
-    assert "Paid" in tray
+    assert "OpenCode Free" in tray
+    assert "OpenCode Paid" in tray
     assert 'DefaultOpencodeFreeModel = "%s"' % FREE_DEFAULT in tray
     assert 'DefaultOpencodePaidModel = "%s"' % PAID_DEFAULT in tray
     seed = tray[tray.index("void SeedAgentChoices") : tray.index("void SeedAgentChoices") + 900]
-    assert "AddOpencodeModelSubmenu" in seed
+    assert "AddOpencodeTopLevelChoices" in seed
     assert 'AddAgentChoice(parent, "opencode", "OpenCode"' not in seed
     # FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row (merged with #9263 tip).
     assert 'AddAgentChoice(parent, "auto"' not in seed
@@ -107,8 +108,8 @@ def test_fr6429_format_helper_region_and_missing():
 def test_fr6429_docs_pin_submenu_and_child_env():
     text = DOCS.read_text(encoding="utf-8")
     assert "FR #6429" in text
-    # FR #9263: menu labels are Free|Paid only (was "Start free/paid model").
-    assert "**Free**" in text and "**Paid**" in text
+    # FR #9588: top-level OpenCode Free|Paid (FR #9263 was nested Free|Paid).
+    assert "OpenCode Free" in text and "OpenCode Paid" in text
     assert FREE_DEFAULT in text
     assert PAID_DEFAULT in text
     assert "child seat process only" in text or "CreateProcessW" in text

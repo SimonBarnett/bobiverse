@@ -281,11 +281,15 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ("INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701 / #9354 tag={0})" -f $priVendor.tag)
-    # FR #9468: tray Plan/Priority resolve vendor\plan\bob-plan.exe and vendor\priority\PriorityAgent.exe.
-    # Release sources: skills-visionary plan-* (PlanAgent.exe) and priority-mcp launcher-* (PriorityAgent.exe).
+    # FR #9468 / #9598: mirror PlanAgent + PriorityAgent into vendor\; never stage bob-plan.exe.
+    # TipForm Agents > Plan uses vendor\plan\PlanAgent.exe (FR #9605 / #9641). Release sources:
+    # skills-visionary plan-* / priority-mcp launcher-*.
     $null = Copy-BobTrayVendorExes -Root $Stage -Require
-    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\bob-plan.exe') -PathType Leaf)) {
-        throw 'FR #9468: bob MSI stage missing vendor\plan\bob-plan.exe'
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\PlanAgent.exe') -PathType Leaf)) {
+        throw 'FR #9468/#9598: bob MSI stage missing vendor\plan\PlanAgent.exe'
+    }
+    if (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\bob-plan.exe') -PathType Leaf) {
+        throw 'FR #9598: bob MSI stage must not include vendor\plan\bob-plan.exe (PlanAgent.exe only)'
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\priority\PriorityAgent.exe') -PathType Leaf)) {
         throw 'FR #9468: bob MSI stage missing vendor\priority\PriorityAgent.exe'
@@ -306,6 +310,8 @@ function Stage-BobAgentFolders([string]$Stage) {
         New-Item -ItemType Directory -Force -Path $shipDest | Out-Null
         Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
+        # FR #9641: after worker lands, refuse identical bytes under PlanAgent (Workers seat via Agents > Plan).
+        Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
     }
     if ($SkipEarExe) {
         Write-Host 'WARN bob pack: -SkipEarExe (test stage; no bob-ear.exe)'

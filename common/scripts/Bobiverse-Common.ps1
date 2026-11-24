@@ -1605,11 +1605,13 @@ function Get-BobiverseDataDriveRoot {
 
 function Get-BobiverseJobWorktreeBase {
     <#
-      FR #4988: base directory for job worktrees / scratch.
+      FR #4988 / #9692: base directory for job worktrees / scratch.
       Override order:
         1. -Override
-        2. env BOB_JOB_WORKTREE_BASE (dedicated)
-        3. -BridgeHome / env BOB_BRIDGE_HOME -> <bridge>\worktrees (never the bare bridge root alone if it is a drive root)
+        2. env BOB_JOB_WORKTREE_BASE (dedicated; kept even on the system drive)
+        3. -BridgeHome / env BOB_BRIDGE_HOME -> <bridge>\worktrees, but when that
+           lands on the system drive and a data disk exists, prefer
+           <data drive>\ai\worktrees (FR #9692 - flamingo C: filled with bridge orphans)
         4. default <data drive>\ai\worktrees
       Never returns a drive root.
     #>
@@ -1622,10 +1624,14 @@ function Get-BobiverseJobWorktreeBase {
         [switch]$Create
     )
     $chosen = $null
+    $fromBridge = $false
+    $fromExplicit = $false
     if ($PSBoundParameters.ContainsKey('Override') -and $Override) {
         $chosen = [string]$Override
+        $fromExplicit = $true
     } elseif ($env:BOB_JOB_WORKTREE_BASE -and $env:BOB_JOB_WORKTREE_BASE.Trim()) {
         $chosen = $env:BOB_JOB_WORKTREE_BASE.Trim()
+        $fromExplicit = $true
     } else {
         if (-not $PSBoundParameters.ContainsKey('BridgeHome')) {
             $BridgeHome = [string]$env:BOB_BRIDGE_HOME
@@ -1636,6 +1642,7 @@ function Get-BobiverseJobWorktreeBase {
                 throw "FR #4988: BOB_BRIDGE_HOME / -BridgeHome must not be a drive root ($bh); set BOB_JOB_WORKTREE_BASE to <drive>\\ai\\worktrees"
             }
             $chosen = [IO.Path]::Combine(([IO.Path]::GetFullPath($bh)).TrimEnd('\'), 'worktrees')
+            $fromBridge = $true
         }
     }
     if (-not $chosen) {
@@ -1652,6 +1659,36 @@ function Get-BobiverseJobWorktreeBase {
     $full = [IO.Path]::GetFullPath($chosen)
     if (Test-BobiverseIsDriveRoot $full) {
         throw "FR #4988: job worktree base must not be a drive root ($full); use <drive>\\ai\\worktrees or set BOB_JOB_WORKTREE_BASE"
+    }
+    # FR #9692: BridgeHome on the system volume must not pin job trees to C: when a
+    # data disk exists. Explicit BOB_JOB_WORKTREE_BASE / -Override still win.
+    # Compare with a path prefix (not only GetPathRoot) so tests can pass fake
+    # -SystemDrive / -Disks roots under a real volume.
+    if ($fromBridge -and -not $fromExplicit) {
+        if (-not $SystemDrive) { $SystemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' } }
+        try {
+            $sysPrefix = [IO.Path]::GetFullPath(($SystemDrive.TrimEnd('\') + '\')).TrimEnd('\')
+        } catch {
+            $sysPrefix = ($SystemDrive.TrimEnd('\') + '\').TrimEnd('\')
+        }
+        $underSystem = $false
+        if ($sysPrefix) {
+            $underSystem = $full.StartsWith($sysPrefix + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                ($full.TrimEnd('\') -ieq $sysPrefix)
+        }
+        if ($underSystem) {
+            $dataRoot = Get-BobiverseDataDriveRoot -Disks $Disks -SystemDrive $SystemDrive
+            $root = [string]$dataRoot
+            if ($root -match '^[A-Za-z]:$') { $root = $root + '\' }
+            elseif ($root -match '^[A-Za-z]:\\+$') { $root = $root.Substring(0, 2) + '\' }
+            else { $root = $root.TrimEnd('\') }
+            $alt = [IO.Path]::GetFullPath([IO.Path]::Combine($root, 'ai', 'worktrees'))
+            $altUnderSystem = $alt.StartsWith($sysPrefix + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                ($alt.TrimEnd('\') -ieq $sysPrefix)
+            if ((-not $altUnderSystem) -and -not (Test-BobiverseIsDriveRoot $alt)) {
+                $full = $alt
+            }
+        }
     }
     # FR #8493: a resolved base on a volume under MinFreeGB (default 2) moves to
     # <data drive>\ai\worktrees when that drive is a different volume. A roomy
@@ -4430,12 +4467,14 @@ function Assert-BobiversePlanCastIronSkillsVisionary {
 function Copy-BobTrayVendorExes {
     <#
     .SYNOPSIS
-      FR #9468: mirror Plan/Priority MSI payloads into tray vendor\ paths.
+      FR #9468 / #9598: mirror Plan/Priority MSI payloads into tray vendor\ paths.
     .DESCRIPTION
-      TipForm Plan starts vendor\plan\bob-plan.exe; Priority starts vendor\priority\PriorityAgent.exe.
-      Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe (FR #9354). This helper copies those
-      into the vendor\ layout (plus MANIFEST sidecars documenting skills-visionary plan-* /
-      priority-mcp launcher-* tags). -Require throws when sources are missing (pack/MSI).
+      TipForm Agents > Plan starts vendor\plan\PlanAgent.exe (FR #9605 / #9641); Priority starts
+      vendor\priority\PriorityAgent.exe. Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe
+      (FR #9354). This helper mirrors those into vendor\ (PlanAgent.exe only - never bob-plan.exe;
+      FR #9598) plus MANIFEST/sha256 sidecars documenting skills-visionary plan-* / priority-mcp
+      launcher-* tags. -Require throws when sources are missing (pack/MSI). FR #9641: never stage
+      bob-worker.exe bytes as PlanAgent.exe (hash must differ when both exist).
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -4459,20 +4498,29 @@ function Copy-BobTrayVendorExes {
 
     if (Test-Path -LiteralPath $planSrc -PathType Leaf) {
         New-Item -ItemType Directory -Force -Path $vendorPlan | Out-Null
-        Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'bob-plan.exe') -Force
+        # FR #9598: single PlanAgent.exe only - do not stage legacy bob-plan.exe duplicate.
         Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'PlanAgent.exe') -Force
         $planMan = Join-Path $Root 'plan\PlanAgent.MANIFEST.json'
         if (Test-Path -LiteralPath $planMan -PathType Leaf) {
             Copy-Item -LiteralPath $planMan -Destination (Join-Path $vendorPlan 'PlanAgent.MANIFEST.json') -Force
-            Copy-Item -LiteralPath $planMan -Destination (Join-Path $vendorPlan 'bob-plan.MANIFEST.json') -Force
         }
-        $sha = & $shaOf (Join-Path $vendorPlan 'bob-plan.exe')
+        $sha = & $shaOf (Join-Path $vendorPlan 'PlanAgent.exe')
         [IO.File]::WriteAllText(
-            (Join-Path $vendorPlan 'bob-plan.exe.sha256'),
-            ($sha + '  bob-plan.exe' + [Environment]::NewLine),
+            (Join-Path $vendorPlan 'PlanAgent.exe.sha256'),
+            ($sha + '  PlanAgent.exe' + [Environment]::NewLine),
             (New-Object System.Text.UTF8Encoding $false)
         )
-        Write-Host ('INFO FR #9468 staged vendor\plan\bob-plan.exe sha256={0}' -f $sha)
+        # Drop leftover bob-plan twin from older packs/hotpatches when Sync re-mirrors.
+        foreach ($stale in @(
+            (Join-Path $vendorPlan 'bob-plan.exe'),
+            (Join-Path $vendorPlan 'bob-plan.exe.sha256'),
+            (Join-Path $vendorPlan 'bob-plan.MANIFEST.json')
+        )) {
+            if (Test-Path -LiteralPath $stale -PathType Leaf) {
+                Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Host ('INFO FR #9468/#9598 staged vendor\plan\PlanAgent.exe sha256={0}' -f $sha)
     } else {
         [void]$missing.Add('plan\PlanAgent.exe')
     }
@@ -4501,7 +4549,50 @@ function Copy-BobTrayVendorExes {
         Write-Host ('WARN ' + $msg)
         return @{ ok = $false; missing = @($missing) }
     }
+    # FR #9641: PlanAgent must not be a renamed bob-worker (Agents > Plan must not open a Workers seat).
+    Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require
     return @{ ok = $true; missing = @() }
+}
+
+function Assert-BobiversePlanAgentNotBobWorker {
+    <#
+    .SYNOPSIS
+      FR #9641: fail-closed when PlanAgent.exe bytes match worker\bob-worker.exe.
+    .DESCRIPTION
+      TipForm Agents > Plan starts vendor\plan\PlanAgent.exe. If Pack/Sync accidentally stages
+      bob-worker.exe as PlanAgent.exe, the menu opens a Workers seat. When both files exist,
+      their SHA-256 must differ. -Require throws; otherwise WARN.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [switch]$Require
+    )
+    $Root = [string](Resolve-Path -LiteralPath $Root).Path
+    $planCandidates = @(
+        (Join-Path $Root 'vendor\plan\PlanAgent.exe'),
+        (Join-Path $Root 'plan\PlanAgent.exe')
+    )
+    $planExe = $planCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    $workerExe = Join-Path $Root 'worker\bob-worker.exe'
+    if (-not $planExe -or -not (Test-Path -LiteralPath $workerExe -PathType Leaf)) {
+        return @{ ok = $true; compared = $false }
+    }
+    $shaOf = {
+        param([string]$Path)
+        if (Get-Command Get-BobiverseFileSha256 -ErrorAction SilentlyContinue) {
+            return [string](Get-BobiverseFileSha256 -Path $Path)
+        }
+        return ([string](Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToLowerInvariant()
+    }
+    $planSha = & $shaOf $planExe
+    $workerSha = & $shaOf $workerExe
+    if ($planSha -eq $workerSha) {
+        $msg = 'FR #9641: PlanAgent.exe SHA-256 matches worker\bob-worker.exe - refuse staging worker bytes as PlanAgent (Agents > Plan must start skills-visionary PlanAgent, not a Workers seat)'
+        if ($Require) { throw $msg }
+        Write-Host ('WARN ' + $msg)
+        return @{ ok = $false; compared = $true; planSha = $planSha; workerSha = $workerSha }
+    }
+    return @{ ok = $true; compared = $true; planSha = $planSha; workerSha = $workerSha }
 }
 
 function Sync-BobiverseAgentFolders {

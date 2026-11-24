@@ -31,11 +31,22 @@ def test_mrb2319_equals_form_pin_past_limit():
     assert "require_machine" not in full[:500]
     stored = gitclaim._body_for_queue(full)
     assert _has_pin(stored)
+    # FR #9637: preserved body line alone does not pin bobiverse.
     assert (
         gitclaim.infer_require_machine(
             title="ops",
             body=stored,
             labels=["feature-request"],
+            repo="SimonBarnett/bobiverse",
+            ident="#999911",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="ops",
+            body=stored,
+            labels=["feature-request", "needs-walrus"],
             repo="SimonBarnett/bobiverse",
             ident="#999911",
         )
@@ -55,14 +66,14 @@ def test_mrb2319_blank_line_before_trailing_pin():
     full = _pad(510) + "\n\nrequire_machine: ionos\n"
     stored = gitclaim._body_for_queue(full)
     assert _has_pin(stored)
-    # Stamp path with claim=None must still infer from preserved stored body.
+    # FR #9637: stamp path needs needs-walrus (body alone clears on bobiverse).
     row = {
         "repo": "SimonBarnett/bobiverse",
         "id": "#999912",
         "task": "FR",
         "title": "FR: trailing pin",
         "body": stored,
-        "labels": ["feature-request", "via-intake"],
+        "labels": ["feature-request", "needs-walrus"],
     }
     gitclaim._stamp_require_machine(row, None)
     assert row.get("require_machine") == "walrus"
@@ -116,7 +127,18 @@ def test_mrb2319_naive_truncate_loses_stamp_on_row_only_refresh():
         "labels": ["feature-request"],
     }
     gitclaim._stamp_require_machine(row, None)
-    assert not row.get("require_machine")
+    assert not row.get("require_machine") or str(row.get("require_machine")).lower() in {
+        "any",
+        "none",
+        "*",
+        "-",
+        "",
+    }
+    # FR #9637: restoring preserved body alone still does not pin; label does.
     row["body"] = gitclaim._body_for_queue(full)
+    gitclaim._stamp_require_machine(row, None)
+    stamped = str(row.get("require_machine") or "").strip().lower()
+    assert stamped in {"", "any", "none", "*", "-"}
+    row["labels"] = ["feature-request", "needs-walrus"]
     gitclaim._stamp_require_machine(row, None)
     assert row.get("require_machine") == "walrus"

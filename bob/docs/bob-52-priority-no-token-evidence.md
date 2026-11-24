@@ -21,7 +21,7 @@ When this box's Priority fuel file is known-empty, the tray shows a no-token dia
 
 ## Surface
 
-- Compiled: `BobTray.cs` `PriorityFuelEmpty` before `StartPriorityExe` on **Start PriorityAgent**
+- Compiled: `BobTray.cs` `PriorityFuelEmpty` before `StartPriorityExe` on flat **Agents > Priority** click (FR #9269)
 - Fallback: `Watch-BobTray.ps1` `Test-BobTrayPriorityFuelEmpty` before `Start-BobTrayPriorityExe`
 
 ## Out of scope

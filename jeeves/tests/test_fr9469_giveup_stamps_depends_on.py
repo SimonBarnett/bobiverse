@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import depends_on
 import gitclaim
 import shop_listen
+
+# FR #9540: never bare ``import depends_on`` — monitor tools/ on path shadows common.
+_dep = gitclaim._load_common_depends_on()
 
 
 REPO = "SimonBarnett/bobiverse"
@@ -26,14 +28,14 @@ def test_parse_blocked_depends_giveup_refs():
 
 def test_merge_depends_on_body_unions_and_plain_line():
     body = "**Depends-on:** #8700\n## What\nwork\n"
-    new, changed = depends_on.merge_depends_on_body(
+    new, changed = _dep.merge_depends_on_body(
         body, [(REPO, 9354)], repo=REPO
     )
     assert changed
     assert new.startswith("Depends-on: #8700, #9354\n")
     assert "**Depends-on:**" not in new
     assert "## What" in new
-    again, changed2 = depends_on.merge_depends_on_body(new, [(REPO, 9354)], repo=REPO)
+    again, changed2 = _dep.merge_depends_on_body(new, [(REPO, 9354)], repo=REPO)
     assert changed2 is False
     assert again == new
 

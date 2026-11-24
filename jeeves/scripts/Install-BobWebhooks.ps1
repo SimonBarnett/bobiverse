@@ -4,7 +4,7 @@
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
   (report, digest, git, intake, jira, hours, models, jeeves appliance). Site default: irc-ntsa.
   FR #9246: after rules, GET Backend/bob/v1/report (WARN when down; -RequireBackend fails; -SkipBackendProbe for tests).
-  FR #9273: BobModelsWebhook forwards GET|HEAD|POST|PUT (grouped); post-install also probes PUT /bob/v1/models.
+  FR #9273 / #9585: BobModelsWebhook forwards GET|HEAD|POST|PUT (grouped); post-install also probes PUT /bob/v1/models (Weights Save; live IIS HTML 404 means re-run this script on walrus).
 #>
 [CmdletBinding()]
 param(
