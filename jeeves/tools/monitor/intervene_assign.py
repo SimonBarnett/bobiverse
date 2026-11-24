@@ -271,13 +271,21 @@ def append_outbox_lines(
 
 
 def truncate_drained_outbox(outbox: Path, pos_path: Path | None = None) -> dict[str, Any]:
-    """Optional hygiene: when *.pos says EOF, truncate outbox to empty (FR #9461)."""
+    """Optional hygiene: when *.pos says EOF, truncate outbox to empty (FR #9461 / #9862)."""
     if not outbox.is_file():
         return {"truncated": False, "reason": "missing"}
-    pos = pos_path or outbox.with_suffix(outbox.suffix + ".pos")
-    if not pos.is_file():
-        alt = outbox.parent / (outbox.name + ".pos")
-        pos = alt if alt.is_file() else pos
+    try:
+        import irc_agent as _ia
+
+        # FR #9862: migrate legacy outbox.pos → outbox.txt.pos before reading.
+        _ia.ensure_canonical_outbox_pos(outbox)
+        pos = Path(pos_path) if pos_path else _ia.outbox_pos_path(outbox)
+    except Exception:
+        pos = pos_path or Path(str(outbox) + ".pos")
+        if not Path(pos).is_file():
+            alt = outbox.parent / (outbox.stem + ".pos")
+            pos = alt if alt.is_file() else pos
+    pos = Path(pos)
     if not pos.is_file():
         return {"truncated": False, "reason": "no_pos"}
     try:
@@ -290,9 +298,15 @@ def truncate_drained_outbox(outbox: Path, pos_path: Path | None = None) -> dict[
         return {"truncated": False, "reason": "not_drained", "pos": offset, "size": size}
     outbox.write_bytes(b"")
     try:
-        pos.write_text("0\n", encoding="utf-8")
+        # Canonical cursor only; drop legacy outbox.pos (FR #9862).
+        import irc_agent as _ia
+
+        _ia.save_outbox_pos(outbox, 0)
     except Exception:
-        pass
+        try:
+            pos.write_text("0\n", encoding="utf-8")
+        except Exception:
+            pass
     return {"truncated": True, "pos": offset, "size": size}
 
 
