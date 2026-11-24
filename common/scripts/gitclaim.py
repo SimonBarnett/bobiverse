@@ -5763,6 +5763,19 @@ def _pop_all_pending(home: Path) -> list[GitClaim]:
     return out
 
 
+def _lock_wait_budget(timeout: float | None) -> float:
+    """Seconds to wait for the disk git-claim lock.
+
+    FR #9534: under pytest (no explicit ``BOB_GITCLAIM_LOCK_S``) default to 2s so a
+    nested re-lock fails fast instead of burning ``--timeout=180`` per test.
+    """
+    if timeout is not None:
+        return max(0.0, float(timeout))
+    if os.environ.get("PYTEST_CURRENT_TEST") and "BOB_GITCLAIM_LOCK_S" not in os.environ:
+        return 2.0
+    return float(LOCK_WAIT_S)
+
+
 @contextmanager
 def _lock(home: Path, *, timeout: float | None = None):
     # FR #1993: same-process chair+HTTP share an RLock (no 30s disk wait between threads).
@@ -5788,7 +5801,8 @@ def _lock(home: Path, *, timeout: float | None = None):
     root = _root(home)
     root.mkdir(parents=True, exist_ok=True)
     path = root / LOCK_NAME
-    deadline = time.time() + (LOCK_WAIT_S if timeout is None else max(0.0, float(timeout)))
+    wait_s = _lock_wait_budget(timeout)
+    deadline = time.time() + wait_s
     fd: int | None = None
     while fd is None:
         try:
@@ -9842,7 +9856,7 @@ def offer_after_release(
         try:
             doc = load_queue(home)
             live = live_seat_nicks(home, now=now)
-            free = free_seat_nicks(home, live)
+            free = free_seat_nicks(home, live, doc=doc)
             cand = enrich_review_author_fields(doc, job)
             if review_blocked_for_author(cand, nick, live, ledger=ledger_load(home), free=free):
                 with contextlib.suppress(Exception):
@@ -10131,13 +10145,20 @@ def live_seat_nicks(home: Path, *, now: float | None = None) -> set[str]:
 
 
 
-def free_seat_nicks(home: Path, live: set[str] | None = None) -> set[str]:
-    """FR #2487: live seats that are idle/free (no digest working_on; not in accepted)."""
+def free_seat_nicks(
+    home: Path, live: set[str] | None = None, *, doc: dict | None = None
+) -> set[str]:
+    """FR #2487: live seats that are idle/free (no digest working_on; not in accepted).
+
+    FR #9534: pass ``doc`` when the caller already holds ``_lock`` so we never
+    re-enter ``load_queue`` (disk ``git-claim.lock`` is non-reentrant; nested wait
+    spins until timeout and hung tip ``build-jeeves`` under pytest-timeout).
+    """
     seats = set(live) if live is not None else live_seat_nicks(home)
     busy: set[str] = set()
     try:
-        doc = load_queue(home)
-        for r in doc.get("accepted") or []:
+        q = doc if doc is not None else load_queue(home)
+        for r in q.get("accepted") or []:
             n = canonical_worker_nick(str(r.get("nick") or "")) or str(r.get("nick") or "").strip()
             if n:
                 busy.add(n.lower())
@@ -13583,7 +13604,8 @@ def offer_top(
             pick_i = None
             i = 0
             live = live_seat_nicks(home)
-            free = free_seat_nicks(home, live)  # FR #9478 soft machine-id
+            # FR #9534: pass locked doc — free_seat_nicks must not call load_queue under lock.
+            free = free_seat_nicks(home, live, doc=doc)  # FR #9478 soft machine-id
             while i < len(doc.get("unaccepted") or []):
                 row = doc["unaccepted"][i]
                 if (
