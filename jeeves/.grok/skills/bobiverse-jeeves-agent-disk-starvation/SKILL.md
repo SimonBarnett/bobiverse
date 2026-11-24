@@ -22,6 +22,8 @@ Health context first: `bobiverse-jeeves-agent-monitor`. Class seen on flamingo (
 ## Detect
 
 - Repeated offer failures with reason `worktree-create-failed:disk` / `disk-low` against **one machine** (live `/bob/v1/report` `giveup_reason` + `offer_outcomes`).
+- Worktree path-collision reasons (`already used by worktree`, `is already checked out`, `worktree ... already exists`) do **not** trigger the check, even when the text also contains `worktree-create-failed:disk` (FR #9710).
+- Map seats via `giveup_seats` as discrete seat-pid tokens only (a JSON string is one token - never character-split; FR #9728). Bare tokens and single-character / punctuation ids are skipped; never file intake for a non-fleet machine id (FR #9710).
 - Seats on that machine stay idle while ungated offerable rows exist elsewhere.
 - Flag once. Raise **one** bobiverse intake issue **per machine per incident** with a dedicated body line:
   `require_machine: <machine>`
