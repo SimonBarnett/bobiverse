@@ -1,7 +1,5 @@
-"""FR #9271 / BOB-TRAY-UI-10: Agents > Plan click starts plan\\PlanAgent.exe."""
+"""FR #9271 / BOB-TRAY-UI-10 (+ FR #9605): Agents > Plan click starts vendor\\plan\\PlanAgent.exe."""
 from __future__ import annotations
-
-from pathlib import Path
 
 from repo_layout import REPO
 
@@ -23,9 +21,9 @@ def test_fr9271_plan_click_wires_start_plan_exe():
 def test_fr9271_start_plan_exe_uses_planagent_not_bob_plan():
     cs = TRAY.read_text(encoding="utf-8-sig")
     body = cs.split("void StartPlanExe()", 1)[1].split("void StartWorker(", 1)[0]
-    assert '"plan", "PlanAgent.exe"' in body
+    # FR #9605: tray starts the Pack/Sync vendor mirror (live installs often lack plan\).
+    assert '"vendor", "plan", "PlanAgent.exe"' in body
     assert "bob-plan.exe" not in body
-    assert "vendor\\plan" not in body
     assert "start exe missing" in body
     assert "Plan - missing exe" in body
     assert 'via", "bob-tray-Plan"' in body
@@ -34,7 +32,7 @@ def test_fr9271_start_plan_exe_uses_planagent_not_bob_plan():
 def test_fr9271_ps_start_uses_planagent():
     ps = WATCH.read_text(encoding="utf-8-sig")
     fn = ps.split("function Start-BobTrayPlanExe {", 1)[1].split("function Start-BobTrayWorkerExe {", 1)[0]
-    assert "plan\\PlanAgent.exe" in fn
+    assert "vendor\\plan\\PlanAgent.exe" in fn
     assert "bob-plan.exe" not in fn
     assert "Plan - missing exe" in fn
     click = ps.split("$miPlan.Add_Click({", 1)[1].split("$miPriority.Add_Click({", 1)[0]
@@ -43,7 +41,7 @@ def test_fr9271_ps_start_uses_planagent():
 
 def test_fr9271_docs_agree_with_msi_planagent():
     readme = README.read_text(encoding="utf-8")
-    assert "plan\\PlanAgent.exe" in readme or "plan/PlanAgent.exe" in readme
+    assert "vendor\\plan\\PlanAgent.exe" in readme or "vendor/plan/PlanAgent.exe" in readme
     ev = EVIDENCE.read_text(encoding="utf-8")
     assert "PlanAgent.exe" in ev
-    assert "9271" in ev or "BOB-TRAY-UI-10" in ev
+    assert "9271" in ev or "BOB-TRAY-UI-10" in ev or "9605" in ev

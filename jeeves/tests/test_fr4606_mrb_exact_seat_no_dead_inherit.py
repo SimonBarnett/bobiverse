@@ -1,4 +1,4 @@
-"""FR #4606: MRB skips dead-seat inherit; FR #9401 machine-id when multi-machine."""
+"""FR #4606 / #9574: MRB skips dead-seat inherit; exact nick only (no machine-id)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,15 +18,15 @@ URL = f"https://github.com/{REPO}/pull/4606"
 
 def test_gitclaim_source_skips_dead_inherit_for_mrb_only():
     text = Path(gitclaim.__file__).read_text(encoding="utf-8")
-    assert "FR #2604 / #4606" in text or "FR #4606" in text
+    assert "FR #2604 / #4606" in text or "FR #4606" in text or "FR #9574" in text
     # MRB branch continues before nick_inherits_dead_seat; UAT still calls it.
     assert "if task == \"MRB\":" in text
     assert "nick_inherits_dead_seat" in text
-    assert "FR #9401" in text
+    assert "FR #9574" in text or "exact-seat" in text.lower() or "exact seat" in text.lower()
 
 
-def test_recycled_seat_blocked_when_other_machine_live(tmp_path, monkeypatch):
-    """FR #9401: same machine as dead author + other machine live => block; offer other."""
+def test_recycled_seat_allowed_when_other_machine_live(tmp_path, monkeypatch):
+    """FR #9574 / #4606: recycled same-machine nick may MRB; dead inherit is UAT-only."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     registered_machines.save_registered(home, {"flamingo", "marchhare"})
@@ -55,15 +55,13 @@ def test_recycled_seat_blocked_when_other_machine_live(tmp_path, monkeypatch):
     }
     live = {RECYCLED, OTHER}
     assert gitclaim.nick_inherits_dead_seat(RECYCLED, DEAD_AUTHOR, live) is True
-    assert gitclaim.review_blocked_for_author(row, RECYCLED, live) is True
+    assert gitclaim.review_blocked_for_author(row, RECYCLED, live) is False
     assert gitclaim.review_blocked_for_author(row, OTHER, live) is False
 
     doc = {"v": 1, "unaccepted": [row], "accepted": [], "done": []}
     gitclaim._write_queue(gitclaim.queue_path(home), doc)
-    st, _ = gitclaim.offer_focus_top(home, RECYCLED, "#flamingo")
-    assert st == "empty"
-    st2, job = gitclaim.offer_focus_top(home, OTHER, "#marchhare")
-    assert st2 == "ok"
+    st, job = gitclaim.offer_focus_top(home, RECYCLED, "#flamingo")
+    assert st == "ok"
     assert job is not None and str(job.get("id") or "") == PR
 
 

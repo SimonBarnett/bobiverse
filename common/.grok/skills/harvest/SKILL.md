@@ -34,6 +34,12 @@ depends_on: []
 >    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
 >    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
 >    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
+> 7. **CAST IRON — interventions → ircJeeves FR (#9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
+>    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, …) must create or de-dup-comment a product FR against
+>    ircJeeves (`SimonBarnett/bobiverse`) the same turn so the chair performs it deterministically. FR #8827 is bridge-only.
+>    Closed-COMPLETED but still bridged live ⇒ regression FR with evidence.
+> 8. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
+>    chair path same turn. Ungated idle+work is never report-only.
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -244,6 +250,7 @@ The bullet archive is `lessons.md` beside this file (FR #8310). skill-dag refuse
 
 Do not land a second copy of a harvest-lesson MRB playbook in this book. Those playbooks belong in `bobiverse-bob-job-mrb`.
 - CAST IRON point 5 (Jeeves MONITORING): prefer deterministic fixes; when tested, FR them into the Jeeves token-less service (tools/monitor, jeeves/checks, common/scripts, chair helpers) so learnings become chair behaviour without an LLM. Skills are interim; durable home is the deterministic product. Same turn: skill harvest and product FR when the path is clear (PR #8851).
+- CAST IRON idle + open FRs/PRs = FAIL (#9644): intervene same turn and FR/de-dup deterministic chair feed (#9628); ungated idle+work is never report-only.
 - skill-dag index preference: over-cap seat copy yields to a later root at or under SKILL_RESOLVE_CAP_BYTES; an under-cap seat copy still wins (FR #7076 / #8323).
 - Any per-seat click state must persist the launch model next to the kind and every restart path must read it; a saved model that cannot start must refuse and report, never fall through to the free default.
 - When IRC _ssl_recv starts polling settimeout, run test_fr8120_ear_ssl_send_serialize.py and test_fr4980_ear_idle_keepalive.py with the new registration test before PASS.
@@ -432,4 +439,20 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When many build-jeeves runs stay in_progress and PR checks stay queued 20m+, cancel older superseded in_progress runs to free runners so tip PR auto-merge can finish.
 - Merge closing FR != host healed: after tray engine_stale fix merges, keep polling !startworker until workers>0 and file residual if NACK persists post-merge
 - offer-timeout:idle-no-ack must clear seat-holds.json with the pin (aged live too); assign inject miss / second agent-not-ready assign must NACK so chair drops offered_to (FR #9403).
+- When !startworker NACKs tray-not-logged-in / no_interactive_session, stuck must report tray_session_missing for that machine (not vague online_zero_workers / needs_human).
+- ACC-moved orphan offer holds: clear on note_seat_hold exclusivity, accept_offered, and purge_orphan_seat_holds from seat_open_job/stuck sweep; keep ack-missing
+- test_mrb2824 contiguous assert: do not add ## Harvested lessons (intake) H2 after ## Harvested monitor playbook; fold bullets into the playbook Harvested lessons section
+- When folding #9588 onto #9586, keep AddOpencodeTopLevelChoices and retarget fr9263/fr9588 pins to WeightsLaunchField (drop OpencodeWebhookModel catalog asserts).
+- Never stage bob-plan.exe alongside PlanAgent.exe; TipForm Plan uses plan\PlanAgent.exe (9271); Copy-BobTrayVendorExes mirrors vendor\plan\PlanAgent.exe only and deletes leftover bob-plan twins.
+- all-gave-up stall fingerprint must be per-repo class key (like bored-latency machine key); intake msgfp keeps #N so it will not collapse twins --- fix stall_detectors.fingerprint key, not fuzzy intake.
+- When build-jeeves is red on an MRB tip, repro the failing tests on origin/main before FAIL or fold; same failures on main are a separate FR, not a fold of the assigned PR (FR #4649).
+- ConPTY twins: keep oldest #9612 as canonical, close Depends-on companions as Duplicate after merging acceptance; tray recycleseat stays its own FR
+- Seat-end intake class keys omit nick so twin seats on one machine share one tip; nick/job/pid stay in the body (FR #9609).
+- Any !assign/sweep/heal bridge must same-turn FR ircJeeves for deterministic chair behaviour; closed-COMPLETED but still bridged => regression FR
+- After FR #7593 grok recycle, probe CreatePseudoConsole before relaunch and GIVEUP shell-hung when terminal/call-*.log stays empty after run_terminal_command (FR #9612).
+- Each MONITORING bridge class gets its own ircJeeves FR same turn (#9627); de-dup offer_to_idle to #9628 and self-MRB to #9622
+- Workers MaxWorkers=2 is Workers-submenu only; Agents Plan must StartPlanExe vendor\plan\PlanAgent.exe; Agents Jeeves must not CapRefusal via StartWorker agent
+- CAST IRON FR #9652: filing >=2 related FRs in one turn MUST create/reuse Digest parent (feature-request + fr-digest) with Depends-on on each child; digests stay useful when unheld; rule FR itself is not fr-digest
+- After bobiverse body require_machine stop pinning, update every pin expect to needs-<machine> or assert empty; keep _body_for_queue preserve asserts separate from infer stamps
+- TipForm Plan must start vendor\plan\PlanAgent.exe --root <install>\plan (or PLAN_AGENT_ROOT); bare vendor PlanAgent FATAL plan-agent tree not found; ops workaround --root C:\ai\bob\plan
 - Present empty local ops home is not authoritative: detect vs fresh /report (empty_local_queue/seat_state_mismatch), prefer live seats or EXIT 0 skipped=stale_local_home; JEEVES_MONITOR_DIGEST_HOME overrides BOB_DIGEST_HOME

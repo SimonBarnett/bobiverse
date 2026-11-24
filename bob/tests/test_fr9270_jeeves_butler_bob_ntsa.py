@@ -27,10 +27,20 @@ def test_tipform_pins_url_cache_and_fallback():
     text = CS.read_text(encoding="utf-8-sig")
     assert URL in text
     assert "assets" in text and "jeeves-butler.ico" in text
-    assert 'Path.Combine(installRoot ?? "", "jeeves", "assets", "jeeves-butler.ico")' in text
-    assert 'Path.Combine(installRoot ?? "", "assets", "jeeves-butler.ico")' in text
+    # FR #9587: fallback uses rootPath + bob/tray/assets then jeeves/assets.
+    assert (
+        'Path.Combine(installRoot ?? "", "jeeves", "assets", "jeeves-butler.ico")' in text
+        or 'Path.Combine(rootPath, "jeeves", "assets", "jeeves-butler.ico")' in text
+    )
+    assert (
+        'Path.Combine(installRoot ?? "", "assets", "jeeves-butler.ico")' in text
+        or 'Path.Combine(rootPath, "assets", "jeeves-butler.ico")' in text
+        or 'JeevesButlerCachePath' in text
+    )
+    assert 'Path.Combine(rootPath, "bob", "tray", "assets", "jeeves-butler.ico")' in text
     assert "ResolveJeevesButlerIcon" in text
     assert "miJeeves.Image" in text
+    assert "menu-icon MISSING" in text
 
 
 def test_watch_pins_url_cache_and_fallback():

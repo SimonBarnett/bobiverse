@@ -12,7 +12,8 @@ sys.path.insert(0, str(ROOT / "common" / "scripts"))
 import gitclaim  # noqa: E402
 
 
-def test_fr1824_body_line_require_machine_colon_ionos_pins():
+def test_fr1824_body_line_require_machine_colon_ionos_no_longer_pins():
+    # FR #9637: bobiverse body require_machine: alone does not pin (needs label / !pin).
     mid = gitclaim.infer_require_machine(
         title="FR: clear workers map + machine working_on on orphan MRB DONE",
         body=(
@@ -23,12 +24,23 @@ def test_fr1824_body_line_require_machine_colon_ionos_pins():
         ),
         labels=["feature-request", "via-intake"],
         repo="SimonBarnett/bobiverse",
-        ident="#1714",
+        ident="#9991714",
+    )
+    assert mid == ""
+
+
+def test_fr1824_needs_walrus_label_still_pins():
+    mid = gitclaim.infer_require_machine(
+        title="FR: clear workers map + machine working_on on orphan MRB DONE",
+        body="require_machine: ionos\n",
+        labels=["feature-request", "needs-walrus"],
+        repo="SimonBarnett/bobiverse",
+        ident="#9991714",
     )
     assert mid == "walrus"
 
 
-def test_fr1824_body_line_require_machine_equals_ionos_pins():
+def test_fr1824_body_line_require_machine_equals_ionos_no_longer_pins():
     mid = gitclaim.infer_require_machine(
         title="chair offered ionos-pinned FR to wrong shop",
         body="evidence...\n\nrequire_machine=ionos\n",
@@ -36,7 +48,7 @@ def test_fr1824_body_line_require_machine_equals_ionos_pins():
         repo="SimonBarnett/bobiverse",
         ident="#1687",
     )
-    assert mid == "walrus"
+    assert mid == ""
 
 
 def test_fr1508_inline_evidence_require_machine_still_does_not_pin():

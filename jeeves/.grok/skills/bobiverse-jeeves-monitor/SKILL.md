@@ -26,6 +26,16 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 > 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
 >    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
 >    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
+> 6. **CAST IRON — interventions → ircJeeves FR (FR #9627).** Every keep-queue-moving or heal intervention **must** file
+>    (or de-dup-comment) a product FR so **ircJeeves** performs it deterministically. FR #8827 commands are a bridge only;
+>    never run `!assign` / `!sweep` / … as a standing LLM loop without the matching chair FR. Closed-COMPLETED but still
+>    bridged live ⇒ regression FR with evidence (`require_machine: walrus` when chair-host).
+> 7. **CAST IRON — idle + open work is FAIL (FR #9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` must
+>    chair-heal (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + #9461 ear-relay); report-only is opt-in.
+>    Reaffirm #9628 / #9460. Same-turn bridge still owes #9627.
+> 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -43,6 +53,7 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 ## Keep-queue-moving playbook (FR #8827)
 
 Prefer **de-duped intake** when a product bug is the root. Use chair commands for **operational unblock** only.
+**Same turn as any intervention:** file/comment the ircJeeves product FR that makes that unblock deterministic (CAST IRON FR #9627).
 
 | Symptom | Command | When |
 |---|---|---|

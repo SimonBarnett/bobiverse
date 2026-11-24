@@ -10,8 +10,8 @@ sys.path.insert(0, str(MONITOR))
 import queue_flow  # noqa: E402
 
 
-def test_fr4610_gate_bucket_uses_dedicated_body_pin_not_raw_stamp():
-    """Bobiverse raw stamp alone is not a gate; dedicated body pin is."""
+def test_fr4610_gate_bucket_uses_needs_label_not_raw_stamp_or_body():
+    """Bobiverse raw stamp / body pin alone are not a gate; needs-<machine> is."""
     stamped_only = {
         "repo": "SimonBarnett/bobiverse",
         "task": "FR",
@@ -22,13 +22,23 @@ def test_fr4610_gate_bucket_uses_dedicated_body_pin_not_raw_stamp():
     }
     assert queue_flow._gate_bucket(stamped_only) == "ungated"
 
-    dedicated = {
+    body_only = {
         "repo": "SimonBarnett/bobiverse",
         "task": "FR",
         "id": "#4610b",
         "title": "IONOS pin",
-        # FR #6407: ce-priority-dev1 dedicated pins retired; use a live machine.
+        # FR #9637: body require_machine: alone must not gate.
         "body": "require_machine: ionos\n",
         "labels": ["feature-request"],
     }
-    assert queue_flow._gate_bucket(dedicated) == "require_machine"
+    assert queue_flow._gate_bucket(body_only) == "ungated"
+
+    labeled = {
+        "repo": "SimonBarnett/bobiverse",
+        "task": "FR",
+        "id": "#4610c",
+        "title": "walrus pin",
+        "body": "require_machine: walrus\n",
+        "labels": ["feature-request", "needs-walrus"],
+    }
+    assert queue_flow._gate_bucket(labeled) == "require_machine"

@@ -117,8 +117,8 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     assert job.get("offered_to") == "walrus-7764"
 
 
-def test_hostile_mrb_sibling_blocked_when_other_machine_live(_home):
-    """FR #9401: same-machine sibling blocked while flamingo is live (unpinned)."""
+def test_hostile_mrb_sibling_allowed_when_other_machine_live(_home):
+    """FR #9574: same-machine sibling eligible while flamingo is live (exact-seat only)."""
     row = _row(
         "SimonBarnett/bobiverse",
         "MRB",
@@ -142,7 +142,7 @@ def test_hostile_mrb_sibling_blocked_when_other_machine_live(_home):
     live = gitclaim.live_seat_nicks(_home)
     assert "flamingo-9" in {n.lower() for n in live}
     assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-1", live) is True
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-2", live) is True
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-2", live) is False
     status, job = gitclaim.offer_focus_top(
         _home,
         "win-mpre8vi4u6u-2",
@@ -151,15 +151,6 @@ def test_hostile_mrb_sibling_blocked_when_other_machine_live(_home):
         is_pull=None,
         issue_open=None,
     )
-    assert status == "empty"
-    status2, job2 = gitclaim.offer_focus_top(
-        _home,
-        "flamingo-9",
-        "#flamingo",
-        pr_exists=None,
-        is_pull=None,
-        issue_open=None,
-    )
-    assert status2 == "ok"
-    assert job2 is not None
-    assert job2.get("offered_to") == "flamingo-9"
+    assert status == "ok"
+    assert job is not None
+    assert job.get("offered_to") == "win-mpre8vi4u6u-2"

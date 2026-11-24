@@ -157,11 +157,27 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _all_gave_up_stable_key(row: dict) -> str:
+    """FR #9602: fingerprint key is ``owner/repo``, not ``owner/repo#N``.
+
+    Per-row keys filed a twin stall tip for every abandoned job. Keep the
+    abandoned row id in evidence so humans still see every parent; stall_filer
+    comments later rows onto the open class tip.
+    """
+    rid = _row_id(row)
+    if "#" in rid:
+        return rid.rsplit("#", 1)[0].strip() or rid
+    repo = str(row.get("repo") or "").strip()
+    return repo or rid or "unknown"
+
+
 def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
     """Report rows abandoned by every live seat unless already parked for a human.
 
     FR #5181: ``needs_human`` rows are intentional parks — skip them so the
     stall filer does not keep re-alerting (class of a-search#5139).
+
+    FR #9602: fingerprint key is the product repo (stable class), not ``#N``.
     """
     live = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("live") or [])}
     live = {n for n in live if n}
@@ -186,14 +202,16 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
             return gitclaim.row_gave_up_by(row, nick, live=live)
         if live and all(_abandoned(n) for n in live):
             rid = _row_id(row)
+            key = _all_gave_up_stable_key(row)
             out.append(
                 {
                     "id": ALL_GAVE_UP_ID,
-                    "key": rid,
-                    "title": f"stall:all-gave-up:{rid}",
+                    "key": key,
+                    "title": f"stall:all-gave-up:{key}",
                     "evidence": {
                         "live": sorted(live),
                         "row": rid,
+                        "repo": key,
                         "giveup_seats": sorted(gitclaim.giveup_seat_set(row)),
                         "needs_human": False,
                     },
@@ -210,14 +228,23 @@ def stamp_needs_human_for_all_gave_up(
 
     Returns the number of rows stamped. Subsequent scans skip via
     ``row_needs_human`` in ``detect_all_gave_up``.
+
+    FR #9602: match on ``evidence.row`` (full ``owner/repo#N``). Finding ``key``
+    is the repo class only; legacy findings still keyed the full row id.
     """
-    keys = {
-        str(f.get("key") or "").strip()
-        for f in (findings or [])
-        if isinstance(f, dict) and str(f.get("id") or "") == ALL_GAVE_UP_ID
-    }
-    keys.discard("")
-    if not keys:
+    row_ids: set[str] = set()
+    for f in findings or []:
+        if not isinstance(f, dict) or str(f.get("id") or "") != ALL_GAVE_UP_ID:
+            continue
+        ev = f.get("evidence") if isinstance(f.get("evidence"), dict) else {}
+        rid = str((ev or {}).get("row") or "").strip()
+        if rid:
+            row_ids.add(rid)
+        k = str(f.get("key") or "").strip()
+        # Pre-FR #9602 findings used the full row id as key.
+        if k and "#" in k:
+            row_ids.add(k)
+    if not row_ids:
         return 0
     stamped = 0
     try:
@@ -228,7 +255,7 @@ def stamp_needs_human_for_all_gave_up(
                 for row in list(doc.get(bucket) or []):
                     if not isinstance(row, dict):
                         continue
-                    if _row_id(row) not in keys:
+                    if _row_id(row) not in row_ids:
                         continue
                     if gitclaim.row_needs_human(row):
                         continue

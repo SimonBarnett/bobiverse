@@ -127,15 +127,12 @@ def test_offer_skips_fix_done_seat_unstamped_mrb(tmp_path, monkeypatch):
     st, job = gitclaim.offer_focus_top(home, FIX_SEAT, "#flamingo")
     assert st == "empty" or job is None or str((job or {}).get("id") or "") != PR
 
-    # FR #9401: same-machine sibling of FIX seat blocked while marchhare live.
-    st2, _ = gitclaim.offer_focus_top(home, OTHER_SEAT, "#flamingo")
-    assert st2 == "empty" or _ is None or str((_ or {}).get("id") or "") != PR
-
-    st3, job3 = gitclaim.offer_focus_top(home, IMPL_SEAT, "#marchhare")
-    assert st3 == "ok"
-    assert job3 is not None
-    assert job3.get("id") == PR
-    assert job3.get("offered_to") == IMPL_SEAT
+    # FR #9574: same-machine sibling of FIX seat is eligible (exact FIX nick only).
+    st2, job2 = gitclaim.offer_focus_top(home, OTHER_SEAT, "#flamingo")
+    assert st2 == "ok"
+    assert job2 is not None
+    assert job2.get("id") == PR
+    assert job2.get("offered_to") == OTHER_SEAT
 
 
 def test_offer_skips_fix_still_accepted(tmp_path, monkeypatch):
@@ -163,14 +160,13 @@ def test_offer_skips_fix_still_accepted(tmp_path, monkeypatch):
     live = {"flamingo-70260", "flamingo-63220", "marchhare-12524"}
     enriched = gitclaim.enrich_mrb_author_fields(doc, doc["unaccepted"][0])
     assert gitclaim.review_blocked_for_author(enriched, FIX_SEAT, live) is True
-    assert gitclaim.review_blocked_for_author(enriched, OTHER_SEAT, live) is True
+    # FR #9574: sibling of FIX seat eligible (exact FIX nick only).
+    assert gitclaim.review_blocked_for_author(enriched, OTHER_SEAT, live) is False
     assert gitclaim.review_blocked_for_author(enriched, IMPL_SEAT, live) is False
 
-    st2, _ = gitclaim.offer_focus_top(home, OTHER_SEAT, "#flamingo")
-    assert st2 == "empty" or _ is None or str((_ or {}).get("id") or "") != PR
-    st3, job3 = gitclaim.offer_focus_top(home, IMPL_SEAT, "#marchhare")
-    assert st3 == "ok"
-    assert job3.get("id") == PR
+    st2, job2 = gitclaim.offer_focus_top(home, OTHER_SEAT, "#flamingo")
+    assert st2 == "ok"
+    assert job2 is not None and job2.get("id") == PR
 
 
 def test_offer_blocks_implementer_and_fix_seat(tmp_path, monkeypatch):
@@ -241,10 +237,10 @@ def test_offer_blocks_implementer_and_fix_seat(tmp_path, monkeypatch):
 
 
 def test_nick_inherits_dead_fix_seat_on_recycle(tmp_path, monkeypatch):
-    """FR #9401: recycled same-machine as dead FIX blocked when another machine live.
+    """FR #9574 / #4606: recycled same-machine as dead FIX may MRB (exact stamp only).
 
     nick_inherits_dead_seat remains True (UAT paths). Live FIX nick still blocked
-    (exact stamp, FR #4604). A third-machine seat may review.
+    (exact stamp, FR #4604). Recycled flamingo nick is eligible for MRB.
     """
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
@@ -286,16 +282,14 @@ def test_nick_inherits_dead_fix_seat_on_recycle(tmp_path, monkeypatch):
     live = {"flamingo-99999", "marchhare-12524", third}
     assert gitclaim.nick_inherits_dead_seat(recycled, FIX_SEAT, live) is True
     enriched = gitclaim.enrich_mrb_author_fields(doc, doc["unaccepted"][0])
-    assert gitclaim.review_blocked_for_author(enriched, recycled, live) is True
+    assert gitclaim.review_blocked_for_author(enriched, recycled, live) is False
     assert gitclaim.review_blocked_for_author(enriched, FIX_SEAT, live | {FIX_SEAT}) is True
     assert gitclaim.review_blocked_for_author(enriched, third, live) is False
 
-    st, _ = gitclaim.offer_focus_top(home, recycled, "#flamingo")
-    assert st == "empty"
-    st2, job = gitclaim.offer_focus_top(home, third, "#redqueen")
-    assert st2 == "ok"
+    st, job = gitclaim.offer_focus_top(home, recycled, "#flamingo")
+    assert st == "ok"
     assert job is not None and str(job.get("id") or "") == PR
-    assert job.get("offered_to") == third
+    assert job.get("offered_to") == recycled
 
 
 def test_done_fix_stamps_existing_mrb_author_seats(tmp_path, monkeypatch):

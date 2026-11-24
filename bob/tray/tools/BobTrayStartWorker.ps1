@@ -788,11 +788,12 @@ function Get-BobTrayWorkerSeatMode {
     if (-not $cl) {
         try { $cl = [string]$Proc.mode } catch { $cl = '' }
     }
-    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance)\b') {
+    # FR #9640: jeeves = Agents > Jeeves (parsed so Measure/CapRefusal never treat it as agent).
+    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance|jeeves)\b') {
         return $Matches[1].ToLowerInvariant()
     }
     $low = ($cl).Trim().ToLowerInvariant()
-    if ($low -in @('agent', 'plan', 'monitor', 'maintenance')) { return $low }
+    if ($low -in @('agent', 'plan', 'monitor', 'maintenance', 'jeeves')) { return $low }
     return 'unknown'
 }
 
@@ -865,7 +866,7 @@ function Measure-BobTrayWorkerSeats {
 function Get-BobTrayWorkerCapRefusal {
     <#
     '' when another worker may start, else the short refusal text (tray dialog / log).
-    FR #2667: -Mode plan|monitor|maintenance never refused; only agent starts are capped.
+    FR #2667 / FR #9640: -Mode plan|monitor|maintenance|jeeves never refused; only agent (Workers) starts are capped.
     Count agent seat roots only (same as startworker.count_workers / bob_worker.worker_cap_refusal).
     -Procs is for tests.
     #>

@@ -6,6 +6,7 @@ Modes
   --mode plan    plan agent: cwd <install>\plan, no IRC, fire-and-forget launch
   --mode monitor Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
+  --mode jeeves  Agents > Jeeves (FR #9640): IRC agent-like, outside Workers MaxWorkers=2 hard cap
 
 Rules (CAST IRON, Simon t762u-t765u)
   * Agent choice is ALWAYS automatic by token availability (FR #3997 / #6120): Grok (local weekly > 0 or unknown read)
@@ -3384,7 +3385,13 @@ def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> 
     return out
 
 
-_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance")
+# FR #9640: jeeves = Agents > Jeeves (IRC agent-like; outside Workers hard cap).
+_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance", "jeeves")
+
+
+def is_irc_agent_like_mode(mode: str) -> bool:
+    """True for Workers agent seats and Agents > Jeeves (FR #9640)."""
+    return str(mode or "").strip().lower() in ("agent", "jeeves")
 
 
 def describe_worker_exe_launch(
@@ -3445,6 +3452,10 @@ def describe_worker_exe_launch(
     elif mode_l == "plan":
         cwd = root / "plan"
         title = "Bob plan - starting (closing this window ends the agent)"
+    elif mode_l == "jeeves":
+        # FR #9640: Agents > Jeeves shares worker cwd / IRC path; uncapped.
+        cwd = root / "worker"
+        title = "Bob jeeves - starting (closing this window ends the agent)"
     else:
         cwd = root / "worker"
         title = "Bob agent - starting (closing this window ends the agent)"
@@ -3495,7 +3506,8 @@ def describe_agent_child_launch(
     launch_folder = folder
     install_worker = folder
     bound_meta: dict = {}
-    if kind_l == "grok" and mode_l == "agent":
+    # FR #9640: jeeves is IRC agent-like (bound grok cwd) but outside Workers hard cap.
+    if kind_l == "grok" and is_irc_agent_like_mode(mode_l):
         try:
             import skill_dag_bound as _sdb
 
@@ -3527,6 +3539,7 @@ def describe_agent_child_launch(
                     f"Harness cwd is {bound_meta['bound_cwd']} (FR #6891 skill catalog bound; "
                     f"only skill-dag-core is listed). Install worker tree: {install_worker}. "
                 ) + prompt
+    # build_launch knows agent|plan|monitor; map jeeves -> agent for the child argv.
     launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
     spec = build_launch(
         kind, launch_mode, launch_folder, prompt, agent_exe, rd,
@@ -5082,6 +5095,30 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "opencode-freeze-recycle"}
+    # FR #9656: console-closed / signal with no ACKed job is free-idle recycle after an
+    # intentional GIVEUP (e.g. require_machine=walrus). Tray may restart the seat; do not
+    # file "agent console closed" / crash twins. Keep filing when job_key is set (ACK open;
+    # FR #8154 WIP GIVEUP path).
+    _job_pending = str(job_key or "").strip()
+    _console_u = None
+    if exit_code is not None:
+        try:
+            _console_u = int(exit_code) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            _console_u = None
+    if not _job_pending and (
+        _fuel_reason in ("console-closed", "signal")
+        or (_console_u is not None and _console_u == CONSOLE_CLOSE_EXIT)
+    ):
+        if log:
+            try:
+                log(
+                    "worker: console-closed with no ACKed job; "
+                    "no console-close intake (FR #9656 free-idle after GIVEUP)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "console-closed-free-idle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -5151,7 +5188,9 @@ def report_agent_cli_nonzero_exit(
             "recycled the seat (FR #7593).\n"
         )
     elif end == "console-close":
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: class key is machine+end (nick stays in body only) so twin seats
+        # on the same host collapse to one tip (class of closed #9606/#9607).
+        key = f"seat-silent-end|{mid}|{end}"[:128]
         title = "bug: agent console closed (FR #7881)"
         what = (
             "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
@@ -5160,7 +5199,8 @@ def report_agent_cli_nonzero_exit(
         )
     elif exit_code is None:
         # FR #7978: recycled while still running — a hang/ack-miss, not a CLI exit.
-        key = f"seat-no-progress|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: nick out of class key (body still has nick/job/pid).
+        key = f"seat-no-progress|{mid}|{end}"[:128]
         title = "bug: seat stopped making progress"
         what = (
             "What: the worker recycled the seat while the agent process was still running "
@@ -5168,7 +5208,8 @@ def report_agent_cli_nonzero_exit(
         )
     else:
         # silent external kill, or an operator/tray recycle after the process ended.
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: seat-silent-end|{mid}|{end} — nick in body only.
+        key = f"seat-silent-end|{mid}|{end}"[:128]
         title = "bug: seat ended with no CLI stderr (FR #7724)"
         what = (
             "What: the seat process ended and there was no CLI stderr. "
@@ -5196,7 +5237,8 @@ def report_agent_cli_nonzero_exit(
         # FR #8148: do not rebrand console-close / signal as "stopped making progress".
         if reason != "agent-exited" and end not in ("console-close", "recycle", "external-kill"):
             title = "bug: seat stopped making progress"
-            key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
+            # FR #9609: no nick in seat-no-progress class key.
+            key = f"seat-no-progress|{mid}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
         what
         + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
@@ -5231,6 +5273,156 @@ def report_agent_cli_nonzero_exit(
         return {"ok": True, "key": key}
     except Exception:
         return {"ok": False, "key": key}
+
+
+def probe_create_pseudoconsole_hresult(
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """FR #9612: host CreatePseudoConsole smoke; log HRESULT; fail closed on error.
+
+    Grok Build's run_terminal_command uses ConPTY. After FR #7593 recycle the host
+    ConPTY stack can be dead while file tools still work. This probe does not fix
+    Grok's internal PTY; it fails fast when the *host* CreatePseudoConsole fails.
+    """
+    if sys.platform != "win32":
+        return {"ok": True, "skipped": True, "reason": "non-windows"}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class COORD(ctypes.Structure):
+            _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+        HPCON = wintypes.HANDLE
+        k32.CreatePipe.argtypes = [
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        k32.CreatePipe.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        # HRESULT CreatePseudoConsole(COORD, HANDLE, HANDLE, DWORD, HPCON*)
+        k32.CreatePseudoConsole.argtypes = [
+            COORD,
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(HPCON),
+        ]
+        k32.CreatePseudoConsole.restype = wintypes.HRESULT
+        k32.ClosePseudoConsole.argtypes = [HPCON]
+        k32.ClosePseudoConsole.restype = None
+
+        h_input_r = wintypes.HANDLE()
+        h_input_w = wintypes.HANDLE()
+        h_output_r = wintypes.HANDLE()
+        h_output_w = wintypes.HANDLE()
+        if not k32.CreatePipe(ctypes.byref(h_input_r), ctypes.byref(h_input_w), None, 0):
+            err = ctypes.get_last_error()
+            if log:
+                log(f"conpty-smoke: CreatePipe input failed winerr={err} (FR #9612)")
+            return {"ok": False, "hresult": None, "winerr": err, "step": "CreatePipe-input"}
+        if not k32.CreatePipe(ctypes.byref(h_output_r), ctypes.byref(h_output_w), None, 0):
+            err = ctypes.get_last_error()
+            k32.CloseHandle(h_input_r)
+            k32.CloseHandle(h_input_w)
+            if log:
+                log(f"conpty-smoke: CreatePipe output failed winerr={err} (FR #9612)")
+            return {"ok": False, "hresult": None, "winerr": err, "step": "CreatePipe-output"}
+        hpc = HPCON()
+        size = COORD(80, 25)
+        # ConPTY wants the opposite ends: input write for host→console, output read console→host
+        hr = int(
+            k32.CreatePseudoConsole(
+                size, h_input_r, h_output_w, 0, ctypes.byref(hpc)
+            )
+        )
+        # Close our unused ends after create attempt
+        k32.CloseHandle(h_input_r)
+        k32.CloseHandle(h_output_w)
+        if hr == 0 and hpc:
+            try:
+                k32.ClosePseudoConsole(hpc)
+            except Exception:
+                pass
+        k32.CloseHandle(h_input_w)
+        k32.CloseHandle(h_output_r)
+        ok = hr == 0
+        if log:
+            log(
+                f"conpty-smoke: CreatePseudoConsole hresult=0x{hr & 0xFFFFFFFF:08X} "
+                f"ok={ok} (FR #9612)"
+            )
+        return {"ok": ok, "hresult": hr, "hresult_hex": f"0x{hr & 0xFFFFFFFF:08X}"}
+    except AttributeError as e:
+        # Older Windows without ConPTY exports
+        if log:
+            log(f"conpty-smoke: API missing {e} (FR #9612)")
+        return {"ok": True, "skipped": True, "reason": "api-missing"}
+    except Exception as e:
+        if log:
+            log(f"conpty-smoke: failed {type(e).__name__}: {e} (FR #9612)")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def detect_grok_empty_terminal_calls(
+    session_dir: str | Path,
+    *,
+    min_age_s: float = 25.0,
+    now: Optional[Callable[[], float]] = None,
+) -> Optional[dict]:
+    """FR #9612: empty terminal/call-*.log after run_terminal_command → shell hung.
+
+    Returns a detail dict when hung, else None.
+    """
+    root = Path(session_dir)
+    terminal = root / "terminal"
+    events = root / "events.jsonl"
+    if not terminal.is_dir():
+        return None
+    clock = now or time.time
+    wall = float(clock())
+    empty: list[str] = []
+    for p in terminal.glob("call-*.log"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size > 0:
+            continue
+        age = wall - float(st.st_mtime)
+        if age >= float(min_age_s):
+            empty.append(p.name)
+    if not empty:
+        return None
+    # Require evidence the session actually tried a shell tool recently.
+    tried_shell = False
+    if events.is_file():
+        try:
+            # Tail last ~256 KiB for tool names (cheap; sessions can be large).
+            raw = events.read_bytes()
+            if len(raw) > 262144:
+                raw = raw[-262144:]
+            text = raw.decode("utf-8", errors="replace").lower()
+            tried_shell = (
+                "run_terminal_command" in text
+                or "run_terminal" in text
+                or '"name":"bash"' in text
+                or '"name": "bash"' in text
+            )
+        except Exception:
+            tried_shell = False
+    if not tried_shell:
+        return None
+    return {
+        "empty_calls": empty[:20],
+        "count": len(empty),
+        "min_age_s": float(min_age_s),
+    }
 
 
 def restart_skill_dag_mcp_stdio_children(
@@ -12769,13 +12961,15 @@ class IrcSeat:
             if params and params[0].lower() == self.shop.lower():
                 self.joined.set()
                 self.log("irc: joined " + self.shop)
-                if getattr(self, "mode", "agent") == "agent" and write_seat_irc is not None:
+                # FR #9640: agent + jeeves write markers; CapRefusal counts mode=agent only.
+                if is_irc_agent_like_mode(getattr(self, "mode", "agent")) and write_seat_irc is not None:
                     try:
                         write_seat_irc(
                             nick=self.nick,
                             pid=os.getpid(),
                             machine=getattr(self, "machine", "") or "",
                             shop=self.shop,
+                            mode=getattr(self, "mode", "agent") or "agent",
                         )
                     except OSError as e:
                         self.log("irc: seat marker write failed: %s" % e)
@@ -20071,8 +20265,52 @@ class Supervisor:
             # FR #3623: ask_user_question Pending (alive process, ACK held) - Enter then recycle.
             if self._check_ask_user_pending(proc):
                 continue
+            # FR #9612: Grok empty terminal/call-*.log after run_terminal_command → shell-hung.
+            if self._check_grok_shell_hung():
+                continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
+
+    def _check_grok_shell_hung(self) -> bool:
+        """FR #9612: empty ConPTY call logs while shell tools ran → GIVEUP shell-hung + recycle."""
+        if (self.kind or "").strip().lower() != "grok":
+            return False
+        if not (self.bored and getattr(self.bored, "_ack_open", False)):
+            return False
+        path = self._ask_user_events_path()
+        if path is None:
+            return False
+        session_dir = path.parent
+        detail = detect_grok_empty_terminal_calls(session_dir)
+        if not detail:
+            return False
+        job_key = ""
+        try:
+            job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            job_key = ""
+        self.log(
+            f"agent: shell-hung empty call logs count={detail.get('count')} "
+            f"files={detail.get('empty_calls')} job={job_key or '-'} (FR #9612)"
+        )
+        if job_key:
+            try:
+                if self.bored is not None:
+                    self.bored._ack_open = False
+                    self.bored._ack_job_key = None
+            except Exception:
+                pass
+            try:
+                self._release_seat_giveup_job(job_key, "shell-hung")
+            except Exception as e:
+                self.log(f"agent: shell-hung GIVEUP failed {type(e).__name__}")
+        # Recycle once; host ConPTY smoke runs on agent-cli-nonzero-exit path when applicable.
+        try:
+            self.restart_agent("shell-hung")
+        except Exception as e:
+            self.log(f"agent: shell-hung restart failed {type(e).__name__}")
+            self.shutdown("shell-hung", EXIT_GAVE_UP)
+        return True
 
     def _progress_hb_skip(self, reason: str, *, now_mono: float) -> None:
         """Rate-limited skip log so a missing heartbeat can be attributed (FR #8249)."""
@@ -20830,6 +21068,28 @@ class Supervisor:
             pending = self.relay.last_unacked
         if pending:
             self.relay.hold(pending)  # the message in flight when the old agent hung is re-delivered to the NEW one once it is ready
+        # FR #9612: after FR #7593 recycle, smoke host CreatePseudoConsole before relaunch.
+        # Fail fast with shell-hung-conpty when HRESULT is nonzero (Grok file tools can still work).
+        if (
+            (self.kind or "").strip().lower() == "grok"
+            and reason == "agent-cli-nonzero-exit"
+        ):
+            smoke = probe_create_pseudoconsole_hresult(log=self.log)
+            if smoke.get("ok") is False and not smoke.get("skipped"):
+                self.log(
+                    "agent: ConPTY smoke failed after recycle; "
+                    f"hresult={smoke.get('hresult_hex') or smoke.get('hresult')} "
+                    f"step={smoke.get('step')} (FR #9612 shell-hung)"
+                )
+                if pending:
+                    try:
+                        key = (assign_job_key(pending) or "").strip()
+                        if key:
+                            self._release_seat_giveup_job(key, "shell-hung")
+                    except Exception as e:
+                        self.log(f"agent: shell-hung GIVEUP failed {type(e).__name__}")
+                self.shutdown("shell-hung-conpty", EXIT_GAVE_UP)
+                return
         if not self.start_agent(note="(restarted after a hang; the previous session was discarded)"):
             self.shutdown("restart-launch-failed", EXIT_LAUNCH_FAIL)
 
@@ -22024,6 +22284,8 @@ def run_agent(args, log: Log) -> int:
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
         sasl = (os.environ["BOB_IRC_SASL_USER"], os.environ["BOB_IRC_SASL_PASSWORD"])
     irc = IrcSeat(args.host, args.port, nick, machine, pw, sasl, tls=not args.no_tls, log=log)
+    # FR #9640: jeeves seats register mode=jeeves markers (excluded from Workers cap).
+    irc.mode = str(getattr(args, "mode", "agent") or "agent").strip().lower() or "agent"
     relay = Relay(log, persist_dir=run_dir)
     irc.on_message = relay.deliver
     try:
@@ -22403,8 +22665,8 @@ except ImportError:
 HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
 # FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use
 # worker_seat_roots / recycle_to_cap / excess_worker_seat_roots (never flat PID Skip-N).
-CAPPED_MODES = ("agent",)     # modes refused when 2 agent seats are already live
-UNCAPPED_MODES = ("plan", "monitor", "maintenance")
+CAPPED_MODES = ("agent",)     # Workers only; plan/monitor/maintenance/jeeves uncapped (FR #2522 / #9640)
+UNCAPPED_MODES = ("plan", "monitor", "maintenance", "jeeves")
 _WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 
 
@@ -22549,9 +22811,9 @@ def recycle_to_cap(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list
 
 
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
-    """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap.
+    """'' = free to start. Plan/monitor/maintenance/jeeves are never refused by the worker cap.
 
-    FR #3181 / FR #4307: IRC agent markers union live agent process roots.
+    FR #3181 / FR #4307 / FR #9640: IRC agent markers union live agent process roots.
     """
     if str(for_mode).lower() not in CAPPED_MODES:
         return ""
@@ -22569,7 +22831,11 @@ def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> 
 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")
-    p.add_argument("--mode", choices=("agent", "plan", "monitor", "maintenance"), default="agent")
+    p.add_argument(
+        "--mode",
+        choices=("agent", "plan", "monitor", "maintenance", "jeeves"),
+        default="agent",
+    )
     p.add_argument(
         "--agent",
         default="",

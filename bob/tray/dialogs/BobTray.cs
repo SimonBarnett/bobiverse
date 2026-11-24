@@ -113,7 +113,7 @@ namespace BobDialogs
         // FR #9097: Access Denied when the parent job forbids breakaway (compiled-menu path).
         const int ErrorAccessDenied = 5;
 
-        public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
+        public const int MaxWorkers = 2;   // t815u / FR #2667: hard Workers AGENT-seat cap (plan/maintenance/jeeves uncapped)
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
         public const string DefaultOpencodeFreeModel = "opencode/deepseek-v4.1-flash-free";
         public const string DefaultOpencodePaidModel = "opencode-go/deepseek-v4-pro";
@@ -121,7 +121,8 @@ namespace BobDialogs
         public const string DefaultPriorityMcpUrl = "https://mcp.ntsa.uk/mcp";
 
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
-        static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance)\b", RegexOptions.IgnoreCase);
+        // FR #9640: jeeves = Agents > Jeeves (agent-like IRC, outside Workers MaxWorkers=2).
+        static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance|jeeves)\b", RegexOptions.IgnoreCase);
 
         // FR #3180: LaunchCalls counts WorkerLauncher.Launch invocations (headless --watchdog-ticks harness).
         public static int LaunchCalls = 0;
@@ -324,6 +325,8 @@ namespace BobDialogs
 
         public static string CapRefusal(string mode = "agent")
         {
+            // FR #9640: Workers submenu only. Agents > Plan/Priority (vendored) and Agents > Jeeves
+            // (--mode jeeves) never hit this cap; Seats() counts agent roots only.
             if (!string.Equals(mode ?? "agent", "agent", StringComparison.OrdinalIgnoreCase))
                 return "";
             int n = Seats();
@@ -1029,6 +1032,7 @@ namespace BobDialogs
         bool engineFailureArmed;  // FR #7505: one open exception report per machine until recovery
         string lastEngineExitCode = "";
         DateTime lastDigestFetchFailReportUtc = DateTime.MinValue; // FR #7580: one CrashHook per failure window
+        DateTime lastRecycleForceReloadUtc = DateTime.MinValue; // FR #9618: pending recycleseat + stale engine
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm; WeightsForm weightsForm;
         public readonly List<string> MenuItems = new List<string>();
@@ -1102,21 +1106,27 @@ namespace BobDialogs
             };
             miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            // FR #9270 / BOB-TRAY-UI-09: bob.ntsa.uk cache under install assets; offline fallback jeeves/assets.
+            // FR #9270 / BOB-TRAY-UI-09 + FR #9587: bob.ntsa.uk cache / jeeves/assets / bob/tray/assets;
+            // always 16x16 + loud menu-icon MISSING (parity with Plan / Priority).
             string butler = ResolveJeevesButlerIcon(root);
-            if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
+            bool jeevesIconOk = false;
+            try
             {
-                try
+                if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
                 {
-                    using (Icon ico = new Icon(butler))
+                    using (Icon ico = new Icon(butler, 16, 16))
                         miJeeves.Image = ico.ToBitmap();
-                    TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico", "path", butler, "source", JeevesButlerUrl);
-                }
-                catch (Exception ex)
-                {
-                    TrayLifecycle.Write("jeeves", "icon", "failed", "error", ex.Message);
+                    jeevesIconOk = miJeeves.Image != null;
                 }
             }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("jeeves", "action", "menu-icon failed", "path", butler ?? "", "error", ex.Message, "ok", "0");
+            }
+            if (jeevesIconOk)
+                TrayLifecycle.Write("jeeves", "action", "menu-icon", "path", butler, "file", "jeeves-butler.ico", "source", JeevesButlerUrl, "ok", "1");
+            else
+                TrayLifecycle.Write("jeeves", "action", "menu-icon MISSING", "path", butler ?? "", "file", "jeeves-butler.ico", "ok", "0");
             miJeeves.Click += delegate {
                 // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
                 if (!JeevesJDrivePresent(@"J:\"))
@@ -1158,7 +1168,8 @@ namespace BobDialogs
                 System.Collections.Hashtable jeevesEnv = new System.Collections.Hashtable();
                 jeevesEnv[JeevesJMcp.EnvName] = JeevesJMcp.SkillsRoot;
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok", jeevesEnv, "", @"J:\");
+                // FR #9640: --mode jeeves is agent-like but outside Workers MaxWorkers=2 CapRefusal/Seats.
+                StartWorker("jeeves", "grok", jeevesEnv, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
@@ -1297,7 +1308,10 @@ namespace BobDialogs
             if (exiting) return;
             if (!noEngine)
             {
+                // FR #9618: ThreadPool path - UI poll may be hung while tray.alive still ticks.
+                try { ConsumeHostReloadTriggers(); } catch { }
                 try { HealEngine(); } catch { }
+                try { HealPendingRecycleSeatWhenEngineStale(); } catch { }
             }
             try { ObserveWorkerSeats(); } catch { }
             try { HealIrcBobIfIdle(); } catch { }
@@ -1459,6 +1473,54 @@ namespace BobDialogs
         string SafeEnginePid()
         {
             try { return engine != null ? engine.Id.ToString() : ""; } catch { return ""; }
+        }
+
+        // FR #5111 / FR #9522 / FR #9618: tray-cmd reload + engine.wake. Shared by UI poll and
+        // ThreadPool Watchdog so a hung WinForms pump still consumes operator/ear reload.
+        void ConsumeHostReloadTriggers()
+        {
+            if (exiting || noEngine) return;
+            bool needReload = TrayHostCmd.TakeReload(cmdFile);
+            if (TrayHostCmd.TakeWake(Path.Combine(aliveDir, "engine.wake"))) needReload = true;
+            if (needReload) ReloadEngine();
+        }
+
+        // FR #9618: recycleseat req-*.json is drained only by the PS engine tick. When the engine
+        // stamp is stale (or the process exited) and reqs are waiting, force ReloadEngine so the
+        // next tick can consume them. Cooldown = MaxAgeSeconds to avoid a kill loop.
+        bool PendingRecycleSeatReqs()
+        {
+            try
+            {
+                string dir = Path.Combine(runDir, "recycleseat");
+                if (!Directory.Exists(dir)) return false;
+                string[] files = Directory.GetFiles(dir, "req-*.json");
+                return files != null && files.Length > 0;
+            }
+            catch { return false; }
+        }
+
+        void HealPendingRecycleSeatWhenEngineStale()
+        {
+            if (exiting || noEngine) return;
+            if (!PendingRecycleSeatReqs()) return;
+            bool exited = true;
+            try { exited = engine == null || engine.HasExited; } catch { exited = true; }
+            double ageS = -1;
+            bool stale = false;
+            if (!exited)
+                stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
+            if (!exited && !stale) return;
+            if (lastRecycleForceReloadUtc != DateTime.MinValue
+                && (DateTime.UtcNow - lastRecycleForceReloadUtc).TotalSeconds < EngineAliveStamp.MaxAgeSeconds)
+                return;
+            lastRecycleForceReloadUtc = DateTime.UtcNow;
+            TrayLifecycle.Write(
+                "engine-reload",
+                "via", "fr9618-recycleseat-stale",
+                "age", ageS.ToString("0.0"),
+                "pid", SafeEnginePid());
+            ReloadEngine();
         }
 
         // FR #5111: operator/ear writes reload to tray-cmd.txt; host (elevated) recycles engine only.
@@ -1710,10 +1772,8 @@ namespace BobDialogs
         {
             try
             {
-                // FR #5111 tray-cmd reload; FR #9522 also consume engine.wake (ear nudge after engine_stale).
-                bool needReload = TrayHostCmd.TakeReload(cmdFile);
-                if (TrayHostCmd.TakeWake(Path.Combine(aliveDir, "engine.wake"))) needReload = true;
-                if (needReload) ReloadEngine();
+                // FR #5111 / #9522 / #9618: shared helper (also ThreadPool Watchdog).
+                ConsumeHostReloadTriggers();
             }
             catch { }
             try
@@ -1873,11 +1933,11 @@ namespace BobDialogs
         {
             parent.DropDownItems.Clear();
             // FR #6301: start entries carry no fuel/quota state text.
-            // FR #6429: OpenCode is a free/paid model submenu (replaces the FR #6301 flat OpenCode row).
-            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/Open Code only.
+            // FR #9588: OpenCode Free / OpenCode Paid are top-level Workers siblings (was FR #9263 submenu).
+            // FR #9262 / BOB-TRAY-UI-02: Workers has no Automatic/auto row; starts are Grok/Cursor/OpenCode Free|Paid.
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
-            AddOpencodeModelSubmenu(parent, true, record);
+            AddOpencodeTopLevelChoices(parent, true, record);
         }
 
         // FR #9270 / BOB-TRAY-UI-09: Jeeves butler from bob.ntsa.uk (cache) or jeeves/assets fallback.
@@ -1890,18 +1950,27 @@ namespace BobDialogs
 
         internal static string JeevesButlerFallbackPath(string installRoot)
         {
-            string fallback = Path.Combine(installRoot ?? "", "jeeves", "assets", "jeeves-butler.ico");
+            string rootPath = installRoot ?? "";
+            // FR #9587: prefer vendored tray asset beside Plan GANTT, then jeeves/assets.
+            string trayAsset = Path.Combine(rootPath, "bob", "tray", "assets", "jeeves-butler.ico");
+            if (File.Exists(trayAsset)) return trayAsset;
+            string trayFlat = Path.Combine(rootPath, "assets", "jeeves-butler.ico");
+            // cache path is the same flat assets file; fallback still lists it for callers.
+            string fallback = Path.Combine(rootPath, "jeeves", "assets", "jeeves-butler.ico");
             if (File.Exists(fallback)) return fallback;
             try
             {
-                DirectoryInfo parent = Directory.GetParent(installRoot ?? "");
+                DirectoryInfo parent = Directory.GetParent(rootPath);
                 if (parent != null)
                 {
+                    string altTray = Path.Combine(parent.FullName, "bob", "tray", "assets", "jeeves-butler.ico");
+                    if (File.Exists(altTray)) return altTray;
                     string alt = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
                     if (File.Exists(alt)) return alt;
                 }
             }
             catch { }
+            if (File.Exists(trayFlat)) return trayFlat;
             return fallback;
         }
 
@@ -2051,48 +2120,53 @@ namespace BobDialogs
             if (record) MenuItems.Add(text);
         }
 
-        void AddOpencodeModelSubmenu(ToolStripMenuItem parent, bool enabled, bool record)
+        void AddOpencodeTopLevelChoices(ToolStripMenuItem parent, bool enabled, bool record)
         {
-            // FR #6429 / FR #9263: Workers > Open Code > Free|Paid only (child-only BOB_OPENCODE_MODEL).
-            // FR #8713 / BOB-06: Workers > Open Code (mock label; was OpenCode).
-            ToolStripMenuItem oc = new ToolStripMenuItem("Open Code");
-            oc.Enabled = enabled;
-            // FR #8728 / BOB-31 + FR #9267: opencode.ai favicon from install assets\.
-            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "source", "https://opencode.ai/favicon-v3.ico");
-            TryApplyTrayMenuIcon(oc, root, "opencode-favicon.ico", "workers-opencode");
-            // FR #9263 / BOB-TRAY-UI-03: submenu is Free and Paid only (no model picker).
-            // Model id comes from Weights/models webhook at click (OpencodeWebhookModel); tip label stays Free|Paid.
+            // FR #9588: Workers siblings OpenCode Free / OpenCode Paid (not nested under Open Code).
+            // Tags stay opencode|free / opencode|paid; Weights model at click (FR #8732); child-only BOB_OPENCODE_MODEL (FR #6429).
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
-            string catalog = ModelsCatalogPath();
-            string whFree = OpencodeWebhookModel(catalog, "Opencode-Free");
-            string whPaid = OpencodeWebhookModel(catalog, "Opencode");
+            // FR #9586: tip labels prefer live GET /bob/v1/models (catalog file is fallback only).
+            string whFree = WeightsLaunchField("Opencode-Free", "model");
+            string whPaid = WeightsLaunchField("Opencode", "model");
             if (whFree.Length > 0) freeModel = whFree;
             if (whPaid.Length > 0) paidModel = whPaid;
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
             string paidRun; bool paidAlive = WorkerLauncher.OpencodeSlotRunning("paid", out paidRun);
-            string freeText = "Free";
+            string freeText = "OpenCode Free";
             if (freeAlive) freeText += " [running]";
-            string paidText = "Paid";
+            string paidText = "OpenCode Paid";
             if (paidAlive) paidText += " [running]";
-            AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
-            AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
+            AddAgentChoice(parent, "opencode|free", freeText, enabled, record);
+            AddAgentChoice(parent, "opencode|paid", paidText, enabled, record);
+            // FR #8728 / BOB-31 + FR #9267: opencode.ai favicon on both top-level rows.
+            TrayLifecycle.Write("workers-opencode", "action", "opencode favicon", "source", "https://opencode.ai/favicon-v3.ico");
             try
             {
-                if (oc.DropDownItems.Count >= 2)
+                int n = parent.DropDownItems.Count;
+                if (n >= 2)
                 {
-                    oc.DropDownItems[0].ToolTipText = freeModel;
-                    oc.DropDownItems[1].ToolTipText = paidModel;
+                    ToolStripMenuItem freeMi = parent.DropDownItems[n - 2] as ToolStripMenuItem;
+                    ToolStripMenuItem paidMi = parent.DropDownItems[n - 1] as ToolStripMenuItem;
+                    if (freeMi != null)
+                    {
+                        freeMi.ToolTipText = freeModel;
+                        TryApplyTrayMenuIcon(freeMi, root, "opencode-favicon.ico", "workers-opencode");
+                    }
+                    if (paidMi != null)
+                    {
+                        paidMi.ToolTipText = paidModel;
+                        TryApplyTrayMenuIcon(paidMi, root, "opencode-favicon.ico", "workers-opencode");
+                    }
                 }
             }
             catch { }
-            TrayLifecycle.Write("workers-opencode", "action", "submenu Free|Paid", "free", freeModel, "paid", paidModel);
-            parent.DropDownItems.Add(oc);
-            if (record) MenuItems.Add("Open Code");
+            TrayLifecycle.Write("workers-opencode", "action", "top-level Free|Paid", "free", freeModel, "paid", paidModel);
         }
 
 
-        // FR #8725 / BOB-17 + FR #8732 / BOB-30: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+        // FR #8725 / BOB-17 + FR #8732 / BOB-30 + FR #9586: Weights SoT is live GET /bob/v1/models.
+        // BOB_MODELS_CATALOG remains a fixture/offline fallback inside BobModelsClient.ResolveAgentLaunchRow.
         string ModelsCatalogPath()
         {
             string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
@@ -2100,46 +2174,60 @@ namespace BobDialogs
             return Path.Combine(root, "home", "models-catalog.json");
         }
 
-        string GrokWebhookModel(string path)
+        Dictionary<string, string> WeightsLaunchRow(string agentName)
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
             try
             {
-                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
-                if (doc == null || !doc.ContainsKey("agents")) return "";
-                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
-                if (agents == null || doc["agents"] is string) return "";
-                foreach (object item in agents)
+                // Prefer catalog path as fixture when tests set BOB_MODELS_CATALOG before GET.
+                string catalog = ModelsCatalogPath();
+                if (!string.IsNullOrWhiteSpace(catalog) && File.Exists(catalog)
+                    && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG")))
                 {
-                    Dictionary<string, object> row = Common.Dict(item);
-                    if (row == null) continue;
-                    if (!string.Equals(Common.Str(row, "agent"), "Grok", StringComparison.OrdinalIgnoreCase)) continue;
-                    return Common.Str(row, "model");
+                    Environment.SetEnvironmentVariable("BOB_MODELS_CATALOG", catalog);
                 }
+                return BobModelsClient.ResolveAgentLaunchRow(root, agentName);
             }
-            catch { }
-            return "";
+            catch
+            {
+                return null;
+            }
         }
 
-        string OpencodeWebhookModel(string path, string agentName)
+        string WeightsLaunchField(string agentName, string field)
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
-            try
+            Dictionary<string, string> row = WeightsLaunchRow(agentName);
+            if (row == null) return "";
+            string v;
+            if (!row.TryGetValue(field, out v) || v == null) return "";
+            return v.Trim();
+        }
+
+        void ApplyWeightsLaunchEnv(Hashtable env, string agentName, string modelKey)
+        {
+            if (env == null) return;
+            Dictionary<string, string> row = WeightsLaunchRow(agentName);
+            if (row == null) return;
+            string model = "";
+            string context = "";
+            string effort = "";
+            row.TryGetValue("model", out model);
+            row.TryGetValue("context", out context);
+            row.TryGetValue("effort", out effort);
+            model = (model ?? "").Trim();
+            context = (context ?? "").Trim();
+            effort = (effort ?? "").Trim();
+            if (model.Length > 0 && !string.IsNullOrWhiteSpace(modelKey))
+                env[modelKey] = model;
+            if (effort.Length > 0)
             {
-                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
-                if (doc == null || !doc.ContainsKey("agents")) return "";
-                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
-                if (agents == null || doc["agents"] is string) return "";
-                foreach (object item in agents)
-                {
-                    Dictionary<string, object> row = Common.Dict(item);
-                    if (row == null) continue;
-                    if (!string.Equals(Common.Str(row, "agent"), agentName, StringComparison.OrdinalIgnoreCase)) continue;
-                    return Common.Str(row, "model");
-                }
+                env["BOB_WORKER_START_EFFORT"] = effort;
+                env["BOB_GROK_EFFORT"] = effort;
             }
-            catch { }
-            return "";
+            if (context.Length > 0)
+            {
+                env["BOB_WORKER_START_CONTEXT"] = context;
+                env["BOB_GROK_CONTEXT"] = context;
+            }
         }
 
         void OnAgentChoiceClick(object sender, EventArgs e)
@@ -2172,16 +2260,40 @@ namespace BobDialogs
                 }
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
-                // FR #8725 / BOB-17: launch uses the Grok row from the models webhook catalog.
-                string catalog = ModelsCatalogPath();
-                string model = GrokWebhookModel(catalog);
-                TrayLifecycle.Write("workers-grok", "action", "webhook model", "model", model, "path", catalog, "agent", "Grok");
-                Hashtable grokEnv = null;
-                if (model.Length > 0)
+                // FR #8725 / BOB-17 + FR #9586: live GET /bob/v1/models Weights row (model/context/effort).
+                string model = WeightsLaunchField("Grok", "model");
+                string context = WeightsLaunchField("Grok", "context");
+                string effort = WeightsLaunchField("Grok", "effort");
+                TrayLifecycle.Write(
+                    "workers-grok",
+                    "action",
+                    "webhook model",
+                    "model",
+                    model,
+                    "context",
+                    context,
+                    "effort",
+                    effort,
+                    "source",
+                    "models-webhook",
+                    "agent",
+                    "Grok");
+                if (model.Length == 0)
                 {
-                    grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
-                    grokEnv["BOB_GROK_MODEL"] = model;
+                    try
+                    {
+                        MessageBox.Show(
+                            "Weights has no Grok model (GET /bob/v1/models). Save Weights, then try again.",
+                            "Bobiverse",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("workers-grok", "action", "refuse", "reason", "weights-model-missing");
+                    return;
                 }
+                Hashtable grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                ApplyWeightsLaunchEnv(grokEnv, "Grok", "BOB_GROK_MODEL");
                 StartWorker("agent", "grok", grokEnv, "");
             }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot.Length == 0 || slot == "free" || slot == "paid"))
@@ -2201,19 +2313,54 @@ namespace BobDialogs
                         TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
                     }
                 }
-                // FR #8732 / BOB-30: free uses the Opencode-Free row; paid uses the Opencode row.
-                string catalog = ModelsCatalogPath();
+                // FR #8732 / BOB-30 + FR #9586: free uses Opencode-Free; paid uses Opencode — live GET.
                 string rowAgent = slot == "free" ? "Opencode-Free" : "Opencode";
-                string webhook = OpencodeWebhookModel(catalog, rowAgent);
-                TrayLifecycle.Write("workers-opencode", "action", "webhook model", "model", webhook, "path", catalog, "agent", rowAgent, "slot", slot);
+                string webhook = WeightsLaunchField(rowAgent, "model");
+                string context = WeightsLaunchField(rowAgent, "context");
+                string effort = WeightsLaunchField(rowAgent, "effort");
+                TrayLifecycle.Write(
+                    "workers-opencode",
+                    "action",
+                    "webhook model",
+                    "model",
+                    webhook,
+                    "context",
+                    context,
+                    "effort",
+                    effort,
+                    "source",
+                    "models-webhook",
+                    "agent",
+                    rowAgent,
+                    "slot",
+                    slot);
                 string model = webhook.Length > 0 ? webhook : WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
-                env["BOB_OPENCODE_MODEL"] = model;
+                ApplyWeightsLaunchEnv(env, rowAgent, "BOB_OPENCODE_MODEL");
+                if (model.Length > 0) env["BOB_OPENCODE_MODEL"] = model;
                 // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
                 // FR #8734 / BOB-29: the tray log names the model this click starts.
-                TrayLifecycle.Write("workers-opencode", "action", "model", "model", model, "slot", slot);
+                TrayLifecycle.Write("workers-opencode", "action", "model", "model", model, "slot", slot, "source", "models-webhook");
                 TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
+            }
+            else if (string.Equals(id, "cursor", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #9586: Cursor Weights row from live GET.
+                string model = WeightsLaunchField("Cursor", "model");
+                TrayLifecycle.Write(
+                    "workers-cursor",
+                    "action",
+                    "webhook model",
+                    "model",
+                    model,
+                    "source",
+                    "models-webhook",
+                    "agent",
+                    "Cursor");
+                Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                ApplyWeightsLaunchEnv(env, "Cursor", "BOB_CURSOR_MODEL");
+                StartWorker("agent", "cursor", env.Count > 0 ? env : null, "");
             }
             else StartWorker("agent", id, null, "");
         }
@@ -2282,7 +2429,7 @@ namespace BobDialogs
                 string reason = grey ? ((err ?? "").Length > 0 ? err : WorkerLauncher.RebuildListReason) : "";
                 AddAgentChoice(parent, "grok", grey ? "Grok - " + reason : "Grok", !grey, false);
                 AddAgentChoice(parent, "cursor", grey ? "Cursor - " + reason : "Cursor", !grey, false);
-                AddOpencodeModelSubmenu(parent, !grey, false);
+                AddOpencodeTopLevelChoices(parent, !grey, false);
                 return;
             }
             parent.DropDownItems.Clear();
@@ -2299,7 +2446,7 @@ namespace BobDialogs
                 if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
                 {
-                    AddOpencodeModelSubmenu(parent, available, false);
+                    AddOpencodeTopLevelChoices(parent, available, false);
                     continue;
                 }
                 AddAgentChoice(parent, id, label, available, false);
@@ -2429,10 +2576,11 @@ namespace BobDialogs
             return false;
         }
 
-        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10: Agents > Plan starts plan\PlanAgent.exe (MSI / BOB-49), not bob-worker --mode plan / bob-plan.exe.
+        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605 / #9641: Agents > Plan starts
+        // vendor\plan\PlanAgent.exe (Pack/Sync mirror). Not bob-worker --mode plan / bob-plan.exe.
         void StartPlanExe()
         {
-            string exe = Path.Combine(root, "plan", "PlanAgent.exe");
+            string exe = Path.Combine(root, "vendor", "plan", "PlanAgent.exe");
             string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
             if (string.IsNullOrEmpty(hook))
                 hook = Path.Combine(root, "run", "models-webhook.json");
@@ -3165,6 +3313,21 @@ namespace BobDialogs
             {
                 File.WriteAllText(dumpWeightsRefresh, WeightsForm.DumpRefreshButton(), new UTF8Encoding(false));
                 return 0;
+            }
+            // FR #9589: headless local CLI discover (fake BOB_*_EXE for tests).
+            string dumpWeightsDiscover = Common.Arg(args, "--dump-weights-discover");
+            if (dumpWeightsDiscover.Length > 0)
+            {
+                BobModelsDiscoverResult disc = BobModelsClient.DiscoverLocalModels();
+                File.WriteAllText(dumpWeightsDiscover, WeightsForm.DumpDiscoverSummary(disc), new UTF8Encoding(false));
+                int total = disc != null ? disc.TotalCount : 0;
+                TrayLifecycle.Write(
+                    "weights_refresh_discover",
+                    "total", total.ToString(),
+                    "grok", disc != null && disc.Reasons.ContainsKey("grok") ? disc.Reasons["grok"] : "",
+                    "cursor", disc != null && disc.Reasons.ContainsKey("cursor") ? disc.Reasons["cursor"] : "",
+                    "opencode", disc != null && disc.Reasons.ContainsKey("opencode") ? disc.Reasons["opencode"] : "");
+                return total > 0 ? 0 : 2;
             }
             // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
             string dumpWeightsValid = Common.Arg(args, "--dump-weights-valid");

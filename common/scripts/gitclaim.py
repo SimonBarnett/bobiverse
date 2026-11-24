@@ -2960,7 +2960,9 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "walrus"),
     (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "walrus"),
 )
-# FR #1824 / #4512: dedicated pin lines (MULTILINE). Intentional pins, not evidence prose.
+# FR #1824 / #4512: dedicated pin lines (MULTILINE). Kept for _body_for_queue preserve
+# and non-bobiverse helpers. FR #9637: bobiverse infer_require_machine ignores these
+# (labels / hard pins / !pin only) so monitor body paste cannot starve idle seats.
 _REQUIRE_MACHINE_DEDICATED_PIN_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*(?:ionos|walrus)\b"), "walrus"),
     # FR #6407: dedicated ce-priority-dev1 / ce-priority-dev pin lines retired.
@@ -3264,8 +3266,11 @@ def infer_require_machine(
     FR #6229 hard-pin bobiverse#6144 -> marchhare (live MarchHare E2E);
     FR #587 / #852 / #2451 / #3129 / #4427 / #5030 / #6229).
 
-    FR #4512: for ``SimonBarnett/bobiverse``, title/body soft text cues never pin.
-    Only labels, hard issue pins/unpins, and dedicated ``require_machine:`` body lines.
+    FR #4512 / #9637: for ``SimonBarnett/bobiverse``, title/body text cues never pin
+    (including dedicated ``require_machine:`` body lines). Only ``needs-<machine>`` /
+    ``require_machine:<machine>`` labels, hard issue pins/unpins, and operator ``!pin``
+    stamps. Monitor filings that paste ``require_machine: walrus`` into implement-anywhere
+    chair FRs starved the idle fleet until ``!unpin`` (FR #9637).
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -3292,13 +3297,8 @@ def infer_require_machine(
                 return fold_chair_host(mid)
         # bare needs-ionos style already covered by cue regex below via label join
     body_blob = str(body or "")
-    # FR #4512: bobiverse — skip title/soft cues; honor dedicated pin lines only.
+    # FR #4512 / #9637: bobiverse — labels + hard pins only (no body require_machine:).
     if repo_l == _BOBIVERSE_REPO_L:
-        for rx, mid in _REQUIRE_MACHINE_DEDICATED_PIN_CUES:
-            if rx.search(body_blob):
-                if _is_retired_require_machine(mid):
-                    return ""
-                return mid
         return ""
     # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
     title_blob = "\n".join(
@@ -3338,28 +3338,32 @@ def row_require_machine(row: dict) -> str:
     # FR #4422 hard unpin before hard pins / stamped machine.
     if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
         return ""
-    # Hard issue pins win over unpin tokens (any/none) — FR #1093 WP0 must not leak
-    # back to win-mpre after a monitor ``require_machine=any`` clear.
-    hard = infer_require_machine(
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    label_tuple = tuple(str(x) for x in labels)
+    # Hard issue pins + needs-<machine> labels win over unpin tokens (any/none).
+    # FR #1093: hard pin must not leak after monitor any-clear.
+    # FR #9664: label needs-walrus must still gate offer when !unpin left rm=any
+    # (else non-walrus seats ACK then GIVEUP require_machine=walrus in a loop).
+    hard_or_label = infer_require_machine(
         title="",
         body="",
-        labels=(),
+        labels=label_tuple,
         line="",
         repo=str(row.get("repo") or ""),
         ident=str(row.get("id") or ""),
     )
-    if hard:
-        return hard
+    if hard_or_label:
+        return hard_or_label
     stamped = str(row.get("require_machine") or "").strip().lower()
     # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
     # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
+    # Labels already applied above (FR #9664).
     if stamped in {"*", "any", "none", "-"}:
         return ""
     if stamped and _is_retired_require_machine(stamped):
         return ""
-    labels = row.get("labels") or ()
-    if isinstance(labels, str):
-        labels = [labels]
     # FR #4512: bobiverse never trusts a persisted text-cue stamp — re-infer
     # (labels / dedicated pin / hard pin only). Stale ionos stamps clear.
     # FR #4745: harvest-lesson rows re-infer too (sticky Day Works DEV1 must not stick).
@@ -3376,7 +3380,7 @@ def row_require_machine(row: dict) -> str:
         return infer_require_machine(
             title=title_s,
             body=str(row.get("body") or ""),
-            labels=tuple(str(x) for x in labels),
+            labels=label_tuple,
             line=str(row.get("line") or ""),
             repo=str(row.get("repo") or ""),
             ident=str(row.get("id") or ""),
@@ -3389,7 +3393,7 @@ def row_require_machine(row: dict) -> str:
     return infer_require_machine(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
-        labels=tuple(str(x) for x in labels),
+        labels=label_tuple,
         line=str(row.get("line") or ""),
         repo=str(row.get("repo") or ""),
         ident=str(row.get("id") or ""),
@@ -5067,6 +5071,8 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     Operator unpin (``any`` / ``none`` / ``*`` / ``-``) must survive title/body cues that
     merely *mention* ``require_machine=ce-priority-dev1`` as evidence (e.g. #1116) —
     otherwise monitor clears are wiped on the next offer/resync stamp.
+    FR #9664: ``needs-<machine>`` labels still overwrite operator/monitor ``any``
+    (label is the GitHub pin; bare any must not re-open wrong shops).
     """
     title = str((claim.title if claim else "") or row.get("title") or "")
     body = str((claim.body if claim else "") or row.get("body") or "")
@@ -5094,6 +5100,13 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     if stamped in {"*", "any", "none", "-"}:
         if hard and not _is_retired_require_machine(hard):
             row["require_machine"] = hard
+            return
+        # FR #9664: labels win over any (do not re-infer soft title/body cues).
+        label_pin = infer_require_machine(
+            title="", body="", labels=labels, line="", repo=repo, ident=ident
+        )
+        if label_pin and not _is_retired_require_machine(label_pin):
+            row["require_machine"] = label_pin
         return
     req = infer_require_machine(
         title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
@@ -5105,12 +5118,22 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
     # FR #4745: harvest-lesson rows clear sticky DEV1 (or other) stamps the same way.
     # FR #6592: operator !pin/!unpin stamps survive; do not wipe them to any.
+    # FR #9664: needs-* labels still overwrite operator any (handled above).
     if req and _is_retired_require_machine(req):
         req = ""
     if repo_l == _BOBIVERSE_REPO_L or harvest_lesson:
         if _is_operator_require_machine(row):
             if hard and not _is_retired_require_machine(hard):
                 row["require_machine"] = hard
+                return
+            # Label pin may still win when stamp drifted back to any mid-path.
+            cur = fold_chair_host(str(row.get("require_machine") or "").strip().lower())
+            if cur in {"*", "any", "none", "-", ""}:
+                label_pin = infer_require_machine(
+                    title="", body="", labels=labels, line="", repo=repo, ident=ident
+                )
+                if label_pin and not _is_retired_require_machine(label_pin):
+                    row["require_machine"] = label_pin
             return
         if req:
             row["require_machine"] = req
@@ -10958,11 +10981,11 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
 
 
 def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None, *, free: set[str] | None = None) -> bool:
-    """Alias for `review_blocked_for_author` (MRB soft machine-id; UAT sibling rules).
+    """Alias for `review_blocked_for_author` (MRB exact-seat; UAT sibling rules).
 
-    FR #2604 / #4606 / #9401 / #9478: MRB blocks exact author/FIX nick and
-    same-machine siblings when another machine has a free/idle seat. UAT still
-    uses sibling / recycle rules (FR #1407 / #4336).
+    FR #2604 / #4606 / #9574: MRB blocks exact author/FIX nick only. Cross-PID
+    same-machine shop seats may review. UAT still uses sibling / recycle rules
+    (FR #1407 / #4336).
     """
     return review_blocked_for_author(row, nick, live, ledger=ledger, free=free)
 
@@ -10975,22 +10998,16 @@ def review_blocked_for_author(
     *,
     free: set[str] | None = None,
 ) -> bool:
-    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604 / #9401 / #9478).
+    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604 / #4606 / #9574).
 
     Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat).
 
-    For **MRB** (FR #9401 / #9478): also blocks a sibling on the same *machine id*
-    while another machine has a *viable free/idle* seat. Busy-only other-machine
-    seats no longer strand author-machine idle reviewers (class of flamingo
-    starve with redqueen busy + marchhare empty). Exact nick alone was not
-    enough for multi-machine fleets (flamingo-4120 / flamingo-14096). Sole-machine
-    fleets still allow same-machine siblings (FR #2604 / #4606 / #5900). MRB never
-    inherits a dead author nick via ``nick_inherits_dead_seat`` (FR #4606).
-
-    **FR #9480:** when ``row_author_seats`` span **two or more** distinct machine
-    ids (e.g. implementer on redqueen + FIX on flamingo), machine-id sibling
-    block is skipped for that row (exact-seat only) so the chair does not stamp
-    ``no_eligible_reviewer`` forever.
+    For **MRB** (FR #2604 / #4606 / #9574): **exact-seat only**. Cross-PID
+    siblings on the same machine (e.g. flamingo-17160 vs author flamingo-17068)
+    are allowed even when another machine has free seats. Soft machine-id
+    sibling block (FR #9401 / #9478 / #9480) false-refused ``!assign`` / offer
+    on same-machine shop seats. MRB never inherits a dead author nick via
+    ``nick_inherits_dead_seat`` (FR #4606).
 
     For **UAT**: also blocks a sibling on the same machine while another machine
     has a *viable free* live seat (FR #1407 / #2487), and a recycled sole
@@ -11001,10 +11018,9 @@ def review_blocked_for_author(
     FR-implementer blocked (``_ledger_blocks``). Giveup / fellow-implementer seats
     must not strand siblings of the stamped author after self-UAT GIVEUP loops.
 
-    FR #2487 / #9478: when ``free`` is provided, MRB and UAT sibling viability
-    require the other-machine seat to be idle/free right now (in ``free``). When
-    ``free`` is None, all ``live`` seats are treated as free (unit-test / legacy
-    default — busy other-machine still blocks).
+    FR #2487: when ``free`` is provided, UAT sibling viability requires the
+    other-machine seat to be idle/free right now (in ``free``). When ``free`` is
+    None, all ``live`` seats are treated as free (unit-test / legacy default).
     """
     task = _canon_task(row)
     if task not in ("MRB", "UAT"):
@@ -11023,19 +11039,6 @@ def review_blocked_for_author(
         for x in free_set
         if str(x or "").strip()
     }
-    # FR #9480: when author seats already span 2+ machines, machine-id sibling
-    # block would strand every seat on those machines (no_eligible forever).
-    # Fall back to exact-seat only for that row; sole-machine authorship keeps
-    # soft free-other-machine (FR #9478 / #9401).
-    author_mids_all: set[str] = set()
-    for a in authors:
-        ap = bobreport.parse_seat_nick(a)
-        if ap:
-            amid = bobreport.fold_machine_id(ap[0])
-            if amid:
-                author_mids_all.add(amid)
-    mrb_exact_seat_only = task == "MRB" and len(author_mids_all) >= 2
-
     def _seat_gave_up_uat(n_c: str) -> bool:
         if row_gave_up_by(row, n_c, live=live):
             return True
@@ -11043,30 +11046,6 @@ def review_blocked_for_author(
             other_why = _ledger_blocks(ledger, row, n_c)
             if other_why and "gave up" in other_why:
                 return True
-        return False
-
-    def _other_machine_free(author_mid: str) -> bool:
-        """True when a free/idle seat exists on a different machine than author_mid.
-
-        FR #2339 / #9401 / #9478: seats pinned out of this row (require_machine)
-        are not viable other-machine evidence — they must not strand
-        author-machine siblings on a machine-pinned MRB. Busy-only other-machine
-        seats are not viable (FR #9478 soft #9401).
-        """
-        if not author_mid:
-            return False
-        for n in live:
-            n_c = (canonical_worker_nick(n) or n or "").strip()
-            if not n_c:
-                continue
-            p = bobreport.parse_seat_nick(n_c)
-            if not p or bobreport.fold_machine_id(p[0]) == author_mid:
-                continue
-            if row_blocked_for_machine(row, n_c):
-                continue
-            if n_c.lower() not in free_l:
-                continue
-            return True
         return False
 
     for author in authors:
@@ -11081,18 +11060,11 @@ def review_blocked_for_author(
         author_mid = (
             bobreport.fold_machine_id(author_p[0]) if author_p else ""
         )
-        # FR #2604 / #4606 / #9401 / #9478 / #9480: MRB skips dead-seat inherit;
-        # machine-id blocks same-machine siblings when another machine has a
-        # free seat (unless authors already span 2+ machines — exact-seat only).
-        # Sole-box fleets still allow siblings. Giveup inheritance stays in
-        # nick_in_giveup_seats; FIX seats use exact nick stamp (FR #4604).
-        # FR #9480: multi-machine author_seats → exact-seat only (skip sibling).
+        # FR #9574 / #2604 / #4606: MRB is exact-seat only (no machine-id sibling
+        # block). Cross-PID shop seats on the author machine may review. Giveup
+        # inheritance stays in nick_in_giveup_seats; FIX seats use exact nick
+        # stamp (FR #4604). Dead-seat inherit stays UAT-only.
         if task == "MRB":
-            if mrb_exact_seat_only:
-                continue
-            if author_mid and me_mid and author_mid == me_mid:
-                if _other_machine_free(author_mid):
-                    return True
             continue
         # UAT (FR #4336): recycled sole successor inherits dead author exclusion.
         if nick_inherits_dead_seat(me, author, live):
@@ -13261,10 +13233,10 @@ def purge_stale_offered_pins(
                 else:
                     with contextlib.suppress(Exception):
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
-                # FR #9403: drop seat-holds with the pin (parity with offer_focus_top).
-                # FR #4089 / MRB #9561: seat_open_job passes clear_aged_live_holds=False
-                # so aged-live holds remain until the offer loop observes timeout.
-                # Dead pins always clear holds.
+                # FR #9403 / #9565 / #9614: drop seat-holds with the pin (parity with
+                # offer_focus_top). Dead pins always clear holds. seat_open_job passes
+                # clear_aged_live_holds=True so aged-but-live holds do not leave idle
+                # seats busy after offer-timeout:idle-no-ack.
                 if clear_aged_live_holds or dead_pin:
                     with contextlib.suppress(Exception):
                         _clear_job_seat_holds_unlocked(
@@ -13313,9 +13285,10 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return ""
-            # FR #9402: drop aged/dead pins before the any-age busy check so
-            # !assign matches offer_focus_top timeout behaviour. Aged live seats
-            # keep seat-holds (FR #4089) until the offer loop observes timeout.
+            # FR #9402 / #9403 / #9565 / #9614: drop aged/dead pins AND their
+            # seat-holds before the any-age busy check so !assign matches
+            # offer_focus_top timeout behaviour. clear_aged_live_holds must be
+            # True here — False left idle seats reporting held FR after purge.
             before_n = len(doc.get("unaccepted") or [])
             before_offers = [
                 str(r.get("offered_to") or "")
@@ -13327,7 +13300,7 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 now=now_f,
                 live=live,
                 locked_doc=doc,
-                clear_aged_live_holds=False,
+                clear_aged_live_holds=True,
             )
             # FR #9558: drop offer holds left when ACC/offered_to moved to another nick.
             with contextlib.suppress(Exception):

@@ -15,6 +15,10 @@ description: >
 > 4. Monitoring observes and reports; may run Jeeves commands **to keep the queue moving** (FR #8827); never touch Ergo, never merge/UAT/VERSION.
 > 5. Prefer deterministic fixes. When tested, FR them into the Jeeves token-less service so what we learn becomes
 >    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
+> 6. **CAST IRON — interventions → ircJeeves FR (#9627).** Any keep-queue-moving / heal action owes a product FR the
+>    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
+> 7. **CAST IRON — idle + open work is FAIL (#9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` chair-heals
+>    (`push_idle` / `offer_to_idle`); not report-only. Same-turn bridge still owes #9627.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
@@ -35,7 +39,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Check | Script / name | Why |
 |---|---|---|
 | Health | `health` | ircJeeves / chair home / webhook surface |
-| Idle seats | `idle_seats` | seats idle while unaccepted work exists (**report only** - keep seats busy; no `clear_seat_doing`) |
+| Idle seats | `idle_seats` | seats idle while ungated work exists — EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
@@ -58,6 +62,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Walrus install gate | `walrus_jeeves_install_ready` | FR #9376 Depends-on / Plan-agent gate issues CLOSED before DryRun / `-SiYes` WinRM hotpatch (`Install-JeevesWalrusWinRm.ps1`). Fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE`. Does not open WinRM. |
 | Redqueen bob-tray install | `redqueen_bob_tray_install_ready` | FR #9419 live `bob-tray.exe` vs green `build-bob-tray.yml` / fixture drift before DryRun / `-Install` local hotpatch (`Install-BobTrayRedqueen.ps1`). Fixture `BOB_TRAY_REDQUEEN_INSTALL_FIXTURE`. Does not mutate the tray. |
 | MRB same-machine starve | `mrb_same_machine_starve` | FR #9478 idle same-machine siblings blocked from offerable MRBs with no free cross-machine reviewer (hard #9401 / free= omit). Prefer cross-machine `!assign`; tip soft free-other-machine; install waits on #9475/#9476. |
+| Models PUT forward | `models_put_forward` | FR #9585 Weights Save: public `PUT /bob/v1/models` must reach bobcallback (not IIS HTML 404). Remediation: re-run `Install-BobWebhooks.ps1` on walrus so `BobModelsWebhook` uses `^(GET\|HEAD\|POST\|PUT)$` (FR #9273). Fixture `JEEVES_MODELS_PUT_FORWARD_FIXTURE`. |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
@@ -68,13 +73,20 @@ After the script checks, if BOB-D / BOB-G product is on tip, open and follow `.g
 Title: short delay symptom. Body: what / where / evidence (script JSON / exit) / fix. De-dup first. Never print secrets.
 
 
-## Non-chair hosts (FR #8579)
+## Non-chair hosts (FR #8579 / #8866 / #9557)
 
 Monitor may run on a worker box (e.g. redqueen) that has no local `~/.jeeves/queue.json`
 and no ircJeeves/BobCallback services. Those local probes **soft-pass** when live
 `GET https://bob.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
-`non_chair_overlay` in the JSON. Prefer the ionos chair host for local service truth.
+`non_chair_overlay` in the JSON. Prefer the walrus chair host for local service truth.
 Start-JeevesMonitor warns when the local queue file is absent; it does not refuse.
+
+**FR #9557:** an empty or stale local ops home (present `queue.json` with zero rows,
+or digest that misses live ACC/doing seats) must prefer the live report for
+`idle_seats` seat paint, or soft-skip EXIT 0 with `skipped=stale_local_home` when
+the report is unusable — never EXIT 1 false starve from Admin `~/.jeeves`. Optional
+env `JEEVES_MONITOR_DIGEST_HOME` (UNC/shared chair digest) overrides seat-local
+`BOB_DIGEST_HOME` for token-free checks.
 
 ## Do not
 

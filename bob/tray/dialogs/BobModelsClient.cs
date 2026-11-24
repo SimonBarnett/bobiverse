@@ -54,7 +54,8 @@ namespace BobDialogs
         public const int GetTimeoutMs = 15000;
         public const int PutTimeoutMs = 30000;
         public const int RefreshTimeoutMs = 60000;
-        public const int DiscoverTimeoutMs = 20000;
+        // FR #9589: 45s default (cold CLI + network); override with BOB_MODELS_DISCOVER_TIMEOUT_MS.
+        public const int DiscoverTimeoutMs = 45000;
         static readonly string[] RefreshClis = new string[] { "grok", "cursor", "opencode" };
         static readonly Regex AnsiRe = new Regex(@"\x1b\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
         static readonly Regex HeaderRe = new Regex(
@@ -264,12 +265,13 @@ namespace BobDialogs
                 return new List<string>();
             }
             string stdout;
+            string stderr;
             int exitCode;
-            if (!RunListing(exe, arg, out stdout, out exitCode, out reason))
+            if (!RunListing(exe, arg, out stdout, out stderr, out exitCode, out reason))
                 return new List<string>();
             if (exitCode != 0)
             {
-                reason = "exit_nonzero";
+                reason = ClassifyListingFailure(stderr, "exit_nonzero");
                 return new List<string>();
             }
             List<string> ids = cli == "opencode"
@@ -284,12 +286,46 @@ namespace BobDialogs
             return ids;
         }
 
+        /// <summary>FR #9589: map stderr to a short per-CLI reason for the Weights status line.</summary>
+        public static string ClassifyListingFailure(string stderr, string fallback)
+        {
+            string s = (stderr ?? "").ToLowerInvariant();
+            if (s.IndexOf("authentication required", StringComparison.Ordinal) >= 0
+                || s.IndexOf("not logged in", StringComparison.Ordinal) >= 0
+                || s.IndexOf("auth required", StringComparison.Ordinal) >= 0
+                || s.IndexOf("cursor_api_key", StringComparison.Ordinal) >= 0)
+                return "auth_required";
+            if (s.IndexOf("not found", StringComparison.Ordinal) >= 0
+                || s.IndexOf("no such file", StringComparison.Ordinal) >= 0)
+                return "not_installed";
+            return string.IsNullOrEmpty(fallback) ? "exit_nonzero" : fallback;
+        }
+
+        static int EffectiveDiscoverTimeoutMs()
+        {
+            string raw = (Environment.GetEnvironmentVariable("BOB_MODELS_DISCOVER_TIMEOUT_MS") ?? "").Trim();
+            int ms;
+            if (raw.Length > 0 && int.TryParse(raw, out ms) && ms >= 5000 && ms <= 180000)
+                return ms;
+            return DiscoverTimeoutMs;
+        }
+
+        /// <summary>FR #9589: skip Store execution aliases that hang under CreateProcess.</summary>
+        public static bool IsBlockedDiscoverPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return true;
+            string p = path.Replace('/', '\\');
+            if (p.IndexOf("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+            return false;
+        }
+
         static string ResolveGrokExe()
         {
             string explicitExe = (Environment.GetEnvironmentVariable("BOB_GROK_EXE") ?? "").Trim();
-            if (explicitExe.Length > 0 && File.Exists(explicitExe)) return explicitExe;
-            string which = WhichOnPath("grok");
-            if (which.Length > 0) return which;
+            if (explicitExe.Length > 0 && File.Exists(explicitExe) && !IsBlockedDiscoverPath(explicitExe))
+                return explicitExe;
+            // Prefer well-known install over PATH (PATH may hit a hanging shim first).
             string home = Environment.GetEnvironmentVariable("USERPROFILE")
                 ?? Environment.GetEnvironmentVariable("HOME")
                 ?? "";
@@ -298,11 +334,16 @@ namespace BobDialogs
                 string cand = Path.Combine(home, ".grok", "bin", "grok.exe");
                 if (File.Exists(cand)) return cand;
             }
+            string which = WhichOnPath("grok");
+            if (which.Length > 0) return which;
             return "";
         }
 
         static string ResolveCursorAgent()
         {
+            string explicitExe = (Environment.GetEnvironmentVariable("BOB_CURSOR_AGENT") ?? "").Trim();
+            if (explicitExe.Length > 0 && File.Exists(explicitExe) && !IsBlockedDiscoverPath(explicitExe))
+                return explicitExe;
             string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
             if (local.Length > 0)
             {
@@ -323,7 +364,17 @@ namespace BobDialogs
         static string ResolveOpencodeExe()
         {
             string explicitExe = (Environment.GetEnvironmentVariable("BOB_OPENCODE_EXE") ?? "").Trim();
-            if (explicitExe.Length > 0 && File.Exists(explicitExe)) return explicitExe;
+            if (explicitExe.Length > 0 && File.Exists(explicitExe) && !IsBlockedDiscoverPath(explicitExe))
+                return explicitExe;
+            string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+            if (local.Length > 0)
+            {
+                // Prefer Programs package over WinGet Links (FR #7302 Links can WinError 448).
+                string programs = Path.Combine(local, "Programs", "opencode", "opencode.exe");
+                if (File.Exists(programs)) return programs;
+                string links = Path.Combine(local, "Microsoft", "WinGet", "Links", "opencode.exe");
+                if (File.Exists(links) && !IsBlockedDiscoverPath(links)) return links;
+            }
             return WhichOnPath("opencode");
         }
 
@@ -337,31 +388,58 @@ namespace BobDialogs
             {
                 string dir = parts[i].Trim().Trim('"');
                 if (dir.Length == 0) continue;
+                if (IsBlockedDiscoverPath(Path.Combine(dir, "x"))) continue;
                 for (int e = 0; e < exts.Length; e++)
                 {
                     string cand = Path.Combine(dir, name + exts[e]);
-                    if (File.Exists(cand)) return cand;
+                    if (File.Exists(cand) && !IsBlockedDiscoverPath(cand)) return cand;
                 }
             }
             return "";
         }
 
-        static bool RunListing(string exe, string arg, out string stdout, out int exitCode, out string reason)
+        static bool RunListing(
+            string exe,
+            string arg,
+            out string stdout,
+            out string stderr,
+            out int exitCode,
+            out string reason)
         {
             stdout = "";
+            stderr = "";
             exitCode = -1;
             reason = "ok";
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = exe;
-                psi.Arguments = arg;
+                string lower = (exe ?? "").ToLowerInvariant();
+                bool isBatch = lower.EndsWith(".cmd") || lower.EndsWith(".bat");
+                if (isBatch)
+                {
+                    // CreateProcess cannot run .cmd reliably without cmd.exe (hangs / spawn_error).
+                    psi.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+                    psi.Arguments = "/d /c \"" + exe + "\" " + arg;
+                }
+                else
+                {
+                    psi.FileName = exe;
+                    psi.Arguments = arg;
+                }
                 psi.UseShellExecute = false;
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
-                psi.RedirectStandardInput = true;
+                // FR #9589: never RedirectStandardInput=true without closing — CLIs wait forever.
+                psi.RedirectStandardInput = false;
                 psi.CreateNoWindow = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
+                try
+                {
+                    string wd = Path.GetDirectoryName(exe);
+                    if (!string.IsNullOrEmpty(wd) && Directory.Exists(wd))
+                        psi.WorkingDirectory = wd;
+                }
+                catch { }
                 string disable = Environment.GetEnvironmentVariable("GROK_DISABLE_AUTOUPDATER");
                 if (string.IsNullOrEmpty(disable))
                     psi.EnvironmentVariables["GROK_DISABLE_AUTOUPDATER"] = "1";
@@ -372,24 +450,39 @@ namespace BobDialogs
                         reason = "spawn_error";
                         return false;
                     }
-                    StringBuilder sb = new StringBuilder();
+                    StringBuilder sbOut = new StringBuilder();
+                    string errText = "";
                     p.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
                     {
-                        if (e.Data != null) sb.AppendLine(e.Data);
+                        if (e.Data != null) sbOut.AppendLine(e.Data);
                     };
                     p.BeginOutputReadLine();
-                    if (!p.WaitForExit(DiscoverTimeoutMs))
+                    // FR #9589 / harvest #1322: drain stderr or the child deadlocks when the pipe fills.
+                    System.Threading.Thread tErr = new System.Threading.Thread(delegate()
+                    {
+                        try { errText = p.StandardError.ReadToEnd(); }
+                        catch { }
+                    });
+                    tErr.IsBackground = true;
+                    tErr.Start();
+                    int timeoutMs = EffectiveDiscoverTimeoutMs();
+                    if (!p.WaitForExit(timeoutMs))
                     {
                         try { p.Kill(); } catch { }
+                        try { tErr.Join(1000); } catch { }
                         reason = "timeout";
+                        stderr = errText ?? "";
                         return false;
                     }
-                    // Drain async output after exit.
                     p.WaitForExit();
+                    try { tErr.Join(2000); } catch { }
                     exitCode = p.ExitCode;
-                    stdout = sb.ToString();
+                    stdout = sbOut.ToString();
+                    stderr = errText ?? "";
                     if (stdout.Length > 256 * 1024)
                         stdout = stdout.Substring(0, 256 * 1024);
+                    if (stderr.Length > 16 * 1024)
+                        stderr = stderr.Substring(0, 16 * 1024);
                     return true;
                 }
             }
@@ -494,6 +587,54 @@ namespace BobDialogs
                 r.Error = Redact(ex.GetType().Name + ": " + ex.Message);
             }
             return r;
+        }
+
+        /// <summary>FR #9586: find Weights agent row by agent / id / name (case-insensitive).</summary>
+        public static Dictionary<string, string> FindAgentRow(
+            IList<Dictionary<string, string>> rows,
+            string agentName)
+        {
+            string want = (agentName ?? "").Trim();
+            if (want.Length == 0 || rows == null) return null;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                Dictionary<string, string> row = rows[i];
+                if (row == null) continue;
+                string agent = Get(row, "agent");
+                if (agent.Length == 0) agent = Get(row, "id");
+                if (agent.Length == 0) agent = Get(row, "name");
+                if (string.Equals(agent, want, StringComparison.OrdinalIgnoreCase))
+                    return row;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// FR #9586: live GET /bob/v1/models row for seat start (model/context/effort).
+        /// Optional BOB_MODELS_CATALOG file is a fixture/offline fallback only when GET fails.
+        /// </summary>
+        public static Dictionary<string, string> ResolveAgentLaunchRow(
+            string installRoot,
+            string agentName)
+        {
+            BobModelsResult live = Get(installRoot);
+            if (live != null && live.Ok && live.Rows != null)
+            {
+                Dictionary<string, string> hit = FindAgentRow(live.Rows, agentName);
+                if (hit != null) return hit;
+            }
+            string catalog = (Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG") ?? "").Trim();
+            if (catalog.Length == 0 || !File.Exists(catalog)) return null;
+            try
+            {
+                string text = File.ReadAllText(catalog, Encoding.UTF8);
+                List<Dictionary<string, string>> rows = ParseAgents(text);
+                return FindAgentRow(rows, agentName);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static BobModelsResult Save(string installRoot, List<Dictionary<string, string>> rows)
