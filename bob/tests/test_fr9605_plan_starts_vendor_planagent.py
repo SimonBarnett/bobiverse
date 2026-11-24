@@ -18,6 +18,8 @@ def test_fr9605_tipform_starts_vendor_planagent():
     assert "bob-plan.exe" not in body
     assert "Plan - missing exe" in body
     assert "start exe missing" in body
+    # FR #9661: --root <install>\plan (exe stays under vendor\plan)
+    assert 'psi.Arguments = "--root " + Quote(planRoot)' in body
 
 
 def test_fr9605_watch_starts_vendor_planagent():
@@ -27,6 +29,8 @@ def test_fr9605_watch_starts_vendor_planagent():
     assert "Join-Path $RepoRoot 'plan\\PlanAgent.exe'" not in fn
     assert "bob-plan.exe" not in fn
     assert "Plan - missing exe" in fn
+    # FR #9661
+    assert "ArgumentList @('--root', $planRoot)" in fn
 
 
 def test_fr9605_docs_pin_vendor_path():
