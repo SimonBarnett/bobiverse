@@ -70,6 +70,8 @@ class _FakeAgent:
     _chair_status_line = irc_agent.Client._chair_status_line
     _chair_log_status = irc_agent.Client._chair_log_status
     _drain_outbox_path = irc_agent.Client._drain_outbox_path
+    # FR #9743: drain gates on live IRC; FakeAgent must expose the same method.
+    irc_live_for_outbox = irc_agent.Client.irc_live_for_outbox
     send_privmsg_lines = irc_agent.Client.send_privmsg_lines
     _channel_only_worker = irc_agent.Client._channel_only_worker
 

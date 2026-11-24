@@ -275,11 +275,84 @@ function Restore-BobTrayExeFromClickfixPark {
     return $null
 }
 
+
+function Get-BobTrayPriorProcessHits {
+    <#
+      FR #9509: Start-BobTray / ForceNew prior sweep must not hang forever on
+      Get-CimInstance Win32_Process (same CIM class that stalls prior-clean on
+      marchhare). Use EnumerationOptions.Timeout, then non-CIM Get-Process
+      bob-tray fallback so ForceNew can still kill a stuck TipForm.
+    #>
+    param(
+        [int]$TimeoutSec = 8,
+        [int]$ExcludePid = 0,
+        [string]$InstallRoot = ''
+    )
+    if ($ExcludePid -le 0) { $ExcludePid = $PID }
+    $toolsPrefix = ''
+    if ($InstallRoot) {
+        try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $InstallRoot 'tools')) } catch { $toolsPrefix = Join-Path $InstallRoot 'tools' }
+    }
+    function Test-BobTrayPriorCmd {
+        param([string]$Cmd, [string]$Name, [string]$Exe)
+        if ($Cmd -and (
+                $Cmd -match 'Watch-BobTray\.ps1' -or
+                $Cmd -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                ($Cmd -match 'Start-BobTray\.ps1') -or
+                ($Cmd -match '(?i)bob-tray\.exe')
+            )) { return $true }
+        if ($Name -eq 'bob-tray.exe') {
+            if (-not $toolsPrefix) { return $true }
+            if (-not $Exe) { return $true }
+            return $Exe.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
+        }
+        return $false
+    }
+    $hits = New-Object System.Collections.Generic.List[object]
+    try {
+        $scope = New-Object System.Management.ManagementScope
+        $query = New-Object System.Management.ObjectQuery 'SELECT ProcessId, Name, CommandLine, ExecutablePath FROM Win32_Process'
+        $opt = New-Object System.Management.EnumerationOptions
+        $opt.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
+        $opt.ReturnImmediately = $false
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+        foreach ($mo in @($searcher.Get())) {
+            $procId = 0
+            try { $procId = [int]$mo['ProcessId'] } catch { continue }
+            if ($procId -eq $ExcludePid) { continue }
+            $cmd = [string]$mo['CommandLine']
+            $name = [string]$mo['Name']
+            $exe = [string]$mo['ExecutablePath']
+            if (Test-BobTrayPriorCmd -Cmd $cmd -Name $name -Exe $exe) {
+                $hits.Add([pscustomobject]@{ ProcessId = $procId; Name = $name; CommandLine = $cmd; ExecutablePath = $exe; Source = 'wmi-timed' })
+            }
+        }
+    } catch { }
+    if ($hits.Count -gt 0) { return @($hits.ToArray()) }
+    # Non-CIM fallback: Name only (no CommandLine). Enough to unblock ForceNew when WMI hangs/times out empty.
+    try {
+        foreach ($p in @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue)) {
+            if ([int]$p.Id -eq $ExcludePid) { continue }
+            # WinPS 5.1: try/catch is not a valid hashtable-value expression (blocks ForceNew after #9528).
+            $exePath = ''
+            try { $exePath = [string]$p.Path } catch { $exePath = '' }
+            $hits.Add([pscustomobject]@{
+                    ProcessId      = [int]$p.Id
+                    Name           = 'bob-tray.exe'
+                    CommandLine    = ''
+                    ExecutablePath = $exePath
+                    Source         = 'get-process'
+                })
+        }
+    } catch { }
+    return @($hits.ToArray())
+}
+
 function Test-BobTrayProcessPresent {
     # True when bob-tray.exe or Watch-BobTray / seat-wrapper is alive (FR #1642 watchdog).
     # FR #2585: Name -eq bob-tray.exe is enough (ExecutablePath may be null); already-running
     # duplicate exits must not look like a missing tray to the watchdog.
-    # FR #3909: Get-Process bob-tray first — Win32_Process CIM can take ~1 minute on a busy box
+    # FR #3909: Get-Process bob-tray first - Win32_Process CIM can take ~1 minute on a busy box
     # and made the Interactive BobiverseTrayWatchdog host look hung (blank console steal focus).
     param([string]$InstallRoot = '')
     if (@(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
@@ -289,6 +362,9 @@ function Test-BobTrayProcessPresent {
     if ($root) {
         $bobRoot = if ((Split-Path -Leaf $root) -ieq 'bob') { $root } else { Join-Path $root 'bob' }
         try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $bobRoot 'tools')) } catch { $toolsPrefix = Join-Path $bobRoot 'tools' }
+    }
+    if (Get-Command Get-BobTrayPriorProcessHits -ErrorAction SilentlyContinue) {
+        return (@(Get-BobTrayPriorProcessHits -TimeoutSec 8 -ExcludePid $PID -InstallRoot $root).Count -gt 0)
     }
     $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             ($_.CommandLine -and (

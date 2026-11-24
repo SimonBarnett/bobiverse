@@ -105,11 +105,10 @@ def test_hi_repo_outranks_lo_repo(_home):
 
 
 def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
-    """MRB machine-id (FR #9401) + pin gate for a pinned-out other machine.
+    """MRB exact-seat (FR #9574) + pin gate for a pinned-out other machine.
 
-    Marchhare is live but pinned out (needs-ionos -> walrus). Pinned-out seats
-    do not count as other-machine evidence (FR #2339), so the walrus sibling
-    stays offerable. Marchhare itself stays machine-blocked.
+    Marchhare is live but pinned out (needs-ionos -> walrus). Exact author is
+    blocked; walrus sibling stays offerable. Marchhare itself stays machine-blocked.
     FR #4512: bobiverse rows need a supported pin cue (label), not a bare stamp.
     FR #8697: needs-ionos folds to walrus seats.
     """
@@ -138,7 +137,7 @@ def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
     ) is True  # exact author
     assert gitclaim.review_blocked_for_author(
         row, "walrus-7764", live, free=free
-    ) is False  # pinned-out marchhare does not trigger FR #9401
+    ) is False  # FR #9574 exact-seat; pin gate still excludes marchhare
     assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True
     status, job = gitclaim.offer_focus_top(
         _home,

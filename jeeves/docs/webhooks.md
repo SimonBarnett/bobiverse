@@ -1,4 +1,6 @@
 # Bobiverse webhooks (Jeeves / digest host)
+**FR #9826 CAST IRON:** when Jeeves is on IRC (ircJeeves Running / Start-Jeeves.ps1), local http://127.0.0.1:7700/bob/v1/report must return HTTP 200 in the same turn — heal BobCallback (optional W3SVC for the public front door); never Ergo/BobIrcd. Monitor check: webhooks_up_with_chair.
+
 
 Default public base: `https://bob.ntsa.uk` (FR #5272 / FR #6142 / FR #6166). IRC host stays `irc.ntsa.uk` (TLS 6697); never use the IRC hostname for `/bob/v1/*` HTTP (Hours and all other HTTP examples below use `bob.ntsa.uk`). Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
@@ -42,7 +44,7 @@ Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 ### FR #5170: webhook-first queue; Copilot virtual seat
 
-Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_request` including synchronize/closed, `pull_request_review`, `check_run`, `workflow_run`). `!resync` / hourly `github-resync` is the fallback (startup, webhook gap, delivery failure, safety interval). Required hook events include `pull_request_review`, `check_suite`, `check_run`, and `workflow_run` (`New-BobGitWebhook.ps1` / `copilot_dispatch.ensure_repo_webhook`). Permission failures file a stall issue (FR #5164). When Copilot allowance remains, Jeeves POSTs `agents/repos/{owner}/{repo}/tasks` with a `prompt` field and announces hand-off/completion as seat nick `copilot`. FR #5172 / #7255 / #7288 / #7371 / #7377 / #7382: allowance is `GET /copilot_internal/user` (dedicated fixed-rate 60s fleet fetch on Jeeves; watchdog poke independent of outbox drain; genuine `unlimited` or remaining/percent > 0). Used-up premium (`remaining=0`, `overage_permitted=false`) is exhausted even when GitHub sets `unlimited=true` / `percent_remaining=100`. OpenCode free/Go and Cursor (FR #7289, CredMan `Bobiverse/CursorAccess`) are the same fleet minute tick (`fleet_pools` on the digest). Credentials for Copilot/OpenCode: CredMan then Jeeves-root files (see `jeeves/docs/fleet-pools-credentials.md`); digest `source` is a tag only. FR #5316 / #5515: an out-of-tokens / quota-exhausted Copilot response persists a cooldown in `copilot-allowance.json` (`exhausted_until`) until `quota_reset_date` 00:00 UTC from `GET /copilot_internal/user`, or 00:00 UTC on the 1st of the next calendar month if that field is missing (`exhausted_until_source` = `api` or `fallback-1st`). Other fuels keep the 7-day pause unless a reset date is available. Jeeves announces once (`copilot out of tokens - paused until <UTC> (<source>)`), releases rows held by nick=copilot, and does not dispatch or probe until the cooldown ends. Digest `resume_at` / `resume_source` show when Copilot comes back. FR #5397: `cooldown_active(..., fuel=)` reads `fuels.<name>.exhausted_until`; Copilot still writes the legacy top-level key; exhausting cursor/grok does not pause Copilot or release Copilot rows. FR #5433: mark_tokens_exhausted keeps an already-active until and skips a second pause announce; an expired until still extends and announces. Digest `copilot` pool shows `state=exhausted` and `resume_at`. Chair calls `ensure_repo_webhook` on startup and hourly. Digest `copilot` pool is shown once on TipForm. FR #6148 / FR-008 / FR #6204: `observe_quota` refreshes Copilot into `copilot-observation.json` on the chair tick (300s cache) when dispatch is enabled or observation is explicitly opted in (`BOB_COPILOT_OBSERVE` / allowance `observe`); default with dispatch off is no quota GET; `fetched_at` advances only on successful parse; `pool_for_digest` prefers the newer successful observation over allowance and keeps cooldown `resume_at` from allowance. TipForm/Status mark aged `fetched_at` stale (900s) even when `resume_at` is still in the future. FR #5847: a draft Copilot FR implement PR (`copilot/fr-<N>-*` head, or `app/copilot-swe-agent` + Closes/Fixes #N) enters the MRB queue; stuck-sweep marks the held FR done (`COPILOT_PR`) and never releases `accepted_holder_gone` or starts a second Copilot task for that issue.
+Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_request` including synchronize/closed, `pull_request_review`, `check_run`, `workflow_run`). `!resync` / hourly `github-resync` is the fallback (startup, webhook gap, delivery failure, safety interval). Required hook events include `pull_request_review`, `check_suite`, `check_run`, and `workflow_run` (`New-BobGitWebhook.ps1` / `copilot_dispatch.ensure_repo_webhook`). Permission failures file a stall issue (FR #5164). When Copilot allowance remains, Jeeves POSTs `agents/repos/{owner}/{repo}/tasks` with a `prompt` field (FR #9738: optional `model` from `BOB_COPILOT_MODEL` / allowance `model`, omit = Auto; `base_ref` default `main` via `BOB_COPILOT_BASE_REF`) and announces hand-off/completion as seat nick `copilot`. Concurrent in-flight Copilot seats = `copilot-jobs.json` length; `tick()` dispatches one job per pass. FR #5172 / #7255 / #7288 / #7371 / #7377 / #7382: allowance is `GET /copilot_internal/user` (dedicated fixed-rate 60s fleet fetch on Jeeves; watchdog poke independent of outbox drain; genuine `unlimited` or remaining/percent > 0). FR #9781: when GitHub sets `unlimited=true`, digest publishes `state=ok` `unlimited=true` even if `remaining=0` / `overage_permitted=false` (CCA create can still succeed). Finite `unlimited=false` with `remaining=0` stays exhausted. OpenCode free/Go and Cursor (FR #7289, CredMan `Bobiverse/CursorAccess`) are the same fleet minute tick (`fleet_pools` on the digest). Credentials for Copilot/OpenCode: CredMan then Jeeves-root files (see `jeeves/docs/fleet-pools-credentials.md`); digest `source` is a tag only. FR #5316 / #5515: an out-of-tokens / quota-exhausted Copilot response persists a cooldown in `copilot-allowance.json` (`exhausted_until`) until `quota_reset_date` 00:00 UTC from `GET /copilot_internal/user`, or 00:00 UTC on the 1st of the next calendar month if that field is missing (`exhausted_until_source` = `api` or `fallback-1st`). Other fuels keep the 7-day pause unless a reset date is available. Jeeves announces once (`copilot out of tokens - paused until <UTC> (<source>)`), releases rows held by nick=copilot, and does not dispatch or probe until the cooldown ends. Digest `resume_at` / `resume_source` show when Copilot comes back. FR #5397: `cooldown_active(..., fuel=)` reads `fuels.<name>.exhausted_until`; Copilot still writes the legacy top-level key; exhausting cursor/grok does not pause Copilot or release Copilot rows. FR #5433: mark_tokens_exhausted keeps an already-active until and skips a second pause announce; an expired until still extends and announces. Digest `copilot` pool shows `state=exhausted` and `resume_at`. Chair calls `ensure_repo_webhook` on startup and hourly. Digest `copilot` pool is shown once on TipForm. FR #6148 / FR-008 / FR #6204: `observe_quota` refreshes Copilot into `copilot-observation.json` on the chair tick (300s cache) when dispatch is enabled or observation is explicitly opted in (`BOB_COPILOT_OBSERVE` / allowance `observe`); default with dispatch off is no quota GET; `fetched_at` advances only on successful parse; `pool_for_digest` prefers the newer successful observation over allowance and keeps cooldown `resume_at` from allowance. TipForm/Status mark aged `fetched_at` stale (900s) even when `resume_at` is still in the future. FR #5847: a draft Copilot FR implement PR (`copilot/fr-<N>-*` head, or `app/copilot-swe-agent` + Closes/Fixes #N) enters the MRB queue; stuck-sweep marks the held FR done (`COPILOT_PR`) and never releases `accepted_holder_gone` or starts a second Copilot task for that issue.
 
 ### Digest lock watchdog (FR #1136 / FR #1388)
 
@@ -78,7 +80,7 @@ curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 
 ### GET models / Weights rows (BOB-01 / FR #8707 / FR #8819 / FR #9258)
 
-Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders.
+Serves `{"clis":{…},"agents":[…]}` for the Weights grid. `agents` is one row per agent (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free, Copilot with empty `model` / `context` / `effort` placeholders (FR #9746: Copilot empty model = omit / GitHub auto).
 
 **FR #9258 (Grok-only context/effort):** context and effort apply only to the Grok CLI. Allowed contexts are `256` or `500`; allowed efforts are `high`, `medium`, or `low` (case-insensitive). Cursor and OpenCode catalog rows are valid with empty `contexts` / `efforts`, so the Weights form and tray start dialog offer those dropdowns only for Grok. Non-Grok stored `workerStartContext` / `workerStartEffort` values are ignored and dropped on the next write; pass status is `not-applicable`.
 
@@ -105,13 +107,24 @@ curl -sS -X PUT "http://127.0.0.1:7700/bob/v1/models" -H "Content-Type: applicat
 
 ### POST models refresh (FR #8820)
 
-`POST /bob/v1/models/refresh` rebuilds the per-CLI `clis` catalog inside digest-home `models-catalog.json` from each CLI's official listing command (no scraping, no cloud API keys):
+`POST /bob/v1/models/refresh` rebuilds the per-CLI `clis` catalog inside digest-home `models-catalog.json`. Two body shapes:
 
-| CLI | Command | Resolver order |
-|-----|---------|----------------|
-| Grok | `grok models` | `BOB_GROK_EXE`, PATH `grok`, `%USERPROFILE%\.grok\bin\grok.exe` |
-| Cursor | `agent models` | `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`) |
-| OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, PATH `opencode` |
+1. **Chair listing** (empty body or `{"clis":["grok","cursor","opencode"]}`): runs each CLI's official listing command on the chair (no scraping, no cloud API keys). Prefer this only on hosts that have the CLIs installed.
+2. **Client catalog (FR #9266 / BOB-TRAY-UI-06):** Weights **Refresh models** discovers models on the seat, then POSTs:
+
+```json
+{"source":"weights-client","clis":{"grok":["id",...],"cursor":[...],"opencode":["provider/model",...]}}
+```
+
+`clis` values may also be `[{"model":"id"}, ...]`. The chair merges the supplied ids and never spawns Grok/Cursor/OpenCode for this path (walrus has no seat CLIs / tokens). Response includes `"source":"weights-client"` when that path ran.
+
+| CLI | Command | Resolver order (chair listing only) |
+|-----|---------|--------------------------------------|
+| Grok | `grok models` | `BOB_GROK_EXE`, `%USERPROFILE%\.grok\bin\grok.exe` (preferred), PATH `grok` (skip `WindowsApps`) |
+| Cursor | `agent models` | `BOB_CURSOR_AGENT`, `%LOCALAPPDATA%\cursor-agent\agent.cmd`, PATH `agent.cmd` / `cursor-agent.cmd` (never `agent.exe`; `.cmd` via `cmd.exe /c`) |
+| OpenCode | `opencode models` | `BOB_OPENCODE_EXE`, `%LOCALAPPDATA%\Programs\opencode\opencode.exe`, WinGet Links, PATH (skip `WindowsApps`) |
+
+FR #9589: discover drains stderr (no pipe deadlock), does not redirect stdin, default timeout 45s (`BOB_MODELS_DISCOVER_TIMEOUT_MS`), and Weights status shows per-CLI reasons (`timeout` / `auth_required` / `not_installed`).
 
 Vendor docs: [xAI CLI](https://docs.x.ai/docs/cli), Cursor agent changelog, [OpenCode CLI](https://opencode.ai). Captured fixture samples live under `common/tests/fixtures/models_refresh/` (dated headers).
 
@@ -122,10 +135,13 @@ Rules:
 - Rate limit: one attempt per CLI per 60 s (in-memory; process restart resets). A second call inside the window returns **429** `rate_limited` with `retry_after_s` and changes nothing.
 - BOB-04 seeds (`models-valid-combos.json`) remain the starting allow-list until the first successful refresh writes `refreshed_at` on a CLI entry in `models-catalog.json`.
 - Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs. IIS `BobModelsWebhook` (`^bob/v1/models(.*)`) forwards GET|HEAD|POST|PUT (FR #9224 / FR #9273); PATCH stays blocked at IIS.
-- Operator check: the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`.
+- Operator check (chair listing): the `ircJeeves` service account must be able to run each CLI non-interactively; otherwise that CLI reports `failed`. Fleet seats use the Weights client catalog path instead.
 
 ```bash
 curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh"
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"weights-client","clis":{"grok":["grok-4"]}}'
 ```
 
 ### Models validation (form-only — Si 2026-11-22 / FR #9258)

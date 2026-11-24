@@ -10,6 +10,8 @@ Built by `gitclaim.summarize_empty_offer` / `format_empty_offer_detail` (shop re
 
 **FR #7182:** idle `worker_list` seats (ready / idle on the digest) are offered within one `offer_to_idle_seats` tick even if Jeeves never said `nothing queued`. Empty-offer logs include per-job `skips=FR owner/repo#N:focus|ledger|pin|...` so "0 offerable" is explainable.
 
+**FR #9460 (N = 30s):** when the digest shows idle/ready shop nicks and the queue still has ungated offerable rows, the chair pushes `offer_to_idle` / `push_idle_offers_via_chair_outbox` within **30 seconds** (`chair_health.IDLE_OFFER_PUSH_S`). That path does **not** wait for `!bored` and does **not** require BobAutoFeed / auto-feed config. After DONE/NACK/GIVEUP, `offer_after_done` still feeds that seat in the same tick, then a fleet idle push covers other idle seats. Ordinary idle+offerable starve must not stamp `needs_human` (ops relay `!assign` remains a backup; sibling FR covers monitor intervene).
+
 ## When only require_machine pins remain
 
 Typical pattern (incident 2026-10-05):
@@ -25,7 +27,7 @@ Typical pattern (incident 2026-10-05):
 3. Confirm digest `/report`: pin machine has **shop workers** (`worker_list`), not only `running=1` ghosts.
 4. Heal options:
    - Prefer monitor auto-heal: `queue_flow` clears ledger giveup when **every live seat on the pin machine** has GIVEUP'd that pin FR (`heal_require_machine_all_gave_up`).
-   - **Preferred (FR #5135):** ops PM `!cleargiveup owner/repo#N [seat]` clears queue giveup stamps + seat-ledger under the queue lock (see `jeeves-commands.md`). Prefer this over hand-editing `queue.json` / `seat-ledger.json`.
+   - **Preferred (FR #5135):** ops PM `!cleargiveup owner/repo#N [seat]` clears queue giveup stamps + seat-ledger under the queue lock (see `jeeves-commands.md`). Prefer this over hand-editing `queue.json` / `seat-ledger.json`. **FR #9634:** `!assign <nick> …` clears that nick's give-up on the row automatically (queue + ledger) so a second `!cleargiveup` is not required before assign.
    - **Exception (FR #2486):** Living FR / Refs-only tracking umbrellas (body cue `Living FR` / `Refs-only` / `keep appending`, or labels `living` / `refs-only` / `tracking-umbrella`) are **excluded** from auto-heal so operator GIVEUPs stick (e.g. bobiverse#1993). Clear those giveups with `!cleargiveup` or an explicit manual `ledger_clear_giveup` when you intend to re-offer.
    - Manual fallback: `gitclaim.ledger_clear_giveup(home, repo, ident, nick=None, task="FR")` (omit nick to clear all), or edit ledger carefully.
 5. File **unpinned** follow-up FRs so marchhare/flamingo stay fed while pins wait for the right box.
@@ -46,6 +48,17 @@ Open MERGEABLE tips can look "never dispatched" for three distinct reasons:
 1. **Ghost seat NAMES refuse** — digest `worker_list` still lists a departed nick; `!assign` hits NAMES timeout / not-in-shop. Chair drops that nick from the roster (`gitclaim.drop_ghost_seat_after_names_miss`) so the next offer prefers a live shop member.
 2. **needs_human walls** — `giveup_count>=2` stamps `needs_human`; `!bored` will not take them. Digest `needs_human_hint` and queue_flow notes name `!cleargiveup owner/repo#N [seat]` or `!recycle`.
 3. **held-pass** — MRB PASS already done; merge-on-green `skip_hold` (phase-gated). Digest/report `held_pass_count` and queue_flow `held-pass=N` — do not re-chase as MRB.
+
+## Interim MRB author_seat heal (FR #9489)
+
+Self-MRB / machine-id blocks can leave every idle seat refused for a tip the
+fleet still needs reviewed. Queue heal options:
+
+- Stamp `author_seat` + `implementer_seat` to a **roster** dead seat such as
+  `marchhare-99999` (never invent `ghost-1` on older chairs --- enrich drops
+  non-parseable nicks and recovers the real implementer).
+- On tip Jeeves with FR #9489, reserved `ghost-1` (positive pid) also sticks.
+- Durable: install soft machine-free MRB from FR #9478 / #9480 (PR #9482).
 
 ## Monitor (FR #2446)
 
@@ -100,6 +113,11 @@ ungated unaccepted work is greater than 0 is reported as
 `rule=online_zero_workers` (machine identity in `machine` / `holder`). That
 machine finding stays visible during the no-seats pause; ordinary job-starvation
 rows stay suppressed while paused.
+**FR #9462:** TipForm paints a durable `online_zero_workers` alert when this
+machine or a fleet peer on the digest is online with `workers=[]` and
+`offerable_count > 0`. Monitor check `online_zero_workers` EXIT 1 with
+fingerprint `stall:online-zero-workers:<machine>` (rate-capped). Operator
+starts seats via **TipForm → Agents** — never silent auto-start (FR #3180).
 The FR #5163 author-only recycle and stall scan also consult cloud eligibility.
 An active tracked cloud review stays accepted: the PR being reviewed is its
 input, not evidence of completed work.

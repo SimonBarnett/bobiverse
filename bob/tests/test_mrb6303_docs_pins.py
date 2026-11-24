@@ -31,22 +31,22 @@ def test_mrb6303_hover_paint_ignores_local_opencode_fuel_json():
 
 
 def test_mrb6303_agent_starts_have_no_fuel_text_and_opencode_submenu():
-    """FR #6301: no fuel text on starts. FR #6429: OpenCode is free/paid submenu."""
+    """FR #6301: no fuel text on starts. FR #9588: OpenCode Free|Paid top-level."""
     tray = TRAY.read_text(encoding="utf-8")
     seed = tray[tray.index("void SeedAgentChoices") : tray.index("void SeedAgentChoices") + 900]
     assert "fuel unknown" not in seed
     assert 'AddAgentChoice(parent, "grok", "Grok"' in seed
-    assert "AddOpencodeModelSubmenu" in seed
+    assert "AddOpencodeTopLevelChoices" in seed
     assert 'AddAgentChoice(parent, "opencode", "OpenCode"' not in seed
     apply = tray[tray.index("void ApplyAgentList") : tray.index("void ApplyAgentList") + 2500]
     assert "Default model" not in apply
-    assert "AddOpencodeModelSubmenu" in apply
+    assert "AddOpencodeTopLevelChoices" in apply
     click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 1200]
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in click
     docs = DOCS.read_text(encoding="utf-8")
     assert "FR #6429" in docs
-    assert "Start free model" in docs
-    assert "Start paid model" in docs
+    assert "OpenCode Free" in docs
+    assert "OpenCode Paid" in docs
 
 
 def test_mrb6303_part_d_key_tests_exist():

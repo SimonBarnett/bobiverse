@@ -17,6 +17,7 @@ description: >
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. **CAST IRON FR #9906 - Never set GIT_ASKPASS to echo GH_TOKEN / GITHUB_TOKEN.** Prefer GH_TOKEN env or gh credential helper; AskPass echo leaks tokens into terminal logs - rotate if leaked.
 
 Shared by jeeves, bob and airc. Product specifics are in `bobiverse-jeeves*`, `bobiverse-bob*`, `bobiverse-airc*`.
 
@@ -152,6 +153,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Self-update Apply aborts at **robocopy >=8** / tag **blocked-loop-guard** / service left Stopped (FR #2563) | Backup threw on locked `.pytest_cache` / `peers.json`; MaxAttempts burned; no operator escape | Backup excludes volatile paths, retries once, logs failing paths; backup-only fails -> `backup-failed` **without** MaxAttempts burn + `Ensure-ServiceRunning`; `-ForceCheck` clears the tag (PR #2565). Prefer Restart-Service Apply over parallel UI msiexec |
 | `gh` / git / harvest: **remote name could not be resolved** for `github.com` / `api.github.com` / `irc.ntsa.uk` (FR #4345) | Default NIC DNS (e.g. LAN-only `192.168.x.x`) fails while public resolvers still answer; temporary `hosts` pins paper over it | `common\scripts\Assert-BobiverseDns.ps1` (probe + JSON). Elevated Admin shell: `-RepairDnsServers` appends `8.8.8.8`/`1.1.1.1` after the existing first hop (`needsElevation=true` at Medium IL); then `-ClearStaleHostsPins`. Prefer reliable resolvers fleet-wide; avoid permanent hosts pins |
 | Flamingo Grok seats + chair both hit GitHub rate limit; identical `reset` across MH/flamingo (FR #9104) | Fleet shares one SimonBarnett **user OAuth** 5 000/hr bucket; `check_run` storms + concurrent seat `gh` burn it | Product: bobcallback returns **204** `rate deferred` for `check_run`/`check_suite` under local intake rate (push/PR stay 429). Monitor: `Test-JeevesMonitorGithubRateLimit.ps1` EXIT1 when core remaining &lt; 500 + `machine`. Seat: backoff non-essential `gh` (see `gh-cli-windows`). Ops: per-machine PAT / App token — never commit tokens; do not raise `seat_target` |
+| HTTPS `git push` asks for credentials / seat sets `GIT_ASKPASS` to echo `GH_TOKEN` (FR #9906) | AskPass that echoes the token prints `github_pat_` / `ghp_` into the agent terminal transcript | Never set GIT_ASKPASS to echo GH_TOKEN/GITHUB_TOKEN/`gh auth token`. Prefer GH_TOKEN env alone or `gh auth setup-git` / credential helper. Redact + rotate any leaked token; never paste it into skills/PRs |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
@@ -194,3 +196,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - When a tip script change must reach frozen bob-ear.exe without rebuild, add the module to FROZEN_SCRIPT_OVERLAY with a tip marker; leave it out of EAR_RUNTIME_DISK_SCRIPTS so provenance does not block hotpatch (FR #8613).
 - One-account fleet = one 5k/hr OAuth bucket; under local webhook rate deny ack check_run/check_suite with 204 (rate deferred) not 429; monitor core.remaining vs BACKOFF_FLOOR with machine id; separate budgets are ops PATs/App tokens never committed.
 - FR #8861 reopen: when intake_allowlist reports repo_not_allowed, first prove default-UA is CF 1010 vs JSON; if main already has the probe UA (#8875) and live allows with UA, DONE the covering PR and refresh the local monitor copy --- do not Sync/compose chase a false drift
+- Tip tray hotpatch on a remote shop: Install-BobTrayHotpatch can fail when BobTrayLifecycle uses try/catch as a hashtable value (WinPS 5.1); fix parse before ForceNew; interactive TipForm start may still need the console (schtasks /IT 267011); living host FRs use Refs not Closes.

@@ -281,6 +281,20 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ("INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701 / #9354 tag={0})" -f $priVendor.tag)
+    # FR #9468 / #9598: mirror PlanAgent + PriorityAgent into vendor\; never stage bob-plan.exe.
+    # TipForm Agents > Plan uses vendor\plan\PlanAgent.exe (FR #9605 / #9641). Release sources:
+    # skills-visionary plan-* / priority-mcp launcher-*.
+    $null = Copy-BobTrayVendorExes -Root $Stage -Require
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\PlanAgent.exe') -PathType Leaf)) {
+        throw 'FR #9468/#9598: bob MSI stage missing vendor\plan\PlanAgent.exe'
+    }
+    if (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\bob-plan.exe') -PathType Leaf) {
+        throw 'FR #9598: bob MSI stage must not include vendor\plan\bob-plan.exe (PlanAgent.exe only)'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\priority\PriorityAgent.exe') -PathType Leaf)) {
+        throw 'FR #9468: bob MSI stage missing vendor\priority\PriorityAgent.exe'
+    }
+
 
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
@@ -296,6 +310,10 @@ function Stage-BobAgentFolders([string]$Stage) {
         New-Item -ItemType Directory -Force -Path $shipDest | Out-Null
         Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
+        # FR #9641: after worker lands, refuse identical bytes under PlanAgent (Workers seat via Agents > Plan).
+        # FR #9843: Assert returns a Hashtable - capture or heat Stage becomes
+        # "System.Collections.Hashtable <path>" (FR #6969 resurfaced).
+        $null = Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
     }
     if ($SkipEarExe) {
         Write-Host 'WARN bob pack: -SkipEarExe (test stage; no bob-ear.exe)'
@@ -478,16 +496,29 @@ function Stage-Product([string]$Name) {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
     }
     # FR #9211: OpenCode seat console icon (find_window_icon kind=opencode + launch-opencode.ps1).
-    $ocIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico')
-    if (-not $ocIcoSrc -or -not (Test-Path -LiteralPath $ocIcoSrc)) {
-        $ocIcoSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tray\assets\opencode-favicon.ico'
-    }
-    if ($ocIcoSrc -and (Test-Path -LiteralPath $ocIcoSrc)) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
-        Copy-Item -LiteralPath $ocIcoSrc -Destination (Join-Path $stage 'assets\opencode-favicon.ico') -Force
-        Write-Host 'INFO FR #9211 staged assets\opencode-favicon.ico'
-    } else {
-        Write-Host 'WARN FR #9211 opencode-favicon.ico missing - OpenCode consoles keep default icon until staged'
+    # FR #9267: stage all non-Cursor tray menu glyphs under assets\ for TipForm / Watch-BobTray.
+    $stageAssets = Join-Path $stage 'assets'
+    New-Item -ItemType Directory -Force -Path $stageAssets | Out-Null
+    foreach ($menuIco in @(
+            'opencode-favicon.ico',
+            'grok-favicon.ico',
+            'plan-gantt.ico',
+            'priority.ico',
+            'jeeves-butler.ico'
+        )) {
+        $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("bob\tray\assets\$menuIco")
+        if (-not $srcIco -or -not (Test-Path -LiteralPath $srcIco)) {
+            $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("third_party\bob-tray\assets\$menuIco")
+        }
+        if ($menuIco -eq 'opencode-favicon.ico' -and (-not $srcIco -or -not (Test-Path -LiteralPath $srcIco))) {
+            $srcIco = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\opencode-favicon.ico'
+        }
+        if ($srcIco -and (Test-Path -LiteralPath $srcIco)) {
+            Copy-Item -LiteralPath $srcIco -Destination (Join-Path $stageAssets $menuIco) -Force
+            Write-Host ("INFO FR #9267/#9211 staged assets\{0}" -f $menuIco)
+        } else {
+            Write-Host ("WARN FR #9267 menu icon missing: {0}" -f $menuIco)
+        }
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
@@ -697,7 +728,8 @@ function Stage-Product([string]$Name) {
         if ((-not $EmbedErgoPassword) -and (Test-Path -LiteralPath $stageErgoGuard)) {
             Remove-Item -LiteralPath $stageErgoGuard -Force
         }
-        Stage-BobAgentFolders -Stage $stage
+        # FR #9843: never let Stage-BobAgentFolders success-stream objects join into $stage.
+        $null = Stage-BobAgentFolders -Stage $stage
         Write-Host ("INFO bob staged TipForm tray from {0} pin={1}" -f $traySrc, ((Get-Content (Join-Path $traySrc 'PIN.txt') -TotalCount 1).Trim()))
     }
     if ($Name -eq 'airc') {
@@ -831,13 +863,30 @@ function Stage-Product([string]$Name) {
     return $stage
 }
 
-function Assert-BobiverseHeatStagePath([string]$Stage) {
+function Assert-BobiverseHeatStagePath {
+    param(
+        # FR #9843: accept object so Hashtable leaks are rejected before [string] join.
+        [Parameter(Mandatory)]$Stage
+    )
     # FR #6969: heat.exe DirectoryHarvester rejects URIs / "npm notice" blobs
     # when Stage-Product leaked native stdout into $stage.
-    $t = [string]$Stage
+    # FR #9843: Hashtable / multi-object success-stream leaks become
+    # "System.Collections.Hashtable <path>" under [string] coercion.
+    if ($null -eq $Stage) { throw 'FR #6969: heat stage path is empty' }
+    if ($Stage -is [System.Collections.IDictionary] -or $Stage -is [hashtable]) {
+        throw 'FR #6969/#9843: heat stage path is a Hashtable (Stage-Product success-stream leak; capture helper output with $null =).'
+    }
+    if ($Stage -is [System.Array] -or ($Stage -is [System.Collections.IList] -and -not ($Stage -is [string]))) {
+        throw 'FR #6969/#9843: heat stage path is a list/array (Stage-Product success-stream leak; capture helper output with $null =).'
+    }
+    if ($Stage -isnot [string] -and $Stage -isnot [System.IO.DirectoryInfo]) {
+        $tn = $Stage.GetType().FullName
+        throw "FR #6969/#9843: heat stage path is not a string path (type=$tn); capture Stage-Product helper output."
+    }
+    $t = if ($Stage -is [System.IO.DirectoryInfo]) { [string]$Stage.FullName } else { [string]$Stage }
     if ([string]::IsNullOrWhiteSpace($t)) { throw 'FR #6969: heat stage path is empty' }
-    if ($t -match '://' -or $t -match '(?i)npm notice') {
-        throw 'FR #6969: heat stage path is not a directory (native command stdout leaked into Stage-Product; capture npm ci).'
+    if ($t -match '://' -or $t -match '(?i)npm notice' -or $t -match '(?i)System\.Collections\.Hashtable') {
+        throw 'FR #6969: heat stage path is not a directory (native command stdout leaked into Stage-Product; capture npm ci / helper Hashtable).'
     }
     if (-not (Test-Path -LiteralPath $t -PathType Container)) {
         $shown = $t

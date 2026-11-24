@@ -1,12 +1,15 @@
 ﻿// FR #8714 / BOB-13: Weights form client for GET/PUT /bob/v1/models (BOB-01/02 contract).
+// FR #9266 / BOB-TRAY-UI-06: Discover local CLI models + POST /bob/v1/models/refresh catalog.
 // C# 5 / .NET Framework 4. Peer-IP gate is server-side; client does not invent auth headers.
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 
 namespace BobDialogs
@@ -34,11 +37,33 @@ namespace BobDialogs
         public string RawBody = "";
     }
 
+    /// <summary>FR #9266: local CLI listing result before POST refresh.</summary>
+    internal sealed class BobModelsDiscoverResult
+    {
+        public Dictionary<string, List<string>> Models =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> Reasons =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public int TotalCount;
+    }
+
     internal static class BobModelsClient
     {
         public const string ModelsPath = "/bob/v1/models";
+        public const string ModelsRefreshPath = "/bob/v1/models/refresh";
         public const int GetTimeoutMs = 15000;
         public const int PutTimeoutMs = 30000;
+        public const int RefreshTimeoutMs = 60000;
+        // FR #9589: 45s default (cold CLI + network); override with BOB_MODELS_DISCOVER_TIMEOUT_MS.
+        public const int DiscoverTimeoutMs = 45000;
+        static readonly string[] RefreshClis = new string[] { "grok", "cursor", "opencode" };
+        static readonly Regex AnsiRe = new Regex(@"\x1b\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
+        static readonly Regex HeaderRe = new Regex(
+            @"^(available models|models|default model|you are logged|logged in)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        static readonly Regex OpencodeModelRe = new Regex(
+            @"^[\w.\-]+/[\w.\-:]+$",
+            RegexOptions.Compiled);
 
         public static string ResolveUrl(string installRoot)
         {
@@ -108,6 +133,426 @@ namespace BobDialogs
             };
         }
 
+        public static string ResolveRefreshUrl(string installRoot)
+        {
+            string models = ResolveUrl(installRoot);
+            if (models.EndsWith(ModelsPath, StringComparison.OrdinalIgnoreCase))
+                return models.Substring(0, models.Length - ModelsPath.Length) + ModelsRefreshPath;
+            try
+            {
+                Uri u = new Uri(models);
+                return u.GetLeftPart(UriPartial.Authority).TrimEnd('/') + ModelsRefreshPath;
+            }
+            catch
+            {
+                return "https://bob.ntsa.uk" + ModelsRefreshPath;
+            }
+        }
+
+        /// <summary>
+        /// FR #9266: run local ``grok models`` / ``agent models`` / ``opencode models`` on this seat.
+        /// Chair/Ergo must not spawn these CLIs; Weights posts the result to /models/refresh.
+        /// </summary>
+        public static BobModelsDiscoverResult DiscoverLocalModels()
+        {
+            BobModelsDiscoverResult r = new BobModelsDiscoverResult();
+            for (int i = 0; i < RefreshClis.Length; i++)
+            {
+                string cli = RefreshClis[i];
+                string reason;
+                List<string> ids = DiscoverOne(cli, out reason);
+                r.Reasons[cli] = reason ?? "";
+                r.Models[cli] = ids != null ? ids : new List<string>();
+                if (ids != null) r.TotalCount += ids.Count;
+            }
+            return r;
+        }
+
+        public static BobModelsResult PostClientCatalog(
+            string installRoot,
+            Dictionary<string, List<string>> catalog)
+        {
+            BobModelsResult r = new BobModelsResult();
+            r.Method = "POST";
+            r.Url = ResolveRefreshUrl(installRoot);
+            r.UrlHost = HostOf(r.Url);
+            string body = SerializeClientCatalog(catalog);
+            r.BodyHash = Sha256Hex(body);
+            try
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(body);
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(r.Url);
+                req.Method = "POST";
+                req.Timeout = RefreshTimeoutMs;
+                req.ReadWriteTimeout = RefreshTimeoutMs;
+                req.ContentType = "application/json; charset=utf-8";
+                req.Accept = "application/json";
+                req.ContentLength = bytes.Length;
+                using (Stream s = req.GetRequestStream())
+                {
+                    s.Write(bytes, 0, bytes.Length);
+                }
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                {
+                    r.Status = (int)resp.StatusCode;
+                    r.RawBody = ReadBody(resp);
+                    r.Clis = ParseClis(r.RawBody);
+                    r.Ok = r.Status >= 200 && r.Status < 300;
+                    if (!r.Ok) r.Error = ShortError(r.RawBody, r.Status);
+                }
+            }
+            catch (WebException wex)
+            {
+                FillWebException(r, wex);
+            }
+            catch (Exception ex)
+            {
+                r.Ok = false;
+                r.Error = Redact(ex.GetType().Name + ": " + ex.Message);
+            }
+            return r;
+        }
+
+        public static string SerializeClientCatalog(Dictionary<string, List<string>> catalog)
+        {
+            Dictionary<string, object> doc = new Dictionary<string, object>();
+            doc["source"] = "weights-client";
+            Dictionary<string, object> clis = new Dictionary<string, object>();
+            if (catalog != null)
+            {
+                foreach (KeyValuePair<string, List<string>> kv in catalog)
+                {
+                    string cli = (kv.Key ?? "").Trim().ToLowerInvariant();
+                    if (cli.Length == 0) continue;
+                    ArrayList ids = new ArrayList();
+                    List<string> list = kv.Value;
+                    if (list != null)
+                    {
+                        for (int i = 0; i < list.Count; i++)
+                        {
+                            string m = (list[i] ?? "").Trim();
+                            if (m.Length > 0) ids.Add(m);
+                        }
+                    }
+                    if (ids.Count == 0) continue;
+                    clis[cli] = ids;
+                }
+            }
+            doc["clis"] = clis;
+            return new JavaScriptSerializer().Serialize(doc);
+        }
+
+        static List<string> DiscoverOne(string cli, out string reason)
+        {
+            reason = "not_installed";
+            string exe = null;
+            string arg = "models";
+            if (cli == "grok")
+            {
+                exe = ResolveGrokExe();
+            }
+            else if (cli == "cursor")
+            {
+                exe = ResolveCursorAgent();
+            }
+            else if (cli == "opencode")
+            {
+                exe = ResolveOpencodeExe();
+            }
+            if (string.IsNullOrEmpty(exe))
+            {
+                reason = "not_installed";
+                return new List<string>();
+            }
+            string stdout;
+            string stderr;
+            int exitCode;
+            if (!RunListing(exe, arg, out stdout, out stderr, out exitCode, out reason))
+                return new List<string>();
+            if (exitCode != 0)
+            {
+                reason = ClassifyListingFailure(stderr, "exit_nonzero");
+                return new List<string>();
+            }
+            List<string> ids = cli == "opencode"
+                ? ParseOpencodeModelsText(stdout)
+                : ParseGrokModelsText(stdout);
+            if (ids == null || ids.Count == 0)
+            {
+                reason = "empty_listing";
+                return new List<string>();
+            }
+            reason = "ok";
+            return ids;
+        }
+
+        /// <summary>FR #9589: map stderr to a short per-CLI reason for the Weights status line.</summary>
+        public static string ClassifyListingFailure(string stderr, string fallback)
+        {
+            string s = (stderr ?? "").ToLowerInvariant();
+            if (s.IndexOf("authentication required", StringComparison.Ordinal) >= 0
+                || s.IndexOf("not logged in", StringComparison.Ordinal) >= 0
+                || s.IndexOf("auth required", StringComparison.Ordinal) >= 0
+                || s.IndexOf("cursor_api_key", StringComparison.Ordinal) >= 0)
+                return "auth_required";
+            if (s.IndexOf("not found", StringComparison.Ordinal) >= 0
+                || s.IndexOf("no such file", StringComparison.Ordinal) >= 0)
+                return "not_installed";
+            return string.IsNullOrEmpty(fallback) ? "exit_nonzero" : fallback;
+        }
+
+        static int EffectiveDiscoverTimeoutMs()
+        {
+            string raw = (Environment.GetEnvironmentVariable("BOB_MODELS_DISCOVER_TIMEOUT_MS") ?? "").Trim();
+            int ms;
+            if (raw.Length > 0 && int.TryParse(raw, out ms) && ms >= 5000 && ms <= 180000)
+                return ms;
+            return DiscoverTimeoutMs;
+        }
+
+        /// <summary>FR #9589: skip Store execution aliases that hang under CreateProcess.</summary>
+        public static bool IsBlockedDiscoverPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return true;
+            string p = path.Replace('/', '\\');
+            if (p.IndexOf("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+            return false;
+        }
+
+        static string ResolveGrokExe()
+        {
+            string explicitExe = (Environment.GetEnvironmentVariable("BOB_GROK_EXE") ?? "").Trim();
+            if (explicitExe.Length > 0 && File.Exists(explicitExe) && !IsBlockedDiscoverPath(explicitExe))
+                return explicitExe;
+            // Prefer well-known install over PATH (PATH may hit a hanging shim first).
+            string home = Environment.GetEnvironmentVariable("USERPROFILE")
+                ?? Environment.GetEnvironmentVariable("HOME")
+                ?? "";
+            if (home.Length > 0)
+            {
+                string cand = Path.Combine(home, ".grok", "bin", "grok.exe");
+                if (File.Exists(cand)) return cand;
+            }
+            string which = WhichOnPath("grok");
+            if (which.Length > 0) return which;
+            return "";
+        }
+
+        static string ResolveCursorAgent()
+        {
+            string explicitExe = (Environment.GetEnvironmentVariable("BOB_CURSOR_AGENT") ?? "").Trim();
+            if (explicitExe.Length > 0 && File.Exists(explicitExe) && !IsBlockedDiscoverPath(explicitExe))
+                return explicitExe;
+            string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+            if (local.Length > 0)
+            {
+                string cand = Path.Combine(local, "cursor-agent", "agent.cmd");
+                if (File.Exists(cand)) return cand;
+            }
+            string[] names = new string[] { "agent.cmd", "cursor-agent.cmd", "agent", "cursor-agent" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                string found = WhichOnPath(names[i]);
+                if (found.Length == 0) continue;
+                if (found.EndsWith("agent.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                return found;
+            }
+            return "";
+        }
+
+        static string ResolveOpencodeExe()
+        {
+            string explicitExe = (Environment.GetEnvironmentVariable("BOB_OPENCODE_EXE") ?? "").Trim();
+            if (explicitExe.Length > 0 && File.Exists(explicitExe) && !IsBlockedDiscoverPath(explicitExe))
+                return explicitExe;
+            string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+            if (local.Length > 0)
+            {
+                // Prefer Programs package over WinGet Links (FR #7302 Links can WinError 448).
+                string programs = Path.Combine(local, "Programs", "opencode", "opencode.exe");
+                if (File.Exists(programs)) return programs;
+                string links = Path.Combine(local, "Microsoft", "WinGet", "Links", "opencode.exe");
+                if (File.Exists(links) && !IsBlockedDiscoverPath(links)) return links;
+            }
+            return WhichOnPath("opencode");
+        }
+
+        static string WhichOnPath(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "";
+            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] parts = pathEnv.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            string[] exts = new string[] { "", ".exe", ".cmd", ".bat" };
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string dir = parts[i].Trim().Trim('"');
+                if (dir.Length == 0) continue;
+                if (IsBlockedDiscoverPath(Path.Combine(dir, "x"))) continue;
+                for (int e = 0; e < exts.Length; e++)
+                {
+                    string cand = Path.Combine(dir, name + exts[e]);
+                    if (File.Exists(cand) && !IsBlockedDiscoverPath(cand)) return cand;
+                }
+            }
+            return "";
+        }
+
+        static bool RunListing(
+            string exe,
+            string arg,
+            out string stdout,
+            out string stderr,
+            out int exitCode,
+            out string reason)
+        {
+            stdout = "";
+            stderr = "";
+            exitCode = -1;
+            reason = "ok";
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                string lower = (exe ?? "").ToLowerInvariant();
+                bool isBatch = lower.EndsWith(".cmd") || lower.EndsWith(".bat");
+                if (isBatch)
+                {
+                    // CreateProcess cannot run .cmd reliably without cmd.exe (hangs / spawn_error).
+                    psi.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+                    psi.Arguments = "/d /c \"" + exe + "\" " + arg;
+                }
+                else
+                {
+                    psi.FileName = exe;
+                    psi.Arguments = arg;
+                }
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                // FR #9589: never RedirectStandardInput=true without closing — CLIs wait forever.
+                psi.RedirectStandardInput = false;
+                psi.CreateNoWindow = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+                try
+                {
+                    string wd = Path.GetDirectoryName(exe);
+                    if (!string.IsNullOrEmpty(wd) && Directory.Exists(wd))
+                        psi.WorkingDirectory = wd;
+                }
+                catch { }
+                string disable = Environment.GetEnvironmentVariable("GROK_DISABLE_AUTOUPDATER");
+                if (string.IsNullOrEmpty(disable))
+                    psi.EnvironmentVariables["GROK_DISABLE_AUTOUPDATER"] = "1";
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null)
+                    {
+                        reason = "spawn_error";
+                        return false;
+                    }
+                    StringBuilder sbOut = new StringBuilder();
+                    string errText = "";
+                    p.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+                    {
+                        if (e.Data != null) sbOut.AppendLine(e.Data);
+                    };
+                    p.BeginOutputReadLine();
+                    // FR #9589 / harvest #1322: drain stderr or the child deadlocks when the pipe fills.
+                    System.Threading.Thread tErr = new System.Threading.Thread(delegate()
+                    {
+                        try { errText = p.StandardError.ReadToEnd(); }
+                        catch { }
+                    });
+                    tErr.IsBackground = true;
+                    tErr.Start();
+                    int timeoutMs = EffectiveDiscoverTimeoutMs();
+                    if (!p.WaitForExit(timeoutMs))
+                    {
+                        try { p.Kill(); } catch { }
+                        try { tErr.Join(1000); } catch { }
+                        reason = "timeout";
+                        stderr = errText ?? "";
+                        return false;
+                    }
+                    p.WaitForExit();
+                    try { tErr.Join(2000); } catch { }
+                    exitCode = p.ExitCode;
+                    stdout = sbOut.ToString();
+                    stderr = errText ?? "";
+                    if (stdout.Length > 256 * 1024)
+                        stdout = stdout.Substring(0, 256 * 1024);
+                    if (stderr.Length > 16 * 1024)
+                        stderr = stderr.Substring(0, 16 * 1024);
+                    return true;
+                }
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                reason = "not_installed";
+                return false;
+            }
+            catch
+            {
+                reason = "spawn_error";
+                return false;
+            }
+        }
+
+        public static List<string> ParseGrokModelsText(string text)
+        {
+            List<string> outList = new List<string>();
+            if (string.IsNullOrEmpty(text)) return outList;
+            string cleaned = AnsiRe.Replace(text, "");
+            string[] lines = cleaned.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            Dictionary<string, bool> seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = (lines[i] ?? "").Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+                if (HeaderRe.IsMatch(line)) continue;
+                if (line.ToLowerInvariant().StartsWith("default model:")) continue;
+                if (line.StartsWith("* ") || line.StartsWith("- ") || line.StartsWith("\u2022 "))
+                    line = line.Substring(2).Trim();
+                line = Regex.Replace(line, @"\s*\([^)]*\)\s*$", "").Trim();
+                int dash = line.IndexOf(" - ", StringComparison.Ordinal);
+                if (dash > 0) line = line.Substring(0, dash).Trim();
+                string token = "";
+                string[] parts = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length > 0) token = parts[0].Trim().Trim('*');
+                if (token.Length == 0) continue;
+                if (!Regex.IsMatch(token, @"^[\w.\-]+$")) continue;
+                string lower = token.ToLowerInvariant();
+                if (lower == "available" || lower == "models" || lower == "model" || lower == "default")
+                    continue;
+                if (seen.ContainsKey(token)) continue;
+                seen[token] = true;
+                outList.Add(token);
+            }
+            return outList;
+        }
+
+        public static List<string> ParseOpencodeModelsText(string text)
+        {
+            List<string> outList = new List<string>();
+            if (string.IsNullOrEmpty(text)) return outList;
+            string cleaned = AnsiRe.Replace(text, "");
+            string[] lines = cleaned.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            Dictionary<string, bool> seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = (lines[i] ?? "").Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+                int dash = line.IndexOf(" - ", StringComparison.Ordinal);
+                if (dash > 0) line = line.Substring(0, dash).Trim();
+                line = Regex.Replace(line, @"\s*\([^)]*\)\s*$", "").Trim();
+                if (!OpencodeModelRe.IsMatch(line)) continue;
+                if (seen.ContainsKey(line)) continue;
+                seen[line] = true;
+                outList.Add(line);
+            }
+            return outList;
+        }
+
         public static BobModelsResult Get(string installRoot)
         {
             BobModelsResult r = new BobModelsResult();
@@ -142,6 +587,54 @@ namespace BobDialogs
                 r.Error = Redact(ex.GetType().Name + ": " + ex.Message);
             }
             return r;
+        }
+
+        /// <summary>FR #9586: find Weights agent row by agent / id / name (case-insensitive).</summary>
+        public static Dictionary<string, string> FindAgentRow(
+            IList<Dictionary<string, string>> rows,
+            string agentName)
+        {
+            string want = (agentName ?? "").Trim();
+            if (want.Length == 0 || rows == null) return null;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                Dictionary<string, string> row = rows[i];
+                if (row == null) continue;
+                string agent = Get(row, "agent");
+                if (agent.Length == 0) agent = Get(row, "id");
+                if (agent.Length == 0) agent = Get(row, "name");
+                if (string.Equals(agent, want, StringComparison.OrdinalIgnoreCase))
+                    return row;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// FR #9586: live GET /bob/v1/models row for seat start (model/context/effort).
+        /// Optional BOB_MODELS_CATALOG file is a fixture/offline fallback only when GET fails.
+        /// </summary>
+        public static Dictionary<string, string> ResolveAgentLaunchRow(
+            string installRoot,
+            string agentName)
+        {
+            BobModelsResult live = Get(installRoot);
+            if (live != null && live.Ok && live.Rows != null)
+            {
+                Dictionary<string, string> hit = FindAgentRow(live.Rows, agentName);
+                if (hit != null) return hit;
+            }
+            string catalog = (Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG") ?? "").Trim();
+            if (catalog.Length == 0 || !File.Exists(catalog)) return null;
+            try
+            {
+                string text = File.ReadAllText(catalog, Encoding.UTF8);
+                List<Dictionary<string, string>> rows = ParseAgents(text);
+                return FindAgentRow(rows, agentName);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static BobModelsResult Save(string installRoot, List<Dictionary<string, string>> rows)

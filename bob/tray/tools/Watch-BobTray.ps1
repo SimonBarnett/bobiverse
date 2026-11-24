@@ -1,4 +1,4 @@
-# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
+﻿# Hidden Bob Fleet tray watcher + system tray icon. Flashes on ACTION_REQUIRED.
 # Title is Bob Fleet. Primary bar is weekly remaining (CLI billing log).
 # Job list: every registered fleet machine (bundled registry + local store +
 # read-only filesystem peer peek). Fail closed: unreachable / lastSeen stale.
@@ -2182,6 +2182,23 @@ function Start-BobTrayPriorityExe {
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
 }
 
+function Test-BobTrayPriorityFuelEmpty {
+    # FR #8698 / BOB-52: true when this box's fuel file says remaining_pct <= 0 or status empty.
+    # Missing file = unknown = allow (do not block).
+    param([string]$FuelPath)
+    if ([string]::IsNullOrWhiteSpace($FuelPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $FuelPath)) { return $false }
+    try { $doc = Get-Content -Raw -LiteralPath $FuelPath | ConvertFrom-Json } catch { return $false }
+    $st = ([string]$doc.status).Trim().ToLowerInvariant()
+    if ($st -in @('empty', 'exhausted', 'out-of-fuel', 'out_of_fuel')) { return $true }
+    foreach ($k in @('remaining_pct', 'remaining', 'tokens_remaining')) {
+        $v = $doc.$k
+        if ($null -eq $v -or [string]$v -eq '') { continue }
+        return ([int]$v -le 0)
+    }
+    return $false
+}
+
 function Test-BobTrayPlanFuelEmpty {
     # FR #8692 / BOB-46: true when this box's fuel file says remaining_pct <= 0 or status empty.
     param([string]$FuelPath)
@@ -2199,8 +2216,12 @@ function Test-BobTrayPlanFuelEmpty {
 }
 
 function Start-BobTrayPlanExe {
-    # FR #8693 / BOB-44: vendored Plan exe. Do not fall back to bob-worker --mode plan.
-    $exe = Join-Path $RepoRoot 'vendor\plan\bob-plan.exe'
+    # FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605: vendor\plan\PlanAgent.exe (Pack/Sync mirror).
+    # Do not fall back to bob-worker --mode plan or plan\PlanAgent.exe.
+    # FR #9661: pass --root <install>\plan (+ PLAN_AGENT_ROOT); vendor exe FATAL without the plan seat tree.
+    $exe = Join-Path $RepoRoot 'vendor\plan\PlanAgent.exe'
+    $planRoot = Join-Path $RepoRoot 'plan'
+    $agentsMd = Join-Path $planRoot 'AGENTS.md'
     $hook = $env:BOB_MODELS_WEBHOOK_FILE
     if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
     if (Test-Path -LiteralPath $hook) {
@@ -2221,12 +2242,34 @@ function Start-BobTrayPlanExe {
     $mcpUrl = 'https://plan.ntsa.uk/mcp'
     Set-Content -LiteralPath $mcpPath -Encoding utf8 -Value ('{"mcpServers":{"plan":{"url":"' + $mcpUrl + '"}}}')
     Write-TrayLog ('plan-mcp url=' + $mcpUrl + ' config=' + $mcpPath)
-    Write-TrayLog ('Plan: start exe ' + $exe)
+    Write-TrayLog ('Plan: start exe ' + $exe + ' --root ' + $planRoot)
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-TrayLog ('Plan exe missing: ' + $exe)
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ('PlanAgent.exe not found at:{0}{1}{0}{0}Install or repair the bob MSI (BOB-49 / skills-visionary PlanAgent).' -f [Environment]::NewLine, $exe),
+            'Plan - missing exe',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
-    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    if (-not (Test-Path -LiteralPath $agentsMd)) {
+        Write-TrayLog ('Plan AGENTS.md missing: ' + $agentsMd)
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ('Plan seat tree not found at:{0}{1}{0}{0}Install or repair the bob MSI (plan\AGENTS.md + .grok\skills).' -f [Environment]::NewLine, $agentsMd),
+            'Plan - missing AGENTS.md',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    # FR #2585 / #2590: do not embed quotes in ArgumentList values (they become part of --root).
+    $prevPlanRoot = $env:PLAN_AGENT_ROOT
+    $env:PLAN_AGENT_ROOT = $planRoot
+    try {
+        Start-Process -FilePath $exe -ArgumentList @('--root', $planRoot) -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    } finally {
+        if ($null -eq $prevPlanRoot) { Remove-Item Env:PLAN_AGENT_ROOT -ErrorAction SilentlyContinue }
+        else { $env:PLAN_AGENT_ROOT = $prevPlanRoot }
+    }
 }
 
 function Start-BobTrayWorkerExe {
@@ -2247,6 +2290,9 @@ function Start-BobTrayWorkerExe {
         # FR #9346: default 'other' is fail-closed (blocked when empty-online.disabled).
         [string]$Trigger = 'other',
         [string]$Model = '',
+        # FR #9586: Weights context/effort from GET /bob/v1/models into child SessionEnv.
+        [string]$Effort = '',
+        [string]$Context = '',
         [switch]$Quiet,
         [switch]$Restore
     )
@@ -2350,8 +2396,11 @@ function Start-BobTrayWorkerExe {
                 }
             }
         # FR #8321: a restart starts the clicked model, paid or free, never the default.
+        # FR #9586: also pin Weights effort/context into child env (worker_start_model reads them).
         $restoreEnv = $null
         $pinnedModel = ([string]$Model).Trim() -replace "[`t`r`n]", ''
+        $pinnedEffort = ([string]$Effort).Trim() -replace "[`t`r`n]", ''
+        $pinnedContext = ([string]$Context).Trim() -replace "[`t`r`n]", ''
         if ($pinnedModel -and $explicit -and $explicit -ne 'auto') {
             $pinKey = switch ($explicit) {
                 'grok' { 'BOB_GROK_MODEL' }
@@ -2361,6 +2410,17 @@ function Start-BobTrayWorkerExe {
             }
             if ($pinKey) {
                 $restoreEnv = @{ $pinKey = $pinnedModel; 'BOB_SEAT_MODEL_PIN' = '1' }
+            }
+        }
+        if ($pinnedEffort -or $pinnedContext) {
+            if (-not $restoreEnv) { $restoreEnv = @{} }
+            if ($pinnedEffort) {
+                $restoreEnv['BOB_WORKER_START_EFFORT'] = $pinnedEffort
+                $restoreEnv['BOB_GROK_EFFORT'] = $pinnedEffort
+            }
+            if ($pinnedContext) {
+                $restoreEnv['BOB_WORKER_START_CONTEXT'] = $pinnedContext
+                $restoreEnv['BOB_GROK_CONTEXT'] = $pinnedContext
             }
         }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
@@ -2904,7 +2964,7 @@ function Update-Hover {
             # FR #6317 / MRB #6321: pass hover-formatted Copilot line + bar (Format-BobCopilotPoolLine is module-private).
             $copilotBarPct = $null
             try { if ($h.copilot_bar -and $h.copilot_bar.known) { $copilotBarPct = [int]$h.copilot_bar.pct } } catch { $copilotBarPct = $null }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines) -DigestPoolRows @($h.digest_pools)
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -CopilotTaskLines @($h.copilot_task_lines) -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines) -DigestPoolRows @($h.digest_pools)
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -3237,14 +3297,109 @@ function Show-BobTrayAbout {
         $logs.Location = New-Object System.Drawing.Point 350, 398
         $logs.Size = New-Object System.Drawing.Size 100, 23
         $logs.Add_Click({
-            # FR #8677 / BOB-09: same tray log as menu Open log
+            # FR #8677 / BOB-09 / FR #9261: tray watch log (top-level Open log removed)
             if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
         })
+        # FR #9264 / BOB-TRAY-UI-04: OpenCode keys on About (TipForm is primary; PS fallback mirrors the button).
+        $keys = New-Object System.Windows.Forms.Button
+        $keys.Name = 'opencodeKeys'
+        $keys.Text = 'OpenCode keys'
+        $keys.Location = New-Object System.Drawing.Point 230, 398
+        $keys.Size = New-Object System.Drawing.Size 110, 23
+        $keys.Add_Click({
+            param($sender, $e)
+            try {
+                $cms = New-Object System.Windows.Forms.ContextMenuStrip
+                $set = $cms.Items.Add('Set key...')
+                $set.Add_Click({
+                    # $RepoRoot defaults to bob/tray (parent of tools); helper lives at bob/scripts or install scripts/.
+                    $helperCandidates = @(
+                        (Join-Path $RepoRoot '..\scripts\Write-BobOpencodeGoApiKey.ps1'),
+                        (Join-Path $RepoRoot 'scripts\Write-BobOpencodeGoApiKey.ps1'),
+                        (Join-Path $RepoRoot 'bob\scripts\Write-BobOpencodeGoApiKey.ps1')
+                    )
+                    $helper = $null
+                    foreach ($cand in $helperCandidates) {
+                        $full = [IO.Path]::GetFullPath($cand)
+                        if (Test-Path -LiteralPath $full) { $helper = $full; break }
+                    }
+                    if ($helper) {
+                        # Quote -File path for spaces (Windows PowerShell 5.1 Start-Process ArgumentList).
+                        $fileArg = '"{0}"' -f $helper
+                        # Do not -Wait: keep About/tray UI responsive while the key prompt runs.
+                        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $fileArg)
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show('Write-BobOpencodeGoApiKey.ps1 not found.', 'OpenCode keys')
+                    }
+                }.GetNewClosure())
+                $keysDir = Join-Path $RepoRoot 'config\opencode-keys'
+                $selected = ''
+                $selFile = Join-Path $keysDir 'selected.txt'
+                if (Test-Path -LiteralPath $selFile) { $selected = (Get-Content -LiteralPath $selFile -ErrorAction SilentlyContinue | Select-Object -First 1) }
+                if (Test-Path -LiteralPath $keysDir) {
+                    Get-ChildItem -LiteralPath $keysDir -Filter '*.apikey' -ErrorAction SilentlyContinue | ForEach-Object {
+                        $lab = [IO.Path]::GetFileNameWithoutExtension($_.Name)
+                        $mark = if ($lab -eq $selected) { ' (selected)' } else { '' }
+                        $mi = $cms.Items.Add(('Select {0}{1}' -f $lab, $mark))
+                        $capture = $lab
+                        $mi.Add_Click({
+                            if (-not (Test-Path -LiteralPath $keysDir)) { New-Item -ItemType Directory -Path $keysDir -Force | Out-Null }
+                            try {
+                                Set-Content -LiteralPath (Join-Path $keysDir 'selected.txt') -Value $capture -Encoding ASCII -ErrorAction Stop
+                                [System.Windows.Forms.MessageBox]::Show(('Selected OpenCode key ''{0}''.' -f $capture), 'OpenCode keys')
+                            } catch {
+                                [System.Windows.Forms.MessageBox]::Show(
+                                    ('Could not select OpenCode key ''{0}'': {1}' -f $capture, $_.Exception.Message),
+                                    'OpenCode keys'
+                                )
+                            }
+                        }.GetNewClosure())
+                    }
+                }
+                $rem = $cms.Items.Add('Remove key...')
+                $rem.Add_Click({
+                    if (-not (Test-Path -LiteralPath $keysDir)) {
+                        [System.Windows.Forms.MessageBox]::Show('No labelled OpenCode keys on this box.', 'OpenCode keys')
+                        return
+                    }
+                    $labs = @(Get-ChildItem -LiteralPath $keysDir -Filter '*.apikey' -ErrorAction SilentlyContinue | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) })
+                    if ($labs.Count -eq 0) {
+                        [System.Windows.Forms.MessageBox]::Show('No labelled OpenCode keys on this box.', 'OpenCode keys')
+                        return
+                    }
+                    $pick = $labs[0]
+                    if ($labs.Count -gt 1) {
+                        $pick = $labs | Out-GridView -Title 'Remove OpenCode key' -OutputMode Single
+                        if (-not $pick) { return }
+                    } else {
+                        $dr = [System.Windows.Forms.MessageBox]::Show(('Remove OpenCode key ''{0}''?' -f $pick), 'OpenCode keys', 'OKCancel', 'Warning')
+                        if ($dr -ne 'OK') { return }
+                    }
+                    try {
+                        Remove-Item -LiteralPath (Join-Path $keysDir ($pick + '.apikey')) -Force -ErrorAction Stop
+                        if ($selected -eq $pick) {
+                            Remove-Item -LiteralPath $selFile -Force -ErrorAction SilentlyContinue
+                        }
+                        [System.Windows.Forms.MessageBox]::Show(('Removed OpenCode key ''{0}''.' -f $pick), 'OpenCode keys')
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            ('Could not remove OpenCode key ''{0}'': {1}' -f $pick, $_.Exception.Message),
+                            'OpenCode keys'
+                        )
+                    }
+                }.GetNewClosure())
+                # Use click sender so the menu still anchors after Show-BobTrayAbout returns.
+                $anchor = if ($sender) { $sender } else { $keys }
+                $cms.Show($anchor, (New-Object System.Drawing.Point 0, $anchor.Height))
+            } catch {
+                Write-TrayLog ('about opencode keys menu error: ' + $_.Exception.Message)
+            }
+        }.GetNewClosure())
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
         $ok.Add_Click({ $script:aboutForm.Close() })
-        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $logs, $ok)) { $form.Controls.Add($c) }
+        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $keys, $logs, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
         $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
@@ -3745,7 +3900,7 @@ function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Obsolete Cursor spending-group bars (high cost / Low cost foreach) stay removed.
     # FR #7243 / #7326: digest-driven fleet families (OpenCode go + Copilot). xAI weekly is per-shop.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $CopilotTaskLines = @(), $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -3861,6 +4016,23 @@ function Rebuild-BobTrayTiles {
             $copilotHeadingColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         }
         $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null -HeadingColor $copilotHeadingColor
+
+        # FR #9750: job lines once under Copilot pool UsageRow (digest.copilot.tasks).
+        $ctLines = @($CopilotTaskLines | Where-Object { $_ })
+        if ($ctLines.Count -gt 0) {
+            $jobTxt = ($ctLines -join "`n")
+            $jl = New-Object System.Windows.Forms.Label
+            $jl.AutoSize = $true
+            $jl.MaximumSize = New-Object System.Drawing.Size 392, 0
+            $jl.Font = $jobFont
+            $jl.ForeColor = $fg
+            $jl.BackColor = [System.Drawing.Color]::Transparent
+            $jl.Text = $jobTxt
+            $jl.Location = New-Object System.Drawing.Point (18 + 14), $y
+            $script:tileHost.Controls.Add($jl)
+            $nLines = @($jobTxt -split "`n").Count
+            $y += [Math]::Max(18, (16 * $nLines) + 8)
+        }
         # FR #7326: extra digest pools; skip Go/Copilot already painted; never paint Cursor / Grok chat / OpenCode free.
         $skipIds = @{
             'grok-build' = $true; 'grok-chat' = $true; 'opencode-go' = $true; 'copilot' = $true
@@ -4323,8 +4495,9 @@ function Show-BobTrayCard {
 
 function Get-BobTrayWorkerAgentChoices {
     <#
-      Agents submenu rows from bob-worker.exe --list-agents.
-      Automatic stays available. Explicit rows come only from that JSON.
+      Workers submenu rows from bob-worker.exe --list-agents.
+      FR #9262 / BOB-TRAY-UI-02: no Automatic/auto row; Grok/Cursor/OpenCode Free|Paid (FR #9588).
+      Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
       The child is killed at 8s. read_fuel can otherwise block for 90s.
     #>
@@ -4334,19 +4507,16 @@ function Get-BobTrayWorkerAgentChoices {
     # FR #6301: start entries carry no fuel/quota prose (empty reason).
     $unknownReason = ''
     $fallback = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
     $missing = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
     )
     $unknown = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
         [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
@@ -4404,9 +4574,13 @@ function Get-BobTrayWorkerAgentChoices {
                 $again.Count -eq 0 -or
                 ($nonAuto.Count -ge 3 -and $unknownFuel -ge 3)
             )
-            if (-not $refreshUnknown) { return @($again) }
+            if (-not $refreshUnknown) {
+                # FR #9262: never surface Automatic/auto in Workers menu rows.
+                return @($again | Where-Object { [string]$_.id -ne 'auto' })
+            }
         }
-        return @($obj.agents)
+        # FR #9262 / BOB-TRAY-UI-02: list-agents may still emit auto for engine fill; menu omits it.
+        return @($obj.agents | Where-Object { [string]$_.id -ne 'auto' })
     }
     catch {
         # Malformed JSON or a Start-Process throw on refresh must not replace
@@ -4421,28 +4595,75 @@ function Get-BobTrayWorkerAgentChoices {
 }
 
 
-function Get-BobTrayGrokWebhookModel {
-    # FR #8725 / BOB-17: model field of the Grok agent row in models-catalog.json.
-    param([string]$CatalogPath)
-    if ([string]::IsNullOrWhiteSpace($CatalogPath)) { return '' }
-    if (-not (Test-Path -LiteralPath $CatalogPath)) { return '' }
-    try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
-    foreach ($row in @($doc.agents)) {
-        if ([string]$row.agent -eq 'Grok') { return [string]$row.model }
+function Resolve-BobTrayWeightsAgentRow {
+    # FR #9586: live GET /bob/v1/models first; BOB_MODELS_CATALOG / -CatalogPath fixture fallback only.
+    param(
+        [Parameter(Mandatory)][string]$AgentName,
+        [string]$CatalogPath
+    )
+    $want = ([string]$AgentName).Trim()
+    if (-not $want) { return $null }
+    $fixture = $CatalogPath
+    if ([string]::IsNullOrWhiteSpace($fixture)) {
+        $fixture = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
     }
+    if (Get-Command Get-BobModelsWebhookAgentRow -ErrorAction SilentlyContinue) {
+        try {
+            $live = Get-BobModelsWebhookAgentRow -AgentId $want
+            if ($live) { return $live }
+        } catch { }
+        if (-not [string]::IsNullOrWhiteSpace($fixture) -and (Test-Path -LiteralPath $fixture)) {
+            try {
+                $fromFile = Get-BobModelsWebhookAgentRow -AgentId $want -FixturePath $fixture
+                if ($fromFile) { return $fromFile }
+            } catch { }
+        }
+    }
+    # Offline / no BobBridge export: read catalog file directly (fixture tests).
+    if ([string]::IsNullOrWhiteSpace($fixture) -or -not (Test-Path -LiteralPath $fixture)) { return $null }
+    try { $doc = Get-Content -Raw -LiteralPath $fixture | ConvertFrom-Json } catch { return $null }
+    $wantLc = $want.ToLowerInvariant()
+    foreach ($row in @($doc.agents)) {
+        if (-not $row) { continue }
+        $id = ''
+        if ($row.PSObject.Properties.Name -contains 'agent') { $id = [string]$row.agent }
+        elseif ($row.PSObject.Properties.Name -contains 'id') { $id = [string]$row.id }
+        elseif ($row.PSObject.Properties.Name -contains 'name') { $id = [string]$row.name }
+        if ($id.Trim().ToLowerInvariant() -eq $wantLc) { return $row }
+    }
+    return $null
+}
+
+function Get-BobTrayWeightsLaunchField {
+    # FR #9586: model|context|effort from Weights row (live GET + catalog fallback).
+    param(
+        [Parameter(Mandatory)][string]$AgentName,
+        [Parameter(Mandatory)][string]$Field,
+        [string]$CatalogPath
+    )
+    $row = Resolve-BobTrayWeightsAgentRow -AgentName $AgentName -CatalogPath $CatalogPath
+    if (-not $row) { return '' }
+    $name = ([string]$Field).Trim().ToLowerInvariant()
+    if (-not $name) { return '' }
+    try {
+        if ($row.PSObject.Properties.Name -contains $name) {
+            return ([string]$row.$name).Trim()
+        }
+    } catch { }
     return ''
 }
 
+function Get-BobTrayGrokWebhookModel {
+    # FR #8725 / BOB-17 + FR #9586: Grok model from Weights (live GET, catalog fallback).
+    param([string]$CatalogPath)
+    return (Get-BobTrayWeightsLaunchField -AgentName 'Grok' -Field 'model' -CatalogPath $CatalogPath)
+}
+
 function Get-BobTrayOpencodeWebhookModel {
-    # FR #8732 / BOB-30: model field of the named Opencode agent row in models-catalog.json.
+    # FR #8732 / BOB-30 + FR #9586: named Opencode row model from Weights (live GET, catalog fallback).
     param([string]$CatalogPath, [string]$AgentName)
-    if ([string]::IsNullOrWhiteSpace($CatalogPath)) { return '' }
-    if (-not (Test-Path -LiteralPath $CatalogPath)) { return '' }
-    try { $doc = Get-Content -Raw -LiteralPath $CatalogPath | ConvertFrom-Json } catch { return '' }
-    foreach ($row in @($doc.agents)) {
-        if ([string]$row.agent -eq $AgentName) { return [string]$row.model }
-    }
-    return ''
+    if ([string]::IsNullOrWhiteSpace($AgentName)) { return '' }
+    return (Get-BobTrayWeightsLaunchField -AgentName $AgentName -Field 'model' -CatalogPath $CatalogPath)
 }
 
 function Update-BobTrayWorkerAgentsMenu {
@@ -4452,27 +4673,76 @@ function Update-BobTrayWorkerAgentsMenu {
     $MenuItem.DropDownItems.Clear()
     foreach ($row in @($Rows)) {
         $id = [string]$row.id
+        # FR #9262 / BOB-TRAY-UI-02: skip Automatic/auto even if list-agents still emits it.
+        if ($id -eq 'auto') { continue }
         $label = [string]$row.label
         $reason = [string]$row.reason
         $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
+        $available = $false
+        try { $available = [bool]$row.available } catch { $available = $false }
+        # FR #9588: OpenCode Free / OpenCode Paid are top-level Workers siblings (was FR #9263 submenu).
+        if ($id -eq 'opencode') {
+            # FR #8728 / BOB-31 + FR #9267: install assets\ then bob\tray\assets\.
+            $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
+            if (-not (Test-Path -LiteralPath $ocIcon)) {
+                $ocIcon = Join-Path $RepoRoot 'bob\tray\assets\opencode-favicon.ico'
+            }
+            Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
+            foreach ($slot in @('free', 'paid')) {
+                $slotLabel = if ($slot -eq 'free') { 'OpenCode Free' } else { 'OpenCode Paid' }
+                $child = New-Object System.Windows.Forms.ToolStripMenuItem $slotLabel
+                $child.Tag = ('opencode|{0}' -f $slot)
+                $child.Enabled = $available
+                if (Test-Path -LiteralPath $ocIcon) {
+                    try { $child.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
+                    catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
+                } else {
+                    Write-TrayLog ('menu-icon MISSING file=opencode-favicon.ico path=' + $ocIcon)
+                }
+                $child.Add_Click({
+                        param($sender, $e)
+                        $picked = ''
+                        if ($sender) { $picked = [string]$sender.Tag }
+                        if ($picked -notlike 'opencode|*') { return }
+                        # Parse slot from Tag (avoid foreach closure on $slot / $Matches).
+                        $ocSlot = if ($picked.EndsWith('|paid')) { 'paid' } else { 'free' }
+                        if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                            Show-BobTrayOpenCodePaidExhaustedDialog
+                            return
+                        }
+                        # FR #9586: Weights SoT is live GET /bob/v1/models (catalog = fixture fallback).
+                        $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                        $rowAgent = if ($ocSlot -eq 'free') { 'Opencode-Free' } else { 'Opencode' }
+                        $webhook = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'model' -CatalogPath $catalog
+                        $ocContext = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'context' -CatalogPath $catalog
+                        $ocEffort = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'effort' -CatalogPath $catalog
+                        $ocModel = if ($ocSlot -eq 'paid') { 'opencode-go/deepseek-v4-pro' } else { 'opencode/deepseek-v4.1-flash-free' }
+                        if (-not [string]::IsNullOrWhiteSpace($webhook)) { $ocModel = $webhook }
+                        Write-TrayLog ('workers-opencode slot=' + $ocSlot)
+                        Write-TrayLog ('Workers Open Code: webhook model ' + $ocModel + ' context=' + $ocContext + ' effort=' + $ocEffort + ' agent ' + $rowAgent + ' source=models-webhook')
+                        Write-TrayLog ('workers-opencode model=' + $ocModel)
+                        Write-TrayLog 'Workers Open Code: opencode CLI start'
+                        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Context $ocContext -Effort $ocEffort -Trigger 'workers-opencode'
+                    })
+                [void]$MenuItem.DropDownItems.Add($child)
+            }
+            Write-TrayLog 'Workers Open Code: top-level Free|Paid (FR #9588)'
+            continue
+        }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
-        if ($id -eq 'opencode') {
-            # FR #8728 / BOB-31: Workers > Open Code uses the opencode.ai favicon.
-            $ocIcon = Join-Path $RepoRoot 'assets\opencode-favicon.ico'
-            Write-TrayLog ('Workers Open Code: favicon ' + $ocIcon)
-            if (Test-Path -LiteralPath $ocIcon) {
-                try { $item.Image = (New-Object System.Drawing.Icon($ocIcon)).ToBitmap() }
-                catch { Write-TrayLog ('Workers Open Code favicon failed: ' + $_.Exception.Message) }
-            }
-        }
         if ($id -eq 'grok') {
-            # FR #8723 / BOB-19: Workers > Grok uses the grok.com favicon.
+            # FR #8723 / BOB-19 + FR #9267: install assets\ then bob\tray\assets\.
             $grokIcon = Join-Path $RepoRoot 'assets\grok-favicon.ico'
+            if (-not (Test-Path -LiteralPath $grokIcon)) {
+                $grokIcon = Join-Path $RepoRoot 'bob\tray\assets\grok-favicon.ico'
+            }
             Write-TrayLog ('Workers Grok: favicon ' + $grokIcon)
             if (Test-Path -LiteralPath $grokIcon) {
                 try { $item.Image = (New-Object System.Drawing.Icon($grokIcon)).ToBitmap() }
                 catch { Write-TrayLog ('Workers Grok favicon failed: ' + $_.Exception.Message) }
+            } else {
+                Write-TrayLog ('menu-icon MISSING file=grok-favicon.ico path=' + $grokIcon)
             }
         }
         $available = $false
@@ -4524,57 +4794,73 @@ function Update-BobTrayWorkerAgentsMenu {
                     }
                     # FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat.
                     Write-TrayLog 'Workers Grok: grok CLI start'
-                    # FR #8725 / BOB-17: cite the Grok row from the models webhook before launch.
+                    # FR #8725 / BOB-17 + FR #9586: live GET /bob/v1/models Weights row.
                     $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
-                    if ([string]::IsNullOrWhiteSpace($catalog)) {
-                        $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
-                        $catalog = Join-Path $install 'home\models-catalog.json'
+                    $model = Get-BobTrayWeightsLaunchField -AgentName 'Grok' -Field 'model' -CatalogPath $catalog
+                    $context = Get-BobTrayWeightsLaunchField -AgentName 'Grok' -Field 'context' -CatalogPath $catalog
+                    $effort = Get-BobTrayWeightsLaunchField -AgentName 'Grok' -Field 'effort' -CatalogPath $catalog
+                    Write-TrayLog ('Workers Grok: webhook model ' + $model + ' context=' + $context + ' effort=' + $effort + ' source=models-webhook')
+                    if ([string]::IsNullOrWhiteSpace($model)) {
+                        Write-TrayLog 'workers-grok refuse reason=weights-model-missing'
+                        try {
+                            [void][System.Windows.Forms.MessageBox]::Show(
+                                'Weights has no Grok model (GET /bob/v1/models). Save Weights, then try again.',
+                                'Bobiverse',
+                                [System.Windows.Forms.MessageBoxButtons]::OK,
+                                [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        } catch { }
+                        return
                     }
-                    $model = Get-BobTrayGrokWebhookModel -CatalogPath $catalog
-                    Write-TrayLog ('Workers Grok: webhook model ' + $model + ' path ' + $catalog)
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model -Context $context -Effort $effort
                 }
-                elseif ($picked -eq 'opencode') {
-                    # FR #8733 / BOB-28: free+paid exhausted -> dialog + quit (no start).
+                elseif ($picked -eq 'opencode' -or $picked -match '^opencode\|(free|paid)$') {
+                    # FR #9588 / FR #9263: top-level tags opencode|free / opencode|paid.
+                    # Legacy flat Tag=opencode keeps free-first (BOB-27) for older dumps.
+                    $ocSlot = 'free'
+                    if ($picked -match '^opencode\|(free|paid)$') { $ocSlot = $Matches[1] }
+                    elseif ($picked -eq 'opencode') {
+                        if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
+                            Show-BobTrayOpenCodePaidExhaustedDialog
+                            return
+                        }
+                        $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
+                        if (-not $ocFuel) { $ocFuel = Join-Path $RepoRoot 'run\opencode-fuel.json' }
+                        if (Test-Path -LiteralPath $ocFuel) {
+                            $ocDoc = Get-Content -LiteralPath $ocFuel -Raw
+                            $ocFree = $null
+                            $ocPaid = $null
+                            if ($ocDoc -match '"free"\s*:\s*(-?\d+)') { $ocFree = [int]$Matches[1] }
+                            if ($ocDoc -match '"paid"\s*:\s*(-?\d+)') { $ocPaid = [int]$Matches[1] }
+                            if ($null -ne $ocFree -and $ocFree -le 0 -and $null -ne $ocPaid -and $ocPaid -gt 0) { $ocSlot = 'paid' }
+                        }
+                    }
                     if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
                         Show-BobTrayOpenCodePaidExhaustedDialog
                         return
                     }
-                    # FR #8730 / BOB-27: free first; paid when free fuel is 0 and paid is above 0.
-                    $ocSlot = 'free'
-                    $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
-                    if (-not $ocFuel) { $ocFuel = Join-Path $RepoRoot 'run\opencode-fuel.json' }
-                    if (Test-Path -LiteralPath $ocFuel) {
-                        $ocDoc = Get-Content -LiteralPath $ocFuel -Raw
-                        $ocFree = $null
-                        $ocPaid = $null
-                        if ($ocDoc -match '"free"\s*:\s*(-?\d+)') { $ocFree = [int]$Matches[1] }
-                        if ($ocDoc -match '"paid"\s*:\s*(-?\d+)') { $ocPaid = [int]$Matches[1] }
-                        if ($null -ne $ocFree -and $ocFree -le 0 -and $null -ne $ocPaid -and $ocPaid -gt 0) { $ocSlot = 'paid' }
-                    }
-                    if ($ocSlot -eq 'paid') { Write-TrayLog 'workers-opencode slot=paid reason=free-exhausted' }
+                    if ($ocSlot -eq 'paid') { Write-TrayLog 'workers-opencode slot=paid' }
                     else { Write-TrayLog 'workers-opencode slot=free' }
-                    $ocModel = 'opencode/deepseek-v4.1-flash-free'
-                    if ($ocSlot -eq 'paid') { $ocModel = 'opencode-go/deepseek-v4-pro' }
-                    # FR #8734 / BOB-29: log the model this click starts (after free/paid choose).
-                    Write-TrayLog ('workers-opencode model=' + $ocModel)
-
-                    # FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat.
-                    Write-TrayLog 'Workers Open Code: opencode CLI start'
-                    # FR #8732 / BOB-30: cite the Opencode / Opencode-Free row for the chosen slot.
+                    $ocModel = if ($ocSlot -eq 'paid') { 'opencode-go/deepseek-v4-pro' } else { 'opencode/deepseek-v4.1-flash-free' }
+                    # FR #9586: Weights SoT is live GET /bob/v1/models (catalog = fixture fallback).
                     $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
-                    if ([string]::IsNullOrWhiteSpace($catalog)) {
-                        $install = Split-Path (Split-Path $RepoRoot -Parent) -Parent
-                        $catalog = Join-Path $install 'home\models-catalog.json'
-                    }
                     $rowAgent = if ($ocSlot -eq 'free') { 'Opencode-Free' } else { 'Opencode' }
-                    $webhook = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName $rowAgent
-                    $paidModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode'
-                    $freeModel = Get-BobTrayOpencodeWebhookModel -CatalogPath $catalog -AgentName 'Opencode-Free'
-                    Write-TrayLog ('Workers Open Code: webhook model ' + $paidModel + ' agent Opencode path ' + $catalog)
-                    Write-TrayLog ('Workers Open Code: webhook model ' + $freeModel + ' agent Opencode-Free path ' + $catalog)
+                    $webhook = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'model' -CatalogPath $catalog
+                    $ocContext = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'context' -CatalogPath $catalog
+                    $ocEffort = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'effort' -CatalogPath $catalog
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $webhook + ' context=' + $ocContext + ' effort=' + $ocEffort + ' agent ' + $rowAgent + ' source=models-webhook')
                     if (-not [string]::IsNullOrWhiteSpace($webhook)) { $ocModel = $webhook }
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Trigger 'workers-opencode'
+                    Write-TrayLog ('workers-opencode model=' + $ocModel)
+                    Write-TrayLog 'Workers Open Code: opencode CLI start'
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Context $ocContext -Effort $ocEffort -Trigger 'workers-opencode'
+                }
+                elseif ($picked -eq 'cursor') {
+                    # FR #9586: Cursor Weights row from live GET /bob/v1/models.
+                    $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
+                    $curModel = Get-BobTrayWeightsLaunchField -AgentName 'Cursor' -Field 'model' -CatalogPath $catalog
+                    $curContext = Get-BobTrayWeightsLaunchField -AgentName 'Cursor' -Field 'context' -CatalogPath $catalog
+                    $curEffort = Get-BobTrayWeightsLaunchField -AgentName 'Cursor' -Field 'effort' -CatalogPath $catalog
+                    Write-TrayLog ('Workers Cursor: webhook model ' + $curModel + ' context=' + $curContext + ' effort=' + $curEffort + ' source=models-webhook')
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent 'cursor' -Model $curModel -Context $curContext -Effort $curEffort -Trigger 'menu'
                 }
                 else {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
@@ -4632,30 +4918,73 @@ $miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.
 $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
+# FR #8689 / #9267 / #9587: Plan GANTT at menu build (16x16); loud MISSING.
+$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
+if (-not (Test-Path -LiteralPath $planGantt)) {
+    $planGantt = Join-Path $RepoRoot 'bob\tray\assets\plan-gantt.ico'
+}
+Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
+if (Test-Path -LiteralPath $planGantt) {
+    try {
+        $planIcon = New-Object System.Drawing.Icon $planGantt, 16, 16
+        $miPlan.Image = $planIcon.ToBitmap()
+        $planIcon.Dispose()
+    } catch {
+        Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message)
+        Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
+    }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
+}
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
-# FR #8694 / BOB-54: existing priority.ico next to PriorityAgent.exe.
+# FR #9269 / BOB-TRAY-UI-08 + BOB-54 + FR #9267: vendor\priority then assets\priority.ico.
 $priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
+if (-not (Test-Path -LiteralPath $priorityIco)) {
+    $priorityIco = Join-Path $RepoRoot 'assets\priority.ico'
+}
+if (-not (Test-Path -LiteralPath $priorityIco)) {
+    $priorityIco = Join-Path $RepoRoot 'bob\tray\assets\priority.ico'
+}
 if (Test-Path -LiteralPath $priorityIco) {
     try {
-        $priorityIcon = New-Object System.Drawing.Icon $priorityIco
+        $priorityIcon = New-Object System.Drawing.Icon $priorityIco, 16, 16
         $miPriority.Image = $priorityIcon.ToBitmap()
         $priorityIcon.Dispose()
-        Write-TrayLog 'priority-icon path=vendor/priority/priority.ico'
+        Write-TrayLog ('priority-icon path=' + $priorityIco)
     }
     catch {
         Write-TrayLog ('priority-icon failed: ' + $_.Exception.Message)
     }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=priority.ico path=' + $priorityIco)
 }
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
-# BOB-40: Agents > Jeeves uses the existing butler icon.
-$butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
-if (-not (Test-Path -LiteralPath $butler)) {
-    $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
+# FR #9270 / #9587: butler helper may live beside Watch, under tools\, or bob\tray\tools\.
+$butlerHelperCandidates = @(
+    (Join-Path $PSScriptRoot 'BobTrayJeevesButler.ps1'),
+    (Join-Path $RepoRoot 'tools\BobTrayJeevesButler.ps1'),
+    (Join-Path $RepoRoot 'bob\tray\tools\BobTrayJeevesButler.ps1')
+)
+foreach ($butlerHelper in $butlerHelperCandidates) {
+    if (Test-Path -LiteralPath $butlerHelper) { . $butlerHelper; break }
 }
-if (Test-Path -LiteralPath $butler) {
-    $ico = New-Object System.Drawing.Icon $butler
-    $miJeeves.Image = $ico.ToBitmap()
-    Write-TrayLog 'jeeves-icon path=jeeves/assets/jeeves-butler.ico'
+$butler = $null
+if (Get-Command Resolve-BobTrayJeevesButlerIcon -ErrorAction SilentlyContinue) {
+    $butler = Resolve-BobTrayJeevesButlerIcon -RepoRoot $RepoRoot
+}
+if ($butler -and (Test-Path -LiteralPath $butler)) {
+    try {
+        $ico = New-Object System.Drawing.Icon $butler, 16, 16
+        $miJeeves.Image = $ico.ToBitmap()
+        $ico.Dispose()
+        Write-TrayLog ('jeeves-icon path={0} source=https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico' -f $butler)
+        Write-TrayLog ('menu-icon file=jeeves-butler.ico path=' + $butler + ' ok=1')
+    } catch {
+        Write-TrayLog ('jeeves-icon failed: ' + $_.Exception.Message)
+        Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + $butler)
+    }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + [string]$butler)
 }
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
@@ -4663,8 +4992,8 @@ if (Test-Path -LiteralPath $butler) {
 $miWorkers = New-Object System.Windows.Forms.ToolStripMenuItem('Workers')
 [void]$menu.Items.Add($miWorkers)
 # Do not call --list-agents here. Engine mode never shows this menu; a fuel read can take 90s.
+# FR #9262 / BOB-TRAY-UI-02: Workers seed has no Automatic/auto row.
 Update-BobTrayWorkerAgentsMenu $miWorkers @(
-    [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
     [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = '' }
     [ordered]@{ id = 'opencode'; label = 'Open Code'; available = $true; installed = $true; reason = '' }
@@ -4677,10 +5006,18 @@ $miWorkers.Add_DropDownOpening({
     })
 $miWeights = $menu.Items.Add('Weights')
 $miAbout = $menu.Items.Add('About')
-$miLog = $menu.Items.Add('Open log')
+# FR #9261 / BOB-TRAY-UI-01: no top-level Open log (About Show logs opens the tray log).
 [void]$menu.Items.Add('-')
-$miRestart = $menu.Items.Add('Restart')
-$miExit = $menu.Items.Add('Exit')
+# FR #8706 / BOB-07 (operator 2026-11-24): Exit > Restart / Reload Engine / --- / Exit (TipForm).
+$miExitMenu = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$menu.Items.Add($miExitMenu)
+$miRestart = New-Object System.Windows.Forms.ToolStripMenuItem('Restart')
+$miReloadEngine = New-Object System.Windows.Forms.ToolStripMenuItem('Reload Engine')
+$miExit = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$miExitMenu.DropDownItems.Add($miRestart)
+[void]$miExitMenu.DropDownItems.Add($miReloadEngine)
+[void]$miExitMenu.DropDownItems.Add('-')
+[void]$miExitMenu.DropDownItems.Add($miExit)
 $notify.ContextMenuStrip = $menu
 
 # FR #9170: timestamp arm (items stay enabled; never bulk enabled=false).
@@ -4768,15 +5105,7 @@ $notify.Add_MouseUp({
     })
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
-if (-not (Test-Path -LiteralPath $planGantt)) {
-    $planGantt = Join-Path $RepoRoot 'bob\tray\assets\plan-gantt.ico'
-}
-Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
-if (Test-Path -LiteralPath $planGantt) {
-    try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
-    catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
-}
+# FR #9587: Plan GANTT icon applied at Agents menu build (above); click only here.
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
         if ([string]::IsNullOrWhiteSpace($fuel)) {
@@ -4793,8 +5122,23 @@ $miPlan.Add_Click({
         }
         Start-BobTrayPlanExe
     })
-# BOB-06 tree only: Priority/Jeeves start slices land later; keep menu click path.
-$miPriority.Add_Click({ Start-BobTrayPriorityExe })
+# FR #8698 / BOB-52: Priority no-token gate before Start-BobTrayPriorityExe (mirror Plan BOB-46).
+$miPriority.Add_Click({
+        $fuel = [Environment]::GetEnvironmentVariable('BOB_PRIORITY_FUEL_FILE')
+        if ([string]::IsNullOrWhiteSpace($fuel)) {
+            $fuel = Join-Path $env:LOCALAPPDATA 'Bobiverse\priority-fuel.json'
+        }
+        if (Test-BobTrayPriorityFuelEmpty -FuelPath $fuel) {
+            Write-TrayLog ('Priority: no tokens; quit ' + $fuel)
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'Priority: this box has no tokens. PriorityAgent will quit instead of starting without fuel.',
+                'Priority - no tokens',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        Start-BobTrayPriorityExe
+    })
 $miJeeves.Add_Click({
         if (-not (Test-BobTrayJeevesDrive)) {
             Write-TrayLog 'Jeeves: J: map missing; quit'
@@ -4837,7 +5181,8 @@ $miJeeves.Add_Click({
         Write-TrayLog 'jeeves-mcp path=J:\.grok\skills'
         Write-TrayLog 'cwd J:'
         Write-TrayLog 'Jeeves: grok start'
-        Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'jeeves-menu'
+        # FR #9640: --mode jeeves is uncapped (Agents > Jeeves outside Workers MaxWorkers=2).
+        Start-BobTrayWorkerExe -Mode 'jeeves' -Agent 'grok' -Trigger 'jeeves-menu'
     })
 $miWeights.Add_Click({
         Write-TrayLog 'Weights: menu click (BOB-06 tree; form is BOB-12/13)'
@@ -4851,9 +5196,19 @@ $miAbout.Add_Click({
         Clear-Attention
         Show-BobTrayAbout
     })
-$miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
+# FR #8706 / BOB-07: Exit submenu handlers (Restart=host, Reload Engine=tray-cmd reload).
+# Fold FR #9170 arm-ts + FR #9163 confirm from main.
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
+$miReloadEngine.Add_Click({
+        # TipForm: request host engine reload via tray-cmd (bob-tray.exe TakeReload).
+        try {
+            $run = Join-Path $RepoRoot 'run'
+            if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Path $run -Force | Out-Null }
+            Set-Content -LiteralPath (Join-Path $run 'tray-cmd.txt') -Value 'reload' -Encoding ascii
+            Write-TrayLog 'Reload Engine: wrote tray-cmd reload'
+        } catch { Write-TrayLog ('Reload Engine: ' + $_.Exception.Message) }
+    })
 $miExit.Add_Click({
         # FR #9170: ignore Exit inside the timestamp arm window (items stay enabled; no grey menu).
         if ([datetime]::UtcNow -lt $script:menuArmUntilUtc) {
@@ -5023,11 +5378,62 @@ $poll.Add_Tick({
                     try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
                     try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
                 }
+                # FR #9462: durable online_zero_workers alert from digest/report (TipForm Agents; no silent auto-start).
+                try {
+                    if (Get-Command Get-BobTrayOnlineZeroWorkerAlerts -ErrorAction SilentlyContinue) {
+                        $ozOfferable = 0
+                        try { $ozOfferable = [int](Get-BobTrayCachedOfferableCount) } catch { $ozOfferable = 0 }
+                        $ozMachines = $null
+                        try {
+                            $repPath = $null
+                            if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
+                                $repPath = Join-Path (Get-BobIrcHome) 'bob-peers\_report-digest.json'
+                            }
+                            if ($repPath -and (Test-Path -LiteralPath $repPath)) {
+                                $repDoc = Get-Content -LiteralPath $repPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                                if ($repDoc -and $repDoc.machines) { $ozMachines = $repDoc.machines }
+                                if ($repDoc -and $repDoc.queue -and $null -ne $repDoc.queue.offerable_count) {
+                                    $ozOfferable = [int]$repDoc.queue.offerable_count
+                                }
+                            }
+                        } catch { }
+                        if (-not $ozMachines -and $script:lastFuelSnapshot -and $script:lastFuelSnapshot.machines) {
+                            $ozMachines = $script:lastFuelSnapshot.machines
+                        }
+                        $ozAlerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $ozMachines -OfferableCount $ozOfferable)
+                        if ($ozAlerts.Count -gt 0) {
+                            $alerts = @($alerts) + @($ozAlerts)
+                            Write-TrayLog ('FR #9462 online_zero_workers alerts=' + ($ozAlerts -join ' | '))
+                        }
+                        # FR #9471: HealEngine storm stamp -> TipForm alert (no silent startworker recovery gap).
+                        if (Get-Command Get-BobTrayEngineStormAlert -ErrorAction SilentlyContinue) {
+                            $stormAlert = Get-BobTrayEngineStormAlert -Root $RepoRoot
+                            if ($stormAlert) {
+                                $alerts = @($alerts) + @($stormAlert)
+                                Write-TrayLog ('FR #9471 ' + $stormAlert)
+                            }
+                        }
+                        if (Get-Command Get-BobTrayEngineWakeAlert -ErrorAction SilentlyContinue) {
+                            $wakeAlert = Get-BobTrayEngineWakeAlert -Root $RepoRoot
+                            if ($wakeAlert) {
+                                $alerts = @($alerts) + @($wakeAlert)
+                                Write-TrayLog ('FR #9513 ' + $wakeAlert)
+                            }
+                        }
+                    }
+                } catch {
+                    Write-TrayLog ('FR #9462 online_zero_workers: ' + $_.Exception.Message)
+                }
                 if ($alerts.Count -gt 0) {
                     $stallFr = Get-BobStallFrIntake -Alert ([string]$alerts[0])
                     Write-TrayLog ('stall-fr repo=' + $stallFr.Repo + ' title=' + $stallFr.Title)
                     # BOB-43: intervene so offerable work can move (nudge under-cap fill cooldown).
-                    if (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue) {
+                    # FR #9462 / #3180: online_zero_workers is TipForm Agents only — skip auto intervene/fill nudge.
+                    $ozOnly = $true
+                    foreach ($a in @($alerts)) {
+                        if ($a -and ($a -notmatch 'online_zero_workers|engine_restart_storm|engine_stale_wake')) { $ozOnly = $false; break }
+                    }
+                    if (-not $ozOnly -and (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue)) {
                         $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir
                         if ($qi.Intervened) { Write-TrayLog $qi.LogLine }
                     }
@@ -5061,7 +5467,20 @@ $poll.Add_Tick({
                         param($Root)
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
-                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
+                            # FR #9462: keep online_zero_workers alert durable on tray-status.json (TipForm/Status paint).
+                            $merged = @()
+                            try {
+                                if ($h.online_zero_alerts) { $merged = @($h.online_zero_alerts) }
+                            } catch { $merged = @() }
+                            $merged = @($merged | Where-Object { $_ } | Select-Object -Unique)
+                            $kind = 'none'
+                            try {
+                                if (Get-Command Get-BobTrayAlertKind -ErrorAction SilentlyContinue) {
+                                    $kind = Get-BobTrayAlertKind -Alerts $merged -RemainingPct $h.remaining_pct
+                                }
+                            } catch { $kind = 'none' }
+                            $attn = ($merged.Count -gt 0)
+                            $model = New-BobTrayStatusModel -Hover $h -AlertKind $kind -Alerts $merged -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $attn -AttentionSeq 0 -Pulse $false
                             [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
                         }
                     })

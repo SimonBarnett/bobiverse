@@ -99,11 +99,67 @@ After token-free checks, if BOB-D offer skip is deployed (chair stamps `depends-
 
 Every monitor cycle once BOB-D is live: `monitor-start` and `bobiverse-jeeves-monitor` list `depends_on`. Report exit 1 via intake. Do not edit the queue and do not act as chair.
 
+## Shared chair gate (FR #9455 / #9857)
+
+Offer, `!assign`, `!list` / digest `offerable_count`, and stuck/report must agree
+for the same `(repo, id)` in the same tick. Product helpers:
+`gitclaim.depends_gate_reason` / `walk_depends_on_offer_reason` (FR #9857 alias;
+marker `bob_g1_shared_gate`). Digests with label `fr-digest` that are **not** in
+the local queue still resolve via `depends_issue_fetch_checker` (FR #9418 / #9434)
+— never surprise `depends-open` after unhold.
+
+| Situation | Reason |
+|---|---|
+| Depends-on unheld `fr-digest` (queued or live) | allow (None) |
+| Depends-on held digest (same-repo or `owner/repo#N`) | `depends-held` |
+| Depends-on ordinary OPEN issue | `depends-open` |
+| Bad token / lookup Unknown | `depends-unresolved` |
+
+## Nested + cross-repo Depends-on (FR #9856 / #9857 / #9858)
+
+- Walk **every** hard ref on the `Depends-on:` line (`#N` and `owner/repo#N`).
+- Relative `#N` resolves against the **child** row repo; qualified refs look up
+  that foreign repo only (FR #9220 / #9857).
+- **FR #9858:** a child in repo B is not offerable while a digest in repo A still
+  has label `hold` / `on-hold` (foreign label state via queue row or
+  `issue_fetch`). Fail-when: child offered while A digest held.
+- Multi-ref: all hard refs must be clear before offer (G1 soft-allow only for
+  **unheld** own/foreign `fr-digest` / `digest`).
+- Unrelated FRs with `Depends-on: (none)` (or no stamp) progress in parallel —
+  default park stamps the digest only; do not invent sibling chains.
+- **No auto-unhold:** chair never removes `hold` from a parent digest because a
+  phase finished. Operator / Plan unholds. Last-child close may close digests
+  (FR #9552); that is not an unhold cascade.
+
+## GIVEUP blocked:depends-on must stamp the body (FR #9469)
+
+ACK then GIVEUP with `reason=blocked:depends-on #N` / `blocked-on #N` /
+`depends_unresolved …#N` is **not** enough. Comment-only evidence leaves the
+issue body without that ref, so after cooldown/`!cleargiveup` the chair can
+re-offer while the prerequisite is still OPEN (class of #8833 / harvest #8755).
+
+Product auto-stamp (prefer this over monitor `gh`):
+
+1. Shop GIVEUP/NACK with a blocked-depends cue + parseable `#N` or `owner/repo#N`.
+2. Chair unions that ref into a **plain** `Depends-on:` line on the queue row
+   body and PATCHes the GitHub issue body (keeps existing deps; no `**Depends-on:**`).
+3. BOB-D3 / `depends_gate_reason` then skips offer/`!assign` until every
+   Depends-on ref is CLOSED.
+
+Monitor intervene may still `gh issue edit` a missing body line when it sees a
+dependency GIVEUP without the stamp; durable path is the chair stamp above.
+
+Worker playbook: when blocked on an open prerequisite, GIVEUP with
+`blocked:depends-on #N` (or qualified `owner/repo#N`). Do not rely on a comment
+alone; the chair stamps the body so the gate sticks.
+
 ## Refs
 
 - Index: #8805 body / `fr-index-depends-on-jeeves-2026-11-21.md`
 - D3 skip-open: #8807
 - D8 docs vs hold: #8812
 - Monitor check: #8848
+- Shared G1 gate: #9455 (`depends_gate_reason`)
+- GIVEUP body stamp: #9469
 - Sibling digest gate: `bobiverse-jeeves-agent-fr-digest`
 - Live MONITORING loop: `bobiverse-jeeves-monitor`, `monitor-start`

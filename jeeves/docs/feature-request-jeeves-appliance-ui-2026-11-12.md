@@ -79,7 +79,7 @@ HTML mocks in docs/mocks/. No generated PNGs. The logo file is a copy of bob/tra
 
 | group | heading | description | keys |
 |-------|---------|-------------|------|
-| fuel | Fuel and review waits | Which review fuels run, and how long CodeRabbit is given | BOB_FUEL_CODERABBIT, BOB_CODERABBIT_WAIT_MIN, BOB_CODERABBIT_ABSENT_SEC, BOB_FUEL_COPILOT, BOB_FUEL_FLEET, BOB_COPILOT_OBSERVE |
+| fuel | Fuel and review waits | Which review fuels run, and how long CodeRabbit is given | BOB_FUEL_CODERABBIT, BOB_CODERABBIT_WAIT_MIN, BOB_CODERABBIT_ABSENT_SEC, BOB_FUEL_COPILOT, BOB_FUEL_FLEET, BOB_COPILOT_OBSERVE, BOB_COPILOT_MODEL, BOB_COPILOT_BASE_REF |
 | digest | Digest | Where the digest lives and when it counts as stale | BOB_DIGEST_HOME, BOB_DIGEST_URL, BOB_DIGEST_STALE_S, BOB_PUBLIC_BASE |
 | irc | IRC timing | Bored idle and IRC reconnect timing. Passwords are under Secrets | BOB_BORED_IDLE_S, BOB_HOLDER_BORED_N, BOB_IRC_IDLE_DEAD_S, BOB_IRC_IDLE_PING_S, BOB_IRC_RECONNECT_MAX, BOB_IRC_RECV_TIMEOUT_S, BOB_IRC_THROTTLE_BASE_S, BOB_IRC_SASL_USER |
 | homes | Chair home | Overrides for the chair home directory | JEEVES_HOME, BOB_JEEVES_HOME |

@@ -26,6 +26,27 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 > 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
 >    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
 >    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
+> 6. **CAST IRON — interventions → ircJeeves FR (FR #9627).** Every keep-queue-moving or heal intervention **must** file
+>    (or de-dup-comment) a product FR so **ircJeeves** performs it deterministically. FR #8827 commands are a bridge only;
+>    never run `!assign` / `!sweep` / … as a standing LLM loop without the matching chair FR. Closed-COMPLETED but still
+>    bridged live ⇒ regression FR with evidence (`require_machine: walrus` when chair-host).
+> 7. **CAST IRON — idle + open work is FAIL (FR #9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` must
+>    chair-heal (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + #9461 ear-relay); report-only is opt-in.
+>    Reaffirm #9628 / #9460. Same-turn bridge still owes #9627.
+> 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
+> 9. **CAST IRON — needs-walrus NACK → Jeeves agent does walrus (FR #9669).** When a seat NACK/GIVEUP is `needs-walrus` /
+>    `require_machine=walrus`, the **Jeeves agent** (receipt + Slab/Si-yes install/heal/patch on walrus) owns the walrus
+>    action — do not leave ACK→GIVEUP thrash on redqueen/flamingo. Mixed code+walrus work **must** split under one Digest:
+>    **Code** child (`feature-request` only, no `needs-walrus`) + **Walrus action** child (`needs-walrus`;
+>    `Depends-on: #<code>` + digest). Pure code/docs/PR FRs are never `needs-walrus` (#9637). On needs-walrus NACK:
+>    stop wrong-machine re-offer; ensure the split exists; drive the walrus child via Jeeves-agent/Slab — do not only comment.
+> 10. **CAST IRON — remove `needs-*` when `!unpin` (FR #9708).** Implement-anywhere chair/worker **code**: remove every
+>     `needs-<machine>` label **and** `!unpin` (`require_machine=any`) in the **same turn**. Never leave `needs-*` on a
+>     row unpinned to `any` — that pair causes ACK→GIVEUP `reason=require_machine=<machine>` and wrong-shop re-offer
+>     loops (#9628/#9634 class; tip gate #9664). True host-action work: keep `needs-*` **and** keep `!pin` together;
+>     never `!unpin` while the label remains.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -43,6 +64,7 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 ## Keep-queue-moving playbook (FR #8827)
 
 Prefer **de-duped intake** when a product bug is the root. Use chair commands for **operational unblock** only.
+**Same turn as any intervention:** file/comment the ircJeeves product FR that makes that unblock deterministic (CAST IRON FR #9627).
 
 | Symptom | Command | When |
 |---|---|---|
@@ -51,7 +73,7 @@ Prefer **de-duped intake** when a product bug is the root. Use chair commands fo
 | Offer flow starved under strict focus | `!focus` / `!unfocus` / `!focus strict off` | Only to restore offer flow; prefer repo-level focus |
 | Idle seats + ungated work and auto-feed cannot hand out | `!assign <seat> owner/repo FR\|MRB\|UAT\|FIX N` | Last resort after `queue_flow` / idle_seats show true starve |
 | Give-up stamps blocking re-offer | `!cleargiveup owner/repo#N [seat]` | After confirming not a GIVEUP loop (do not clear-and-reloop) |
-| Machine pin wrong | `!pin` / `!unpin` | Ops pin only; prefer intake if cue inference is wrong |
+| Machine pin wrong | `!pin` / `!unpin` | Ops pin only; prefer intake if cue inference is wrong. **CAST IRON #9708:** implement-anywhere ⇒ remove `needs-*` **and** `!unpin` together; host-action ⇒ keep label+pin |
 
 **Auth:** nick `monitoring` (default `JEEVES_MONITOR_NICKS`) or services account in `JEEVES_MONITOR_ACCOUNTS`, or **ear relay** (append `PRIVMSG #bobiverse :!<cmd>` to `bob-<machine>` outbox). Details without secrets: `docs/monitoring.md`, `docs/jeeves-commands.md`. Tray intervene UI is BOB-43 (#8681).
 
@@ -161,6 +183,13 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json` / `focus.json` live under `BOB_DIGEST_HOME` (`~/.bobiverse`). Monitor checks resolve ops files via `ops_home`: prefer chair when those files exist there, else fall back to digest home. Pass `-ChairHome` / `--digest-home` explicitly when verifying. `BobCallback` may be a Scheduled Task (or `:7700` listen), not `Get-Service`.
 
+## Harvested lessons (intake)
+
+- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
+- Session reliability backlog for token-less chair: shared offerable predicate (list=assign=stuck), G1 assign when fr-digest not queued (#9548), auto-close fr-digest on last child, auto-pin tipform host-local after repeated GIVEUPs, stuck refresh, tray_session_missing rule, monitor ops_home on non-walrus, seat-hold clear on ACC nick move.
+- CAST IRON FR #9669: needs-walrus NACK → Jeeves agent does walrus (split code FR + walrus FR under Digest; stop wrong-machine re-offer).
+- CAST IRON FR #9708: implement-anywhere ⇒ remove every `needs-*` **and** `!unpin` same turn; host-action ⇒ keep label+pin; never `needs-*` + `rm=any`.
+
 ## Harvested monitor playbook (skill records #1215-#1456)
 
 - **FR #7182:** digest-idle ready seats get offers in one `offer_to_idle_seats` tick without a prior nothing-queued note; `summarize_empty_offer` logs per-job skips (PR #7210).
@@ -187,8 +216,11 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
 - Bored-latency heal must count `!recycleseat` by **machine slot** in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever (harvest-lesson MRB #6812; keep the product gap here, not in harvest honesty-box).
 - **FR #9344 / live D3 before BOB-G1:** unhold of an fr-digest alone leaves children with `Depends-on` OPEN blocked under live D3. Close the digest (or clear Depends-on) to release assign. Prefer outbox file-edit + HTTPS digest when the chair-host shell/WinRM hangs.
+- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
 
 ## Harvested lessons
+
+- **FR #9489 MRB author heal:** interim queue stamp must be `<roster-machine>-<dead-pid>` (e.g. `marchhare-99999`); `ghost-1` dropped on chairs that still require `parse_seat_nick`. Tip reserved `ghost-N` (N>=1) sticks; durable fix is soft `free=` / multi-author exact-seat (FR #9478/#9480 / PR #9482).
 
 - If build-jeeves / tip CI fails while waiting on FR #9376 walrus install: FR the CI failures; do not Install-JeevesWalrusWinRm -SiYes until green.
 - **FR #9406 / #9402:** hold-labeled ops FR sticky `offered_to` must not leave a seat `busy (offered FR ...)` — clear sticky offer + drop the held FR from unaccepted (digest gate rows keep queue, lose offer pin) so gate MRB `!assign` can proceed.

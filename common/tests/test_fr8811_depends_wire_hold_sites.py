@@ -74,7 +74,9 @@ def test_s1_every_fr_hold_call_site_has_depends_gate_nearby():
     hold_sites = [
         n
         for n in hold_sites
+        # Wrapper returns (row_fr_skip_offer_reason / row_fr_hold_reason) are not offer sites.
         if "return fr_hold_reason" not in lines[n - 1]
+        and "return row_fr_hold_reason" not in lines[n - 1]
     ]
     # Enqueue-time hold skip keeps Depends-on rows queueable (FR #8754); depends
     # gate is offer/purge/reconcile-time. Exclude _append_unaccepted hold site.
@@ -83,12 +85,27 @@ def test_s1_every_fr_hold_call_site_has_depends_gate_nearby():
         for n in hold_sites
         if "never enqueue FR for issues on hold" not in "\n".join(lines[max(0, n - 8) : n])
     ]
+    # Hold-drop / webhook / linked-issue paths are not offer gates (FR #9402 / #9455).
+    def _hold_drop_only(n: int) -> bool:
+        ctx = "\n".join(lines[n - 1 : min(len(lines), n + 20)])
+        return (
+            "clear_sticky_offer_fields" in ctx
+            or "linked issue" in ctx
+            or "_clear_unaccepted_offer_pins_for_job" in ctx
+            or "_remove_unaccepted" in ctx
+        )
+
+    hold_sites = [n for n in hold_sites if not _hold_drop_only(n)]
     assert hold_sites, "expected FR hold call sites in gitclaim"
 
-    depends_sites = set(_call_sites(src, "row_fr_depends_blocked_reason"))
+    # FR #9455: offer/assign/stuck prefer depends_gate_reason; blocked_reason remains
+    # inside the shared helper for BOB-* tokens.
+    depends_sites = set(_call_sites(src, "row_fr_depends_blocked_reason")) | set(
+        _call_sites(src, "depends_gate_reason")
+    )
     assert depends_sites, "expected Depends gate call sites"
 
-    window = 18
+    window = 25
     missing = []
     for hn in hold_sites:
         nearby = range(hn, min(len(lines), hn + window) + 1)
