@@ -3428,6 +3428,30 @@ def parse_blocked_depends_giveup_refs(
     return out
 
 
+def _load_common_depends_on():
+    """FR #9540: load ``common/scripts/depends_on.py`` by path (never monitor shadow).
+
+    Tip ``build-jeeves`` collects monitor tests that ``sys.path.insert(0, tools/monitor)``.
+    A bare ``import depends_on`` then binds ``jeeves/tools/monitor/depends_on.py`` (no
+    ``merge_depends_on_body``) and reds FR #9469. Always load the sibling of this file.
+    """
+    import importlib.util
+    import sys as _sys
+
+    name = "bobiverse_common_depends_on"
+    cached = _sys.modules.get(name)
+    if cached is not None and hasattr(cached, "merge_depends_on_body"):
+        return cached
+    path = Path(__file__).resolve().with_name("depends_on.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load common depends_on from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _sys.modules[name] = mod
+    return mod
+
+
 def apply_depends_on_giveup_stamp(
     row: dict,
     reason: str,
@@ -3449,7 +3473,7 @@ def apply_depends_on_giveup_stamp(
     if not refs:
         return []
     try:
-        import depends_on as _dep
+        _dep = _load_common_depends_on()
     except Exception:
         return []
     body = str(row.get("body") or "")
