@@ -40,9 +40,11 @@ def test_fr9588_watch_builds_toplevel_rows():
 
 def test_fr9588_click_still_uses_weights_webhook_rows():
     cs = TRAY.read_text(encoding="utf-8-sig")
-    assert "OpencodeWebhookModel(catalog, rowAgent)" in cs
+    # FR #9586: live WeightsLaunchField (was OpencodeWebhookModel(catalog, ...)).
+    assert "WeightsLaunchField(rowAgent," in cs or 'WeightsLaunchField(rowAgent, "model")' in cs
     assert 'env["BOB_OPENCODE_MODEL"]' in cs
-    assert 'OpencodeWebhookModel(catalog, "Opencode-Free")' in cs
+    assert 'WeightsLaunchField("Opencode-Free", "model")' in cs or '"Opencode-Free"' in cs
+    assert "models-webhook" in cs
     assert FIXTURE.is_file()
 
 

@@ -23,7 +23,10 @@ def test_fr9263_tipform_free_paid_only():
     assert 'AddAgentChoice(parent, "opencode|paid", paidText' in cs
     block = cs.split("void AddOpencodeTopLevelChoices", 1)[1].split("void OnAgentChoiceClick", 1)[0]
     assert "Start free model" not in block
-    assert 'OpencodeWebhookModel(catalog, "Opencode-Free")' in cs
+    # FR #9586: live Weights field (was OpencodeWebhookModel(catalog, ...)).
+    assert 'WeightsLaunchField("Opencode-Free", "model")' in cs or (
+        "WeightsLaunchField" in cs and '"Opencode-Free"' in cs
+    )
     assert "top-level Free|Paid" in cs
 
 
@@ -33,16 +36,18 @@ def test_fr9263_watch_builds_free_paid_rows():
     assert "opencode|{0}" in ps
     assert "'OpenCode Free'" in ps and "'OpenCode Paid'" in ps
     assert "EndsWith('|paid')" in ps
-    assert "Get-BobTrayOpencodeWebhookModel" in ps
+    assert "Get-BobTrayWeightsLaunchField" in ps or "Get-BobTrayOpencodeWebhookModel" in ps
     assert "'Opencode-Free'" in ps
     assert "'Opencode'" in ps
+    assert "source=models-webhook" in ps
 
 
 def test_fr9263_click_still_uses_weights_webhook_rows():
     cs = TRAY.read_text(encoding="utf-8-sig")
-    assert "OpencodeWebhookModel(catalog, rowAgent)" in cs
+    assert "WeightsLaunchField(rowAgent, \"model\")" in cs or "WeightsLaunchField(rowAgent," in cs
     assert 'env["BOB_OPENCODE_MODEL"]' in cs
     assert '"Opencode-Free"' in cs
+    assert "models-webhook" in cs
     assert FIXTURE.is_file()
 
 

@@ -1102,21 +1102,27 @@ namespace BobDialogs
             };
             miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            // FR #9270 / BOB-TRAY-UI-09: bob.ntsa.uk cache under install assets; offline fallback jeeves/assets.
+            // FR #9270 / BOB-TRAY-UI-09 + FR #9587: bob.ntsa.uk cache / jeeves/assets / bob/tray/assets;
+            // always 16x16 + loud menu-icon MISSING (parity with Plan / Priority).
             string butler = ResolveJeevesButlerIcon(root);
-            if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
+            bool jeevesIconOk = false;
+            try
             {
-                try
+                if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
                 {
-                    using (Icon ico = new Icon(butler))
+                    using (Icon ico = new Icon(butler, 16, 16))
                         miJeeves.Image = ico.ToBitmap();
-                    TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico", "path", butler, "source", JeevesButlerUrl);
-                }
-                catch (Exception ex)
-                {
-                    TrayLifecycle.Write("jeeves", "icon", "failed", "error", ex.Message);
+                    jeevesIconOk = miJeeves.Image != null;
                 }
             }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("jeeves", "action", "menu-icon failed", "path", butler ?? "", "error", ex.Message, "ok", "0");
+            }
+            if (jeevesIconOk)
+                TrayLifecycle.Write("jeeves", "action", "menu-icon", "path", butler, "file", "jeeves-butler.ico", "source", JeevesButlerUrl, "ok", "1");
+            else
+                TrayLifecycle.Write("jeeves", "action", "menu-icon MISSING", "path", butler ?? "", "file", "jeeves-butler.ico", "ok", "0");
             miJeeves.Click += delegate {
                 // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
                 if (!JeevesJDrivePresent(@"J:\"))
@@ -1890,18 +1896,27 @@ namespace BobDialogs
 
         internal static string JeevesButlerFallbackPath(string installRoot)
         {
-            string fallback = Path.Combine(installRoot ?? "", "jeeves", "assets", "jeeves-butler.ico");
+            string rootPath = installRoot ?? "";
+            // FR #9587: prefer vendored tray asset beside Plan GANTT, then jeeves/assets.
+            string trayAsset = Path.Combine(rootPath, "bob", "tray", "assets", "jeeves-butler.ico");
+            if (File.Exists(trayAsset)) return trayAsset;
+            string trayFlat = Path.Combine(rootPath, "assets", "jeeves-butler.ico");
+            // cache path is the same flat assets file; fallback still lists it for callers.
+            string fallback = Path.Combine(rootPath, "jeeves", "assets", "jeeves-butler.ico");
             if (File.Exists(fallback)) return fallback;
             try
             {
-                DirectoryInfo parent = Directory.GetParent(installRoot ?? "");
+                DirectoryInfo parent = Directory.GetParent(rootPath);
                 if (parent != null)
                 {
+                    string altTray = Path.Combine(parent.FullName, "bob", "tray", "assets", "jeeves-butler.ico");
+                    if (File.Exists(altTray)) return altTray;
                     string alt = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
                     if (File.Exists(alt)) return alt;
                 }
             }
             catch { }
+            if (File.Exists(trayFlat)) return trayFlat;
             return fallback;
         }
 
@@ -2057,9 +2072,9 @@ namespace BobDialogs
             // Tags stay opencode|free / opencode|paid; Weights model at click (FR #8732); child-only BOB_OPENCODE_MODEL (FR #6429).
             string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
             string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
-            string catalog = ModelsCatalogPath();
-            string whFree = OpencodeWebhookModel(catalog, "Opencode-Free");
-            string whPaid = OpencodeWebhookModel(catalog, "Opencode");
+            // FR #9586: tip labels prefer live GET /bob/v1/models (catalog file is fallback only).
+            string whFree = WeightsLaunchField("Opencode-Free", "model");
+            string whPaid = WeightsLaunchField("Opencode", "model");
             if (whFree.Length > 0) freeModel = whFree;
             if (whPaid.Length > 0) paidModel = whPaid;
             string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
@@ -2096,7 +2111,8 @@ namespace BobDialogs
         }
 
 
-        // FR #8725 / BOB-17 + FR #8732 / BOB-30: models webhook file. BOB_MODELS_CATALOG overrides <install>\home\models-catalog.json.
+        // FR #8725 / BOB-17 + FR #8732 / BOB-30 + FR #9586: Weights SoT is live GET /bob/v1/models.
+        // BOB_MODELS_CATALOG remains a fixture/offline fallback inside BobModelsClient.ResolveAgentLaunchRow.
         string ModelsCatalogPath()
         {
             string env = Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG");
@@ -2104,46 +2120,60 @@ namespace BobDialogs
             return Path.Combine(root, "home", "models-catalog.json");
         }
 
-        string GrokWebhookModel(string path)
+        Dictionary<string, string> WeightsLaunchRow(string agentName)
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
             try
             {
-                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
-                if (doc == null || !doc.ContainsKey("agents")) return "";
-                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
-                if (agents == null || doc["agents"] is string) return "";
-                foreach (object item in agents)
+                // Prefer catalog path as fixture when tests set BOB_MODELS_CATALOG before GET.
+                string catalog = ModelsCatalogPath();
+                if (!string.IsNullOrWhiteSpace(catalog) && File.Exists(catalog)
+                    && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BOB_MODELS_CATALOG")))
                 {
-                    Dictionary<string, object> row = Common.Dict(item);
-                    if (row == null) continue;
-                    if (!string.Equals(Common.Str(row, "agent"), "Grok", StringComparison.OrdinalIgnoreCase)) continue;
-                    return Common.Str(row, "model");
+                    Environment.SetEnvironmentVariable("BOB_MODELS_CATALOG", catalog);
                 }
+                return BobModelsClient.ResolveAgentLaunchRow(root, agentName);
             }
-            catch { }
-            return "";
+            catch
+            {
+                return null;
+            }
         }
 
-        string OpencodeWebhookModel(string path, string agentName)
+        string WeightsLaunchField(string agentName, string field)
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
-            try
+            Dictionary<string, string> row = WeightsLaunchRow(agentName);
+            if (row == null) return "";
+            string v;
+            if (!row.TryGetValue(field, out v) || v == null) return "";
+            return v.Trim();
+        }
+
+        void ApplyWeightsLaunchEnv(Hashtable env, string agentName, string modelKey)
+        {
+            if (env == null) return;
+            Dictionary<string, string> row = WeightsLaunchRow(agentName);
+            if (row == null) return;
+            string model = "";
+            string context = "";
+            string effort = "";
+            row.TryGetValue("model", out model);
+            row.TryGetValue("context", out context);
+            row.TryGetValue("effort", out effort);
+            model = (model ?? "").Trim();
+            context = (context ?? "").Trim();
+            effort = (effort ?? "").Trim();
+            if (model.Length > 0 && !string.IsNullOrWhiteSpace(modelKey))
+                env[modelKey] = model;
+            if (effort.Length > 0)
             {
-                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
-                if (doc == null || !doc.ContainsKey("agents")) return "";
-                System.Collections.IEnumerable agents = doc["agents"] as System.Collections.IEnumerable;
-                if (agents == null || doc["agents"] is string) return "";
-                foreach (object item in agents)
-                {
-                    Dictionary<string, object> row = Common.Dict(item);
-                    if (row == null) continue;
-                    if (!string.Equals(Common.Str(row, "agent"), agentName, StringComparison.OrdinalIgnoreCase)) continue;
-                    return Common.Str(row, "model");
-                }
+                env["BOB_WORKER_START_EFFORT"] = effort;
+                env["BOB_GROK_EFFORT"] = effort;
             }
-            catch { }
-            return "";
+            if (context.Length > 0)
+            {
+                env["BOB_WORKER_START_CONTEXT"] = context;
+                env["BOB_GROK_CONTEXT"] = context;
+            }
         }
 
         void OnAgentChoiceClick(object sender, EventArgs e)
@@ -2176,16 +2206,40 @@ namespace BobDialogs
                 }
                 // FR #8727 / BOB-16: Workers > Grok starts the Grok CLI seat and logs it.
                 TrayLifecycle.Write("workers-grok", "action", "grok CLI start", "agent", "grok");
-                // FR #8725 / BOB-17: launch uses the Grok row from the models webhook catalog.
-                string catalog = ModelsCatalogPath();
-                string model = GrokWebhookModel(catalog);
-                TrayLifecycle.Write("workers-grok", "action", "webhook model", "model", model, "path", catalog, "agent", "Grok");
-                Hashtable grokEnv = null;
-                if (model.Length > 0)
+                // FR #8725 / BOB-17 + FR #9586: live GET /bob/v1/models Weights row (model/context/effort).
+                string model = WeightsLaunchField("Grok", "model");
+                string context = WeightsLaunchField("Grok", "context");
+                string effort = WeightsLaunchField("Grok", "effort");
+                TrayLifecycle.Write(
+                    "workers-grok",
+                    "action",
+                    "webhook model",
+                    "model",
+                    model,
+                    "context",
+                    context,
+                    "effort",
+                    effort,
+                    "source",
+                    "models-webhook",
+                    "agent",
+                    "Grok");
+                if (model.Length == 0)
                 {
-                    grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
-                    grokEnv["BOB_GROK_MODEL"] = model;
+                    try
+                    {
+                        MessageBox.Show(
+                            "Weights has no Grok model (GET /bob/v1/models). Save Weights, then try again.",
+                            "Bobiverse",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                    catch { }
+                    TrayLifecycle.Write("workers-grok", "action", "refuse", "reason", "weights-model-missing");
+                    return;
                 }
+                Hashtable grokEnv = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                ApplyWeightsLaunchEnv(grokEnv, "Grok", "BOB_GROK_MODEL");
                 StartWorker("agent", "grok", grokEnv, "");
             }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot.Length == 0 || slot == "free" || slot == "paid"))
@@ -2205,19 +2259,54 @@ namespace BobDialogs
                         TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
                     }
                 }
-                // FR #8732 / BOB-30: free uses the Opencode-Free row; paid uses the Opencode row.
-                string catalog = ModelsCatalogPath();
+                // FR #8732 / BOB-30 + FR #9586: free uses Opencode-Free; paid uses Opencode — live GET.
                 string rowAgent = slot == "free" ? "Opencode-Free" : "Opencode";
-                string webhook = OpencodeWebhookModel(catalog, rowAgent);
-                TrayLifecycle.Write("workers-opencode", "action", "webhook model", "model", webhook, "path", catalog, "agent", rowAgent, "slot", slot);
+                string webhook = WeightsLaunchField(rowAgent, "model");
+                string context = WeightsLaunchField(rowAgent, "context");
+                string effort = WeightsLaunchField(rowAgent, "effort");
+                TrayLifecycle.Write(
+                    "workers-opencode",
+                    "action",
+                    "webhook model",
+                    "model",
+                    webhook,
+                    "context",
+                    context,
+                    "effort",
+                    effort,
+                    "source",
+                    "models-webhook",
+                    "agent",
+                    rowAgent,
+                    "slot",
+                    slot);
                 string model = webhook.Length > 0 ? webhook : WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
-                env["BOB_OPENCODE_MODEL"] = model;
+                ApplyWeightsLaunchEnv(env, rowAgent, "BOB_OPENCODE_MODEL");
+                if (model.Length > 0) env["BOB_OPENCODE_MODEL"] = model;
                 // FR #8735 / BOB-26: Workers > Open Code starts the OpenCode CLI seat and logs it.
                 // FR #8734 / BOB-29: the tray log names the model this click starts.
-                TrayLifecycle.Write("workers-opencode", "action", "model", "model", model, "slot", slot);
+                TrayLifecycle.Write("workers-opencode", "action", "model", "model", model, "slot", slot, "source", "models-webhook");
                 TrayLifecycle.Write("workers-opencode", "action", "opencode CLI start", "agent", "opencode", "slot", slot);
                 StartWorker("agent", "opencode", env, slot);
+            }
+            else if (string.Equals(id, "cursor", StringComparison.OrdinalIgnoreCase))
+            {
+                // FR #9586: Cursor Weights row from live GET.
+                string model = WeightsLaunchField("Cursor", "model");
+                TrayLifecycle.Write(
+                    "workers-cursor",
+                    "action",
+                    "webhook model",
+                    "model",
+                    model,
+                    "source",
+                    "models-webhook",
+                    "agent",
+                    "Cursor");
+                Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                ApplyWeightsLaunchEnv(env, "Cursor", "BOB_CURSOR_MODEL");
+                StartWorker("agent", "cursor", env.Count > 0 ? env : null, "");
             }
             else StartWorker("agent", id, null, "");
         }
