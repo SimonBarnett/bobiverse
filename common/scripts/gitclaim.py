@@ -1617,13 +1617,18 @@ def format_unaccepted_list(
         open_keys = open_fr_issue_keys(doc)
     except Exception:
         open_keys = set()
+    # FR #9821 / #9553: same issue_fetch as offer/assign so held digests absent
+    # from the local queue still gate !list (token-free when digests are queued).
+    _list_fetch = depends_issue_fetch_checker()
     rows = [
         r
         for r in rows
         if not (
             isinstance(r, dict)
             and _canon_task(r) == "FR"
-            and depends_gate_reason(r, doc, open_keys=open_keys)
+            and depends_gate_reason(
+                r, doc, open_keys=open_keys, issue_fetch=_list_fetch
+            )
         )
     ]
     if not rows:
@@ -5116,14 +5121,24 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                 )
             ]
             return "skipped"
+    # FR #9821 / BOB-G3: digest gate rows must enter unaccepted even when
+    # label:fr-digest is SKIP_FR or the digest carries hold — otherwise the
+    # token-free Depends-on held-digest gate cannot see them (class of #9803).
+    _digest_probe = {
+        "task": "FR",
+        "title": claim.title,
+        "body": claim.body,
+        "labels": list(claim.labels),
+    }
+    _is_digest_gate = claim.task == "FR" and bool(digest_issue_reason(_digest_probe))
     if claim.task == "FR":
         _skip_fr = issue_skip_fr_reason(
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
         )
-        if _skip_fr:
+        if _skip_fr and not _is_digest_gate:
             # FR #9402: ops/monitor trackers drop any twin + clear offered_to.
             # Other skip_fr reasons keep prior behaviour (return skipped; digests
-            # and needs-human paths are handled by prune / label mutation).
+            # fall through so they stay as go-gate records).
             if _skip_fr == "ops_monitor_tracker":
                 store_repo = canonical_queue_repo(claim.repo)
                 _clear_unaccepted_offer_pins_for_job(
@@ -5143,28 +5158,23 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     # FR #4009: never enqueue FR for issues on hold (label or owner HOLD body stamp).
     # Drop any already-queued twin so webhook edited / resync clears the offer path.
     # FR #9402: also clear offered_to / seat-holds so the pin cannot block !assign.
-    # BOB-G3: held digests stay as gate records (do not drop).
+    # BOB-G3 / FR #9821: held digests stay as gate records (enqueue, do not drop).
     if claim.task == "FR" and fr_hold_reason(
         title=claim.title, body=claim.body, labels=claim.labels
     ):
-        _digest_probe = {
-            "task": "FR",
-            "title": claim.title,
-            "body": claim.body,
-            "labels": list(claim.labels),
-        }
-        if digest_issue_reason(_digest_probe):
+        if _is_digest_gate:
+            pass  # fall through to append/refresh below
+        else:
+            store_repo = canonical_queue_repo(claim.repo)
+            _clear_unaccepted_offer_pins_for_job(
+                home, doc, store_repo, claim.task, claim.id
+            )
+            doc["unaccepted"] = [
+                r
+                for r in (doc.get("unaccepted") or [])
+                if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
+            ]
             return "skipped"
-        store_repo = canonical_queue_repo(claim.repo)
-        _clear_unaccepted_offer_pins_for_job(
-            home, doc, store_repo, claim.task, claim.id
-        )
-        doc["unaccepted"] = [
-            r
-            for r in (doc.get("unaccepted") or [])
-            if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
-        ]
-        return "skipped"
     # FR #3928 / #9080: never enqueue MRB for PRs on hold; purge any twin already queued
     # (done-fix requeue used to stamp labels=() and leave a held tip offerable).
     if claim.task == "MRB" and pr_hold_reason(
@@ -5388,7 +5398,9 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
         hold = fr_hold_reason(
             title=claim.title, body=claim.body, labels=claim.labels
         )
-        # BOB-G3: digest gate records stay queued even when held / fr-digest skip.
+        # BOB-G3 / FR #9821: digest gate records stay queued even when held /
+        # fr-digest SKIP_FR. If the digest was never enqueued (old skip path),
+        # backfill it so Depends-on children see hold without GitHub fetch.
         _digest_probe = {
             "task": "FR",
             "title": claim.title,
@@ -5396,6 +5408,17 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             "labels": list(claim.labels),
         }
         if digest_issue_reason(_digest_probe):
+            if (
+                not found_unaccepted
+                and not repo_archived_for_queue(claim.repo)
+            ):
+                ch = _append_unaccepted(doc, claim, home=home)
+                if ch == "added":
+                    return "added"
+                if ch == "duplicate":
+                    return "updated"
+                if ch == "skipped":
+                    return "noop"
             return "updated" if updated else "noop"
         if skip or hold:
             cleared = _clear_unaccepted_offer_pins_for_job(
@@ -15026,7 +15049,11 @@ def _strip_giveup_seat_from_row(row: dict, seat: str) -> None:
 def clear_giveup_job(
     home: Path, repo: str, ident: str, seat: str | None = None
 ) -> dict:
-    """FR #5135: under the queue lock, clear giveup stamps + matching ledger entry."""
+    """FR #5135 / FR #9771: clear giveup stamps + ledger + matching seat-holds.
+
+    FR #9771: ``!cleargiveup`` with ledger=0 still left ``busy (held …)`` when
+    ``seat-holds.json`` kept a via=offer pin for the closed/stuck MRB.
+    """
     repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
     ident_n = _norm_row_id(ident)
     seat_c = _canon_ledger_nick(seat) if seat else ""
@@ -15055,10 +15082,22 @@ def clear_giveup_job(
     except (TimeoutError, OSError):
         return {"ok": False, "error": "lock", "queue_rows": 0, "ledger": 0}
     ledger_n = ledger_clear_giveup_entry(home, repo_c, ident_n, nick=seat_c or None)
+    # FR #9771: drop seat-holds for this job (all seats, or the named seat).
+    holds_n = 0
+    with contextlib.suppress(Exception):
+        if seat_c:
+            if clear_seat_hold(
+                home, seat_c, repo=repo_c, task="", ident=ident_n, clear_pins=True
+            ):
+                holds_n = 1
+        else:
+            if clear_job_seat_holds(home, repo_c, "", ident_n):
+                holds_n = 1
     return {
         "ok": True,
         "queue_rows": rows_n,
         "ledger": ledger_n,
+        "holds": holds_n,
         "seat": seat_c,
         "repo": repo_c,
         "id": ident_n,
@@ -18503,12 +18542,13 @@ def prune_unassignable_queue(home: Path) -> dict:
             dropped_detail: list[str] = []
             for row in doc["unaccepted"]:
                 task = str(row.get("task") or "").upper()
-                if task == "FR" and row_skip_fr_reason(row):
-                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
-                    continue
-                # BOB-G3: keep digest gate rows even when held (do not fr_hold-drop).
+                # BOB-G3 / FR #9821: keep digest gate rows even when fr-digest is
+                # SKIP_FR or the digest carries hold (token-free Depends-on gate).
                 if task == "FR" and digest_issue_reason(row):
                     keep.append(row)
+                    continue
+                if task == "FR" and row_skip_fr_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue
                 # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
                 if task == "FR" and row_fr_hold_reason(row):
@@ -19905,6 +19945,10 @@ def resync_from_github(
                         # offers must not survive after a blocking FR opens.
                         dropped_detail.append(f"{_row_drop_label(row)} uat_repo_not_clear")
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
+                # BOB-G3 / FR #9821: digest gate rows survive skip_fr + hold prune.
+                if task_u == "FR" and digest_issue_reason(row):
+                    keep.append(row)
+                    continue
                 if task_u == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk
@@ -20987,15 +21031,19 @@ _HOLDER_OPEN_RX = re.compile(
 def release_sticky_offer_on_bored(
     home: Path, nick: str, now: float | None = None
 ) -> str:
-    """FR #9633: !bored clears a *stale* sticky offered_to pin (no accepted row).
+    """FR #9633 / FR #9771: !bored clears *stale* sticky offer pins and via=offer holds.
 
     Within ``offer_timeout_s`` the seat stays busy (FR #3192 / #8738 — fresh
     post-DONE / post-GIVEUP pushes must not be wiped by the next !bored). Past
     the timeout, clear ``offered_to`` + matching seat-hold so digest-idle seats
     are not NAK ``busy (offered …)`` forever (issue #9633).
 
-    Bare ack-missing / closed-PR ``held …`` seat-holds (FR #4115 / #4415) are
-    never cleared here. Does not call ``seat_open_job`` (that would purge first).
+    FR #9771: when the pin is already gone but a ``via=offer`` seat-hold remains
+    (hold reaper is ``SEAT_HOLD_MAX_S`` = 1h while offer timeout is ~90s), clear
+    that stale hold on !bored so seats are not NAK ``busy (held …)`` after #9633.
+
+    Bare ack-missing ``held …`` seat-holds (FR #4115 / #4415) are never cleared
+    here. Does not call ``seat_open_job`` (that would purge first).
 
     Returns the open-job text that was cleared, else ''.
     """
@@ -21037,6 +21085,25 @@ def release_sticky_offer_on_bored(
             if changed:
                 with contextlib.suppress(OSError):
                     _write_queue(queue_path(home), doc)
+            # FR #9771: stale via=offer hold with no live pin on this nick.
+            if not changed:
+                key = _seat_key(nick)
+                holds = _load_seat_holds_unlocked(home, now_f)
+                h = holds.get(key) if key else None
+                if isinstance(h, dict):
+                    via = str(h.get("via") or "offer").strip().lower() or "offer"
+                    if via != "ack-missing":
+                        age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
+                        if age >= offer_timeout_s(None):
+                            repo_s = str(h.get("repo") or "")
+                            task_u = str(h.get("task") or "").upper()
+                            ident_s = str(h.get("id") or "")
+                            cleared_job = f"held {task_u} {repo_s}{ident_s}".strip()
+                            repo, task, ident = repo_s, task_u, ident_s
+                            holds.pop(key, None)
+                            with contextlib.suppress(OSError):
+                                _save_seat_holds_unlocked(home, holds)
+                            changed = True
     except (TimeoutError, OSError):
         return ""
     if not changed:
