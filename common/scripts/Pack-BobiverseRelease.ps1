@@ -24,6 +24,8 @@ param(
     [switch]$SkipPriorityExe,
     # Tests only (needs -SkipMsi): skip skills-visionary PlanAgent.exe download (FR #9354); MZ stub / fixture.
     [switch]$SkipPlanAgentExe,
+    # Tests only (needs -SkipMsi): skip jeeves-mcp JeevesAgent.exe download (FR #9689); MZ stub / fixture.
+    [switch]$SkipJeevesAgentExe,
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
     [switch]$SkipJeevesExe,
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
@@ -74,6 +76,7 @@ if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed t
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 if ($SkipPlanAgentExe -and -not $SkipMsi) { throw '-SkipPlanAgentExe is only allowed together with -SkipMsi (an MSI without PlanAgent.exe must never ship; FR #9354)' }
 if ($SkipPriorityExe -and -not $SkipMsi) { throw '-SkipPriorityExe is only allowed together with -SkipMsi (an MSI without PriorityAgent.exe must never ship; FR #8701)' }
+if ($SkipJeevesAgentExe -and -not $SkipMsi) { throw '-SkipJeevesAgentExe is only allowed together with -SkipMsi (an MSI without JeevesAgent.exe must never ship; FR #9689)' }
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
 if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
@@ -281,9 +284,71 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ("INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701 / #9354 tag={0})" -f $priVendor.tag)
+    # FR #9689: stage JeevesAgent.exe from jeeves-mcp release for TipForm Agents > Jeeves.
+    # Mirrored into vendor\ by Copy-BobTrayVendorExes.
+    $jeevesDir = Join-Path $Stage 'jeeves'
+    New-Item -ItemType Directory -Force -Path $jeevesDir | Out-Null
+    $jeevesAgentExe = Join-Path $jeevesDir 'JeevesAgent.exe'
+    $jeevesVendor = $null
+    $jeevesSrc = $null
+    foreach ($c in @(
+            [string]$env:BOB_JEEVES_AGENT_EXE,
+            (Join-Path $OutDir 'JeevesAgent.exe')
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { $jeevesSrc = $c; break }
+    }
+    if ($SkipJeevesAgentExe) {
+        $fix = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\JeevesAgent.exe'
+        if ($jeevesSrc) {
+            Copy-Item -LiteralPath $jeevesSrc -Destination $jeevesAgentExe -Force
+        } elseif (Test-Path -LiteralPath $fix -PathType Leaf) {
+            Copy-Item -LiteralPath $fix -Destination $jeevesAgentExe -Force
+        } else {
+            [IO.File]::WriteAllBytes($jeevesAgentExe, [byte[]](0x4D, 0x5A))
+        }
+        $jeevesVendor = @{
+            tag = 'skip-test'
+            sha256 = (Get-BobiverseFileSha256 -Path $jeevesAgentExe)
+            bytes = [int64](Get-Item -LiteralPath $jeevesAgentExe).Length
+            repo = 'local-skip'
+            asset = 'JeevesAgent.exe'
+            url = ''
+            path = $jeevesAgentExe
+        }
+        Write-Host 'WARN bob pack: -SkipJeevesAgentExe (test stage JeevesAgent.exe stub)'
+    } elseif ($jeevesSrc) {
+        Copy-Item -LiteralPath $jeevesSrc -Destination $jeevesAgentExe -Force
+        $jeevesVendor = @{
+            tag = 'local'
+            sha256 = (Get-BobiverseFileSha256 -Path $jeevesAgentExe)
+            bytes = [int64](Get-Item -LiteralPath $jeevesAgentExe).Length
+            repo = 'local'
+            asset = 'JeevesAgent.exe'
+            url = $jeevesSrc
+            path = $jeevesAgentExe
+        }
+        Write-Host ("INFO bob staged jeeves\JeevesAgent.exe from {0}" -f $jeevesSrc)
+    } else {
+        $jeevesTag = [string]$env:BOB_JEEVES_AGENT_RELEASE_TAG
+        $cache = Join-Path $OutDir 'vendor\jeeves-mcp'
+        $jeevesVendor = Save-BobiverseGhReleaseVerifiedExe `
+            -Repo 'SimonBarnett/jeeves-mcp' `
+            -AssetName 'JeevesAgent.exe' `
+            -Destination $jeevesAgentExe `
+            -Tag $jeevesTag `
+            -CacheDir $cache `
+            -TimeoutSec 900
+    }
+    if (-not (Test-Path -LiteralPath $jeevesAgentExe -PathType Leaf)) {
+        throw 'FR #9689: bob MSI stage missing jeeves\JeevesAgent.exe'
+    }
+    $jeevesMan = Join-Path $jeevesDir 'JeevesAgent.MANIFEST.json'
+    $null = Write-BobiverseVendoredExeManifest -Path $jeevesMan -Info $jeevesVendor -Fr '9689' -Bob ''
+    Write-Host ("INFO bob staged jeeves\JeevesAgent.exe for bob-ear MSI (FR #9689 tag={0})" -f $jeevesVendor.tag)
     # FR #9468 / #9598: mirror PlanAgent + PriorityAgent into vendor\; never stage bob-plan.exe.
     # TipForm Agents > Plan uses vendor\plan\PlanAgent.exe (FR #9605 / #9641). Release sources:
     # skills-visionary plan-* / priority-mcp launcher-*.
+    # FR #9689: also mirror JeevesAgent.exe into vendor\jeeves\.
     $null = Copy-BobTrayVendorExes -Root $Stage -Require
     if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\PlanAgent.exe') -PathType Leaf)) {
         throw 'FR #9468/#9598: bob MSI stage missing vendor\plan\PlanAgent.exe'
@@ -293,6 +358,9 @@ function Stage-BobAgentFolders([string]$Stage) {
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\priority\PriorityAgent.exe') -PathType Leaf)) {
         throw 'FR #9468: bob MSI stage missing vendor\priority\PriorityAgent.exe'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\jeeves\JeevesAgent.exe') -PathType Leaf)) {
+        throw 'FR #9689: bob MSI stage missing vendor\jeeves\JeevesAgent.exe'
     }
 
 
