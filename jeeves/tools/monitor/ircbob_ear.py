@@ -277,14 +277,19 @@ def _heal_local_ear(
 
     # FR #9496: Running without App child is a false-healthy nssm state.
     # FR #9743: more than one child is a duplicate-ear hazard for outbox.pos.
-    count = _ear_child_count() if child_alive is None else (1 if child_alive else 0)
-    if child_alive is None and count > 1:
-        findings.append(
-            f"local {SERVICE_NAME} Running-duplicate bob-ear children={count} "
-            f"(FR #9743; disconnected twin can drain outbox.pos)"
-        )
-        return svc, None, True
-    alive = count > 0 if child_alive is None else bool(child_alive)
+    # Count>1 is report-only; alive still comes from _ear_child_alive so heal
+    # tests that mock alive (not count) keep working.
+    if child_alive is None:
+        count = _ear_child_count()
+        if count > 1:
+            findings.append(
+                f"local {SERVICE_NAME} Running-duplicate bob-ear children={count} "
+                f"(FR #9743; disconnected twin can drain outbox.pos)"
+            )
+            return svc, None, True
+        alive = _ear_child_alive()
+    else:
+        alive = bool(child_alive)
     if alive:
         return svc, None, True
 
