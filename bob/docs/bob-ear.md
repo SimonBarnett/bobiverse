@@ -57,6 +57,13 @@ Park drafts: `bob/docs/fr/digest-ear-publish/` (Refs, not Closes, for impl FRs).
 
 `GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (flat nick list) plus `airc_console_details` (`[{nick, machine, channel}]`) and per-machine `console_nicks`. Chair NAMES on **every** channel Jeeves sits in (registered shops and customer channels) record live `*_console` nicks; PART/QUIT clears them. No NickServ, no secrets. Priority Agent airc picker can verify presence without IRC credentials.
 
+## Single-instance (FR #9861 / #9743)
+
+- **OS named mutex** `Global\BobiverseBobEar-<hash(home|nick)>` is acquired in `irc_agent.main` **before** prior-clean / Client / outbox (FR #9861). A second process exits **3**.
+- File advisory `ear.<nick>.lock` (FR #9743) remains complementary when present; the mutex covers NSSM same-second twin starts that file locks can lose.
+- `Start-BobEar.ps1` refuses a second python/exe start when a process already has the same `--home`.
+- `--once` (smoke/UAT) skips the mutex.
+
 ## Outbox (send) â€” identical on every machine
 
 UTF-8 **no BOM**. Append one complete line per send to `<bob home>\outbox.txt`. Only lines starting with `PRIVMSG ` are sent raw (same interface on Ionos / MarchHare / Flamingo):

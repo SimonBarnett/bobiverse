@@ -1239,6 +1239,11 @@ function Invoke-Apply {
                 if (Test-Path -LiteralPath $nssmExe) {
                     Set-BobiverseNssmAppExitRestart -Nssm $nssmExe -ServiceName $ServiceName -RestartDelayMs 2000
                     Write-UpdLog "post-upgrade-appexit-restart $ServiceName"
+                    # FR #9896: re-pin AppRotate* (ircJeeves stdout.log unbounded without it).
+                    if ($Product -eq 'jeeves') {
+                        Set-BobiverseNssmAppRotate -Nssm $nssmExe -ServiceName $ServiceName
+                        Write-UpdLog "post-upgrade-approtate $ServiceName"
+                    }
                 } else {
                     Write-UpdLog "post-upgrade-appexit-skip nssm missing"
                 }
