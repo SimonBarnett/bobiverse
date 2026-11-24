@@ -696,8 +696,10 @@ function Test-BobTrayDigestEarOffline {
 function Get-BobTrayIrcBobServiceStatus {
     <#
     .SYNOPSIS
-      FR #9144 / #9496: local ircBob Status (Running/Running-no-child/Stopped/missing/skipped).
+      FR #9144 / #9496 / #9743: local ircBob Status
+      (Running/Running-no-child/Running-duplicate/Stopped/missing/skipped).
       Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
+      Running-duplicate when more than one bob-ear / irc_agent child shares the machine (FR #9743).
     #>
     if ($env:OS -notmatch 'Windows') { return 'skipped' }
     try {
@@ -713,6 +715,7 @@ function Get-BobTrayIrcBobServiceStatus {
                     )
                 }).Count
             if ($child -lt 1) { return 'Running-no-child' }
+            if ($child -gt 1) { return 'Running-duplicate' }
         }
         return $st
     } catch {
@@ -725,6 +728,7 @@ function Resolve-BobTrayDigestFailNote {
     .SYNOPSIS
       FR #9144 / #9496: Prefer ear-offline wording over GetResponse unreachable when ear is down.
       Running-no-child (nssm Running, no bob-ear process) paints ear-offline.
+      Running-duplicate (FR #9743) also paints ear-offline so a dead twin cannot hide.
     #>
     param(
         [string]$DigestErr,
@@ -735,7 +739,8 @@ function Resolve-BobTrayDigestFailNote {
     $err = [string]$DigestErr
     if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
     $svc = ([string]$IrcBobStatus).Trim()
-    # Exact Running/skipped/missing/error stay non-offline; Running-no-child and Stopped paint ear-offline.
+    # Exact Running/skipped/missing/error stay non-offline; Running-no-child,
+    # Running-duplicate and Stopped paint ear-offline.
     if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
         return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
     }

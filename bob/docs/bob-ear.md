@@ -70,6 +70,8 @@ PRIVMSG {machine}_console :<short-cmd>
 
 Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox â€” use a talk-seat / worker run home for agent replies.
 
+**FR #9743 (duplicate / disconnected ear):** only an ear with live IRC (`sock` + JOIN + not dead/stop) may advance `outbox.txt.pos`. A send `OSError` stops the tick and leaves that line for retry — a half-open twin must not consume `!assign`. Startup takes an exclusive `ear.<nick>.lock` under `--home` (PID stamped); a second process with the same home/nick exits. Tray watchdog logs `ircbob-duplicate-ear` when more than one bob-ear/irc_agent child is present; TipForm status can show `Running-duplicate`; the jeeves `ircbob_ear` monitor raises the same finding.
+
 Raw shop-op verbs (bob-* ear, own `#{machine}` only; `shop_ops.raw_op_line`): `KICK`, `NAMES`, and `MODE +/-o|v|h <nick>` (FR #4069 adds half-op `+h`/`-h` alongside op/voice).
 
 ## Keepalive / half-open links (FR #4980)
