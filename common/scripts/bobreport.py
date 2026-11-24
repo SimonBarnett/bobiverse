@@ -5795,7 +5795,7 @@ def _digest_fleet_layout(doc: dict | None) -> dict:
 
 
 def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
-    """FR #6148 / #7178: public Copilot pool — never omit; prefer freshest source."""
+    """FR #6148 / #7178 / #9748: public Copilot pool + nested ``tasks`` list."""
     try:
         import copilot_dispatch as cd
 
@@ -5808,12 +5808,20 @@ def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
                 best = cd.prefer_public_pool(best, fleet_copilot)
             elif isinstance(sticky, dict):
                 best = cd.prefer_public_pool(best, sticky)
-        return cd.ensure_public_pool(best)
+        pool = cd.ensure_public_pool(best)
+        # Attach after normalize so ensure_public_pool never drops live jobs.
+        try:
+            pool["tasks"] = list(cd.tasks_for_digest(home) or [])
+        except Exception:  # noqa: BLE001
+            pool["tasks"] = []
+        return pool
     except Exception:  # noqa: BLE001
         try:
             import copilot_dispatch as cd
 
-            return cd.empty_public_pool(error="unread")
+            pool = cd.empty_public_pool(error="unread")
+            pool["tasks"] = []
+            return pool
         except Exception:  # noqa: BLE001
             return {
                 "state": "unknown",
@@ -5823,11 +5831,12 @@ def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
                 "reset_at": "",
                 "fetched_at": "",
                 "last_error": "unread",
+                "tasks": [],
             }
 
 
 def _digest_copilot_tasks(home: Path) -> list:
-    """FR #9748: export active copilot tasks to digest."""
+    """FR #9748: active Copilot jobs (also nested on ``digest.copilot.tasks``)."""
     try:
         import copilot_dispatch as cd
 
@@ -5909,8 +5918,9 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
+        # FR #9748: live jobs are digest.copilot.tasks (nested), never top-level
+        # copilot_tasks and never machines.copilot.
         "copilot": _digest_copilot_pool(home, doc),
-        "copilot_tasks": _digest_copilot_tasks(home),
         "fleet_pools": _digest_fleet_pools(doc),
         "fleet": _digest_fleet_layout(doc),
         "opencode": doc.get("opencode") if isinstance(doc.get("opencode"), dict) else None,

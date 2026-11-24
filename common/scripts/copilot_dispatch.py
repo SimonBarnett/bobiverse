@@ -642,6 +642,8 @@ def empty_public_pool(*, error: str | None = "unread") -> dict:
         "state": "unknown",
         "resume_at": "",
         "resume_source": "",
+        # FR #9748: live jobs nest under digest.copilot.tasks (never machines.copilot).
+        "tasks": [],
     }
     if error:
         out["last_error"] = str(error)
@@ -655,9 +657,11 @@ def ensure_public_pool(pool: dict | None, *, error: str | None = None) -> dict:
         for key in base:
             if key in pool:
                 base[key] = pool[key]
-        for key in ("max_recorded_usage", "last_error", "overage_permitted"):
+        for key in ("max_recorded_usage", "last_error", "overage_permitted", "tasks"):
             if key in pool:
                 base[key] = pool[key]
+    if not isinstance(base.get("tasks"), list):
+        base["tasks"] = []
     if error and not base.get("last_error"):
         base["last_error"] = str(error)
     if not str(base.get("state") or "").strip():
@@ -758,25 +762,58 @@ def pool_for_digest(home: Path) -> dict:
 
 
 def tasks_for_digest(home: Path | None) -> list:
-    """FR #9748: export active copilot tasks to digest."""
+    """FR #9748: export active Copilot jobs for ``digest.copilot.tasks``.
+
+    Nested under the public pool object (never a top-level ``copilot_tasks`` key,
+    never ``machines.copilot``). Fields: model/start_model, task, repo, id,
+    working_on; optional task_id / task_url / started.
+    """
     if home is None:
         return []
     try:
+        allow = load_allowance(home) if home is not None else {}
+    except Exception:  # noqa: BLE001
+        allow = {}
+    default_model = ""
+    if isinstance(allow, dict):
+        default_model = str(
+            allow.get("model") or allow.get("start_model") or ""
+        ).strip()
+    try:
         doc = _load_jobs(home)
         jobs = doc.get("jobs") or []
-        # Return tasks list for digest; each task includes repo, task type, ID, and task ID.
-        return [
-            {
-                "repo": job.get("repo"),
-                "task": job.get("task"),
-                "id": job.get("id"),
-                "task_id": job.get("task_id"),
-                "task_url": job.get("task_url"),
-                "started": job.get("started"),
+        out: list[dict] = []
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            task = str(job.get("task") or "").strip().upper() or "FR"
+            ident = str(job.get("id") or "").strip()
+            if ident and not ident.startswith("#"):
+                ident = f"#{ident}"
+            model = str(
+                job.get("model") or job.get("start_model") or default_model or ""
+            ).strip()
+            working = str(job.get("working_on") or "").strip()
+            if not working:
+                working = f"{task} {ident}".strip()
+            row = {
+                "repo": str(job.get("repo") or "").strip(),
+                "task": task,
+                "id": ident,
+                "working_on": working,
+                "model": model,
+                "start_model": model,
             }
-            for job in jobs
-            if isinstance(job, dict)
-        ]
+            tid = str(job.get("task_id") or "").strip()
+            if tid:
+                row["task_id"] = tid
+            turl = str(job.get("task_url") or "").strip()
+            if turl:
+                row["task_url"] = turl
+            if job.get("started") is not None:
+                row["started"] = job.get("started")
+            out.append(row)
+        return out
     except Exception:  # noqa: BLE001
         return []
 
@@ -1284,16 +1321,24 @@ def dispatch_row(
     if st not in ("ok", "duplicate"):
         return {"status": "accept-failed", "accept": st}
     doc = _load_jobs(home)
-    doc["jobs"].append(
-        {
-            "repo": repo,
-            "task": task,
-            "id": ident,
-            "task_id": task_id,
-            "task_url": task_url,
-            "started": float(now if now is not None else time.time()),
-        }
-    )
+    model = ""
+    with contextlib.suppress(Exception):
+        allow = load_allowance(home)
+        if isinstance(allow, dict):
+            model = str(allow.get("model") or allow.get("start_model") or "").strip()
+    job_row = {
+        "repo": repo,
+        "task": task,
+        "id": ident,
+        "task_id": task_id,
+        "task_url": task_url,
+        "started": float(now if now is not None else time.time()),
+        "working_on": f"{task} {ident}".strip(),
+    }
+    if model:
+        job_row["model"] = model
+        job_row["start_model"] = model
+    doc["jobs"].append(job_row)
     _save_jobs(home, doc)
     line = announce_handoff(repo=repo, task=task, ident=ident, task_url=task_url or path)
     if announce:

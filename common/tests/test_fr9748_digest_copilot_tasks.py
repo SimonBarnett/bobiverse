@@ -1,4 +1,4 @@
-"""FR #9748: digest.copilot.tasks export."""
+"""FR #9748: digest.copilot.tasks export (nested under pool; never machines.copilot)."""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,6 @@ def test_tasks_for_digest_empty(tmp_path: Path):
 
 def test_tasks_for_digest_with_jobs(tmp_path: Path):
     """tasks_for_digest returns list of active tasks from copilot-jobs.json."""
-    # Create a jobs file with some tasks
     jobs_data = {
         "jobs": [
             {
@@ -26,6 +25,7 @@ def test_tasks_for_digest_with_jobs(tmp_path: Path):
                 "task_id": "task-123",
                 "task_url": "https://github.com/SimonBarnett/bobiverse/tasks/task-123",
                 "started": 1700000000.0,
+                "model": "claude-haiku-4.5",
             },
             {
                 "repo": "SimonBarnett/other",
@@ -37,8 +37,9 @@ def test_tasks_for_digest_with_jobs(tmp_path: Path):
             },
         ]
     }
-    jobs_path = tmp_path / "copilot-jobs.json"
-    jobs_path.write_text(json.dumps(jobs_data), encoding="utf-8")
+    (tmp_path / "copilot-jobs.json").write_text(
+        json.dumps(jobs_data), encoding="utf-8"
+    )
 
     result = cd.tasks_for_digest(tmp_path)
 
@@ -47,60 +48,75 @@ def test_tasks_for_digest_with_jobs(tmp_path: Path):
     assert result[0]["task"] == "FR"
     assert result[0]["id"] == "#9748"
     assert result[0]["task_id"] == "task-123"
+    assert result[0]["model"] == "claude-haiku-4.5"
+    assert result[0]["start_model"] == "claude-haiku-4.5"
+    assert result[0]["working_on"] == "FR #9748"
     assert result[1]["repo"] == "SimonBarnett/other"
     assert result[1]["task"] == "MRB"
+    assert result[1]["working_on"] == "MRB #42"
 
 
 def test_tasks_for_digest_malformed_file(tmp_path: Path):
     """tasks_for_digest returns empty list on file read errors."""
-    # Create a malformed jobs file
-    jobs_path = tmp_path / "copilot-jobs.json"
-    jobs_path.write_text("not valid json", encoding="utf-8")
-
+    (tmp_path / "copilot-jobs.json").write_text("not valid json", encoding="utf-8")
     result = cd.tasks_for_digest(tmp_path)
     assert result == []
 
 
-def test_digest_includes_copilot_tasks(tmp_path, monkeypatch):
-    """build_digest_object includes copilot_tasks from jobs file."""
+def test_digest_copilot_tasks_nested_not_top_level(tmp_path, monkeypatch):
+    """build_digest_object exposes tasks under copilot.tasks (FR #9748 shape)."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
 
-    # Create allowance file for copilot
-    allowance_data = {
-        "enabled": True,
-        "remaining": 10,
-        "state": "ok",
-        "unlimited": True,
-    }
     (tmp_path / "copilot-allowance.json").write_text(
-        json.dumps(allowance_data), encoding="utf-8"
-    )
-
-    # Create jobs file with tasks
-    jobs_data = {
-        "jobs": [
+        json.dumps(
             {
-                "repo": "SimonBarnett/bobiverse",
-                "task": "FR",
-                "id": "#9748",
-                "task_id": "task-123",
-                "task_url": "https://github.com/SimonBarnett/bobiverse/tasks/task-123",
-                "started": 1700000000.0,
-            },
-        ]
-    }
+                "enabled": True,
+                "remaining": 10,
+                "state": "ok",
+                "unlimited": True,
+                "model": "claude-haiku-4.5",
+            }
+        ),
+        encoding="utf-8",
+    )
     (tmp_path / "copilot-jobs.json").write_text(
-        json.dumps(jobs_data), encoding="utf-8"
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "repo": "SimonBarnett/bobiverse",
+                        "task": "FR",
+                        "id": "#9748",
+                        "task_id": "task-123",
+                        "task_url": "https://github.com/SimonBarnett/bobiverse/tasks/task-123",
+                        "started": 1700000000.0,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
     )
 
-    # Save and build digest
     bobreport.save_digest(tmp_path, bobreport.empty_digest())
     obj = bobreport.build_digest_object(tmp_path, "TestChair")
 
-    # Verify copilot_tasks is in the digest
-    assert "copilot_tasks" in obj
-    assert isinstance(obj["copilot_tasks"], list)
-    assert len(obj["copilot_tasks"]) == 1
-    assert obj["copilot_tasks"][0]["repo"] == "SimonBarnett/bobiverse"
-    assert obj["copilot_tasks"][0]["task"] == "FR"
-    assert obj["copilot_tasks"][0]["id"] == "#9748"
+    assert "copilot_tasks" not in obj
+    machines = obj.get("machines") or {}
+    assert "copilot" not in machines or not isinstance(machines.get("copilot"), list)
+    pool = obj.get("copilot")
+    assert isinstance(pool, dict)
+    tasks = pool.get("tasks")
+    assert isinstance(tasks, list)
+    assert len(tasks) == 1
+    assert tasks[0]["repo"] == "SimonBarnett/bobiverse"
+    assert tasks[0]["task"] == "FR"
+    assert tasks[0]["id"] == "#9748"
+    assert tasks[0]["working_on"] == "FR #9748"
+    assert tasks[0]["model"] == "claude-haiku-4.5"
+    assert tasks[0]["start_model"] == "claude-haiku-4.5"
+
+
+def test_ensure_public_pool_keeps_tasks():
+    pool = cd.ensure_public_pool({"state": "ok", "tasks": [{"repo": "o/r", "task": "FR", "id": "#1"}]})
+    assert isinstance(pool.get("tasks"), list)
+    assert pool["tasks"][0]["id"] == "#1"
