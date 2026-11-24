@@ -395,6 +395,27 @@ function Format-BobTrayOnlineZeroCaption {
     return ('online_zero_workers={0} offerable={1} - TipForm Agents (no auto-start)' -f (($ids | Select-Object -Unique) -join ','), $OfferableCount)
 }
 
+
+function Get-BobTrayEngineWakeAlert {
+    <#
+    FR #9513: ear wrote engine.wake after engine_stale NACK (tray-cmd reload also queued).
+    TipForm-only alert sibling of engine_restart_storm (no auto intervene).
+    #>
+    param(
+        [string]$Root = '',
+        [double]$MaxAgeSeconds = 300
+    )
+    try {
+        if (-not $Root) { return $null }
+        $wake = Join-Path (Join-Path (Join-Path $Root 'run') 'startworker') 'engine.wake'
+        if (-not (Test-Path -LiteralPath $wake)) { return $null }
+        $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $wake).LastWriteTimeUtc).TotalSeconds
+        if ($age -lt 0) { $age = 0 }
+        if ($age -gt $MaxAgeSeconds) { return $null }
+        return ('engine_stale_wake age={0:0}s - ReloadEngine requested (FR #9513)' -f $age)
+    } catch { return $null }
+}
+
 function Get-BobTrayEngineStormAlert {
     <#
     FR #9471: TipForm alert while HealEngine storm stamp run/startworker/engine.storm is fresh.
