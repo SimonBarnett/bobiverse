@@ -232,6 +232,28 @@ OPS_MONITOR_TRACKER_BODY_RE = re.compile(
     r")"
 )
 
+# FR #9827: TipForm-restore / online_zero_workers escalate receipts (ops TipForm
+# Agents only; not shop FR). Title shapes from #9824 / #9378 / #9103 / #9310.
+# Never match product FRs that merely name the detector (#9462).
+TIPFORM_RESTORE_ESCALATE_TITLE_RE = re.compile(
+    r"(?i)(?:"
+    r"\(TipForm\s+restore\)"
+    r"|\bonline\s+workers\s*=\s*\[\s*\]\s+while\s+offerable"
+    r"|\bonline\s+with\s+zero\s+workers?(?:\s+seats?)?\b"
+    r"|\bidle\s+seats?\b.{0,60}\bofferable\s*>\s*0\b.{0,60}\bTipForm-only"
+    r")"
+)
+TIPFORM_RESTORE_ESCALATE_BODY_RE = re.compile(
+    r"(?i)(?:"
+    r"TipForm-only\s+seat\s+start"
+    r"|TipForm-only\s+start;\s*report-only"
+    r"|monitor will not Start-BobWorker"
+    r"|Operator:\s*TipForm\s+(?:Agents|->)"
+    r"|fingerprint\s+stall:online-zero-workers:"
+    r")"
+)
+
+
 # Labels safe to detect in free text (title/line only when GitHub labels empty).
 # Bare ``mrb`` is labels-only — otherwise titles like "harden MRB/FR routing" (#595)
 # would false-positive. ``owner-missing`` is also labels-only (FR #3661 / class of
@@ -2361,6 +2383,30 @@ def ops_monitor_tracker_reason(
     return None
 
 
+
+def tipform_restore_escalate_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #9827: TipForm-restore / online_zero_workers escalate receipt (None = ordinary FR).
+
+    Ops TipForm Agents-only filings (class of #9824 / #9378 / #9103). Never skip
+    stamped `feature-request` product work (e.g. #9462). `stall:online-zero-workers:`
+    titles remain `stall_receipt` via the earlier `^stall:` check.
+    """
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "feature-request" in labs:
+        return None
+    title_s = (title or "").strip()
+    if TIPFORM_RESTORE_ESCALATE_TITLE_RE.search(title_s):
+        return "tipform_restore_escalate"
+    if "via-intake" in labs and TIPFORM_RESTORE_ESCALATE_BODY_RE.search(body or ""):
+        return "tipform_restore_escalate"
+    return None
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -2446,6 +2492,12 @@ def issue_skip_fr_reason(
     ops = ops_monitor_tracker_reason(title=title_s, body=body or "", labels=tuple(labs))
     if ops:
         return ops
+    # FR #9827: TipForm-restore / online_zero_workers escalate receipts (no feature-request).
+    tip = tipform_restore_escalate_reason(
+        title=title_s, body=body or "", labels=tuple(labs)
+    )
+    if tip:
+        return tip
     return None
 
 
@@ -5138,8 +5190,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
         if _skip_fr and not _is_digest_gate:
             # FR #9402: ops/monitor trackers drop any twin + clear offered_to.
             # Other skip_fr reasons keep prior behaviour (return skipped; digests
-            # fall through so they stay as go-gate records).
-            if _skip_fr == "ops_monitor_tracker":
+            # and needs-human paths are handled by prune / label mutation).
+            if _skip_fr in ("ops_monitor_tracker", "tipform_restore_escalate"):
                 store_repo = canonical_queue_repo(claim.repo)
                 _clear_unaccepted_offer_pins_for_job(
                     home, doc, store_repo, claim.task, claim.id
@@ -14000,7 +14052,7 @@ def offer_focus_top(
                 skip_why = row_skip_fr_reason(cand)
                 if skip_why:
                     # FR #9411: ops-monitor trackers leave the unaccepted queue (not sticky).
-                    if skip_why == "ops_monitor_tracker":
+                    if skip_why in ("ops_monitor_tracker", "tipform_restore_escalate"):
                         if _drop_unaccepted_row(
                             doc, cand, kind="ops-monitor", reason=skip_why
                         ):
@@ -14490,7 +14542,7 @@ def offer_top(
                 # offer_focus_top); other skip_fr reasons stay sticky skip.
                 skip_why = row_skip_fr_reason(row)
                 if skip_why:
-                    if skip_why == "ops_monitor_tracker":
+                    if skip_why in ("ops_monitor_tracker", "tipform_restore_escalate"):
                         if _drop_unaccepted_row(
                             doc, row, kind="ops-monitor", reason=skip_why
                         ):
@@ -18325,10 +18377,16 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
-            # FR #9411: refuse ops-monitor trackers even when hold was cleared.
+            # FR #9411 / #9827: refuse ops-monitor + TipForm-restore escalate even when hold cleared.
             _assign_skip = row_skip_fr_reason(cand)
-            if task_u == "FR" and _assign_skip == "ops_monitor_tracker":
-                return "refused", "ops-monitor tracker (not shop FR; FR #9411)"
+            if task_u == "FR" and _assign_skip in (
+                "ops_monitor_tracker",
+                "tipform_restore_escalate",
+            ):
+                return (
+                    "refused",
+                    f"{_assign_skip} (not shop FR; FR #9411/#9827)",
+                )
             # FR #9411: unbudgeted closed check when caller omitted issue_open.
             _fr_open = (
                 issue_open
