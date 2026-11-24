@@ -93,7 +93,7 @@ def test_fr9843_stage_product_bob_returns_single_directory_string(tmp_path: Path
     ps = f"""
 $ErrorActionPreference = 'Continue'
 & '{PACK}' -Product bob -RepoRoot '{ROOT}' -OutDir '{out}' -Version '2.0.1274' `
-  -SkipMsi -SkipWorkerExe -SkipEarExe -SkipPlanAgentExe -SkipPriorityExe `
+  -SkipMsi -SkipWorkerExe -SkipEarExe -SkipPlanAgentExe -SkipPriorityExe -SkipWatcherExe `
   -KeepStage -SkipPublishedVersionCheck 2>&1 | Out-String | Write-Output
 $dirs = @(Get-ChildItem -LiteralPath '{out}' -Directory -ErrorAction SilentlyContinue |
   Where-Object {{ $_.Name -like 'bob-*' }})
