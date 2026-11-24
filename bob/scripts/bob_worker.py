@@ -6,6 +6,7 @@ Modes
   --mode plan    plan agent: cwd <install>\plan, no IRC, fire-and-forget launch
   --mode monitor Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
+  --mode jeeves  Agents > Jeeves (FR #9640): IRC agent-like, outside Workers MaxWorkers=2 hard cap
 
 Rules (CAST IRON, Simon t762u-t765u)
   * Agent choice is ALWAYS automatic by token availability (FR #3997 / #6120): Grok (local weekly > 0 or unknown read)
@@ -3384,7 +3385,13 @@ def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> 
     return out
 
 
-_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance")
+# FR #9640: jeeves = Agents > Jeeves (IRC agent-like; outside Workers hard cap).
+_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance", "jeeves")
+
+
+def is_irc_agent_like_mode(mode: str) -> bool:
+    """True for Workers agent seats and Agents > Jeeves (FR #9640)."""
+    return str(mode or "").strip().lower() in ("agent", "jeeves")
 
 
 def describe_worker_exe_launch(
@@ -3445,6 +3452,10 @@ def describe_worker_exe_launch(
     elif mode_l == "plan":
         cwd = root / "plan"
         title = "Bob plan - starting (closing this window ends the agent)"
+    elif mode_l == "jeeves":
+        # FR #9640: Agents > Jeeves shares worker cwd / IRC path; uncapped.
+        cwd = root / "worker"
+        title = "Bob jeeves - starting (closing this window ends the agent)"
     else:
         cwd = root / "worker"
         title = "Bob agent - starting (closing this window ends the agent)"
@@ -3495,7 +3506,8 @@ def describe_agent_child_launch(
     launch_folder = folder
     install_worker = folder
     bound_meta: dict = {}
-    if kind_l == "grok" and mode_l == "agent":
+    # FR #9640: jeeves is IRC agent-like (bound grok cwd) but outside Workers hard cap.
+    if kind_l == "grok" and is_irc_agent_like_mode(mode_l):
         try:
             import skill_dag_bound as _sdb
 
@@ -3527,6 +3539,7 @@ def describe_agent_child_launch(
                     f"Harness cwd is {bound_meta['bound_cwd']} (FR #6891 skill catalog bound; "
                     f"only skill-dag-core is listed). Install worker tree: {install_worker}. "
                 ) + prompt
+    # build_launch knows agent|plan|monitor; map jeeves -> agent for the child argv.
     launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
     spec = build_launch(
         kind, launch_mode, launch_folder, prompt, agent_exe, rd,
@@ -12924,13 +12937,15 @@ class IrcSeat:
             if params and params[0].lower() == self.shop.lower():
                 self.joined.set()
                 self.log("irc: joined " + self.shop)
-                if getattr(self, "mode", "agent") == "agent" and write_seat_irc is not None:
+                # FR #9640: agent + jeeves write markers; CapRefusal counts mode=agent only.
+                if is_irc_agent_like_mode(getattr(self, "mode", "agent")) and write_seat_irc is not None:
                     try:
                         write_seat_irc(
                             nick=self.nick,
                             pid=os.getpid(),
                             machine=getattr(self, "machine", "") or "",
                             shop=self.shop,
+                            mode=getattr(self, "mode", "agent") or "agent",
                         )
                     except OSError as e:
                         self.log("irc: seat marker write failed: %s" % e)
@@ -22245,6 +22260,8 @@ def run_agent(args, log: Log) -> int:
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
         sasl = (os.environ["BOB_IRC_SASL_USER"], os.environ["BOB_IRC_SASL_PASSWORD"])
     irc = IrcSeat(args.host, args.port, nick, machine, pw, sasl, tls=not args.no_tls, log=log)
+    # FR #9640: jeeves seats register mode=jeeves markers (excluded from Workers cap).
+    irc.mode = str(getattr(args, "mode", "agent") or "agent").strip().lower() or "agent"
     relay = Relay(log, persist_dir=run_dir)
     irc.on_message = relay.deliver
     try:
@@ -22624,8 +22641,8 @@ except ImportError:
 HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
 # FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use
 # worker_seat_roots / recycle_to_cap / excess_worker_seat_roots (never flat PID Skip-N).
-CAPPED_MODES = ("agent",)     # modes refused when 2 agent seats are already live
-UNCAPPED_MODES = ("plan", "monitor", "maintenance")
+CAPPED_MODES = ("agent",)     # Workers only; plan/monitor/maintenance/jeeves uncapped (FR #2522 / #9640)
+UNCAPPED_MODES = ("plan", "monitor", "maintenance", "jeeves")
 _WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 
 
@@ -22770,9 +22787,9 @@ def recycle_to_cap(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list
 
 
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
-    """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap.
+    """'' = free to start. Plan/monitor/maintenance/jeeves are never refused by the worker cap.
 
-    FR #3181 / FR #4307: IRC agent markers union live agent process roots.
+    FR #3181 / FR #4307 / FR #9640: IRC agent markers union live agent process roots.
     """
     if str(for_mode).lower() not in CAPPED_MODES:
         return ""
@@ -22790,7 +22807,11 @@ def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> 
 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")
-    p.add_argument("--mode", choices=("agent", "plan", "monitor", "maintenance"), default="agent")
+    p.add_argument(
+        "--mode",
+        choices=("agent", "plan", "monitor", "maintenance", "jeeves"),
+        default="agent",
+    )
     p.add_argument(
         "--agent",
         default="",
