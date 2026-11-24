@@ -32,10 +32,15 @@ def test_mrb2325_orphan_clear_before_bored_gate():
     assert "clear_orphan_digest_mrb_doing" in text
     assert "bored_gate" in text
     # crude order: orphan clear appears before bored_gate inside _git_bored
+    # FR #9633: sticky-offer clear also lives in _git_bored; keep window large enough
+    # that bored_gate( is still visible after that block.
     i_fn = text.find("def _git_bored")
     assert i_fn > 0
-    chunk = text[i_fn : i_fn + 2500]
-    assert chunk.find("clear_orphan_digest_mrb_doing") < chunk.find("bored_gate(")
+    chunk = text[i_fn : i_fn + 4000]
+    i_orphan = chunk.find("clear_orphan_digest_mrb_doing")
+    i_gate = chunk.find("bored_gate(")
+    assert i_orphan >= 0 and i_gate >= 0
+    assert i_orphan < i_gate
 
 
 def test_mrb2325_shop_listen_done_missing_note():

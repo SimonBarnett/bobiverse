@@ -6933,6 +6933,140 @@ def list_open_prs_missing_mrb(
     return out
 
 
+def heal_open_prs_missing_mrb(
+    home: Path,
+    pulls,
+    *,
+    repo: str = "",
+    dry_run: bool = False,
+) -> dict:
+    """FR #9635: enqueue MRB for open expected PRs missing from the queue.
+
+    Mirrors ``resync_from_github`` open-PR classification via
+    ``list_open_prs_missing_mrb`` / ``claim_from_github_issue``. Includes
+    ``lesson(...)`` / harvest-lesson tips (same as !resync / !assign; webhook
+    still skips pure intake receipts per FR #2650).
+
+    Returns ``{ok, added, duplicate, skipped, refused, missing_before,
+    missing_after, details, dry_run}``.
+    """
+    pulls_l = [p for p in (pulls if isinstance(pulls, list) else []) if isinstance(p, dict)]
+    by_num: dict[tuple[str, int], dict] = {}
+    for pr in pulls_l:
+        num = pr.get("number")
+        if not isinstance(num, int):
+            continue
+        base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+        pr_repo = (
+            canonical_queue_repo(str(base_repo.get("full_name") or repo or ""))
+            or str(repo or "").strip()
+        )
+        if not pr_repo:
+            continue
+        by_num[(_repo_key(pr_repo), int(num))] = pr
+
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            missing = list_open_prs_missing_mrb(pulls_l, doc, repo=repo)
+            details: list[dict] = []
+            added = duplicate = skipped = refused = 0
+            if dry_run:
+                return {
+                    "ok": True,
+                    "added": 0,
+                    "duplicate": 0,
+                    "skipped": 0,
+                    "refused": 0,
+                    "missing_before": len(missing),
+                    "missing_after": len(missing),
+                    "details": [
+                        {
+                            "repo": m.get("repo"),
+                            "number": m.get("number"),
+                            "planned": "enqueue_mrb",
+                        }
+                        for m in missing
+                    ],
+                    "dry_run": True,
+                }
+            for m in missing:
+                pr_repo = canonical_queue_repo(str(m.get("repo") or repo or "")) or ""
+                num = m.get("number")
+                if not pr_repo or not isinstance(num, int):
+                    refused += 1
+                    details.append({"repo": pr_repo, "number": num, "result": "refused:bad_key"})
+                    continue
+                pr = by_num.get((_repo_key(pr_repo), int(num)))
+                if pr is None:
+                    refused += 1
+                    details.append(
+                        {"repo": pr_repo, "number": num, "result": "refused:pr_not_in_list"}
+                    )
+                    continue
+                # claim_from_github_issue treats /pull/ URLs (and pull_request blobs) as MRB.
+                issue = dict(pr)
+                if "html_url" not in issue or "/pull/" not in str(issue.get("html_url") or ""):
+                    issue["html_url"] = (
+                        str(pr.get("html_url") or "")
+                        or f"https://github.com/{pr_repo}/pull/{num}"
+                    )
+                if "state" not in issue:
+                    issue["state"] = "open"
+                claim = claim_from_github_issue(pr_repo, issue)
+                if claim is None or claim.task != "MRB":
+                    refused += 1
+                    details.append(
+                        {
+                            "repo": pr_repo,
+                            "number": num,
+                            "result": "refused:not_mrb_claim",
+                        }
+                    )
+                    continue
+                url = str(pr.get("html_url") or issue.get("html_url") or "")
+                result = _append_unaccepted(doc, claim, home=home, url=url)
+                if result == "added":
+                    added += 1
+                elif result == "duplicate":
+                    duplicate += 1
+                elif result == "skipped":
+                    skipped += 1
+                else:
+                    refused += 1
+                details.append(
+                    {"repo": pr_repo, "number": num, "result": result or "refused"}
+                )
+            if added or duplicate:
+                _write_queue(queue_path(home), doc)
+            missing_after = list_open_prs_missing_mrb(pulls_l, doc, repo=repo)
+            return {
+                "ok": True,
+                "added": added,
+                "duplicate": duplicate,
+                "skipped": skipped,
+                "refused": refused,
+                "missing_before": len(missing),
+                "missing_after": len(missing_after),
+                "details": details,
+                "dry_run": False,
+            }
+    except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}:{exc}",
+            "added": 0,
+            "duplicate": 0,
+            "skipped": 0,
+            "refused": 0,
+            "missing_before": 0,
+            "missing_after": -1,
+            "details": [],
+            "dry_run": bool(dry_run),
+        }
+
+
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -14633,6 +14767,23 @@ def parse_pin_cmd(body: str) -> tuple[str, str, str] | None:
     return m.group(1).strip().strip("{}"), f"#{int(m.group(2))}", mid
 
 
+def row_needs_machine_labels(row: dict) -> list[str]:
+    """GitHub ``needs-<machine>`` / ``require_machine:<machine>`` labels on a queue row (FR #9708)."""
+    labs = row.get("labels") or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    out: list[str] = []
+    for lab in labs:
+        s = str(lab or "").strip()
+        m = _REQUIRE_MACHINE_LABEL_RE.match(s)
+        if not m:
+            continue
+        mid = bobreport.normalize_machine_id(m.group(1)) or m.group(1).strip().lower()
+        if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE and not _is_retired_require_machine(mid):
+            out.append(s)
+    return out
+
+
 def set_require_machine_job(
     home: Path, repo: str, ident: str, machine: str
 ) -> dict:
@@ -14644,6 +14795,8 @@ def set_require_machine_job(
     rows honor the pin under FR #4512 re-infer (bare stamps without the flag still clear).
     Remaining hard ``_REQUIRE_MACHINE_ISSUE_PINS`` still win over operator any
     (documented in jeeves-commands); retired ce-priority-dev1 hard pins are gone.
+    FR #9708: ``!unpin`` refuses while the queue row still has ``needs-*`` /
+    ``require_machine:*`` labels (CAST IRON: never leave needs-* + rm=any).
     """
     repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
     ident_n = _norm_row_id(ident)
@@ -14684,6 +14837,7 @@ def set_require_machine_job(
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
+            matches: list[dict] = []
             for bucket in ("unaccepted", "accepted"):
                 for row in list(doc.get(bucket) or []):
                     if not isinstance(row, dict):
@@ -14692,10 +14846,28 @@ def set_require_machine_job(
                         continue
                     if _norm_row_id(row.get("id")) != ident_n:
                         continue
-                    row["require_machine"] = stamp
-                    # FR #6592: mark operator !pin/!unpin so bobiverse FR #4512 re-infer keeps it.
-                    row["require_machine_operator"] = "1"
-                    rows_n += 1
+                    matches.append(row)
+            if stamp == "any":
+                # FR #9708 CAST IRON: remove needs-* before !unpin (never needs-* + any).
+                lingering: list[str] = []
+                for row in matches:
+                    lingering.extend(row_needs_machine_labels(row))
+                if lingering:
+                    uniq = ",".join(sorted(set(lingering)))
+                    return {
+                        "ok": False,
+                        "error": f"needs_labels:{uniq}",
+                        "queue_rows": len(matches),
+                        "repo": repo_c,
+                        "id": ident_n,
+                        "require_machine": "",
+                        "needs_labels": sorted(set(lingering)),
+                    }
+            for row in matches:
+                row["require_machine"] = stamp
+                # FR #6592: mark operator !pin/!unpin so bobiverse FR #4512 re-infer keeps it.
+                row["require_machine_operator"] = "1"
+                rows_n += 1
             if rows_n:
                 _write_queue(queue_path(home), doc)
     except (TimeoutError, OSError):
@@ -17596,10 +17768,13 @@ def assign_row(
     Returns ("ok", job) -> caller posts ``format_assign_line`` in the worker's shop channel as Jeeves
     and the worker's ACK accepts it (``accept_offered``); or ("refused", reason).
     The same eligibility as ``offer_focus_top`` applies: real seat nick, not busy, row queued and
-    unaccepted, no self-MRB/UAT, not skip/cooldown/machine-pinned/already given up by this seat,
+    unaccepted, no self-MRB/UAT, not skip/cooldown/machine-pinned,
     not offered to another seat inside OFFER_TIMEOUT_S, and (FR #6211) the automatic MRB
-    CodeRabbit current-head hold. Intentional exception (FR #4336): ordinary ``!assign`` may
-    still hand out ``needs_human`` FR/MRB rows that auto-offer blocks.
+    CodeRabbit current-head hold. Intentional exceptions: ordinary ``!assign`` may still hand
+    out ``needs_human`` FR/MRB rows that auto-offer blocks (FR #4336), and clears this nick's
+    prior give-up on the row (queue ``giveup_seats`` + seat ledger) instead of refusing
+    ``already gave this row up`` (FR #9634) — same effect as ops ``!cleargiveup … <nick>`` then
+    assign.
 
     FR #3400 / #7186: refuse assign to a nick not in #{machine} membership (JOIN/NAMES/PART),
     never because they have not sent ``!bored``. If the named job is only
@@ -17804,10 +17979,19 @@ def assign_row(
                 return "refused", f"{me}: model mismatch or below jobRequiredModelTier (FR #7084)"
             if seat_fuel_pause_reason(home, me, now_f):
                 return "refused", f"{me}: fuel paused until reset (FR #7837)"
-            # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
-            # auto-offer. Ops may !assign needs_human to a recycled successor.
+            # FR #9634: !assign implies clear give-up for this nick+row (queue + ledger),
+            # same as ops ``!cleargiveup owner/repo#N <nick>`` then assign. Exact-nick only;
+            # recycle inherit remains auto-offer (FR #4336 / #5088). Do not call
+            # clear_giveup_job here — it takes the queue lock we already hold.
             if row_gave_up_by(cand, me):
-                return "refused", f"{me} already gave this row up"
+                drop_nick_from_giveup_seats(cand, me)
+                with contextlib.suppress(Exception):
+                    ledger_clear_giveup_entry(
+                        home,
+                        str(cand.get("repo") or repo),
+                        str(cand.get("id") or num),
+                        nick=me,
+                    )
             if row_blocked_for_giveup_agent_kind(cand, seat_agent_kind(home, me)):
                 return "refused", f"{me}: agent class blocked after hard-ceiling GIVEUPs (FR #8008)"
             if mrb_fail_same_head_for_seat(cand, me):
@@ -20515,13 +20699,84 @@ _HOLDER_OPEN_RX = re.compile(
 )
 
 
+def release_sticky_offer_on_bored(
+    home: Path, nick: str, now: float | None = None
+) -> str:
+    """FR #9633: !bored clears a *stale* sticky offered_to pin (no accepted row).
+
+    Within ``offer_timeout_s`` the seat stays busy (FR #3192 / #8738 — fresh
+    post-DONE / post-GIVEUP pushes must not be wiped by the next !bored). Past
+    the timeout, clear ``offered_to`` + matching seat-hold so digest-idle seats
+    are not NAK ``busy (offered …)`` forever (issue #9633).
+
+    Bare ack-missing / closed-PR ``held …`` seat-holds (FR #4115 / #4415) are
+    never cleared here. Does not call ``seat_open_job`` (that would purge first).
+
+    Returns the open-job text that was cleared, else ''.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return ""
+    if _seat_has_accepted(home, nick):
+        return ""
+    # Live pending ACK window: leave the pin alone (FR #8738).
+    if seat_pending_offer(home, nick, now_f) is not None:
+        return ""
+    changed = False
+    cleared_job = ""
+    repo = task = ident = ""
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them != me:
+                    continue
+                if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
+                    continue
+                task_u = str(cand.get("task") or "").upper()
+                repo_s = str(cand.get("repo") or "")
+                ident_s = str(cand.get("id") or "")
+                cleared_job = f"offered {task_u} {repo_s}{ident_s}".strip()
+                repo, task, ident = repo_s, task_u, ident_s
+                clear_sticky_offer_fields(cand)
+                changed = True
+            if changed:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        return ""
+    if not changed:
+        return ""
+    with contextlib.suppress(Exception):
+        if repo and task and ident:
+            clear_seat_hold(
+                home, nick, repo=repo, task=task, ident=ident, clear_pins=True
+            )
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick)
+    return cleared_job
+
+
+
 def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
     """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
 
     Returns the open-job text when this call released it, else ''. A different
     seat's !bored never touches this nick's row. Offered-but-not-accepted pins
-    stay on the existing busy path. ACK/DONE/progress must call
-    ``reset_holder_bored`` or the streak keeps counting.
+    are cleared by ``release_sticky_offer_on_bored`` (FR #9633) before the busy
+    gate. ACK/DONE/progress must call ``reset_holder_bored`` or the streak keeps
+    counting.
     """
     import time as _time
 
@@ -20612,8 +20867,14 @@ def bored_gate(
         return "busy"
     if seat_fuel_pause_reason(home, nick, now):
         return "busy"
+    # FR #9633: sticky offered-but-not-ACKed must not NAK !bored forever when the
+    # seat is claiming idle — clear the pin so offer_focus_top can re-send.
+    with contextlib.suppress(Exception):
+        release_sticky_offer_on_bored(home, nick, now)
     # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
     # never re-offer the same row and never treat it as stale digest doing.
+    # (After FR #9633 clear above, a fresh pending offer means another path stamped
+    # one mid-gate; still busy.)
     if seat_pending_offer(home, nick, now):
         return "busy"
     # FR #4642: ack-missing hold for a job this seat already DONE'd (no later
