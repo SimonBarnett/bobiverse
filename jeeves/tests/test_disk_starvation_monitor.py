@@ -94,3 +94,17 @@ def test_check_dry_run_ok():
     # run_check --dry-run path
     rc = ds.main(["--dry-run"])
     assert rc == 0
+
+
+def test_mrb9700_remediator_skips_bridge_leaves_with_local_work():
+    """Hostile MRB #9700: orphan bob-bridge rmdir must gate on git local work."""
+    rem = (
+        Path(__file__).resolve().parents[2]
+        / "common"
+        / "scripts"
+        / "Invoke-BobiverseDiskStarvationRemediate.ps1"
+    )
+    text = rem.read_text(encoding="utf-8-sig")
+    assert "Test-BridgeLeafHasLocalWork" in text
+    assert "orphan_bob_bridge_skip_local_work" in text
+    assert "status --porcelain" in text
