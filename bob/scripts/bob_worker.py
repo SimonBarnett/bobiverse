@@ -5238,6 +5238,156 @@ def report_agent_cli_nonzero_exit(
         return {"ok": False, "key": key}
 
 
+def probe_create_pseudoconsole_hresult(
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """FR #9612: host CreatePseudoConsole smoke; log HRESULT; fail closed on error.
+
+    Grok Build's run_terminal_command uses ConPTY. After FR #7593 recycle the host
+    ConPTY stack can be dead while file tools still work. This probe does not fix
+    Grok's internal PTY; it fails fast when the *host* CreatePseudoConsole fails.
+    """
+    if sys.platform != "win32":
+        return {"ok": True, "skipped": True, "reason": "non-windows"}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class COORD(ctypes.Structure):
+            _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+        HPCON = wintypes.HANDLE
+        k32.CreatePipe.argtypes = [
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        k32.CreatePipe.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        # HRESULT CreatePseudoConsole(COORD, HANDLE, HANDLE, DWORD, HPCON*)
+        k32.CreatePseudoConsole.argtypes = [
+            COORD,
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(HPCON),
+        ]
+        k32.CreatePseudoConsole.restype = wintypes.HRESULT
+        k32.ClosePseudoConsole.argtypes = [HPCON]
+        k32.ClosePseudoConsole.restype = None
+
+        h_input_r = wintypes.HANDLE()
+        h_input_w = wintypes.HANDLE()
+        h_output_r = wintypes.HANDLE()
+        h_output_w = wintypes.HANDLE()
+        if not k32.CreatePipe(ctypes.byref(h_input_r), ctypes.byref(h_input_w), None, 0):
+            err = ctypes.get_last_error()
+            if log:
+                log(f"conpty-smoke: CreatePipe input failed winerr={err} (FR #9612)")
+            return {"ok": False, "hresult": None, "winerr": err, "step": "CreatePipe-input"}
+        if not k32.CreatePipe(ctypes.byref(h_output_r), ctypes.byref(h_output_w), None, 0):
+            err = ctypes.get_last_error()
+            k32.CloseHandle(h_input_r)
+            k32.CloseHandle(h_input_w)
+            if log:
+                log(f"conpty-smoke: CreatePipe output failed winerr={err} (FR #9612)")
+            return {"ok": False, "hresult": None, "winerr": err, "step": "CreatePipe-output"}
+        hpc = HPCON()
+        size = COORD(80, 25)
+        # ConPTY wants the opposite ends: input write for host→console, output read console→host
+        hr = int(
+            k32.CreatePseudoConsole(
+                size, h_input_r, h_output_w, 0, ctypes.byref(hpc)
+            )
+        )
+        # Close our unused ends after create attempt
+        k32.CloseHandle(h_input_r)
+        k32.CloseHandle(h_output_w)
+        if hr == 0 and hpc:
+            try:
+                k32.ClosePseudoConsole(hpc)
+            except Exception:
+                pass
+        k32.CloseHandle(h_input_w)
+        k32.CloseHandle(h_output_r)
+        ok = hr == 0
+        if log:
+            log(
+                f"conpty-smoke: CreatePseudoConsole hresult=0x{hr & 0xFFFFFFFF:08X} "
+                f"ok={ok} (FR #9612)"
+            )
+        return {"ok": ok, "hresult": hr, "hresult_hex": f"0x{hr & 0xFFFFFFFF:08X}"}
+    except AttributeError as e:
+        # Older Windows without ConPTY exports
+        if log:
+            log(f"conpty-smoke: API missing {e} (FR #9612)")
+        return {"ok": True, "skipped": True, "reason": "api-missing"}
+    except Exception as e:
+        if log:
+            log(f"conpty-smoke: failed {type(e).__name__}: {e} (FR #9612)")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def detect_grok_empty_terminal_calls(
+    session_dir: str | Path,
+    *,
+    min_age_s: float = 25.0,
+    now: Optional[Callable[[], float]] = None,
+) -> Optional[dict]:
+    """FR #9612: empty terminal/call-*.log after run_terminal_command → shell hung.
+
+    Returns a detail dict when hung, else None.
+    """
+    root = Path(session_dir)
+    terminal = root / "terminal"
+    events = root / "events.jsonl"
+    if not terminal.is_dir():
+        return None
+    clock = now or time.time
+    wall = float(clock())
+    empty: list[str] = []
+    for p in terminal.glob("call-*.log"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size > 0:
+            continue
+        age = wall - float(st.st_mtime)
+        if age >= float(min_age_s):
+            empty.append(p.name)
+    if not empty:
+        return None
+    # Require evidence the session actually tried a shell tool recently.
+    tried_shell = False
+    if events.is_file():
+        try:
+            # Tail last ~256 KiB for tool names (cheap; sessions can be large).
+            raw = events.read_bytes()
+            if len(raw) > 262144:
+                raw = raw[-262144:]
+            text = raw.decode("utf-8", errors="replace").lower()
+            tried_shell = (
+                "run_terminal_command" in text
+                or "run_terminal" in text
+                or '"name":"bash"' in text
+                or '"name": "bash"' in text
+            )
+        except Exception:
+            tried_shell = False
+    if not tried_shell:
+        return None
+    return {
+        "empty_calls": empty[:20],
+        "count": len(empty),
+        "min_age_s": float(min_age_s),
+    }
+
+
 def restart_skill_dag_mcp_stdio_children(
     agent_pid: int | None,
     seat_markers: list[str | Path | None],
@@ -20076,8 +20226,52 @@ class Supervisor:
             # FR #3623: ask_user_question Pending (alive process, ACK held) - Enter then recycle.
             if self._check_ask_user_pending(proc):
                 continue
+            # FR #9612: Grok empty terminal/call-*.log after run_terminal_command → shell-hung.
+            if self._check_grok_shell_hung():
+                continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
+
+    def _check_grok_shell_hung(self) -> bool:
+        """FR #9612: empty ConPTY call logs while shell tools ran → GIVEUP shell-hung + recycle."""
+        if (self.kind or "").strip().lower() != "grok":
+            return False
+        if not (self.bored and getattr(self.bored, "_ack_open", False)):
+            return False
+        path = self._ask_user_events_path()
+        if path is None:
+            return False
+        session_dir = path.parent
+        detail = detect_grok_empty_terminal_calls(session_dir)
+        if not detail:
+            return False
+        job_key = ""
+        try:
+            job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            job_key = ""
+        self.log(
+            f"agent: shell-hung empty call logs count={detail.get('count')} "
+            f"files={detail.get('empty_calls')} job={job_key or '-'} (FR #9612)"
+        )
+        if job_key:
+            try:
+                if self.bored is not None:
+                    self.bored._ack_open = False
+                    self.bored._ack_job_key = None
+            except Exception:
+                pass
+            try:
+                self._release_seat_giveup_job(job_key, "shell-hung")
+            except Exception as e:
+                self.log(f"agent: shell-hung GIVEUP failed {type(e).__name__}")
+        # Recycle once; host ConPTY smoke runs on agent-cli-nonzero-exit path when applicable.
+        try:
+            self.restart_agent("shell-hung")
+        except Exception as e:
+            self.log(f"agent: shell-hung restart failed {type(e).__name__}")
+            self.shutdown("shell-hung", EXIT_GAVE_UP)
+        return True
 
     def _progress_hb_skip(self, reason: str, *, now_mono: float) -> None:
         """Rate-limited skip log so a missing heartbeat can be attributed (FR #8249)."""
@@ -20835,6 +21029,28 @@ class Supervisor:
             pending = self.relay.last_unacked
         if pending:
             self.relay.hold(pending)  # the message in flight when the old agent hung is re-delivered to the NEW one once it is ready
+        # FR #9612: after FR #7593 recycle, smoke host CreatePseudoConsole before relaunch.
+        # Fail fast with shell-hung-conpty when HRESULT is nonzero (Grok file tools can still work).
+        if (
+            (self.kind or "").strip().lower() == "grok"
+            and reason == "agent-cli-nonzero-exit"
+        ):
+            smoke = probe_create_pseudoconsole_hresult(log=self.log)
+            if smoke.get("ok") is False and not smoke.get("skipped"):
+                self.log(
+                    "agent: ConPTY smoke failed after recycle; "
+                    f"hresult={smoke.get('hresult_hex') or smoke.get('hresult')} "
+                    f"step={smoke.get('step')} (FR #9612 shell-hung)"
+                )
+                if pending:
+                    try:
+                        key = (assign_job_key(pending) or "").strip()
+                        if key:
+                            self._release_seat_giveup_job(key, "shell-hung")
+                    except Exception as e:
+                        self.log(f"agent: shell-hung GIVEUP failed {type(e).__name__}")
+                self.shutdown("shell-hung-conpty", EXIT_GAVE_UP)
+                return
         if not self.start_agent(note="(restarted after a hang; the previous session was discarded)"):
             self.shutdown("restart-launch-failed", EXIT_LAUNCH_FAIL)
 
