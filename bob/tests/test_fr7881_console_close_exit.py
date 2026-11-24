@@ -9,7 +9,8 @@ def test_fr7881_control_c_exit_is_console_close_not_cli_bug():
     posts = []
     bw.report_agent_cli_nonzero_exit(
         exit_code=3221225786,
-        job_key="",
+        # FR #9656: empty job_key skips free-idle console-close intake; ACK-open still files.
+        job_key="FR SimonBarnett/bobiverse#7881",
         machine="redqueen",
         nick="redqueen-2528",
         kind="opencode",
@@ -32,6 +33,7 @@ def test_fr7881_signed_control_c_matches():
     posts = []
     bw.report_agent_cli_nonzero_exit(
         exit_code=-1073741510,
+        job_key="FR SimonBarnett/bobiverse#7881",
         machine="redqueen",
         nick="redqueen-2528",
         kind="opencode",
@@ -61,6 +63,7 @@ def test_fr8148_signal_reason_is_console_close():
     bw.report_agent_cli_nonzero_exit(
         exit_code=1,
         reason="signal",
+        job_key="FR SimonBarnett/bobiverse#8148",
         machine="flamingo",
         nick="flamingo-1",
         kind="grok",
