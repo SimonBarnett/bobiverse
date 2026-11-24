@@ -2522,10 +2522,11 @@ namespace BobDialogs
             return false;
         }
 
-        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10: Agents > Plan starts plan\PlanAgent.exe (MSI / BOB-49), not bob-worker --mode plan / bob-plan.exe.
+        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605: Agents > Plan starts vendor\plan\PlanAgent.exe
+        // (Pack/Sync mirror; live installs often lack plan\PlanAgent.exe). Not bob-worker --mode plan / bob-plan.exe.
         void StartPlanExe()
         {
-            string exe = Path.Combine(root, "plan", "PlanAgent.exe");
+            string exe = Path.Combine(root, "vendor", "plan", "PlanAgent.exe");
             string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
             if (string.IsNullOrEmpty(hook))
                 hook = Path.Combine(root, "run", "models-webhook.json");

@@ -8,7 +8,7 @@
 
 ## S1
 
-The bob product MSI stage (bob-ear pack) contains the **Plan** agent build under `plan\` and a verified **`plan\PlanAgent.exe`** from `SimonBarnett/skills-visionary` releases (tags `plan-*`). Pack also stages **`vendor/plan/PlanAgent.exe`** (single copy; FR #9598) so About/install discovery and Sync mirrors stay aligned. TipForm Plan clicks start **`plan\PlanAgent.exe`** (FR #9271 / BOB-TRAY-UI-10).
+The bob product MSI stage (bob-ear pack) contains the **Plan** agent build under `plan\` and a verified **`plan\PlanAgent.exe`** from `SimonBarnett/skills-visionary` releases (tags `plan-*`). Pack also stages **`vendor/plan/PlanAgent.exe`** (single copy; FR #9598) so About/install discovery and Sync mirrors stay aligned. TipForm Plan clicks start **`vendor/plan/PlanAgent.exe`** (FR #9605; was `plan\PlanAgent.exe` in FR #9271 / BOB-TRAY-UI-10).
 
 ## How measured
 
