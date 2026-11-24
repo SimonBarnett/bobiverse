@@ -973,9 +973,9 @@ def return_job_to_unaccepted(
             if reason and not console_closed_giveup:
                 with contextlib.suppress(Exception):
                     gitclaim.apply_require_machine_giveup_stamp(job, reason)
-            # FR #9469: blocked:depends-on / blocked-on / depends_unresolved with a
-            # parseable #N stamps plain Depends-on: on queue body + GitHub issue so
-            # BOB-D3 skips re-offer until that ref is CLOSED (union existing deps).
+            # FR #9469 / #9665: blocked:depends-on / depends_open:#N stamps plain
+            # Depends-on: + durable depends_open so offer skips until CLOSED
+            # (bypasses unheld fr-digest soft-allow).
             if reason and not console_closed_giveup:
                 with contextlib.suppress(Exception):
                     gitclaim.apply_depends_on_giveup_stamp(job, reason)
