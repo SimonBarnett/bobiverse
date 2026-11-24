@@ -20499,13 +20499,15 @@ _HOLDER_OPEN_RX = re.compile(
 def release_sticky_offer_on_bored(
     home: Path, nick: str, now: float | None = None
 ) -> str:
-    """FR #9633: !bored while only sticky-offered (no accepted) clears the pin.
+    """FR #9633: !bored clears a *stale* sticky offered_to pin (no accepted row).
 
-    Digest-idle seats that NAK ``busy (offered …)`` forever while the chair still
-    holds ``offered_to`` block ``offer_to_idle`` / focus-top. Clear the sticky
-    offer + matching seat-hold so the next ``bored_gate`` / ``offer_focus_top``
-    can re-send work. Accepted rows are untouched (holder_bored / stale-busy
-    paths remain).
+    Within ``offer_timeout_s`` the seat stays busy (FR #3192 / #8738 — fresh
+    post-DONE / post-GIVEUP pushes must not be wiped by the next !bored). Past
+    the timeout, clear ``offered_to`` + matching seat-hold so digest-idle seats
+    are not NAK ``busy (offered …)`` forever (issue #9633).
+
+    Bare ack-missing / closed-PR ``held …`` seat-holds (FR #4115 / #4415) are
+    never cleared here. Does not call ``seat_open_job`` (that would purge first).
 
     Returns the open-job text that was cleared, else ''.
     """
@@ -20517,23 +20519,15 @@ def release_sticky_offer_on_bored(
         return ""
     if _seat_has_accepted(home, nick):
         return ""
-    open_job = seat_open_job(home, nick, now_f)
-    if not open_job or str(open_job).startswith("accepted "):
+    # Live pending ACK window: leave the pin alone (FR #8738).
+    if seat_pending_offer(home, nick, now_f) is not None:
         return ""
-    # seat_open_job paints "offered …" / "held …" (not "accepted …").
-    match = re.match(
-        r"^(offered|held)\s+(\S+)\s+(.+)(#\d+)\s*$",
-        str(open_job).strip(),
-        re.IGNORECASE,
-    )
+    changed = False
+    cleared_job = ""
     repo = task = ident = ""
-    if match:
-        _kind, task, repo, ident = match.groups()
-        task = str(task or "").upper()
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
-            changed = False
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
                     continue
@@ -20543,8 +20537,13 @@ def release_sticky_offer_on_bored(
                 them = (canonical_worker_nick(to) or to).strip().lower()
                 if them != me:
                     continue
-                if repo and task and ident and not _same(cand, repo, task, ident):
+                if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
                     continue
+                task_u = str(cand.get("task") or "").upper()
+                repo_s = str(cand.get("repo") or "")
+                ident_s = str(cand.get("id") or "")
+                cleared_job = f"offered {task_u} {repo_s}{ident_s}".strip()
+                repo, task, ident = repo_s, task_u, ident_s
                 clear_sticky_offer_fields(cand)
                 changed = True
             if changed:
@@ -20552,18 +20551,19 @@ def release_sticky_offer_on_bored(
                     _write_queue(queue_path(home), doc)
     except (TimeoutError, OSError):
         return ""
+    if not changed:
+        return ""
     with contextlib.suppress(Exception):
         if repo and task and ident:
             clear_seat_hold(
                 home, nick, repo=repo, task=task, ident=ident, clear_pins=True
             )
-        else:
-            clear_seat_hold(home, nick, clear_pins=True)
     with contextlib.suppress(Exception):
         import bobreport
 
         bobreport.clear_seat_doing(home, nick)
-    return open_job
+    return cleared_job
+
 
 
 def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:

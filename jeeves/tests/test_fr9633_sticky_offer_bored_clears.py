@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FR #9633: !bored while only sticky-offered must clear the pin (not NAK busy forever)."""
+"""FR #9633: !bored clears a *stale* sticky offered_to pin (not NAK busy forever)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -61,15 +61,19 @@ def test_fr9633_bored_gate_ok_after_sticky_offer_release(home: Path):
                 "title": "MRB 9625",
                 "state": "open",
                 "offered_to": ME,
-                "offered_ts": _ts(30),
+                "offered_ts": _ts(120),  # past OFFER_TIMEOUT_S (90)
                 "offered_via": "offer",
             }
         ],
     )
-    # Pre-clear: sticky offer is visible as open/pending work
-    open_before = gitclaim.seat_open_job(home, ME, now)
-    assert open_before and "9625" in open_before
-    assert gitclaim.seat_pending_offer(home, ME, now) is not None
+    # Stale sticky still on the row; outside live pending-ACK window.
+    doc0 = gitclaim.load_queue(home)
+    assert any(
+        str(r.get("offered_to") or "").strip() == ME
+        for r in (doc0.get("unaccepted") or [])
+        if isinstance(r, dict)
+    )
+    assert gitclaim.seat_pending_offer(home, ME, now) is None
     cleared = gitclaim.release_sticky_offer_on_bored(home, ME, now)
     assert cleared
     assert "9625" in cleared
@@ -79,7 +83,7 @@ def test_fr9633_bored_gate_ok_after_sticky_offer_release(home: Path):
         for r in (doc.get("unaccepted") or [])
         if isinstance(r, dict)
     )
-    # bored_gate clears sticky offers (FR #9633) then returns ok
+    # bored_gate clears stale sticky offers (FR #9633) then returns ok
     assert gitclaim.bored_gate(home, ME, SHOP, now) == "ok"
 
 
@@ -102,4 +106,49 @@ def test_fr9633_does_not_clear_accepted_row(home: Path):
         ],
     )
     assert gitclaim.release_sticky_offer_on_bored(home, ME, now) == ""
+    assert gitclaim.bored_gate(home, ME, SHOP, now) == "busy"
+
+
+def test_fr9633_does_not_clear_ack_missing_seat_hold(home: Path):
+    """FR #4115 holds must stay busy on !bored (MRB #9709 regression gate)."""
+    now = datetime.now(timezone.utc).timestamp()
+    _queue(home, [])
+    ok = gitclaim.note_seat_hold(
+        home,
+        ME,
+        {"repo": REPO, "task": "FR", "id": "#4115", "offered_ts": _ts(5)},
+        via="ack-missing",
+    )
+    assert ok is True
+    why = gitclaim.seat_open_job(home, ME, now)
+    assert why.startswith("held FR")
+    assert gitclaim.release_sticky_offer_on_bored(home, ME, now) == ""
+    assert gitclaim.seat_open_job(home, ME, now).startswith("held FR")
+    assert gitclaim.bored_gate(home, ME, SHOP, now) == "busy"
+
+
+def test_fr9633_fresh_offer_stays_busy_on_bored(home: Path):
+    """FR #8738 / #3192: within OFFER_TIMEOUT, !bored must not wipe the pin."""
+    now = datetime.now(timezone.utc).timestamp()
+    _queue(
+        home,
+        [
+            {
+                "repo": REPO,
+                "task": "MRB",
+                "id": "#9625",
+                "seq": 1,
+                "ts": "2026-11-24T13:50:00Z",
+                "line": f"MRB {REPO}#9625",
+                "url": f"https://github.com/{REPO}/pull/9625",
+                "title": "MRB 9625",
+                "state": "open",
+                "offered_to": ME,
+                "offered_ts": _ts(30),
+                "offered_via": "offer",
+            }
+        ],
+    )
+    assert gitclaim.release_sticky_offer_on_bored(home, ME, now) == ""
+    assert gitclaim.seat_pending_offer(home, ME, now) is not None
     assert gitclaim.bored_gate(home, ME, SHOP, now) == "busy"
