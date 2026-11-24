@@ -5420,6 +5420,15 @@ class Client:
                             except Exception:  # noqa: BLE001
                                 _detail = f"{src}: nothing queued"
                             info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
+                        # FR #9460: same tick, feed other digest-idle seats.
+                        with contextlib.suppress(Exception):
+                            n_idle = gitclaim.push_idle_offers_via_chair_outbox(
+                                self._digest_home()
+                            )
+                            if n_idle:
+                                info(
+                                    f"INFO git-claim idle-offer-after-giveup sent={n_idle}"
+                                )
                     except Exception as offer_exc:  # noqa: BLE001
                         info(f"WARN giveup-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status in ("ok", "missing"):
@@ -5456,6 +5465,13 @@ class Client:
                     except Exception:  # noqa: BLE001
                         _detail = f"{src}: nothing queued"
                     info(f"INFO git-claim done-offer empty nick={src} {_detail}")
+                # FR #9460: same tick, feed other digest-idle seats (no !bored wait).
+                with contextlib.suppress(Exception):
+                    n_idle = gitclaim.push_idle_offers_via_chair_outbox(
+                        self._digest_home()
+                    )
+                    if n_idle:
+                        info(f"INFO git-claim idle-offer-after-done sent={n_idle}")
             except Exception as offer_exc:  # noqa: BLE001
                 info(f"WARN done-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status not in ("ok", "missing"):
