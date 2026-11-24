@@ -470,3 +470,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Seat hold on closed MRB survives !cleargiveup ledger=0; !stuck shows held; need chair clear of seat_job hold for closed tips (#9633)
 - pool_for_digest sticky allowance exhausted wins over fresher observation ok/unlimited --- clear exhaust on observe ok or prefer fresher obs
 - CCA task POST accepts model=claude-haiku-4.5; chair build_task_body must grow BOB_COPILOT_MODEL to avoid Auto/Luna-only
+- If outbox len barely grows after UTF-8 appends and pos stays 0, a twin bob-ear or tray rewriter is truncating outbox --- kill socketless :6697 peers before re-appending assigns.
