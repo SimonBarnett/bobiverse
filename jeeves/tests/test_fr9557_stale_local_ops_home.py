@@ -152,6 +152,50 @@ def test_local_ops_authoritative_when_local_matches(tmp_path):
     assert common.local_ops_stale_vs_live_report(chair, digest, report) == ""
 
 
+def test_local_ops_not_stale_when_local_has_unaccepted_and_workers(tmp_path):
+    """MRB #9566: non-empty local must stay authoritative despite extra live ACC.
+
+    ``live_acc > local_acc`` alone must not flip to seat_state_mismatch — that
+    broke idle_seats unit tests (and would hijack healthy chair locals).
+    """
+    chair, digest = _homes(tmp_path)
+    (chair / "queue.json").write_text(
+        json.dumps(
+            {
+                "unaccepted": [
+                    {
+                        "id": 1,
+                        "task": "FR",
+                        "repo": "SimonBarnett/bobiverse",
+                        "needs_human": True,
+                    }
+                ],
+                "accepted": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (digest / "digest.json").write_text(
+        json.dumps(
+            {
+                "machines": {
+                    "win-mpre8vi4u6u": {
+                        "workers": {
+                            "20596": {
+                                "nick": "win-mpre8vi4u6u-20596",
+                                "state": "idle",
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    why = common.local_ops_stale_vs_live_report(chair, digest, _fresh_report())
+    assert why == ""
+
+
 def test_idle_seats_empty_local_prefers_live_report(tmp_path, monkeypatch):
     chair, digest = _homes(tmp_path)
     (chair / "queue.json").write_text(
