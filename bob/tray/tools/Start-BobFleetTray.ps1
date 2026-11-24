@@ -109,22 +109,53 @@ function Get-BobSystrayTrayProcesses {
     # Wrapper CommandLine does not contain "Watch-BobTray.ps1", so a strict .ps1
     # suffix miss made ForceNew leave ghosts and "failed to stay up" false-fail.
     # FR #2585: match bob-tray.exe by Name (ExecutablePath is often null on CIM) or CommandLine.
+    # FR #9509: prefer timed prior helper (no bare Get-CimInstance hang on marchhare-class CIM stalls).
     param([string]$Root = '')
     if (-not $Root) { $Root = $RepoRoot }
+    if (Get-Command Get-BobTrayPriorProcessHits -ErrorAction SilentlyContinue) {
+        return @(Get-BobTrayPriorProcessHits -TimeoutSec 8 -ExcludePid $PID -InstallRoot $Root)
+    }
     $toolsPrefix = ''
     try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $Root 'tools')) } catch { $toolsPrefix = Join-Path $Root 'tools' }
-    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            ($_.CommandLine -and (
-                $_.CommandLine -match 'Watch-BobTray\.ps1' -or
-                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1' -or
-                $_.CommandLine -match '(?i)bob-tray\.exe'
-            )) -or (
-                $_.Name -eq 'bob-tray.exe' -and (
-                    -not $_.ExecutablePath -or
-                    $_.ExecutablePath.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
-                )
-            )
-        })
+    $hits = New-Object System.Collections.Generic.List[object]
+    try {
+        $scope = New-Object System.Management.ManagementScope
+        $query = New-Object System.Management.ObjectQuery 'SELECT ProcessId, Name, CommandLine, ExecutablePath FROM Win32_Process'
+        $opt = New-Object System.Management.EnumerationOptions
+        $opt.Timeout = [TimeSpan]::FromSeconds(8)
+        $opt.ReturnImmediately = $false
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+        foreach ($mo in @($searcher.Get())) {
+            $cmd = [string]$mo['CommandLine']
+            $name = [string]$mo['Name']
+            $exe = [string]$mo['ExecutablePath']
+            $ok = $false
+            if ($cmd -and (
+                    $cmd -match 'Watch-BobTray\.ps1' -or
+                    $cmd -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                    $cmd -match '(?i)bob-tray\.exe'
+                )) { $ok = $true }
+            elseif ($name -eq 'bob-tray.exe' -and (
+                    -not $exe -or
+                    $exe.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
+                )) { $ok = $true }
+            if ($ok) {
+                $hits.Add([pscustomobject]@{
+                        ProcessId = [int]$mo['ProcessId']; Name = $name; CommandLine = $cmd; ExecutablePath = $exe
+                    })
+            }
+        }
+    } catch { }
+    if ($hits.Count -eq 0) {
+        try {
+            foreach ($p in @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue)) {
+                $hits.Add([pscustomobject]@{
+                        ProcessId = [int]$p.Id; Name = 'bob-tray.exe'; CommandLine = ''; ExecutablePath = try { [string]$p.Path } catch { '' }
+                    })
+            }
+        } catch { }
+    }
+    return @($hits.ToArray())
 }
 
 function Invoke-BobSystrayTidy {
