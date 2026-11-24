@@ -18,6 +18,7 @@ REQUIRED = (
     "Cursor",
     "Opencode",
     "Opencode-Free",
+    "Copilot",
 )
 
 

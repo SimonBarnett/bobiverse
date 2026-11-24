@@ -79,7 +79,8 @@ def test_fr9304_digest_does_not_block_repo_uat():
     )
 
 
-def test_fr9304_append_unaccepted_skips_fr_digest_label():
+def test_fr9304_append_unaccepted_keeps_fr_digest_as_gate():
+    """FR #9821: digests enqueue as gate records (still never offered as work)."""
     doc = gitclaim._empty_queue()
     claim = gitclaim.GitClaim(
         repo="SimonBarnett/bobiverse",
@@ -93,11 +94,15 @@ def test_fr9304_append_unaccepted_skips_fr_digest_label():
         labels=("feature-request", "fr-digest"),
     )
     changed = gitclaim._append_unaccepted(doc, claim, url=claim.line)
-    assert changed == "skipped"
-    assert doc["unaccepted"] == []
+    assert changed == "added"
+    assert len(doc["unaccepted"]) == 1
+    assert gitclaim.digest_issue_reason(doc["unaccepted"][0])
+    assert gitclaim.issue_skip_fr_reason(
+        title=claim.title, body=claim.body, labels=claim.labels
+    ) == "label:fr-digest"
 
 
-def test_fr9304_append_unaccepted_skips_kind_body():
+def test_fr9304_append_unaccepted_keeps_kind_body_as_gate():
     doc = gitclaim._empty_queue()
     claim = gitclaim.GitClaim(
         repo="SimonBarnett/bobiverse",
@@ -111,12 +116,13 @@ def test_fr9304_append_unaccepted_skips_kind_body():
         labels=("feature-request",),
     )
     changed = gitclaim._append_unaccepted(doc, claim, url=claim.line)
-    assert changed == "skipped"
-    assert doc["unaccepted"] == []
+    assert changed == "added"
+    assert len(doc["unaccepted"]) == 1
+    assert gitclaim.digest_issue_reason(doc["unaccepted"][0])
 
 
-def test_fr9304_prune_drops_existing_digest_row():
-    """Resync/prune: an already-queued digest must leave unaccepted."""
+def test_fr9304_prune_keeps_existing_digest_row():
+    """FR #9821 / BOB-G3: prune keeps digest gate rows (skip_fr does not drop them)."""
     doc = gitclaim._empty_queue()
     doc["unaccepted"].append(
         {
@@ -132,3 +138,4 @@ def test_fr9304_prune_drops_existing_digest_row():
     )
     why = gitclaim.row_skip_fr_reason(doc["unaccepted"][0])
     assert why == "label:fr-digest"
+    assert gitclaim.digest_issue_reason(doc["unaccepted"][0])

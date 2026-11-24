@@ -222,6 +222,74 @@ if ($cbTaskState -and $cbTaskState.State -eq 'Running' -and -not (Test-BobCallba
     Write-Host 'WARN BobCallback task Running but :7700 not LISTENING - wedge (FR #1316)'
 }
 
+# FR #9826 CAST IRON: Jeeves on IRC => local /bob/v1/report HTTP 200 (same-turn bring-up).
+# TCP listen alone is not enough; assert the report route before launching the chair nick.
+function Test-BobCallbackReportOk {
+    param(
+        [string]$Url = 'http://127.0.0.1:7700/bob/v1/report',
+        [int]$TimeoutSec = 10
+    )
+    try {
+        $r = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec ([math]::Max(3, $TimeoutSec)) -UseBasicParsing
+        return ($r.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+function Wait-BobCallbackReportOk {
+    param(
+        [string]$Url = 'http://127.0.0.1:7700/bob/v1/report',
+        [int]$TimeoutSec = 20
+    )
+    $deadline = [datetime]::UtcNow.AddSeconds([math]::Max(1, $TimeoutSec))
+    while ([datetime]::UtcNow -lt $deadline) {
+        if (Test-BobCallbackReportOk -Url $Url -TimeoutSec 5) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return (Test-BobCallbackReportOk -Url $Url -TimeoutSec 5)
+}
+$reportUrl = if ($env:BOB_WEBHOOKS_LOCAL_REPORT_URL) { $env:BOB_WEBHOOKS_LOCAL_REPORT_URL } else { 'http://127.0.0.1:7700/bob/v1/report' }
+if (-not (Test-BobCallbackReportOk -Url $reportUrl -TimeoutSec 8)) {
+    Write-Host ("WARN FR #9826 local report not 200 at {0}; healing BobCallback before chair nick" -f $reportUrl)
+    if (-not (Test-BobCallbackListening)) {
+        try {
+            Start-BobCallbackUserContext -PythonExe $Python -CallbackPy $callback -WorkDir $scriptDir -DigestHome $env:BOB_DIGEST_HOME | Out-Null
+        } catch {
+            Write-Host ("WARN FR #9826 bobcallback heal: {0}" -f $_.Exception.Message)
+        }
+        [void](Wait-BobCallbackListening -TimeoutSec 15)
+    } else {
+        $cbTaskHeal = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
+        if ($cbTaskHeal) {
+            try {
+                Stop-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+                Start-ScheduledTask -TaskName 'BobCallback'
+            } catch {
+                Write-Host ("WARN FR #9826 BobCallback restart: {0}" -f $_.Exception.Message)
+            }
+        }
+        [void](Wait-BobCallbackListening -TimeoutSec 15)
+    }
+    # Soft IIS front-door heal when present (public ARR); never Ergo / BobIrcd.
+    try {
+        $w3 = Get-Service -Name 'W3SVC' -ErrorAction SilentlyContinue
+        if ($w3 -and $w3.Status -ne 'Running') {
+            Start-Service W3SVC -ErrorAction SilentlyContinue
+            Write-Host 'INFO FR #9826 started W3SVC for webhook front door'
+        }
+    } catch {
+        Write-Host ("WARN FR #9826 W3SVC heal skipped: {0}" -f $_.Exception.Message)
+    }
+    if (Wait-BobCallbackReportOk -Url $reportUrl -TimeoutSec 20) {
+        Write-Host ("INFO FR #9826 local report HTTP 200 at {0}" -f $reportUrl)
+    } else {
+        Write-Host ("WARN FR #9826 local report still not 200 at {0} (chair will start; Watch-BobWebhooks / monitor webhooks_up_with_chair will keep finding)" -f $reportUrl)
+    }
+} else {
+    Write-Host ("INFO FR #9826 local report HTTP 200 at {0}" -f $reportUrl)
+}
+
 $watchWh = Join-Path $scriptDir 'Watch-BobWebhooks.ps1'
 if (Test-Path -LiteralPath $watchWh) {
     try { & $watchWh -DigestHome $env:BOB_DIGEST_HOME } catch {
