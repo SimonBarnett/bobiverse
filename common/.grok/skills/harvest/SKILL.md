@@ -432,3 +432,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When many build-jeeves runs stay in_progress and PR checks stay queued 20m+, cancel older superseded in_progress runs to free runners so tip PR auto-merge can finish.
 - Merge closing FR != host healed: after tray engine_stale fix merges, keep polling !startworker until workers>0 and file residual if NACK persists post-merge
 - offer-timeout:idle-no-ack must clear seat-holds.json with the pin (aged live too); assign inject miss / second agent-not-ready assign must NACK so chair drops offered_to (FR #9403).
+- ACC-moved orphan offer holds: clear on note_seat_hold exclusivity, accept_offered, and purge_orphan_seat_holds from seat_open_job/stuck sweep; keep ack-missing
