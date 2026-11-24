@@ -6150,11 +6150,14 @@ class Client:
         Requires: socket + joined + not dead/stop.
         A disconnected/dead ear must not advance outbox.pos.
         """
+        joined_set = getattr(self, "joined", None)
+        dead_set = getattr(self, "dead", None)
+        stop_set = getattr(self, "stop", None)
         return (
             self.sock is not None
-            and self.joined.is_set()
-            and not self.dead.is_set()
-            and not self.stop.is_set()
+            and (joined_set is None or joined_set.is_set())
+            and (dead_set is None or not dead_set.is_set())
+            and (stop_set is None or not stop_set.is_set())
         )
 
     def _drain_outbox_path(self, path: Path) -> list[str]:
@@ -6182,6 +6185,7 @@ class Client:
         # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
         refuse_job_wire = not getattr(self.args, "chair", False)
         seal_spans: list[tuple[int, int, bytes]] = []
+        send_error_occurred = False  # FR #9743: track send failures to prevent pos advance on error
         for norm0, abs_start, abs_end, raw_span in records:
             line = norm0
             try:
@@ -6212,7 +6216,8 @@ class Client:
                         info(
                             f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
                         )
-                        continue
+                        send_error_occurred = True  # FR #9743: prevent pos advance on send error
+                        break  # Stop processing this tick to leave line for retry
                     for w in wire:
                         head = w.split(" :", 1)[0]
                         prev = scrub_cred_seal_preview(w)
@@ -6253,9 +6258,9 @@ class Client:
                     "WARN outbox CRED-SEAL scrub error "
                     f"{type(exc).__name__} path={path.name}"
                 )
-        # FR #9743: only save pos if IRC is still live (commit-on-success).
-        # OSError or disconnection during send loop prevents pos advance for retry.
-        if new_last != last and self.irc_live_for_outbox():
+        # FR #9743: only save pos if IRC is still live and no send errors occurred.
+        # OSError during send loop prevents pos advance for retry; disconnected ear never touches pos.
+        if new_last != last and self.irc_live_for_outbox() and not send_error_occurred:
             save_outbox_pos(path, new_last)
         return sent
 
