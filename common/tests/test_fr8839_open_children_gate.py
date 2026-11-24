@@ -138,6 +138,74 @@ def test_fr8839_cli_pr_json_closes(tmp_path: Path):
     assert rc == 1
 
 
+def test_fr8839_pr_co_closes_child_is_ok(tmp_path: Path):
+    """Same PR Closes parent + Depends-on child: CI-G1 must not fail (FR #9858 tip)."""
+    issues_path = tmp_path / "issues.json"
+    issues_path.write_text(
+        json.dumps(
+            [
+                _issue(9858, "Depends-on: #9856\n", title="FR-B parent"),
+                _issue(
+                    9860,
+                    "Depends-on: #9856 #9858\n",
+                    title="FR-D child of 9858",
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pr_path = tmp_path / "pr.json"
+    pr_path.write_text(
+        json.dumps(
+            {
+                "number": 9904,
+                "body": (
+                    "Closes SimonBarnett/bobiverse#9858\n"
+                    "Closes SimonBarnett/bobiverse#9860\n"
+                ),
+                "closingIssuesReferences": [
+                    {
+                        "number": 9858,
+                        "repository": {
+                            "name": "bobiverse",
+                            "owner": {"login": "SimonBarnett"},
+                        },
+                    },
+                    {
+                        "number": 9860,
+                        "repository": {
+                            "name": "bobiverse",
+                            "owner": {"login": "SimonBarnett"},
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = ocg.main(
+        [
+            "--repo",
+            REPO,
+            "--pr-json",
+            str(pr_path),
+            "--issues-json",
+            str(issues_path),
+        ]
+    )
+    assert rc == 0
+
+
+def test_fr8839_gate_excludes_co_closed_children():
+    issues = [_issue(9860, "Depends-on: #9858\n", title="co-closed child")]
+    exclude = {(REPO.lower(), 9860)}
+    code, lines = ocg.gate_open_children(
+        REPO, 9858, issues=issues, exclude_closing=exclude
+    )
+    assert code == 0
+    assert "ok" in "\n".join(lines)
+
+
 def test_fr8839_parents_from_pr_body_fallback():
     parents = ocg.parents_from_pr_closing_refs(
         {"body": "Closes #42\nFixes other/x#9\n", "number": 1},

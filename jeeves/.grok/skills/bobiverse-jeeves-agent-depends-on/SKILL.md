@@ -99,20 +99,37 @@ After token-free checks, if BOB-D offer skip is deployed (chair stamps `depends-
 
 Every monitor cycle once BOB-D is live: `monitor-start` and `bobiverse-jeeves-monitor` list `depends_on`. Report exit 1 via intake. Do not edit the queue and do not act as chair.
 
-## Shared chair gate (FR #9455)
+## Shared chair gate (FR #9455 / #9857)
 
-Offer, `!assign`, and stuck/report must agree for the same `(repo, id)` in the
-same tick. Product helper: `gitclaim.depends_gate_reason` (marker
-`bob_g1_shared_gate`). Digests with label `fr-digest` that are **not** in the
-local queue still resolve via `depends_issue_fetch_checker` (FR #9418 / #9434) —
-never surprise `depends-open` after unhold.
+Offer, `!assign`, `!list` / digest `offerable_count`, and stuck/report must agree
+for the same `(repo, id)` in the same tick. Product helpers:
+`gitclaim.depends_gate_reason` / `walk_depends_on_offer_reason` (FR #9857 alias;
+marker `bob_g1_shared_gate`). Digests with label `fr-digest` that are **not** in
+the local queue still resolve via `depends_issue_fetch_checker` (FR #9418 / #9434)
+— never surprise `depends-open` after unhold.
 
 | Situation | Reason |
 |---|---|
 | Depends-on unheld `fr-digest` (queued or live) | allow (None) |
-| Depends-on held digest | `depends-held` |
+| Depends-on held digest (same-repo or `owner/repo#N`) | `depends-held` |
 | Depends-on ordinary OPEN issue | `depends-open` |
 | Bad token / lookup Unknown | `depends-unresolved` |
+
+## Nested + cross-repo Depends-on (FR #9856 / #9857 / #9858)
+
+- Walk **every** hard ref on the `Depends-on:` line (`#N` and `owner/repo#N`).
+- Relative `#N` resolves against the **child** row repo; qualified refs look up
+  that foreign repo only (FR #9220 / #9857).
+- **FR #9858:** a child in repo B is not offerable while a digest in repo A still
+  has label `hold` / `on-hold` (foreign label state via queue row or
+  `issue_fetch`). Fail-when: child offered while A digest held.
+- Multi-ref: all hard refs must be clear before offer (G1 soft-allow only for
+  **unheld** own/foreign `fr-digest` / `digest`).
+- Unrelated FRs with `Depends-on: (none)` (or no stamp) progress in parallel —
+  default park stamps the digest only; do not invent sibling chains.
+- **No auto-unhold:** chair never removes `hold` from a parent digest because a
+  phase finished. Operator / Plan unholds. Last-child close may close digests
+  (FR #9552); that is not an unhold cascade.
 
 ## GIVEUP blocked:depends-on must stamp the body (FR #9469)
 

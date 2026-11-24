@@ -68,8 +68,18 @@ Theme index: BOB-G1 #8837, BOB-G2 #8838, CI-G1 #8839, CI-G2 #8841. Vision packs 
 - One digest issue per target repo for a batch park
 - Digest labels: `fr-digest` and `hold` (Plan parks on hold)
 - Children: `Depends-on: #digest` (and optional intra-batch Depends-on among children)
+- Cross-repo children: `Depends-on: owner/repo#digest` (FR #9856 / #9858) — held foreign digests skip the same as same-repo
+- Nested digests: sub-digests may `Depends-on:` a parent digest; operator unholds each held parent (no auto-unhold next-phase cascade)
+- Parallel default: siblings under an unheld digest are offerable together unless a child also Depends-on a sibling
 - Offer path: parse Depends-on -> if depend has `hold` skip `depends-held` -> else if depend is `fr-digest` without hold, allow even while OPEN -> else OPEN skip (D3)
 - CI: open issues that still `Depends-on` the PR's FR => fail build-jeeves (CI-G1/G2)
+
+## No auto-unhold (CAST IRON)
+
+Parent digests stay held until **operator / Plan** intervention. Closing the last
+child (FR #9552) may close the digest issue; it must **not** strip `hold` from a
+sibling phase or auto-unhold the next nested digest. Skills must not describe
+"auto-unhold next phase" as required chair behavior (FR #9860 fail-when).
 
 ## When live (monitor cycle)
 

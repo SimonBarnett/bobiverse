@@ -37,6 +37,13 @@ FIXTURE = {
                 "efforts": [],
             }
         ],
+        "copilot": [
+            {
+                "model": "fixture-copilot-a",
+                "contexts": [],
+                "efforts": [],
+            }
+        ],
         "aider": [
             {
                 "model": "should-ignore",
@@ -74,13 +81,15 @@ def test_load_valid_combos_keeps_first_duplicate_and_skips_aider(tmp_path: Path)
     _write_combos(tmp_path)
     cat = mc.load_valid_combos(tmp_path)
     assert cat.available is True
-    assert set(cat.clis) == {"grok", "cursor", "opencode"}
+    assert set(cat.clis) == {"grok", "cursor", "opencode", "copilot"}
     assert "aider" not in cat.clis
     grok_models = [r.model for r in cat.clis["grok"]]
     assert grok_models == ["fixture-grok-a"]
     assert cat.clis["grok"][0].contexts == ["256", "500"]
     assert cat.clis["cursor"][0].contexts == []
     assert cat.clis["opencode"][0].contexts == []
+    assert cat.clis["copilot"][0].contexts == []
+    assert cat.clis["copilot"][0].efforts == []
 
 
 def test_validate_combo_accepts_valid(tmp_path: Path):
@@ -94,6 +103,17 @@ def test_validate_combo_accepts_valid(tmp_path: Path):
         "cursor", "fixture-cursor-a", "", None, home=tmp_path
     )
     assert ok2 and err2 is None and field2 is None
+    # FR #9746: Copilot — empty context + no effort; nonempty context rejected.
+    ok3, err3, field3 = mc.validate_combo(
+        "copilot", "fixture-copilot-a", "", None, home=tmp_path
+    )
+    assert ok3 and err3 is None and field3 is None
+    bad_ctx, err_ctx, field_ctx = mc.validate_combo(
+        "copilot", "fixture-copilot-a", "256", None, home=tmp_path
+    )
+    assert bad_ctx is False
+    assert err_ctx == mc.ERROR_INVALID_CONTEXT
+    assert field_ctx == "context"
 
 
 def test_validate_combo_rejects_each_field(tmp_path: Path):

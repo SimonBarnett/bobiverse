@@ -74,7 +74,9 @@ def test_s1_every_fr_hold_call_site_has_depends_gate_nearby():
     hold_sites = [
         n
         for n in hold_sites
+        # Wrapper returns (row_fr_skip_offer_reason / row_fr_hold_reason) are not offer sites.
         if "return fr_hold_reason" not in lines[n - 1]
+        and "return row_fr_hold_reason" not in lines[n - 1]
     ]
     # Enqueue-time hold skip keeps Depends-on rows queueable (FR #8754); depends
     # gate is offer/purge/reconcile-time. Exclude _append_unaccepted hold site.
