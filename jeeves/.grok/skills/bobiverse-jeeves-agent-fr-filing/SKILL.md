@@ -50,3 +50,19 @@ Omnibus FRs. Filing the same thing twice because a search was too narrow.
 5. Same-turn repair: if ≥2 related FRs already landed without a digest, file the digest immediately and wire children.
 
 The CAST IRON *rule* FR itself (#9652) is a normal FR (not an `fr-digest` parent). Batch parents use the `Digest: …` title + `fr-digest` label.
+
+## needs-walrus split — CAST IRON (FR #9669)
+
+When work mixes **code** and **walrus host action**, file **two** FRs under one Digest (`feature-request` + `fr-digest`):
+
+| Child | Owner | Labels / pin |
+|---|---|---|
+| **Code** | worker (any machine) | `feature-request` only — **no** `needs-walrus` |
+| **Walrus action** | Jeeves agent (walrus) | `needs-walrus`; `Depends-on: #<code>` (+ digest) |
+
+Rules:
+
+1. Pure code/docs/PR FRs are never `needs-walrus` (#9637).
+2. Walrus child waits until code child is CLOSED/merged tip.
+3. If a seat NACK/GIVEUP is `needs-walrus` / `require_machine=walrus`, the **Jeeves agent** does the walrus action (receipt + Slab/Si-yes) — do not leave ACK→GIVEUP thrash on other machines.
+4. MONITORING on needs-walrus NACK: stop wrong-machine re-offer; ensure this split exists; drive walrus child via Jeeves-agent/Slab — do not only comment.
