@@ -1332,6 +1332,7 @@ namespace BobDialogs
             }
             try { ObserveWorkerSeats(); } catch { }
             try { HealIrcBobIfIdle(); } catch { }
+            try { DetectDuplicateBobEar(); } catch { }
         }
 
         // FR #5195: if ircBob is Stopped and no update is in progress, start it (do not heal worker seats).
@@ -1356,6 +1357,43 @@ namespace BobDialogs
                         return;
                     }
                 }
+            }
+            catch { }
+        }
+
+        // FR #9743: detect duplicate bob-ear / irc_agent children (disconnected twin
+        // can advance outbox.pos). Log once per quiet spell; ear.lock refuses a second start.
+        int _dupEarLastLogTick;
+        void DetectDuplicateBobEar()
+        {
+            if (exiting) return;
+            try
+            {
+                int n = 0;
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT ProcessId, Name, CommandLine FROM Win32_Process"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        string name = (mo["Name"] ?? "").ToString();
+                        string cmd = (mo["CommandLine"] ?? "").ToString();
+                        bool hit =
+                            (name.IndexOf("bob-ear", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                            (cmd.IndexOf("bob-ear.exe", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                            (cmd.IndexOf("irc_agent.py", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                             cmd.IndexOf("bobiverse", StringComparison.OrdinalIgnoreCase) >= 0);
+                        if (hit) n++;
+                    }
+                }
+                if (n <= 1) return;
+                int now = Environment.TickCount;
+                // ~5 min quiet spell between lifecycle lines
+                if (_dupEarLastLogTick != 0 && unchecked(now - _dupEarLastLogTick) < 300000) return;
+                _dupEarLastLogTick = now;
+                TrayLifecycle.Write(
+                    "ircbob-duplicate-ear",
+                    "count", n.ToString(),
+                    "via", "bob-tray-watchdog-fr9743");
             }
             catch { }
         }

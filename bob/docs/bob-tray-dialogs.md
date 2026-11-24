@@ -115,7 +115,7 @@ TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a depl
 
 - `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **120 seconds** (FR #7250; or missing/unparseable/far-future) as stale. No `updated HH:mm` stamp.
 - A future `resume_at` (dispatch cooldown) does **not** force fresh: age is always from `fetched_at`.
-- Stale paint: `Copilot - <value> [stale]` only (never `older than 2 min`). **FR #7299 / #7378:** only the exact `[stale]` token is red (RGB 248,81,73) on TipForm `Add-BobTrayUsageRow` and `BobStatus` UsageRow — OpenCode / Copilot / xAI / extra pools; the rest of the heading keeps normal fg. Keep last remaining %; missing/unparseable `fetched_at` is stale. Unlimited Copilot never paints `0%`. **FR #7371:** GitHub `unlimited=true` + `percent_remaining=100` with `remaining=0` and `overage_permitted=false` is used-up (paint `0% left` / empty bar), not unlimited. Meter stays left-aligned (FR #6317).
+- Stale paint: `Copilot - <value> [stale]` only (never `older than 2 min`). **FR #7299 / #7378:** only the exact `[stale]` token is red (RGB 248,81,73) on TipForm `Add-BobTrayUsageRow` and `BobStatus` UsageRow — OpenCode / Copilot / xAI / extra pools; the rest of the heading keeps normal fg. Keep last remaining %; missing/unparseable `fetched_at` is stale. Unlimited Copilot never paints `0%`. **FR #9781:** GitHub `unlimited=true` (even with `remaining=0` / `overage_permitted=false`) paints as unlimited / full bar; digest `state=ok`. Finite exhausted stays `0% left`. Meter stays left-aligned (FR #6317).
 - **FR #6215:** known `reset_at` still paints a countdown using the same `Format-BobResetLabel` convention as other pools (even when stale). Past/missing reset stays omitted.
 - **FR #6215:** when `used` and `max_recorded_usage` are known, remaining % is derived from historical max (high-water mark bumped when usage exceeds it --- **not** a contractual quota). Missing/zero denominator paints `unknown`.
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), `copilot_bar` (`known`/`pct`/`r`/`g`/`b`), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
@@ -182,3 +182,10 @@ Install the rebuilt `scripts\bob-ear.exe`, pinned `scripts\bobreport.py` (this h
 
 * **FR #9471 HealEngine storm:** after 3 relaunch attempts / 5 min, host writes `run/startworker/engine.storm`, CrashHook once, then one forced **Reload engine** so `!startworker` can leave `engine_stale` silence. TipForm shows `engine_restart_storm` while the stamp is fresh; operator may also use menu **Reload engine**.
 * **FR #9513 / #9522 engine.wake:** on `engine_stale` NACK the ear writes `run/startworker/engine.wake` and queues `reload` in `tray-cmd.txt`. TipForm host **TakeWake** (FR #9522) consumes `engine.wake` beside **TakeReload** and calls **ReloadEngine** once. TipForm paints `engine_stale_wake` while the stamp remains. **Merge closing an FR ≠ host healed** — recycle the ear (new `startworker` tip) and **Reload engine** / rebuild tray on the shop until `!startworker` ACKs and workers>0; a NACK that still lacks `wake requested` / `wake pending` means the ear tip lags.
+
+## FR #9750 Copilot task lines
+
+TipForm paints live CCA jobs from `digest.copilot.tasks` **once** under the
+Copilot pool UsageRow (model + working_on via `Format-BobCopilotTaskLines`).
+Jobs are not painted under `machines.*` / no synthetic `machines.copilot` seat.
+Soft-allow after digest export FR #9748; empty `tasks` paints nothing.

@@ -827,6 +827,10 @@ def _bob_g1_digest_gate_for_pair(
             dep = _github_issue_dict_as_fr_row(repo, num, issue)
     if dep is None:
         return None
+    # Closed parents (incl. issue_fetch) never gate children — leftover hold labels
+    # on a closed digest must not hide a released child (MRB #9834 / CodeRabbit).
+    if str(dep.get("state") or "").strip().lower() == "closed":
+        return None
     labs = _depend_row_label_names(dep)
     if "hold" in labs or "on-hold" in labs:
         # Held digest (or any held depend) blocks children.
@@ -971,6 +975,32 @@ def depends_gate_reason(
     ):
         return DEPENDS_UNRESOLVED_REASON
     return DEPENDS_OPEN_REASON
+
+
+def walk_depends_on_offer_reason(
+    row: dict,
+    doc: dict | None = None,
+    *,
+    open_keys: set[tuple[str, int]] | None = None,
+    issue_open=None,
+    issue_fetch=None,
+    docs_root: Path | None = None,
+) -> str | None:
+    """FR #9857: shared Depends-on walk for !bored / assign / offerable list.
+
+    Alias of `depends_gate_reason` (FR #9455). Resolves relative `#N` against
+    the child row repo and qualified `owner/repo#N`. Multi-ref: every hard ref
+    must be clear (G1: unheld fr-digest may stay OPEN). Fail-closed when
+    `issue_open` raises and a fetch path exists (`depends-unresolved`).
+    """
+    return depends_gate_reason(
+        row,
+        doc,
+        open_keys=open_keys,
+        issue_open=issue_open,
+        issue_fetch=issue_fetch,
+        docs_root=docs_root,
+    )
 
 
 # BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
@@ -4616,7 +4646,16 @@ def claim_from_payload(
         if action != "edited" and issue_skip_fr_reason(
             title=title, body=body, labels=labels, state=state
         ):
-            return None
+            # FR #9821 / MRB #9834: open fr-digest gate records must still claim so
+            # _append_unaccepted can enqueue them (skip_fr alone must not drop).
+            _probe = {
+                "task": "FR",
+                "title": title,
+                "body": body,
+                "labels": list(labels),
+            }
+            if str(state).strip().lower() == "closed" or not digest_issue_reason(_probe):
+                return None
         if action == "edited" and str(state).strip().lower() == "closed":
             return None
         return GitClaim(
@@ -5539,9 +5578,19 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         return _apply_label_mutation(doc, claim, home=home)
 
     if ev == "issues" and action in ("opened", "reopened"):
+        _opened_digest = bool(
+            digest_issue_reason(
+                {
+                    "task": "FR",
+                    "title": claim.title,
+                    "body": claim.body,
+                    "labels": list(claim.labels),
+                }
+            )
+        )
         if issue_skip_fr_reason(
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
-        ):
+        ) and not _opened_digest:
             changed = "noop"
         elif action == "reopened":
             # FR #4373: leave done, clear pins, stamp history, re-enter unaccepted.
@@ -17738,7 +17787,8 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             docs_mrb_orphan=docs_pin,
             mrb_fix_offer=_mrb_fix_offer_issue,
         )
-    if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
+    _probe = {"task": "FR", "title": title, "body": body, "labels": list(labels or ())}
+    if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open") and not digest_issue_reason(_probe):
         return None
     if (_repo_key(repo), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
         return None
@@ -19922,7 +19972,17 @@ def resync_from_github(
             body = str(iss.get("body") or "")
             labels = _label_names(iss.get("labels"))
             state = str(iss.get("state") or "open")
-            if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
+            _iss_digest = bool(
+                digest_issue_reason(
+                    {
+                        "task": "FR",
+                        "title": title,
+                        "body": body,
+                        "labels": list(labels),
+                    }
+                )
+            )
+            if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state) and not _iss_digest:
                 continue
             if (_repo_key(repo), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
                 continue  # FR #2480 hard-pin umbrella
@@ -20003,10 +20063,13 @@ def resync_from_github(
                         # offers must not survive after a blocking FR opens.
                         dropped_detail.append(f"{_row_drop_label(row)} uat_repo_not_clear")
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
-                # BOB-G3 / FR #9821: digest gate rows survive skip_fr + hold prune.
+                # BOB-G3 / FR #9821: digest gate rows survive skip_fr + hold prune,
+                # but closed digests absent from want still fall through to removal
+                # (MRB #9834: do not bypass closure reconciliation).
                 if task_u == "FR" and digest_issue_reason(row):
-                    keep.append(row)
-                    continue
+                    if not (_row_fetched(repo_s) and job_k not in want):
+                        keep.append(row)
+                        continue
                 if task_u == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk

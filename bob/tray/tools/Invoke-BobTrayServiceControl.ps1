@@ -26,6 +26,11 @@ if ($DryRun) { Write-Output ("dry-run {0} {1}" -f $Action, $ServiceName); exit 0
 $state = Get-SvcState
 if ($state -eq 'MISSING') { Write-SvcLog "$Action ${ServiceName}: service not installed"; exit 0 }
 # FR #3987: never sc stop while START_PENDING/STOP_PENDING - races Install-Bob Start-Service and hangs msiexec.
+# FR #9863: NSSM AppThrottle leaves PAUSED after unexpected bob-ear kill.
+# Restart path (stop+start) clears Pause; never Stop-Process the ear child under NSSM.
+if ($state -eq 'PAUSED' -or $state -eq 'PAUSE_PENDING') {
+    Write-SvcLog "$Action ${ServiceName}: was $state (FR #9863 AppThrottle/Paused); forcing restart"
+}
 if ($state -eq 'START_PENDING' -or $state -eq 'STOP_PENDING') {
     Write-SvcLog "$Action ${ServiceName}: skip while $state (FR #3987)"
     exit 0
