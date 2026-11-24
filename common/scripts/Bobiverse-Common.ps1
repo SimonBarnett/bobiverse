@@ -4430,12 +4430,13 @@ function Assert-BobiversePlanCastIronSkillsVisionary {
 function Copy-BobTrayVendorExes {
     <#
     .SYNOPSIS
-      FR #9468: mirror Plan/Priority MSI payloads into tray vendor\ paths.
+      FR #9468 / FR #9598: mirror Plan/Priority MSI payloads into tray vendor\ paths.
     .DESCRIPTION
-      TipForm Plan starts vendor\plan\bob-plan.exe; Priority starts vendor\priority\PriorityAgent.exe.
-      Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe (FR #9354). This helper copies those
-      into the vendor\ layout (plus MANIFEST sidecars documenting skills-visionary plan-* /
-      priority-mcp launcher-* tags). -Require throws when sources are missing (pack/MSI).
+      TipForm Plan starts plan\PlanAgent.exe (FR #9271); Priority starts vendor\priority\PriorityAgent.exe.
+      Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe (FR #9354). This helper copies Plan
+      into vendor\plan\PlanAgent.exe only (FR #9598: do not dual-stage bob-plan.exe) and Priority into
+      vendor\priority\PriorityAgent.exe (plus MANIFEST / .sha256 sidecars documenting skills-visionary
+      plan-* / priority-mcp launcher-* tags). -Require throws when sources are missing (pack/MSI).
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -4459,20 +4460,19 @@ function Copy-BobTrayVendorExes {
 
     if (Test-Path -LiteralPath $planSrc -PathType Leaf) {
         New-Item -ItemType Directory -Force -Path $vendorPlan | Out-Null
-        Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'bob-plan.exe') -Force
+        # FR #9598: stage PlanAgent.exe only (bob-plan.exe was an identical dead duplicate).
         Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'PlanAgent.exe') -Force
         $planMan = Join-Path $Root 'plan\PlanAgent.MANIFEST.json'
         if (Test-Path -LiteralPath $planMan -PathType Leaf) {
             Copy-Item -LiteralPath $planMan -Destination (Join-Path $vendorPlan 'PlanAgent.MANIFEST.json') -Force
-            Copy-Item -LiteralPath $planMan -Destination (Join-Path $vendorPlan 'bob-plan.MANIFEST.json') -Force
         }
-        $sha = & $shaOf (Join-Path $vendorPlan 'bob-plan.exe')
+        $sha = & $shaOf (Join-Path $vendorPlan 'PlanAgent.exe')
         [IO.File]::WriteAllText(
-            (Join-Path $vendorPlan 'bob-plan.exe.sha256'),
-            ($sha + '  bob-plan.exe' + [Environment]::NewLine),
+            (Join-Path $vendorPlan 'PlanAgent.exe.sha256'),
+            ($sha + '  PlanAgent.exe' + [Environment]::NewLine),
             (New-Object System.Text.UTF8Encoding $false)
         )
-        Write-Host ('INFO FR #9468 staged vendor\plan\bob-plan.exe sha256={0}' -f $sha)
+        Write-Host ('INFO FR #9468/#9598 staged vendor\plan\PlanAgent.exe sha256={0}' -f $sha)
     } else {
         [void]$missing.Add('plan\PlanAgent.exe')
     }
