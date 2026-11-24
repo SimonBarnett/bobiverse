@@ -328,3 +328,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #9344:** TipForm OpenCode starts free unless the operator sets `BOB_OPENCODE_MODEL` (e.g. `opencode-go/deepseek-v4-pro` for paid). Free OpenCode seats take FR/FIX only (never `!assign` MRB/UAT); paid/Go may take hostile jobs (FR #6134 / #7888). TipForm Free|Paid submenu is living FR #9263.
 - FR #9277: progress heartbeat / agent I/O after turn_ended cancels armed done-miss; paid OpenCode go unknown mid-job logs fuel: once not out-of-fuel spam
 - After harvest clears, BoredEmitter should skip the first idle_s (2s debounce) so !bored returns in seconds; harvest outbox chatter must not reset that clock
+- bob-worker-net embeds SourceCommit by rewriting GeneratedSourceCommit.cs before dotnet publish and restoring the placeholder in finally (AssemblyMetadata -p alone is unreliable for --version).
