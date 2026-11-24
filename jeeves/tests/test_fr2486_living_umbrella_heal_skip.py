@@ -60,6 +60,7 @@ def test_fr2486_living_fr_body_skips_heal(home):
             _row(
                 1993,
                 body="Living FR — keep appending WP notes. require_machine: ionos\nRefs only.",
+                labels=["feature-request", "needs-ionos"],
             )
         ],
     )
@@ -69,12 +70,13 @@ def test_fr2486_living_fr_body_skips_heal(home):
     # FR #4512: bobiverse ignores soft stamps; keep a dedicated pin line so the
     # ionos gate (and all-gave-up check) still applies while Living FR skips heal.
     living = "Living FR — keep appending\nrequire_machine: ionos\n"
+    living_row = _row(1993, body=living, labels=["feature-request", "needs-ionos"])
     assert gitclaim.require_machine_all_live_gave_up(
         home,
-        _row(1993, body=living),
+        living_row,
         live,
     )
-    assert gitclaim.row_skip_pin_ledger_heal_reason(_row(1993, body=living))
+    assert gitclaim.row_skip_pin_ledger_heal_reason(living_row)
     assert gitclaim.heal_require_machine_all_gave_up(home, live) == []
     # giveups still present
     assert gitclaim.ledger_clear_giveup(home, "SimonBarnett/bobiverse", "#1993") >= 1
@@ -90,7 +92,7 @@ def test_fr2486_refs_only_label_skips_heal(home):
 
 def test_fr2486_ordinary_pin_fr_still_heals(home):
     _digest_seats(home, {"ionos": ("100", "200")})
-    _queue(home, [_row(2446, title="FR: pin starve ordinary", body="require_machine: ionos")])
+    _queue(home, [_row(2446, title="FR: pin starve ordinary", body="require_machine: ionos", labels=["feature-request", "needs-ionos"])])
     gitclaim.ledger_giveup(home, "ionos-100", "SimonBarnett/bobiverse", "FR", "#2446")
     gitclaim.ledger_giveup(home, "ionos-200", "SimonBarnett/bobiverse", "FR", "#2446")
     live = gitclaim.live_seat_nicks(home)

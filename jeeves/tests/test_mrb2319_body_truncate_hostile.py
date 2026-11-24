@@ -35,7 +35,7 @@ def test_mrb2319_equals_form_pin_past_limit():
         gitclaim.infer_require_machine(
             title="ops",
             body=stored,
-            labels=["feature-request"],
+            labels=["feature-request", "needs-ionos"],
             repo="SimonBarnett/bobiverse",
             ident="#999911",
         )
@@ -62,7 +62,7 @@ def test_mrb2319_blank_line_before_trailing_pin():
         "task": "FR",
         "title": "FR: trailing pin",
         "body": stored,
-        "labels": ["feature-request", "via-intake"],
+        "labels": ["feature-request", "via-intake", "needs-ionos"],
     }
     gitclaim._stamp_require_machine(row, None)
     assert row.get("require_machine") == "walrus"
@@ -118,5 +118,8 @@ def test_mrb2319_naive_truncate_loses_stamp_on_row_only_refresh():
     gitclaim._stamp_require_machine(row, None)
     assert not row.get("require_machine")
     row["body"] = gitclaim._body_for_queue(full)
+    gitclaim._stamp_require_machine(row, None)
+    assert not row.get("require_machine")
+    row["labels"] = ["feature-request", "needs-ionos"]
     gitclaim._stamp_require_machine(row, None)
     assert row.get("require_machine") == "walrus"

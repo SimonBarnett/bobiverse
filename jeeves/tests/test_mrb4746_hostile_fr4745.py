@@ -71,12 +71,22 @@ def test_dedicated_require_machine_line_pins_harvest_lesson():
         )
         == ""
     )
-    # Live machines still pin from a dedicated body line.
+    # FR #9637: bobiverse dedicated body line alone does not pin; needs-* label does.
     assert (
         gitclaim.infer_require_machine(
             title="lesson(harvest): tip",
             body="require_machine: ionos\n",
             labels=["harvest-lesson", "via-intake"],
+            repo="SimonBarnett/bobiverse",
+            ident="#204",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="lesson(harvest): tip",
+            body="require_machine: ionos\n",
+            labels=["harvest-lesson", "via-intake", "needs-ionos"],
             repo="SimonBarnett/bobiverse",
             ident="#204",
         )

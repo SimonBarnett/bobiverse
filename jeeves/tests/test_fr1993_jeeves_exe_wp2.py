@@ -69,6 +69,7 @@ def test_fr1993_wp2_self_test_queue_and_offer(tmp_path):
                 "url": "https://github.com/SimonBarnett/bobiverse/issues/1993",
                 "require_machine": "ionos",
                 "body": "require_machine: ionos\n",
+                "labels": ["feature-request", "needs-ionos"],
             },
             {
                 "repo": "SimonBarnett/other",
@@ -203,6 +204,7 @@ def test_fr1993_wp2_summarize_empty_offer(tmp_path):
                 "id": "1993",
                 "require_machine": "ionos",
                 "body": "require_machine: ionos\n",
+                "labels": ["feature-request", "needs-ionos"],
             },
             {"repo": "SimonBarnett/other", "task": "FR", "id": "2"},
         ],

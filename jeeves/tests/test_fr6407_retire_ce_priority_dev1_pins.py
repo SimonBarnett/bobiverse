@@ -221,11 +221,22 @@ def test_parse_pin_unpin_cmds():
 
 
 def test_ionos_redqueen_marchhare_pins_still_work():
+    # FR #9637: bobiverse body require_machine: alone does not pin.
     assert (
         gitclaim.infer_require_machine(
             title="FR: install+smoke on ionos",
             body="require_machine: ionos\n",
             labels=["feature-request"],
+            repo="SimonBarnett/bobiverse",
+            ident="#99901",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="FR: install+smoke on ionos",
+            body="require_machine: ionos\n",
+            labels=["feature-request", "needs-ionos"],
             repo="SimonBarnett/bobiverse",
             ident="#99901",
         )
