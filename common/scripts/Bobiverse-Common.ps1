@@ -4434,7 +4434,7 @@ function Copy-BobTrayVendorExes {
     .DESCRIPTION
       TipForm Plan starts plan\PlanAgent.exe (FR #9271); Priority starts vendor\priority\PriorityAgent.exe.
       Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe (FR #9354). This helper mirrors those
-      into vendor\ (PlanAgent.exe only — never bob-plan.exe; FR #9598) plus MANIFEST/sha256 sidecars
+      into vendor\ (PlanAgent.exe only - never bob-plan.exe; FR #9598) plus MANIFEST/sha256 sidecars
       documenting skills-visionary plan-* / priority-mcp launcher-* tags. -Require throws when sources
       are missing (pack/MSI).
     #>
@@ -4460,7 +4460,7 @@ function Copy-BobTrayVendorExes {
 
     if (Test-Path -LiteralPath $planSrc -PathType Leaf) {
         New-Item -ItemType Directory -Force -Path $vendorPlan | Out-Null
-        # FR #9598: single PlanAgent.exe only — do not stage legacy bob-plan.exe duplicate.
+        # FR #9598: single PlanAgent.exe only - do not stage legacy bob-plan.exe duplicate.
         Copy-Item -LiteralPath $planSrc -Destination (Join-Path $vendorPlan 'PlanAgent.exe') -Force
         $planMan = Join-Path $Root 'plan\PlanAgent.MANIFEST.json'
         if (Test-Path -LiteralPath $planMan -PathType Leaf) {
