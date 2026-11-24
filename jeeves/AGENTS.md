@@ -49,6 +49,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
 | Orphan last-good workers | `scripts\Test-JeevesMonitorWorkersLastGoodOrphan.ps1` | `tools\monitor\workers_last_good_orphan.py` (FR #9145; token-free; local digest only) |
 | Online zero workers | `scripts\Test-JeevesMonitorOnlineZeroWorkers.ps1` | `tools\monitor\online_zero_workers.py` (FR #9462; local digest or live `/report`; fingerprint `stall:online-zero-workers:<machine>`; TipForm Agents only — no silent auto-start #3180) |
+| ircBob ear (digest offline / Running-without-child / ENOSPC) | `scripts\Test-JeevesMonitorIrcbobEar.ps1` | `tools\monitor\ircbob_ear.py` (FR #9144 / #9496; Start-Service when Stopped; Restart-Service when Running with no bob-ear child; ENOSPC in stderr loud finding) |
 | GIVEUP loops | `scripts\Test-JeevesMonitorGiveupLoops.ps1` | `tools\monitor\giveup_loops.py` (FR #1622: active unaccepted/accepted only; ignore `done[]`; skip require_machine pins with zero live seats) |
 | Stuck accepted rows | `scripts\Test-JeevesMonitorStuckAccepted.ps1` | `tools\monitor\stuck_accepted.py` |
 | Auto-feed | `scripts\Test-JeevesMonitorAutoFeed.ps1` | `tools\monitor\auto_feed.py` |

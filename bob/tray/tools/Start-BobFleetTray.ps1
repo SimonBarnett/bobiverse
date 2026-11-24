@@ -230,6 +230,8 @@ if ($ForceNew -and $hits.Count -gt 0) {
                     $needAnnounce = $false
                 }
             }
+            # FR #9496: process match only. Never treat Get-Service ircBob=Running alone as
+            # ear-up — nssm can report Running with zero bob-ear.exe / irc_agent children.
             $agentStillUp = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                     $_.CommandLine -and (
                         ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
@@ -237,13 +239,6 @@ if ($ForceNew -and $hits.Count -gt 0) {
                         ($_.Name -match '(?i)^bob-ear')
                     )
                 }).Count -gt 0
-            # Also treat ircBob Running as "ear up" when process match misses (NSSM / frozen exe).
-            if (-not $agentStillUp) {
-                try {
-                    $svcFn = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-                    if ($svcFn -and $svcFn.Status -eq 'Running') { $agentStillUp = $true }
-                } catch { }
-            }
             # Skip if Restart already logged out (agent gone) — avoid orphan announce for next join.
             if ($needAnnounce -and $agentStillUp) {
                 if (Test-Path -LiteralPath $obFn) {

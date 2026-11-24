@@ -87,9 +87,11 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 When an online shop has `workers=[]` and `!startworker` gets **no** ACK/NACK, the target ear is down or swallowed a decide exception. FR #9471 makes the owning ear NACK `decide failed` instead of staying silent, and HealEngine storm forces one ReloadEngine + `engine.storm` TipForm alert. Keep `online_zero_workers` firing until workers>0 (FR #9462 / #3180 TipForm Agents only).
 
-## ircbob_ear (FR #9144)
+## ircbob_ear (FR #9144 / #9496)
 
-`tools/monitor/ircbob_ear.py` is **token-free**. It EXIT 1 when digest machines show `online=false` / status `I am offline`, or `lastSeen` older than 900s (same band as `stale_digest`). On win32 it also reads local `Get-Service ircBob`; when Status is Stopped it tries one `Start-Service` and re-checks (`heal=started|failed`). TipForm `Resolve-BobTrayDigestFailNote` prefers `digest ear-offline:` over `digest unreachable:` when the ear is down or digest shows offline (pure GetResponse failures stay unreachable). Never touches Ergo / BobIrcd. Remote WinRM Start-Service is out of scope.
+`tools/monitor/ircbob_ear.py` is **token-free**. It EXIT 1 when digest machines show `online=false` / status `I am offline`, or `lastSeen` older than 900s (same band as `stale_digest`). On win32 it also reads local `Get-Service ircBob`; when Status is Stopped it tries one `Start-Service` and re-checks (`heal=started|failed`).
+
+**FR #9496:** when Status is **Running** but no `bob-ear.exe` / `irc_agent.py` child process is present, EXIT 1 with finding `Running without bob-ear child` and try one `Restart-Service` (`heal=restarted|failed`). Start-Service alone is a no-op while nssm still says Running. Recent `ENOSPC` / errno 28 / "No space left on device" in install `logs/stderr.log` (or stdout) is also a loud finding (`enospc=true`). TipForm `Get-BobTrayIrcBobServiceStatus` returns `Running-no-child` for that false-healthy state so `Resolve-BobTrayDigestFailNote` paints `digest ear-offline:`. `Start-BobFleetTray` never treats service Running alone as ear-up. Never touches Ergo / BobIrcd. Remote WinRM heal is out of scope.
 
 ## Composed drive-root monitor scripts (FR #8860 / #9007 / #9100 / #9309 / #9350 / #9435)
 
