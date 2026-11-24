@@ -4826,23 +4826,21 @@ if (Test-Path -LiteralPath $priorityIco) {
     Write-TrayLog ('menu-icon MISSING file=priority.ico path=' + $priorityIco)
 }
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
-# BOB-40 + FR #9267: jeeves\assets, sibling install, then assets\jeeves-butler.ico.
-$butler = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
-if (-not (Test-Path -LiteralPath $butler)) {
-    $butler = Join-Path (Split-Path -Parent $RepoRoot) 'jeeves\assets\jeeves-butler.ico'
+# FR #9270 / BOB-TRAY-UI-09: bob.ntsa.uk cache under install assets; offline fallback jeeves/assets.
+$butlerHelper = Join-Path $PSScriptRoot 'BobTrayJeevesButler.ps1'
+if (Test-Path -LiteralPath $butlerHelper) { . $butlerHelper }
+$butler = $null
+if (Get-Command Resolve-BobTrayJeevesButlerIcon -ErrorAction SilentlyContinue) {
+    $butler = Resolve-BobTrayJeevesButlerIcon -RepoRoot $RepoRoot
 }
-if (-not (Test-Path -LiteralPath $butler)) {
-    $butler = Join-Path $RepoRoot 'assets\jeeves-butler.ico'
-}
-if (-not (Test-Path -LiteralPath $butler)) {
-    $butler = Join-Path $RepoRoot 'bob\tray\assets\jeeves-butler.ico'
-}
-if (Test-Path -LiteralPath $butler) {
-    $ico = New-Object System.Drawing.Icon $butler
-    $miJeeves.Image = $ico.ToBitmap()
-    Write-TrayLog ('jeeves-icon path=' + $butler)
-} else {
-    Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + $butler)
+if ($butler -and (Test-Path -LiteralPath $butler)) {
+    try {
+        $ico = New-Object System.Drawing.Icon $butler
+        $miJeeves.Image = $ico.ToBitmap()
+        Write-TrayLog ('jeeves-icon path={0} source=https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico' -f $butler)
+    } catch {
+        Write-TrayLog ('jeeves-icon failed: ' + $_.Exception.Message)
+    }
 }
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)

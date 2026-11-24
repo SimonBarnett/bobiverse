@@ -18,6 +18,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Management;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Reflection;
@@ -1101,25 +1102,20 @@ namespace BobDialogs
             };
             miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            // BOB-40 + FR #9267: jeeves\assets, sibling jeeves install, then assets\jeeves-butler.ico.
-            string butler = Path.Combine(root, "jeeves", "assets", "jeeves-butler.ico");
-            if (!File.Exists(butler))
+            // FR #9270 / BOB-TRAY-UI-09: bob.ntsa.uk cache under install assets; offline fallback jeeves/assets.
+            string butler = ResolveJeevesButlerIcon(root);
+            if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
             {
-                DirectoryInfo parent = Directory.GetParent(root);
-                if (parent != null)
-                    butler = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
-            }
-            if (!File.Exists(butler))
-                butler = ResolveTrayMenuIconPath(root, "jeeves-butler.ico");
-            if (File.Exists(butler))
-            {
-                using (Icon ico = new Icon(butler))
-                    miJeeves.Image = ico.ToBitmap();
-                TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico", "path", butler);
-            }
-            else
-            {
-                TrayLifecycle.Write("jeeves", "action", "menu-icon MISSING", "path", butler, "file", "jeeves-butler.ico");
+                try
+                {
+                    using (Icon ico = new Icon(butler))
+                        miJeeves.Image = ico.ToBitmap();
+                    TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico", "path", butler, "source", JeevesButlerUrl);
+                }
+                catch (Exception ex)
+                {
+                    TrayLifecycle.Write("jeeves", "icon", "failed", "error", ex.Message);
+                }
             }
             miJeeves.Click += delegate {
                 // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
@@ -1824,6 +1820,95 @@ namespace BobDialogs
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
             AddOpencodeModelSubmenu(parent, true, record);
+        }
+
+        // FR #9270 / BOB-TRAY-UI-09: Jeeves butler from bob.ntsa.uk (cache) or jeeves/assets fallback.
+        internal const string JeevesButlerUrl = "https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico";
+
+        internal static string JeevesButlerCachePath(string installRoot)
+        {
+            return Path.Combine(installRoot ?? "", "assets", "jeeves-butler.ico");
+        }
+
+        internal static string JeevesButlerFallbackPath(string installRoot)
+        {
+            string fallback = Path.Combine(installRoot ?? "", "jeeves", "assets", "jeeves-butler.ico");
+            if (File.Exists(fallback)) return fallback;
+            try
+            {
+                DirectoryInfo parent = Directory.GetParent(installRoot ?? "");
+                if (parent != null)
+                {
+                    string alt = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
+                    if (File.Exists(alt)) return alt;
+                }
+            }
+            catch { }
+            return fallback;
+        }
+
+        static bool IsIcoMagic(byte[] bytes)
+        {
+            return bytes != null && bytes.Length >= 4
+                && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0;
+        }
+
+        static bool TryCacheJeevesButler(string cachePath, string url, int timeoutMs)
+        {
+            if (string.IsNullOrEmpty(cachePath) || string.IsNullOrEmpty(url)) return false;
+            try
+            {
+                string dir = Path.GetDirectoryName(cachePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "GET";
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                using (Stream stream = resp.GetResponseStream())
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = stream.Read(buf, 0, buf.Length)) > 0) ms.Write(buf, 0, n);
+                    byte[] bytes = ms.ToArray();
+                    if (!IsIcoMagic(bytes)) return false;
+                    string tmp = cachePath + ".tmp";
+                    File.WriteAllBytes(tmp, bytes);
+                    if (File.Exists(cachePath)) File.Delete(cachePath);
+                    File.Move(tmp, cachePath);
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+
+        internal static string ResolveJeevesButlerIcon(string installRoot)
+        {
+            string cache = JeevesButlerCachePath(installRoot);
+            string fallback = JeevesButlerFallbackPath(installRoot);
+            try
+            {
+                if (File.Exists(cache))
+                {
+                    byte[] head = new byte[4];
+                    using (FileStream fs = File.OpenRead(cache))
+                    {
+                        if (fs.Read(head, 0, 4) == 4 && IsIcoMagic(head)) return cache;
+                    }
+                }
+            }
+            catch { }
+
+            string skip = Environment.GetEnvironmentVariable("BOB_JEEVES_BUTLER_SKIP_FETCH") ?? "";
+            string url = Environment.GetEnvironmentVariable("BOB_JEEVES_BUTLER_URL");
+            if (string.IsNullOrWhiteSpace(url)) url = JeevesButlerUrl;
+            if (!string.Equals(skip.Trim(), "1", StringComparison.OrdinalIgnoreCase))
+            {
+                if (TryCacheJeevesButler(cache, url.Trim(), 3000) && File.Exists(cache)) return cache;
+            }
+            if (File.Exists(fallback)) return fallback;
+            return "";
         }
 
         // FR #8717 / BOB-24: Workers > Cursor uses the cursor.com favicon.
