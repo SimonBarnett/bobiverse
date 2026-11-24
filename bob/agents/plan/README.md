@@ -6,4 +6,4 @@ The bobiverse in-tree Plan agent (`bob/agents/plan`, `bobiverse-bob-plan` skill,
 
 **Latest release (PlanAgent.exe):** https://github.com/SimonBarnett/skills-visionary/releases/latest
 
-Tray **Plan** still starts `plan\PlanAgent.exe` from the bob-ear / bob MSI payload (downloaded and sha256-checked at pack time). Do not re-add a second Plan source tree under bobiverse.
+Tray **Plan** starts `vendor\plan\PlanAgent.exe` (FR #9605; Pack/Sync mirror of the bob-ear / bob MSI `plan\PlanAgent.exe` payload downloaded and sha256-checked at pack time). Do not re-add a second Plan source tree under bobiverse.

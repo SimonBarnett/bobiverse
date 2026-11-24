@@ -44,14 +44,15 @@ def test_fr9468_sync_mirrors_plan_priority_into_vendor():
 
 
 def test_fr9468_tray_plan_uses_planagent_not_vendor_bob_plan():
-    """FR #9271: TipForm Plan starts plan\\PlanAgent.exe; Priority stays on vendor\\priority."""
+    """FR #9605: TipForm Plan starts vendor\\plan\\PlanAgent.exe; Priority stays on vendor\\priority."""
     cs = TRAY.read_text(encoding="utf-8-sig")
     ps = WATCH.read_text(encoding="utf-8-sig")
     assert "vendor\\plan\\bob-plan.exe" not in cs
     assert "vendor\\priority\\PriorityAgent.exe" in cs
     assert "vendor\\plan\\bob-plan.exe" not in ps
     assert "vendor\\priority\\PriorityAgent.exe" in ps
-    assert "plan\\PlanAgent.exe" in ps or '"plan", "PlanAgent.exe"' in cs
+    assert '"vendor", "plan", "PlanAgent.exe"' in cs
+    assert "vendor\\plan\\PlanAgent.exe" in ps
 
 
 def test_fr9468_docs_name_release_sources():

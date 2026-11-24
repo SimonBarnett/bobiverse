@@ -2216,8 +2216,9 @@ function Test-BobTrayPlanFuelEmpty {
 }
 
 function Start-BobTrayPlanExe {
-    # FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10: plan\PlanAgent.exe (MSI / BOB-49). Do not fall back to bob-worker --mode plan.
-    $exe = Join-Path $RepoRoot 'plan\PlanAgent.exe'
+    # FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605: vendor\plan\PlanAgent.exe (Pack/Sync mirror).
+    # Do not fall back to bob-worker --mode plan or plan\PlanAgent.exe.
+    $exe = Join-Path $RepoRoot 'vendor\plan\PlanAgent.exe'
     $hook = $env:BOB_MODELS_WEBHOOK_FILE
     if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
     if (Test-Path -LiteralPath $hook) {
