@@ -452,3 +452,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After FR #7593 grok recycle, probe CreatePseudoConsole before relaunch and GIVEUP shell-hung when terminal/call-*.log stays empty after run_terminal_command (FR #9612).
 - Each MONITORING bridge class gets its own ircJeeves FR same turn (#9627); de-dup offer_to_idle to #9628 and self-MRB to #9622
 - Workers MaxWorkers=2 is Workers-submenu only; Agents Plan must StartPlanExe vendor\plan\PlanAgent.exe; Agents Jeeves must not CapRefusal via StartWorker agent
+- New tools/monitor helper modules that are not -Check names must join FR #9049 SKIP (like ear_down_gate); pytest-ascii-bom fails on U+2014 in changed .ps1
