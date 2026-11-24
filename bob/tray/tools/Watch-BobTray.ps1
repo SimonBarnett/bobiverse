@@ -5008,8 +5008,16 @@ $miWeights = $menu.Items.Add('Weights')
 $miAbout = $menu.Items.Add('About')
 # FR #9261 / BOB-TRAY-UI-01: no top-level Open log (About Show logs opens the tray log).
 [void]$menu.Items.Add('-')
-$miRestart = $menu.Items.Add('Restart')
-$miExit = $menu.Items.Add('Exit')
+# FR #8706 / BOB-07 (operator 2026-11-24): Exit > Restart / Reload Engine / --- / Exit (TipForm).
+$miExitMenu = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$menu.Items.Add($miExitMenu)
+$miRestart = New-Object System.Windows.Forms.ToolStripMenuItem('Restart')
+$miReloadEngine = New-Object System.Windows.Forms.ToolStripMenuItem('Reload Engine')
+$miExit = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$miExitMenu.DropDownItems.Add($miRestart)
+[void]$miExitMenu.DropDownItems.Add($miReloadEngine)
+[void]$miExitMenu.DropDownItems.Add('-')
+[void]$miExitMenu.DropDownItems.Add($miExit)
 $notify.ContextMenuStrip = $menu
 
 # FR #9170: timestamp arm (items stay enabled; never bulk enabled=false).
@@ -5189,7 +5197,18 @@ $miAbout.Add_Click({
         Show-BobTrayAbout
     })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
+# FR #8706 / BOB-07: Exit submenu handlers (Restart=host, Reload Engine=tray-cmd reload).
+# Fold FR #9170 arm-ts + FR #9163 confirm from main.
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
+$miReloadEngine.Add_Click({
+        # TipForm: request host engine reload via tray-cmd (bob-tray.exe TakeReload).
+        try {
+            $run = Join-Path $RepoRoot 'run'
+            if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Path $run -Force | Out-Null }
+            Set-Content -LiteralPath (Join-Path $run 'tray-cmd.txt') -Value 'reload' -Encoding ascii
+            Write-TrayLog 'Reload Engine: wrote tray-cmd reload'
+        } catch { Write-TrayLog ('Reload Engine: ' + $_.Exception.Message) }
+    })
 $miExit.Add_Click({
         # FR #9170: ignore Exit inside the timestamp arm window (items stay enabled; no grey menu).
         if ([datetime]::UtcNow -lt $script:menuArmUntilUtc) {
