@@ -2758,6 +2758,7 @@ function Update-BobTrayDigestPools {
             try { if ($prev.copilot_stale_line) { $copilotStaleLine = [string]$prev.copilot_stale_line } } catch { }
             try { if ($null -ne $prev.copilot_fresh_until) { $copilotFreshUntil = [int64]$prev.copilot_fresh_until } } catch { }
             try { if ($prev.copilot_bar) { $copilotBar = $prev.copilot_bar } } catch { }
+            try { $copilotTaskLines = @($prev.copilot_task_lines) } catch { $copilotTaskLines = @() }
             try { if ($prev.opencode_line) { $opencodeLine = [string]$prev.opencode_line } } catch { }
             try { $opencodeFree = $prev.opencode_free } catch { }
             try { $opencodeGo = $prev.opencode_go } catch { }
@@ -2807,6 +2808,7 @@ function Update-BobTrayDigestPools {
         copilot_stale_line  = $copilotStaleLine
         copilot_fresh_until = $copilotFreshUntil
         copilot_bar         = $copilotBar
+        copilot_task_lines  = $(try { @($copilotTaskLines) } catch { @() })
         digest_pools        = @($digestPools)
     }
 
@@ -2969,6 +2971,41 @@ function Format-BobCopilotPoolLine {
     $mid = ('{0}% left' -f [int]$left)
     if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
     return ('Copilot - {0}' -f $mid)
+}
+
+
+function Format-BobCopilotTaskLines {
+    <#
+    .SYNOPSIS
+      FR #9750: one TipForm/hover line per digest.copilot.tasks row (model + working_on).
+      Soft-allow after #9748: empty/missing tasks => no lines. Never invent machines.copilot.
+    #>
+    param($Tasks)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($t in @($Tasks)) {
+        if (-not $t) { continue }
+        $model = ''
+        try {
+            $model = [string]$t.model
+            if (-not $model) { $model = [string]$t.start_model }
+        } catch { $model = '' }
+        $model = ([string]$model).Trim()
+        $work = ''
+        try { $work = [string]$t.working_on } catch { $work = '' }
+        $work = ([string]$work).Trim()
+        if (-not $work) {
+            $task = ''
+            $id = ''
+            try { $task = ([string]$t.task).Trim() } catch { }
+            try { $id = ([string]$t.id).Trim() } catch { }
+            $work = ('{0} {1}' -f $task, $id).Trim()
+        }
+        if (-not $work -and -not $model) { continue }
+        if ($model -and $work) { [void]$out.Add(('{0}: {1}' -f $model, $work)) }
+        elseif ($work) { [void]$out.Add($work) }
+        else { [void]$out.Add($model) }
+    }
+    return @($out)
 }
 
 function Get-BobCopilotMeterBarPct {
@@ -5215,6 +5252,26 @@ function Get-BobTrayHover {
         $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
     }
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
+    # FR #9750: live CCA jobs under digest.copilot.tasks (once; never machines.copilot).
+    $copilotTaskLines = @()
+    try {
+        $rawTasks = $null
+        if ($copilotPoolObj -and $null -ne $copilotPoolObj.PSObject.Properties['tasks']) {
+            $rawTasks = $copilotPoolObj.tasks
+        }
+        $copilotTaskLines = @(Format-BobCopilotTaskLines -Tasks $rawTasks)
+    } catch { $copilotTaskLines = @() }
+    if ($copilotTaskLines.Count -gt 0) {
+        $ctBlock = @()
+        foreach ($ctl in @($copilotTaskLines)) { if ($ctl) { $ctBlock += (('  {0}' -f $ctl)) } }
+        if ($ctBlock.Count -gt 0) {
+            $rest = @($jobLines)
+            if ($rest.Count -gt 0 -and [string]$rest[0] -eq ('  {0}' -f $copilotLine)) {
+                $rest = @($rest | Select-Object -Skip 1)
+            }
+            $jobLines = @(('  {0}' -f $copilotLine)) + $ctBlock + $rest
+        }
+    }
     # FR #7243: hover lists every digest pool (six canonical + extra pcent keys).
     $digestPoolCatalog = @()
     try { $digestPoolCatalog = @(Get-BobTrayDigestPoolCatalog -Digest $reportDigest -MachineId $machineId) } catch { $digestPoolCatalog = @() }
@@ -5316,6 +5373,7 @@ function Get-BobTrayHover {
         copilot_freshness   = $copilotFresh
         copilot_fresh_until = $(if ($copilotFresh -and $null -ne $copilotFresh.fresh_until) { [int64]$copilotFresh.fresh_until } else { [int64]0 })
         copilot_bar         = $copilotBar
+        copilot_task_lines  = @($copilotTaskLines)
         digest_pools        = @($digestPoolCatalog)
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {
