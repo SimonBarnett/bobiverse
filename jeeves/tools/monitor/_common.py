@@ -543,11 +543,16 @@ def local_ops_stale_vs_live_report(
     doing = _report_doing_nicks(report)
     if doing and not dig_path.is_file():
         return "missing_local_digest"
-    # Live ACC/doing seats absent from local digest → local paint is wrong.
+    # Live ACC/doing seats absent from local digest → local paint is wrong only
+    # when the local home itself is empty/thin (FR #9557 empty ~/.jeeves class).
+    # Do NOT trip on live_acc > local_acc alone: a healthy chair/local test queue
+    # with unaccepted rows is still authoritative even when the live report has
+    # extra ACC seats (MRB #9566: that branch poisoned idle_seats unit tests and
+    # would hijack non-empty locals whenever the fleet had more ACC).
     missing = {n for n in doing if n not in local_nicks}
-    if missing and (not dig_path.is_file() or local_unacc + local_acc == 0 or len(local_nicks) == 0):
-        return "seat_state_mismatch"
-    if missing and live_acc > local_acc:
+    if missing and (
+        not dig_path.is_file() or local_unacc + local_acc == 0 or len(local_nicks) == 0
+    ):
         return "seat_state_mismatch"
     return ""
 
