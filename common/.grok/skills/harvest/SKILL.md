@@ -434,3 +434,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - offer-timeout:idle-no-ack must clear seat-holds.json with the pin (aged live too); assign inject miss / second agent-not-ready assign must NACK so chair drops offered_to (FR #9403).
 - When !startworker NACKs tray-not-logged-in / no_interactive_session, stuck must report tray_session_missing for that machine (not vague online_zero_workers / needs_human).
 - ACC-moved orphan offer holds: clear on note_seat_hold exclusivity, accept_offered, and purge_orphan_seat_holds from seat_open_job/stuck sweep; keep ack-missing
+- test_mrb2824 contiguous assert: do not add ## Harvested lessons (intake) H2 after ## Harvested monitor playbook; fold bullets into the playbook Harvested lessons section
