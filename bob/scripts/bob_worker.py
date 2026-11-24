@@ -5151,7 +5151,9 @@ def report_agent_cli_nonzero_exit(
             "recycled the seat (FR #7593).\n"
         )
     elif end == "console-close":
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: class key is machine+end (nick stays in body only) so twin seats
+        # on the same host collapse to one tip (class of closed #9606/#9607).
+        key = f"seat-silent-end|{mid}|{end}"[:128]
         title = "bug: agent console closed (FR #7881)"
         what = (
             "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
@@ -5160,7 +5162,8 @@ def report_agent_cli_nonzero_exit(
         )
     elif exit_code is None:
         # FR #7978: recycled while still running — a hang/ack-miss, not a CLI exit.
-        key = f"seat-no-progress|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: nick out of class key (body still has nick/job/pid).
+        key = f"seat-no-progress|{mid}|{end}"[:128]
         title = "bug: seat stopped making progress"
         what = (
             "What: the worker recycled the seat while the agent process was still running "
@@ -5168,7 +5171,8 @@ def report_agent_cli_nonzero_exit(
         )
     else:
         # silent external kill, or an operator/tray recycle after the process ended.
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        # FR #9609: seat-silent-end|{mid}|{end} — nick in body only.
+        key = f"seat-silent-end|{mid}|{end}"[:128]
         title = "bug: seat ended with no CLI stderr (FR #7724)"
         what = (
             "What: the seat process ended and there was no CLI stderr. "
@@ -5196,7 +5200,8 @@ def report_agent_cli_nonzero_exit(
         # FR #8148: do not rebrand console-close / signal as "stopped making progress".
         if reason != "agent-exited" and end not in ("console-close", "recycle", "external-kill"):
             title = "bug: seat stopped making progress"
-            key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
+            # FR #9609: no nick in seat-no-progress class key.
+            key = f"seat-no-progress|{mid}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
         what
         + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
