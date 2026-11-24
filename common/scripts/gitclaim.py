@@ -2901,17 +2901,43 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
         "gate",
     }
 )
-# FR #8653: Ergo and the Jeeves chair host moved from ionos to walrus.
-# Legacy ionos require_machine cues still match, then fold onto walrus.
-_LIVE_CHAIR_HOST = "walrus"
-_LEGACY_CHAIR_HOSTS = frozenset({"ionos", "bob-ionos"})
+# FR #8653 / #9680: Ergo and the Jeeves chair host used to be ionos, then walrus.
+# Never bake the live hostname into source — resolve from BOB_CHAIR_MACHINE
+# (bob_recycle.CHAIR_ENV) or JEEVES_CHAIR_HOST (jeeves_chair_host). Legacy
+# labels/cues ``needs-walrus`` / ``needs-ionos`` / ``require_machine: walrus|ionos``
+# remain aliases that fold onto the configured live host.
+_LEGACY_CHAIR_HOST_ALIASES = frozenset({"ionos", "bob-ionos", "walrus"})
+
+
+def live_chair_host() -> str:
+    """Resolved Ergo / Jeeves chair machine id (FR #9680).
+
+    Prefer ``BOB_CHAIR_MACHINE``, then ``JEEVES_CHAIR_HOST``, then
+    ``jeeves_chair_host.DEFAULT_CHAIR_HOST``. Tests inject via monkeypatch.
+    """
+    import bob_recycle
+    import jeeves_chair_host as jch
+
+    raw = (os.environ.get(bob_recycle.CHAIR_ENV) or "").strip()
+    if raw:
+        return bobreport.normalize_machine_id(raw) or jch.normalize_host(raw)
+    return jch.configured_chair_host()
 
 
 def fold_chair_host(mid: str) -> str:
-    """Map a retired chair-host id onto the live chair. Other ids stay put."""
+    """Map a retired/alias chair-host id onto the configured live chair.
+
+    Other fleet machine ids stay put. Legacy ``ionos`` / ``walrus`` always fold
+    to ``live_chair_host()`` so a future chair rename only needs env/config.
+    """
     m = (mid or "").strip().lower()
-    if m in _LEGACY_CHAIR_HOSTS:
-        return _LIVE_CHAIR_HOST
+    if not m:
+        return m
+    live = live_chair_host()
+    if m == live:
+        return live
+    if m in _LEGACY_CHAIR_HOST_ALIASES:
+        return live
     return m
 
 
@@ -3312,13 +3338,15 @@ def infer_require_machine(
         if rx.search(title_blob):
             if _is_retired_require_machine(mid):
                 return ""
-            return mid
+            # FR #9680: cue maps may still name legacy aliases (walrus/ionos);
+            # stamp the configured live chair host.
+            return fold_chair_host(mid)
     # Body: only strong WP0 / ionos-ops cues (not bare machine name mentions).
     for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
         if rx.search(body_blob) or rx.search(title_blob):
             if _is_retired_require_machine(mid):
                 return ""
-            return mid
+            return fold_chair_host(mid)
     # FR #4745: harvest-lesson / lesson(<book>) tips never inherit Day Works / UAT
     # auto-pin (docs/skill-only MRB). Explicit needs-<machine> labels and dedicated
     # require_machine lines already returned above.
@@ -5083,10 +5111,10 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
         row["require_machine"] = "any"
         return
-    stamped = fold_chair_host(str(row.get("require_machine") or "").strip().lower())
-    if stamped in _LEGACY_CHAIR_HOSTS or (
-        str(row.get("require_machine") or "").strip().lower() in _LEGACY_CHAIR_HOSTS
-    ):
+    raw_stamp = str(row.get("require_machine") or "").strip().lower()
+    stamped = fold_chair_host(raw_stamp)
+    # FR #9680: rewrite legacy ionos/walrus stamps onto the configured live host.
+    if stamped and (raw_stamp in _LEGACY_CHAIR_HOST_ALIASES or stamped != raw_stamp):
         row["require_machine"] = stamped
     if stamped and _is_retired_require_machine(stamped):
         stamped = "any"
