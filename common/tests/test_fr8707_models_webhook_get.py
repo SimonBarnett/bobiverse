@@ -16,6 +16,7 @@ REQUIRED_AGENTS = (
     "Cursor",
     "Opencode",
     "Opencode-Free",
+    "Copilot",
 )
 
 

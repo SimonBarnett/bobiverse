@@ -28,6 +28,13 @@
         "contexts": [],
         "efforts": []
       }
+    ],
+    "copilot": [
+      {
+        "model": "fixture-copilot-a",
+        "contexts": [],
+        "efforts": []
+      }
     ]
   },
   "provenance": {

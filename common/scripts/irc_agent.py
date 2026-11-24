@@ -900,6 +900,131 @@ def save_outbox_pos(outbox: Path, pos: int) -> None:
     _unlink_legacy_outbox_pos(outbox)
 
 
+# --- FR #9743: single-instance ear.lock per home/nick -----------------------------
+_EAR_INSTANCE_LOCK_HELD: dict[str, object] = {"fh": None, "path": None}
+
+
+def ear_instance_lock_path(home: Path, nick: str) -> Path:
+    """Lock file path under home for this nick (FR #9743)."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (nick or "ear").strip()) or "ear"
+    return Path(home) / f"ear.{safe}.lock"
+
+
+def _pid_alive_ear(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            h = ctypes.windll.kernel32.OpenProcess(0x00100000, 0, int(pid))
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return int(ctypes.windll.kernel32.GetLastError()) == 5
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _try_ear_advisory_lock(fh, timeout_s: float = 0.25) -> bool:
+    deadline = time.monotonic() + max(0.05, float(timeout_s))
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _unlock_ear_advisory(fh) -> None:
+    with contextlib.suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def release_ear_instance_lock(holder: object | None = None) -> None:
+    """Release process-held ear.lock (FR #9743)."""
+    fh = holder if holder is not None else _EAR_INSTANCE_LOCK_HELD.get("fh")
+    if fh is None:
+        return
+    with contextlib.suppress(Exception):
+        _unlock_ear_advisory(fh)
+    with contextlib.suppress(Exception):
+        fh.close()
+    if _EAR_INSTANCE_LOCK_HELD.get("fh") is fh:
+        _EAR_INSTANCE_LOCK_HELD["fh"] = None
+        path = _EAR_INSTANCE_LOCK_HELD.get("path")
+        _EAR_INSTANCE_LOCK_HELD["path"] = None
+        if path is not None:
+            with contextlib.suppress(OSError):
+                Path(str(path)).unlink(missing_ok=True)
+
+
+def acquire_ear_instance_lock(home: Path | str, nick: str) -> object | None:
+    """Exclusive ear.lock for home+nick. Returns open fh holder, or None if busy (FR #9743).
+
+    Stale locks whose stamped PID is dead are broken and retaken. The returned
+    file handle must stay open for the process lifetime (advisory lock).
+    """
+    root = Path(home)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = ear_instance_lock_path(root, nick)
+    # Break stale file when holder PID is gone (no open advisory holder).
+    if lock_path.exists():
+        try:
+            raw = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            raw = ""
+        stale_pid = None
+        if raw:
+            first = raw.splitlines()[0].strip()
+            if first.isdigit():
+                stale_pid = int(first)
+        if stale_pid is None or not _pid_alive_ear(stale_pid):
+            with contextlib.suppress(OSError):
+                lock_path.unlink()
+        elif stale_pid == os.getpid() and _EAR_INSTANCE_LOCK_HELD.get("fh") is not None:
+            return _EAR_INSTANCE_LOCK_HELD["fh"]
+    fh = open(lock_path, "a+b")
+    if not _try_ear_advisory_lock(fh, 0.35):
+        with contextlib.suppress(Exception):
+            fh.close()
+        return None
+    payload = f"{os.getpid()}\n{nick}\n{time.time():.3f}\n".encode("utf-8")
+    with contextlib.suppress(OSError):
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(payload)
+        fh.flush()
+    _EAR_INSTANCE_LOCK_HELD["fh"] = fh
+    _EAR_INSTANCE_LOCK_HELD["path"] = str(lock_path)
+    return fh
+
+
 def is_enospc(exc: BaseException) -> bool:
     """True for disk-full OSError (errno 28 / WinError 112|39) — FR #8205 / #7896."""
     if not isinstance(exc, OSError):
@@ -6204,8 +6329,28 @@ class Client:
         why = (trailing or "").strip().replace("\n", " ")[:80] or "Cannot send to channel"
         info(f"WARN outbox/send ERR_CANNOTSENDTOCHAN {cmd} {ch}: {why}")
 
+    def irc_live_for_outbox(self) -> bool:
+        """True when this ear may drain/advance outbox.pos (FR #9743).
+
+        Requires a socket, JOIN completed, and neither dead nor stop set. A
+        disconnected duplicate ear must not consume outbox lines.
+        """
+        if self.sock is None:
+            return False
+        joined = getattr(self, "joined", None)
+        if joined is not None and not joined.is_set():
+            return False
+        dead = getattr(self, "dead", None)
+        if dead is not None and dead.is_set():
+            return False
+        stop = getattr(self, "stop", None)
+        if stop is not None and stop.is_set():
+            return False
+        return True
+
     def _drain_outbox_path(self, path: Path) -> list[str]:
-        if self.sock is None or not path.exists():
+        # FR #9743: never advance outbox.pos without live IRC.
+        if not self.irc_live_for_outbox() or not path.exists():
             return []
         last = load_outbox_pos(path)
         # FR #5826: one-shot / pending sweep of already-consumed CRED-SEAL ciphertext.
@@ -6225,12 +6370,18 @@ class Client:
         # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
         refuse_job_wire = not getattr(self.args, "chair", False)
         seal_spans: list[tuple[int, int, bytes]] = []
+        # FR #9743: only checkpoint past lines successfully sent or intentionally consumed.
+        committed = last
+        stop_drain = False
         for norm0, abs_start, abs_end, raw_span in records:
+            if stop_drain or not self.irc_live_for_outbox():
+                break
             line = norm0
             try:
                 # FR #226: re-normalize (BOM / pre-wrapped) before classify
                 kind, norm = normalize_outbox_line(line)
                 if kind == "empty":
+                    committed = abs_end
                     continue
                 line = norm
                 if is_cred_seal_outbox_line(line):
@@ -6240,8 +6391,10 @@ class Client:
                     if len(preview) > 160:
                         preview = preview[:157] + "..."
                     info(f"WARN outbox refused misplaced worker job-wire (FR #2384): {preview}")
+                    committed = abs_end
                     continue
                 if gate_fleet and bobreport.outbox_line_spam_for_fleet_channel(line, default_channel=self.chan):
+                    committed = abs_end
                     continue
                 op = shop_ops.raw_op_line(line, self.original_nick)
                 if kind == "privmsg" or line.upper().startswith("PRIVMSG "):
@@ -6255,7 +6408,9 @@ class Client:
                         info(
                             f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
                         )
-                        continue
+                        # FR #9743: leave this line and the rest for a live ear; do not advance.
+                        stop_drain = True
+                        break
                     for w in wire:
                         head = w.split(" :", 1)[0]
                         prev = scrub_cred_seal_preview(w)
@@ -6263,30 +6418,48 @@ class Client:
                             prev = prev[:157] + "..."
                         info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                     sent.extend(wire)
+                    committed = abs_end
                     # FR #8622: own PRIVMSG is not echoed; decide !startworker from this outbox locally.
                     self._maybe_local_outbox_startworker(line)
                     # FR #4796: pace *_console Commands slower than shop chat.
                     time.sleep(flood_s_for_outbox_line(line))
                 elif op:
                     # bob-* shop ops (A23): KICK / MODE / NAMES on own #{machine}, raw.
-                    self.send(op)
+                    try:
+                        self.send(op)
+                    except OSError as exc:
+                        info(
+                            f"ERROR outbox: shop-op send failed {type(exc).__name__}"[:220]
+                        )
+                        stop_drain = True
+                        break
                     info(f"INFO shop-op sent {op.split(' :', 1)[0]}")
+                    committed = abs_end
                     time.sleep(FLOOD_S)
                 else:
                     self.say(line)
                     sent.append(line)
+                    committed = abs_end
                     self._maybe_local_outbox_startworker(line)
             except Exception as exc:  # noqa: BLE001 -- FR #5157
                 preview = scrub_cred_seal_preview(str(line))
                 if len(preview) > 160:
                     preview = preview[:157] + "..."
                 info(f"ERROR outbox: line failed {type(exc).__name__}: {preview}"[:220])
+                # Non-OSError line failures still consume (legacy FR #5157); keep going.
+                committed = abs_end
                 continue
         # FR #5826: blank CRED-SEAL after send loop, before checkpoint (best-effort).
+        batch_end = committed if stop_drain else new_last
+        if not stop_drain and records:
+            # All records in this tick handled; take take_outbox_records new_last
+            # (includes blank lines past the last nonempty record).
+            batch_end = new_last
+            committed = new_last
         if seal_spans:
             try:
                 _blanked, failures = blank_cred_seal_spans(
-                    path, seal_spans, batch_end=new_last
+                    path, seal_spans, batch_end=batch_end
                 )
                 if failures:
                     self._cred_seal_sweep_pending = True
@@ -6296,8 +6469,8 @@ class Client:
                     "WARN outbox CRED-SEAL scrub error "
                     f"{type(exc).__name__} path={path.name}"
                 )
-        if new_last != last:
-            save_outbox_pos(path, new_last)
+        if committed != last:
+            save_outbox_pos(path, committed)
         return sent
 
     def drain_outbox_once(self) -> list[str]:
@@ -6307,7 +6480,8 @@ class Client:
                 grok_talk.drain_completions_to_outbox(self.home, outbox=self.outbox)
             except OSError:
                 pass
-        if self.sock is None:
+        # FR #9743: live IRC gate (sock + joined + not dead/stop).
+        if not self.irc_live_for_outbox():
             return []
         sent = self._drain_outbox_path(self.outbox)
         if getattr(self.args, "chair", False):
@@ -6640,6 +6814,68 @@ class Client:
             backoff = next_reconnect_backoff_s(backoff)
 
 
+
+# --- FR #9861: OS named mutex (NSSM same-second twin) -----------------------------
+_EAR_INSTANCE_MUTEX_HANDLE = None
+_EAR_MUTEX_EXIT = 3  # same as FR #9743 duplicate-ear refuse
+
+
+def ear_instance_mutex_name(home: Path | str, nick: str) -> str:
+    """Global mutex name for one bob-ear per home+nick (FR #9861)."""
+    raw = f"{Path(home).expanduser().resolve()}|{str(nick or '').strip().lower()}"
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"Global\\BobiverseBobEar-{digest}"
+
+
+def try_acquire_ear_instance_mutex(home: Path | str, nick: str) -> bool:
+    """Windows named mutex; True if this process owns the ear instance (FR #9861).
+
+    File advisory locks (FR #9743) can lose a same-second NSSM double-start race.
+    CreateMutexW is atomic across processes. Non-Windows: always True (tests use
+    mocks). Fail-open only when the mutex API itself is unavailable.
+    """
+    global _EAR_INSTANCE_MUTEX_HANDLE
+    if os.name != "nt":
+        return True
+    home_s = str(home or "").strip()
+    nick_s = str(nick or "").strip()
+    if not home_s or not nick_s:
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        name = ear_instance_mutex_name(home_s, nick_s)
+        handle = kernel32.CreateMutexW(None, wintypes.BOOL(True), name)
+        if not handle:
+            return True  # fail-open: do not brick ear on CreateMutex failure
+        err = int(kernel32.GetLastError() or 0)
+        # ERROR_ALREADY_EXISTS = 183
+        if err == 183:
+            kernel32.CloseHandle(handle)
+            return False
+        _EAR_INSTANCE_MUTEX_HANDLE = handle
+        return True
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def release_ear_instance_mutex() -> None:
+    """Drop the FR #9861 named mutex (tests / orderly shutdown)."""
+    global _EAR_INSTANCE_MUTEX_HANDLE
+    if _EAR_INSTANCE_MUTEX_HANDLE is None or os.name != "nt":
+        _EAR_INSTANCE_MUTEX_HANDLE = None
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(_EAR_INSTANCE_MUTEX_HANDLE)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    _EAR_INSTANCE_MUTEX_HANDLE = None
+
+
 def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
     """Hard-kill hung same-nick / same-home priors before the first connect.
 
@@ -6783,7 +7019,38 @@ def main() -> None:
         )
     except Exception as e:  # pragma: no cover - never block connect on guard bugs
         info(f"WARN live-tree guard skipped {type(e).__name__}")
+    # FR #9861: OS mutex BEFORE prior-clean / Client / outbox so NSSM twin starts
+    # in the same second cannot both connect (file advisory lock alone can race).
+    if home and not bool(args.once):
+        if not try_acquire_ear_instance_mutex(home, args.nick):
+            info(
+                f"ERROR ear instance mutex busy home={home} nick={args.nick} "
+                f"(FR #9861); refusing duplicate bob-ear"
+            )
+            sys.exit(_EAR_MUTEX_EXIT)
+        import atexit
+
+        atexit.register(release_ear_instance_mutex)
     clean_crashed_priors(args.nick, home, once=bool(args.once))
+    # FR #9743: single-instance lock per home/nick so a disconnected duplicate
+    # cannot drain outbox.txt.pos ahead of the live ear.
+    ear_lock_home = home
+    if not ear_lock_home:
+        try:
+            ear_lock_home = str(seal.home())
+        except Exception:
+            ear_lock_home = ""
+    if ear_lock_home and not bool(args.once):
+        holder = acquire_ear_instance_lock(ear_lock_home, args.nick)
+        if holder is None:
+            info(
+                f"ERROR ear instance lock busy home={ear_lock_home} nick={args.nick} "
+                "(FR #9743); refusing duplicate bob-ear"
+            )
+            sys.exit(3)
+        import atexit
+
+        atexit.register(release_ear_instance_lock, holder)
     c = Client(args)
 
     def _stop(*_a: object) -> None:
@@ -6798,7 +7065,10 @@ def main() -> None:
         except TimeoutError:
             sys.exit(1)
         return
-    c.run_forever()
+    try:
+        c.run_forever()
+    finally:
+        release_ear_instance_lock()
 
 
 if __name__ == "__main__":

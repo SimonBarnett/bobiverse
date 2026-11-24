@@ -6,6 +6,8 @@ Architecture: ``PR closes #P -> search open issues Depends-on:#P -> fail with li
 Given parent ``owner/repo#P`` (or a PR that Closes that FR), exit non-zero and
 list every **open** issue whose ``Depends-on:`` stamp resolves to that parent.
 Silent pass while an open child still Depends-on #P is the fail-when.
+When ``--pr`` / ``--pr-json`` supplies Closes parents, children that the same PR
+also Closes are excluded (consolidated tip co-close; FR #9858).
 
 Reusable for other SimonBarnett repos. CI-G2 wires this into build-jeeves.
 """
@@ -155,18 +157,36 @@ def gate_open_children(
     *,
     issues: Iterable[dict] | None = None,
     fetch_issues: IssueFetcher | None = None,
+    exclude_closing: set[tuple[str, int]] | None = None,
 ) -> tuple[int, list[str]]:
-    """Return ``(exit_code, stdout_lines)``. 1 when open children remain."""
+    """Return ``(exit_code, stdout_lines)``. 1 when open children remain.
+
+    ``exclude_closing``: ``(repo_lower, number)`` pairs this PR also Closes.
+    Co-closed Depends-on children are ignored so a consolidated tip that Closes
+    parent + child can pass CI-G1 (FR #9858 / #8839).
+    """
     pref = _canon_repo(parent_repo)
     pnum = _canon_num(parent_num)
     if issues is None:
         getter = fetch_issues or fetch_open_issues
         issues = getter(pref)
     children = find_open_children(pref, pnum, issues)
+    if exclude_closing:
+        kept: list[dict] = []
+        for child in children:
+            crepo = _issue_repo(child, default=pref).lower()
+            try:
+                cnum = int(str(child.get("number") or "").strip().lstrip("#"))
+            except ValueError:
+                kept.append(child)
+                continue
+            if (crepo, cnum) in exclude_closing:
+                continue
+            kept.append(child)
+        children = kept
     if not children:
         return 0, [f"open-children-gate: ok {pref}#{pnum} (no open Depends-on children)"]
     return 1, format_open_children_report(pref, pnum, children)
-
 
 def _github_token(token: str = "") -> str:
     tok = (
@@ -401,9 +421,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Same-PR co-close: children this tip also Closes are not blockers (CI-G1).
+    exclude: set[tuple[str, int]] | None = None
+    if pr_mode:
+        exclude = {(r.lower(), n) for r, n in uniq}
+
     exit_code = 0
     for pref, pnum in uniq:
-        code, lines = gate_open_children(pref, pnum, issues=issues)
+        code, lines = gate_open_children(
+            pref, pnum, issues=issues, exclude_closing=exclude
+        )
         for line in lines:
             print(line)
         if code != 0:

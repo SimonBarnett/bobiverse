@@ -42,6 +42,8 @@ namespace BobDialogs
         public bool CopilotBarKnown;
         public int CopilotBarPct;
         public int CopilotBarR = 88, CopilotBarG = 166, CopilotBarB = 255;
+        // FR #9750: digest.copilot.tasks lines under pool UsageRow.
+        public string[] CopilotTaskLines = new string[0];
         public string OpencodeLine = "OpenCode  n/a";
         public List<string> OpencodeWindowLines = new List<string>();
         public List<OpencodeBarRow> OpencodeBars = new List<OpencodeBarRow>();
@@ -90,6 +92,11 @@ namespace BobDialogs
                 m.CopilotBarR = Common.Int(cbar, "r", 88);
                 m.CopilotBarG = Common.Int(cbar, "g", 166);
                 m.CopilotBarB = Common.Int(cbar, "b", 255);
+            }
+            // FR #9750: task lines independent of bar object.
+            {
+                object ctl = d.ContainsKey("copilot_task_lines") ? d["copilot_task_lines"] : null;
+                m.CopilotTaskLines = Common.StrArray(ctl);
             }
             string a = Common.Str(d, "alert"); if (a.Length > 0) m.Alert = a;
             IList c = Common.List(d.ContainsKey("cursor") ? d["cursor"] : null);
@@ -355,6 +362,16 @@ namespace BobDialogs
             copilotRow.Bar.G = m.CopilotBarG;
             copilotRow.Bar.B = m.CopilotBarB;
             y = UsageRow(g, 32, y, copilotRow, 354);
+            // FR #9750: task lines once under pool.
+            if (m.CopilotTaskLines != null)
+            {
+                foreach (string tl in m.CopilotTaskLines)
+                {
+                    if (string.IsNullOrWhiteSpace(tl)) continue;
+                    Draw(g, tl.Trim(), fSmall, Fg, 46, y);
+                    y += 16;
+                }
+            }
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;
