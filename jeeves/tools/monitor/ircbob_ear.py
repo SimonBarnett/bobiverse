@@ -10,6 +10,10 @@ EXIT 1 with finding and attempt Restart-Service once (Start-Service is a no-op
 while Running). Also scan install logs/stderr for recent ENOSPC / errno 28 and
 raise a loud finding. TipForm wording for ear-offline vs unreachable lives in
 Get-BobTrayHover.ps1.
+
+FR #9863 / #9902: Paused/PausePending (NSSM AppThrottle) never uses Start-Service
+or Stop-Process. Prefer Resume-Service when an ear child is still alive; otherwise
+Restart-Service. Resume failure falls through to Restart.
 """
 from __future__ import annotations
 
@@ -164,6 +168,39 @@ def _restart_service(name: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
+def _resume_service(name: str) -> tuple[bool, str]:
+    """Local Resume-Service heal for Paused + live ear child (FR #9902).
+
+    Clears NSSM AppThrottle Pause without respawning the App. Prefer this over
+    Restart-Service when a bob-ear child is already alive (Restart on redqueen
+    NSSM can twin-spawn). Never touches Ergo / BobIrcd. Returns (ok, detail).
+    """
+    if sys.platform != "win32":
+        return False, "skipped"
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Resume-Service -Name '{name}' -ErrorAction Stop; "
+                f"Start-Sleep -Seconds 2; "
+                f"(Get-Service -Name '{name}').Status",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        if r.returncode == 0 and out.lower() == "running":
+            return True, out
+        detail = out or err or f"exit={r.returncode}"
+        return False, detail[:240]
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def _ear_child_alive() -> bool:
     """True when a bob-ear.exe or irc_agent.py (bobiverse) process is present."""
     if sys.platform != "win32":
@@ -242,41 +279,60 @@ def _heal_local_ear(
     *,
     child_alive: bool | None = None,
 ) -> tuple[str, str | None, bool | None]:
-    """Heal Stopped via Start-Service; Paused / Running-without-child via Restart-Service.
+    """Heal Stopped via Start-Service; Paused via Resume or Restart; Running-without-child via Restart.
 
     FR #9863: NSSM AppThrottle after an unexpected bob-ear child kill leaves
-    ``Get-Service ircBob`` as **Paused**. ``Start-Service`` does not clear Pause;
-    only ``Restart-Service`` brings the ear back. Never ``Stop-Process`` the
-    service ear under NSSM — use ``Restart-Service ircBob`` / ``Restart-BobEar.ps1``.
+    ``Get-Service ircBob`` as **Paused**. ``Start-Service`` does not clear Pause.
+    Never ``Stop-Process`` the service ear under NSSM.
+
+    FR #9902: when Paused/PausePending and an ear child is still alive, prefer
+    ``Resume-Service`` (clears Pause without respawn). On Resume failure, or when
+    no child is present, fall through to ``Restart-Service``. Restart on redqueen
+    NSSM can twin-spawn; Resume avoids that when IRC/child is already up.
 
     Returns (status_after, heal_result, ear_child_alive).
-    heal_result: 'started'|'restarted'|'failed'|None.
+    heal_result: 'started'|'resumed'|'restarted'|'failed'|None.
     """
     if svc in ("skipped", "missing"):
         return svc, None, child_alive
 
     st = (svc or "").strip().lower()
 
-    # FR #9863: Paused / PausePending — AppThrottle after twin kill or crash loop.
+    # FR #9863 / #9902: Paused / PausePending — AppThrottle after twin kill or crash.
     if st in ("paused", "pausepending"):
         findings.append(
             f"local {SERVICE_NAME} Status={svc} "
-            f"(NSSM AppThrottle / unexpected ear death; FR #9863 — never Stop-Process "
-            f"bob-ear under NSSM; use Restart-Service)"
+            f"(NSSM AppThrottle / unexpected ear death; FR #9863/#9902 — never "
+            f"Stop-Process bob-ear under NSSM; Resume when child up else Restart)"
         )
+        alive_before = (
+            _ear_child_alive() if child_alive is None else bool(child_alive)
+        )
+        if alive_before:
+            ok, detail = _resume_service(SERVICE_NAME)
+            after = _service_state(SERVICE_NAME)
+            alive_after = _ear_child_alive()
+            if ok and after.lower() == "running" and alive_after:
+                notes.append(
+                    f"local {SERVICE_NAME} healed Resume-Service "
+                    f"(was Status={svc}; now Running + ear child; FR #9902)"
+                )
+                findings[:] = [f for f in findings if "FR #9863" not in f]
+                return after, "resumed", True
+            notes.append(
+                f"local {SERVICE_NAME} Resume-Service did not clear Pause "
+                f"status={after or svc} child_alive={alive_after} detail={detail!r}; "
+                f"falling through to Restart-Service (FR #9902)"
+            )
         ok, detail = _restart_service(SERVICE_NAME)
         after = _service_state(SERVICE_NAME)
         alive_after = _ear_child_alive()
         if ok and after.lower() == "running" and alive_after:
             notes.append(
                 f"local {SERVICE_NAME} healed Restart-Service "
-                f"(was Status={svc}; now Running + ear child; FR #9863)"
+                f"(was Status={svc}; now Running + ear child; FR #9863/#9902)"
             )
-            findings[:] = [
-                f
-                for f in findings
-                if "FR #9863" not in f
-            ]
+            findings[:] = [f for f in findings if "FR #9863" not in f]
             return after, "restarted", True
         findings.append(
             f"local {SERVICE_NAME} Restart-Service heal failed "
@@ -393,7 +449,7 @@ def check(args):
     local_mid = _local_machine_id()
     apply_gate = bool(local_mid) and path.is_file() and (
         (isinstance(svc, str) and svc.lower() == "running")
-        or heal_result in ("started", "restarted", "failed")
+        or heal_result in ("started", "resumed", "restarted", "failed")
         or ear_child is not None
     )
     if apply_gate:

@@ -103,13 +103,13 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 | Running but no `inbound-transcript.log` | `Restart-BobEar.ps1` after this FR is deployed |
 | Running, socket ESTABLISHED, no transcript / deaf shop | FR #4980 keepalive; else `Restart-BobEar.ps1` |
 | Missing `outbox.txt` | Ear recreates home on start; ensure service ObjectName/home path |
-| **Paused** (NSSM AppThrottle after kill/crash) | **Never** `Stop-Process` bob-ear under NSSM (FR #9863). Use `Restart-Service ircBob` / `Restart-BobEar.ps1`. Monitor `ircbob_ear` heals Paused via Restart-Service. |
+| **Paused** (NSSM AppThrottle after kill/crash) | **Never** `Stop-Process` / `Start-Service` for Pause (FR #9863). Prefer `Resume-Service ircBob` when an ear child is still alive (FR #9902; Restart on redqueen NSSM can twin-spawn). Without a child, `Restart-Service ircBob` / `Restart-BobEar.ps1`. Monitor `ircbob_ear` follows the same Resume-then-Restart path. |
 | Twin / duplicate bob-ear | Prefer single-instance lock (FR #9743 / PR #9753). Do not prune with Stop-Process — Restart-Service instead. |
 
 
 ## Never Stop-Process the NSSM ear (FR #9863)
 
-Killing a `bob-ear.exe` / `irc_agent.py` child under **ircBob** with `Stop-Process` (or Task Manager End Task) can leave `Get-Service ircBob` as **Paused** (NSSM AppThrottle after unexpected exit). Outbox PRIVMSG then stops until Resume/Restart. Always heal with `Restart-Service ircBob` or Desktop **Restart ircBob** / `scripts\Restart-BobEar.ps1`. TipForm/monitor must Restart, never Pause-and-linger. Single-instance (FR #9743) removes the need to prune twins by hand.
+Killing a `bob-ear.exe` / `irc_agent.py` child under **ircBob** with `Stop-Process` (or Task Manager End Task) can leave `Get-Service ircBob` as **Paused** (NSSM AppThrottle after unexpected exit). Outbox PRIVMSG then stops until Resume/Restart. When the ear child is still alive, prefer `Resume-Service ircBob` (FR #9902) so NSSM does not respawn a twin; otherwise heal with `Restart-Service ircBob` or Desktop **Restart ircBob** / `scripts\Restart-BobEar.ps1`. TipForm/monitor must never Pause-and-linger or use `Start-Service` / `Stop-Process` for Pause. Single-instance (FR #9743) removes the need to prune twins by hand.
 ## Tray / recycle
 
 - Product Sync/ff runs on **ircBob Start-Bob** only â€” TipForm Start never updates the tree.
