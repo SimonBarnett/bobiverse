@@ -348,6 +348,28 @@ namespace BobDialogs
 
         public static IList List(object o) { return o as IList; }
 
+        public static string[] StrArray(object v)
+        {
+            if (v == null) return new string[0];
+            string[] sa = v as string[];
+            if (sa != null) return sa;
+            IList listObj = v as IList;
+            if (listObj != null)
+            {
+                var list = new System.Collections.Generic.List<string>();
+                foreach (object o in listObj)
+                {
+                    if (o == null) continue;
+                    string s = Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture);
+                    if (!string.IsNullOrWhiteSpace(s)) list.Add(s.Trim());
+                }
+                return list.ToArray();
+            }
+            string one = Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture);
+            if (string.IsNullOrWhiteSpace(one)) return new string[0];
+            return new[] { one.Trim() };
+        }
+
         public static string Str(Dictionary<string, object> d, string key)
         {
             object v;

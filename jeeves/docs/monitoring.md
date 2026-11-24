@@ -82,7 +82,10 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 `Test-JeevesMonitorOnlineZeroWorkers.ps1` / `tools/monitor/online_zero_workers.py` EXIT 1 when an **online** digest/report machine has a known empty `workers` / `worker_list` and fleet `offerable_count > 0`. Payload lists `machine_ids` and fingerprints `stall:online-zero-workers:<machine>` (chair `stall_filer` rate-caps the same id). Local `queue.json` uses digest home; missing queue uses one live `/bob/v1/report` (same non-chair path as idle_seats FR #8866).
 
-**Remediation:** TipForm â†’ **Agents** on the empty shop (FR #3180). Do **not** silent auto-start seats from monitor. Digest stuck[] already carries `rule=online_zero_workers` (FR #8429 / MRB #8445); this check makes the gap EXIT 1 on monitor hosts that only read `/report`. TipForm paints a durable `online_zero_workers` alert/caption while the condition holds.
+**Remediation:** TipForm -> **Agents** on the empty shop (FR #3180). Do **not** silent auto-start seats from monitor. Digest stuck[] already carries `rule=online_zero_workers` (FR #8429 / MRB #8445); this check makes the gap EXIT 1 on monitor hosts that only read `/report`. TipForm paints a durable `online_zero_workers` alert/caption while the condition holds.
+
+
+**FR #9827 offer skip:** escalate filings (titles like `<machine> online workers=[] while offerable>0 (TipForm restore)` or fingerprint `stall:online-zero-workers:<machine>`) stay visible on GitHub; chair `issue_skip_fr_reason` returns `tipform_restore_escalate` / `stall_receipt` so they are not assignable FR work (product FRs with `feature-request` like #9462 stay offerable).
 
 ### FR #9471 startworker silence / HealEngine storm
 

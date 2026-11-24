@@ -25,22 +25,27 @@ depends_on: []
 >    `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
-> 5. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
+> 5. **CAST IRON FR #9906 - Never set GIT_ASKPASS to echo GH_TOKEN / GITHUB_TOKEN / `gh auth token`.**
+>     AskPass that echoes the token prints it into the terminal transcript (harvest-MRB fold class). Prefer
+>     `GH_TOKEN` / `GITHUB_TOKEN` env alone, or `gh` credential helper / `gh auth setup-git`. Never Write-Output /
+>     echo the token into AskPass. If a transcript leaked a `github_pat_` / `ghp_` value: redact, rotate that token,
+>     and file intake - do not paste the secret into skills or PRs.
+> 6. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
 >    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
 >    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
 >    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
-> 6. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
+> 7. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
 >    or `bobiverse-jeeves-*` must open or update a `lesson(<book>):` / `harvest/…` PR that patches the owning
 >    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
 >    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
 >    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
-> 7. **CAST IRON — interventions → ircJeeves FR (#9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
+> 8. **CAST IRON — interventions → ircJeeves FR (#9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
 >    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, …) must create or de-dup-comment a product FR against
 >    ircJeeves (`SimonBarnett/bobiverse`) the same turn so the chair performs it deterministically. FR #8827 is bridge-only.
 >    Closed-COMPLETED but still bridged live ⇒ regression FR with evidence.
-> 8. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
+> 9. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
 >    chair path same turn. Ungated idle+work is never report-only.
-> 9. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
+> 10. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
 >    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>` (plain grammar).
 >    Never leave a multi-FR batch free-floating. Digests stay useful when unheld; `hold` parks the whole batch. Same-turn
 >    repair: if ≥2 related FRs already filed without a digest, file the digest immediately and add Depends-on on children.
@@ -320,6 +325,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Infra-soft give-up reasons must not black out auto-offer. Persist the raw needs_human bit separately from the offer gate so heal can still see a false stamp.
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
+- Dispatched BOB-* FR with vision Depends-on still open: ACK then GIVEUP reason=blocked-on <depend-id>; leave OPEN; do not invent DONE URL
+- BOB-51 S1: Invoke-BobPriorityModelsDryRun resolves agent=priority from GET /bob/v1/models (or fixture) and writes LOCALAPPDATA\Bobiverse\logs\priority-models-dry-run.log citing webhook=; fixture covers until BOB-01 lands.
 - BOB-09 About Show logs: bottom button on AboutForm + PS fallback opens watch_bob_tray.log via notepad (same path as Open log)
 - BOB-08 About rename: menu label Acknowledge->About on BobTray.cs and Watch-BobTray.ps1; keep Acknowledge() attention clear; pin mock home.html
 - BOB-11 Status keep pool dialog: when Item(Status)/ShowStatus/StatusForm already on main, DONE with covering PR URL (#7521) and close the twin --- do not re-implement
@@ -467,14 +474,26 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - bob_git_hook announce_seen must match Ergo nick case-insensitively (:jeeves! and :Jeeves!); seed ~/.grok/ergo/connect.password from bob config\ergo.password before Start-BobiverseGitAnnounceListen
 - When flamingo authors dominate the MRB queue, prefer no-flamingo-author MERGEABLE rows for flamingo seats (exact-nick self-MRB is tip #9574/#9579; host lag may still false-refuse — #9672). Sticky assign-sent + digest-idle is #9633.
 - TrayContext cannot call WorkerLauncher.Quote - inline ProcessStartInfo Arguments path quoting for PlanAgent --root (CS0103 on build-bob-tray); companion fix #9684
+- CAST IRON FR #9698: disk GIVEUP/NACK (worktree-create-failed:disk / disk-low) auto-files one open bobiverse issue per machine with require_machine: <machine> body + needs-<machine> label; twin-comment instead of a second file
 - flamingo disk: Clear-BobiverseJobWorktrees needs git safe.directory for SYSTEM-owned C:\ai\bob; orphan C:\Users\simon\.grok\bob-bridge\worktrees not in git worktree list must be bulk-reclaimed; set BOB_JOB_WORKTREE_BASE=D:\ai\worktrees
 - FIX on CONFLICTING tip: rebuild from fresh origin/main; if empty force-push closes or sticks PR head, reopen and verify ls-remote refs/pull/N/head matches branch
 - CAST IRON FR #9669: needs-walrus / require_machine=walrus NACK->GIVEUP is a hand-off to the Jeeves agent on walrus (Slab/Si-yes); split mixed work into code FR (no pin) + walrus FR (needs-walrus, Depends-on code) under one Digest; stop wrong-machine re-offer thrash
 - Seat hold on closed MRB survives !cleargiveup ledger=0; !stuck shows held; need chair clear of seat_job hold for closed tips (#9633)
 - pool_for_digest sticky allowance exhausted wins over fresher observation ok/unlimited --- clear exhaust on observe ok or prefer fresher obs
+- Weights Copilot catalog: add Copilot to VALID_CLI_KEYS/defaults; GET backfill only when legacy full seven-row set; PUT may omit only Copilot and merge stored row; keep REFRESH_CLIS without copilot
 - CCA task POST accepts model=claude-haiku-4.5; chair build_task_body must grow BOB_COPILOT_MODEL to avoid Auto/Luna-only
+- When updating Digest #9744 pack: comment+edit child bodies with live CCA evidence (model string claude-haiku-4.5, single-slot tick, sticky exhausted vs unlimited); keep TargetHaiku=2 via refill while chair FR-A/E land
+- If outbox len barely grows after UTF-8 appends and pos stays 0, a twin bob-ear or tray rewriter is truncating outbox --- kill socketless :6697 peers before re-appending assigns.
 - open_pr_mrb_missing default-heals missing expected MRB rows (incl lesson tips) via heal_open_prs_missing_mrb; --no-heal for report-only (FR #9635).
 - !assign <nick> clears that nick+row giveup (queue giveup_seats + seat-ledger) instead of refusing already gave this row up; no separate !cleargiveup required (FR #9634).
 - If outbox pos==len but no Bob-* jeeves replies for >60s, check duplicate bob-ear TCP: keep only PID with Established IRC; dead peer can steal pos.
 - disk_starvation: never for-seat in giveup_seats when it may be a JSON string --- wrap via iter_giveup_seats or chars become WinRM hosts (FR #9728).
+- FR #9743 Running-duplicate must not replace _ear_child_alive for heal; FakeAgent tests that bind Client._drain_outbox_path also need irc_live_for_outbox
+- When report returns prefer tip FIX/MRB (#9866); prune NO_IRC+Resume; Restart only if EST=0
+- CCA missing_conclusion must soft-release + forget job + last_infra_error and return infra_retry before quota exhaust; quote reviewed-sha when assign pins it
+- Pack heat System.Collections.Hashtable <path>: find uncaptured helper that returns Hashtable (here Assert-BobiversePlanAgentNotBobWorker); $null= at call site and harden Assert-BobiverseHeatStagePath type checks
+- Keep growing held Digest #9830 with every new Jeeves/IRCD lesson same turn; wire Depends-on #9830; tip-red FIX #9840 is priority for merge gate.
+- Treat assign: refused busy holding FIX as evidence seat is not idle even if /report lags; keep bridging exact idle nicks from fresh report
+- On /report 502 use IRC inbound; if redqueen workers=[] with offerable>0 escalate TipForm #9462 only --- never Start-BobWorker from monitor
+- After MRB FAIL+FIX tip push (FR #5142), re-review the new head SHA and PASS when the prior finding is fixed; do not FAIL again for the same ascii-bom finding.
 - Product MRB: a tip merge/FIX commit with simon@<this-machine>.wonderland.local forces self-MRB GIVEUP even when implement was emerge-it (FR #9401/#4604)
