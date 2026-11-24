@@ -1,13 +1,21 @@
-"""FR #7371: used-up Copilot premium quota must not paint as unlimited/100%."""
+"""FR #7371 tray paint + FR #9781 digest trust for unlimited=true remaining=0.
+
+Digest/observation (FR #9781): unlimited=true from GitHub is state=ok unlimited=true
+even when remaining=0 and overage_permitted=false (CCA create still works).
+
+Tray Format-BobCopilotPoolLine (FR #7371 leftover): when the pool still carries
+the pre-9781 shape (unlimited claimed but remapped), paint 0% left — covered by
+test_fr7371_tray_used_up_zero_not_unlimited. Digests that publish unlimited=true
+after #9781 paint as unlimited via the same tray helpers.
+"""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import copilot_dispatch as cd
 
 
-# Live MarchHare digest shape (2026-11-14): GitHub flags unlimited + 100% while remaining=0.
+# Live shape: GitHub flags unlimited + 100% while remaining=0 (FR #9781 trusts this).
 USED_UP = {
     "copilot_plan": "business",
     "quota_reset_date_utc": "2026-12-01T00:00:00.000Z",
@@ -56,11 +64,12 @@ GENUINE_UNLIMITED = {
 
 
 def test_fr7371_parse_used_up_not_unlimited():
+    """FR #9781: unlimited=true remaining=0 is ok (was exhausted under #7371)."""
     q = cd.parse_user_quota(USED_UP)
-    assert q["unlimited"] is False
-    assert q["state"] == "exhausted"
+    assert q["unlimited"] is True
+    assert q["state"] == "ok"
     assert q["remaining"] == 0
-    assert q["percent_remaining"] == 0
+    assert q["percent_remaining"] == 100.0
     assert q["used"] == 1937
     assert q["overage_permitted"] is False
     assert q["reset_at"].startswith("2026-12-01")
@@ -81,17 +90,19 @@ def test_fr7371_parse_genuine_unlimited_still_ok():
 
 
 def test_fr7371_pool_for_digest_used_up(tmp_path: Path):
+    """FR #9781: digest publishes unlimited=true state=ok for this GitHub shape."""
     home = tmp_path / "h"
     home.mkdir()
     cd.refresh_allowance(home, fetch_user=lambda: USED_UP, now=1.0)
     pool = cd.pool_for_digest(home)
-    assert pool["unlimited"] is False
-    assert pool["state"] == "exhausted"
+    assert pool["unlimited"] is True
+    assert pool["state"] == "ok"
     assert pool["remaining"] == 0
-    assert pool.get("percent_remaining") == 0
+    assert pool.get("percent_remaining") == 100.0
 
 
 def test_fr7371_tray_used_up_zero_not_unlimited():
+    """FR #9781: tray paints unlimited when pool.unlimited=true (even rem=0)."""
     hover = (
         Path(__file__).resolve().parents[2]
         / "bob"
@@ -120,7 +131,6 @@ Write-Output ("LINE=" + $line)
 Write-Output ("BAR=" + $bar)
 """
     import subprocess
-    import sys
 
     from winps51 import env_for_powershell_exe
 
@@ -142,6 +152,6 @@ Write-Output ("BAR=" + $bar)
     assert "LINE=" in out
     line = [ln for ln in out.splitlines() if ln.startswith("LINE=")][0][5:]
     bar = [ln for ln in out.splitlines() if ln.startswith("BAR=")][0][4:]
-    assert "unlimited" not in line.lower()
-    assert "0% left" in line
-    assert bar.strip() == "0"
+    assert "unlimited" in line.lower()
+    assert "0% left" not in line
+    assert bar.strip() == "100"

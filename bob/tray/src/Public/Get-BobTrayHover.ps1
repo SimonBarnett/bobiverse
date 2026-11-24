@@ -696,8 +696,11 @@ function Test-BobTrayDigestEarOffline {
 function Get-BobTrayIrcBobServiceStatus {
     <#
     .SYNOPSIS
-      FR #9144 / #9496: local ircBob Status (Running/Running-no-child/Stopped/missing/skipped).
+      FR #9144 / #9496 / #9743 / #9863: local ircBob Status
+      (Running/Running-no-child/Running-duplicate/Paused/Stopped/missing/skipped).
       Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
+      Running-duplicate when more than one bob-ear / irc_agent child shares the machine (FR #9743).
+      Paused = NSSM AppThrottle after unexpected ear death (FR #9863); heal with Resume/Restart, never Stop-Process.
     #>
     if ($env:OS -notmatch 'Windows') { return 'skipped' }
     try {
@@ -713,6 +716,7 @@ function Get-BobTrayIrcBobServiceStatus {
                     )
                 }).Count
             if ($child -lt 1) { return 'Running-no-child' }
+            if ($child -gt 1) { return 'Running-duplicate' }
         }
         return $st
     } catch {
@@ -725,6 +729,7 @@ function Resolve-BobTrayDigestFailNote {
     .SYNOPSIS
       FR #9144 / #9496: Prefer ear-offline wording over GetResponse unreachable when ear is down.
       Running-no-child (nssm Running, no bob-ear process) paints ear-offline.
+      Running-duplicate (FR #9743) also paints ear-offline so a dead twin cannot hide.
     #>
     param(
         [string]$DigestErr,
@@ -735,7 +740,8 @@ function Resolve-BobTrayDigestFailNote {
     $err = [string]$DigestErr
     if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
     $svc = ([string]$IrcBobStatus).Trim()
-    # Exact Running/skipped/missing/error stay non-offline; Running-no-child and Stopped paint ear-offline.
+    # Exact Running/skipped/missing/error stay non-offline; Running-no-child,
+    # Running-duplicate and Stopped paint ear-offline.
     if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
         return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
     }
@@ -1721,18 +1727,11 @@ function Get-BobCopilotFreshness {
     $st = ''
     try { $st = ([string]$Pool.state).Trim().ToLowerInvariant() } catch { }
     if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
-    # FR #6317: unlimited is not a 0% hold. Do not let remaining 0 plus a future
-    # reset paint an old fetched_at as fresh. Used-up quota (overage off) stays a hold.
+    # FR #6317 / FR #9781: unlimited is not a 0% hold. Trust unlimited=true even
+    # when remaining=0 and overage_permitted=false (digest publishes state=ok).
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    $overageOk = $true
-    try {
-        if ($null -ne $Pool.overage_permitted -and [string]$Pool.overage_permitted -ne '') {
-            $overageOk = [bool]$Pool.overage_permitted
-        }
-    } catch { }
-    $usedUp = ($unlimited -and $null -ne $rem -and $rem -le 0 -and -not $overageOk)
-    if ($unlimited -and -not $usedUp) { $rem = $null }
+    if ($unlimited) { $rem = $null }
     $reset = $null
     try { if ($Pool.reset_at) { $reset = [string]$Pool.reset_at } } catch { }
     try { if (-not $reset -and $Pool.period_end) { $reset = [string]$Pool.period_end } } catch { }
@@ -2758,6 +2757,7 @@ function Update-BobTrayDigestPools {
             try { if ($prev.copilot_stale_line) { $copilotStaleLine = [string]$prev.copilot_stale_line } } catch { }
             try { if ($null -ne $prev.copilot_fresh_until) { $copilotFreshUntil = [int64]$prev.copilot_fresh_until } } catch { }
             try { if ($prev.copilot_bar) { $copilotBar = $prev.copilot_bar } } catch { }
+            try { $copilotTaskLines = @($prev.copilot_task_lines) } catch { $copilotTaskLines = @() }
             try { if ($prev.opencode_line) { $opencodeLine = [string]$prev.opencode_line } } catch { }
             try { $opencodeFree = $prev.opencode_free } catch { }
             try { $opencodeGo = $prev.opencode_go } catch { }
@@ -2807,6 +2807,7 @@ function Update-BobTrayDigestPools {
         copilot_stale_line  = $copilotStaleLine
         copilot_fresh_until = $copilotFreshUntil
         copilot_bar         = $copilotBar
+        copilot_task_lines  = $(try { @($copilotTaskLines) } catch { @() })
         digest_pools        = @($digestPools)
     }
 
@@ -2917,8 +2918,8 @@ function Format-BobCopilotPoolLine {
     $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    # FR #7371: do not paint unlimited when remaining is 0 and overage is not permitted
-    # (GitHub used-up business quota). Genuine unlimited keeps overage_permitted=true.
+    # FR #9781: trust digest/API unlimited=true even when remaining=0 and
+    # overage_permitted=false (CCA create still works). Do not remap to exhausted.
     $remProbe = $null
     try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $remProbe = [int]$Pool.remaining } } catch { }
     $overageOk = $true
@@ -2927,10 +2928,6 @@ function Format-BobCopilotPoolLine {
             $overageOk = [bool]$Pool.overage_permitted
         }
     } catch { }
-    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
-        $unlimited = $false
-        if ($stLow -in @('ok', '')) { $state = 'exhausted'; $stLow = 'exhausted' }
-    }
     # FR #7299: unlimited never paints as 0%; prefer the word unlimited (or 100%).
     if ($unlimited) {
         if ($isStale) { return ('Copilot - unlimited {0}' -f $staleMark) }
@@ -2971,6 +2968,41 @@ function Format-BobCopilotPoolLine {
     return ('Copilot - {0}' -f $mid)
 }
 
+
+function Format-BobCopilotTaskLines {
+    <#
+    .SYNOPSIS
+      FR #9750: one TipForm/hover line per digest.copilot.tasks row (model + working_on).
+      Soft-allow after #9748: empty/missing tasks => no lines. Never invent machines.copilot.
+    #>
+    param($Tasks)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($t in @($Tasks)) {
+        if (-not $t) { continue }
+        $model = ''
+        try {
+            $model = [string]$t.model
+            if (-not $model) { $model = [string]$t.start_model }
+        } catch { $model = '' }
+        $model = ([string]$model).Trim()
+        $work = ''
+        try { $work = [string]$t.working_on } catch { $work = '' }
+        $work = ([string]$work).Trim()
+        if (-not $work) {
+            $task = ''
+            $id = ''
+            try { $task = ([string]$t.task).Trim() } catch { }
+            try { $id = ([string]$t.id).Trim() } catch { }
+            $work = ('{0} {1}' -f $task, $id).Trim()
+        }
+        if (-not $work -and -not $model) { continue }
+        if ($model -and $work) { [void]$out.Add(('{0}: {1}' -f $model, $work)) }
+        elseif ($work) { [void]$out.Add($work) }
+        else { [void]$out.Add($model) }
+    }
+    return @($out)
+}
+
 function Get-BobCopilotMeterBarPct {
     <#
       FR #6301 / FR #6317: bar is % left. Unlimited uses 100 - historical-max used pct.
@@ -2989,10 +3021,7 @@ function Get-BobCopilotMeterBarPct {
             $overageOk = [bool]$Pool.overage_permitted
         }
     } catch { }
-    # FR #7371: used-up quota must not draw a full green unlimited bar.
-    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
-        $unlimited = $false
-    }
+    # FR #9781: trust unlimited=true (do not clear for rem=0 + !overage).
     if ($unlimited) {
         # FR #7299: unlimited bar is 100% left (never 0% from historical-max math).
         return 100
@@ -5215,6 +5244,26 @@ function Get-BobTrayHover {
         $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
     }
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
+    # FR #9750: live CCA jobs under digest.copilot.tasks (once; never machines.copilot).
+    $copilotTaskLines = @()
+    try {
+        $rawTasks = $null
+        if ($copilotPoolObj -and $null -ne $copilotPoolObj.PSObject.Properties['tasks']) {
+            $rawTasks = $copilotPoolObj.tasks
+        }
+        $copilotTaskLines = @(Format-BobCopilotTaskLines -Tasks $rawTasks)
+    } catch { $copilotTaskLines = @() }
+    if ($copilotTaskLines.Count -gt 0) {
+        $ctBlock = @()
+        foreach ($ctl in @($copilotTaskLines)) { if ($ctl) { $ctBlock += (('  {0}' -f $ctl)) } }
+        if ($ctBlock.Count -gt 0) {
+            $rest = @($jobLines)
+            if ($rest.Count -gt 0 -and [string]$rest[0] -eq ('  {0}' -f $copilotLine)) {
+                $rest = @($rest | Select-Object -Skip 1)
+            }
+            $jobLines = @(('  {0}' -f $copilotLine)) + $ctBlock + $rest
+        }
+    }
     # FR #7243: hover lists every digest pool (six canonical + extra pcent keys).
     $digestPoolCatalog = @()
     try { $digestPoolCatalog = @(Get-BobTrayDigestPoolCatalog -Digest $reportDigest -MachineId $machineId) } catch { $digestPoolCatalog = @() }
@@ -5316,6 +5365,7 @@ function Get-BobTrayHover {
         copilot_freshness   = $copilotFresh
         copilot_fresh_until = $(if ($copilotFresh -and $null -ne $copilotFresh.fresh_until) { [int64]$copilotFresh.fresh_until } else { [int64]0 })
         copilot_bar         = $copilotBar
+        copilot_task_lines  = @($copilotTaskLines)
         digest_pools        = @($digestPoolCatalog)
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {

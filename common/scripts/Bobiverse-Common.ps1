@@ -1157,16 +1157,24 @@ function Set-BobiverseNssmAppExitRestart {
     FR #1055: pin NSSM to Restart on Default AND exit code 0.
     Graceful chair quit exits 0; without an explicit AppExit 0=Restart some installs
     leave ircJeeves Stopped after a clean exit even when Default=Restart.
+    FR #9863: also pin AppThrottle (default 1500ms). Rapid unexpected bob-ear death
+    inside the throttle window leaves Get-Service Status=Paused until Restart-Service;
+    never Stop-Process the NSSM-managed ear - use Restart-Service / Restart-BobEar.ps1.
     #>
     param(
         [Parameter(Mandatory)][string]$Nssm,
         [Parameter(Mandatory)][string]$ServiceName,
-        [int]$RestartDelayMs = 2000
+        [int]$RestartDelayMs = 2000,
+        [int]$AppThrottleMs = 1500
     )
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', '0', 'Restart'))
     if ($RestartDelayMs -gt 0) {
         [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRestartDelay', ([string]$RestartDelayMs)))
+    }
+    # FR #9863: explicit throttle so Pause-after-crash is documented + re-pinned on Update.
+    if ($AppThrottleMs -gt 0) {
+        [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppThrottle', ([string]$AppThrottleMs)))
     }
 }
 
@@ -4550,7 +4558,8 @@ function Copy-BobTrayVendorExes {
         return @{ ok = $false; missing = @($missing) }
     }
     # FR #9641: PlanAgent must not be a renamed bob-worker (Agents > Plan must not open a Workers seat).
-    Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require
+    # FR #9843: capture Hashtable return (do not pollute Copy-BobTrayVendorExes callers).
+    $null = Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require
     return @{ ok = $true; missing = @() }
 }
 
