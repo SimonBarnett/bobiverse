@@ -1158,11 +1158,32 @@ def row_depends_open_reason(
         return None
     if _row_depends_on_has_bad_ref(row):
         return DEPENDS_UNRESOLVED_REASON
+    keys = open_keys if open_keys is not None else set()
+    fetch = issue_fetch
+    # FR #9665: durable GIVEUP depends_open block bypasses unheld fr-digest soft-allow
+    # until those refs are CLOSED (auto-cleared here when checkers say closed).
+    block_refs = clear_closed_depends_open_block(
+        row, open_keys=keys if open_keys is not None else None, issue_open=issue_open
+    )
+    if block_refs:
+        home = str(row.get("repo") or "").strip()
+        for repo, num in block_refs:
+            repo_s = str(repo or home or "").strip()
+            if (repo_s, int(num)) in keys or (repo_s.lower(), int(num)) in {
+                (r.lower(), n) for r, n in keys
+            }:
+                return DEPENDS_OPEN_REASON
+            if issue_open is None:
+                # No live checker: keep blocking while depends_open is non-empty.
+                return DEPENDS_OPEN_REASON
+            try:
+                if bool(issue_open(repo_s, str(num))):
+                    return DEPENDS_OPEN_REASON
+            except Exception:
+                return DEPENDS_UNRESOLVED_REASON
     refs = _row_depends_on_issue_refs(row)
     if not refs:
         return None
-    keys = open_keys if open_keys is not None else set()
-    fetch = issue_fetch
     for repo, num in refs:
         g1 = _bob_g1_digest_gate_for_pair(
             doc if isinstance(doc, dict) else {}, repo, str(num), issue_fetch=fetch
@@ -3651,18 +3672,28 @@ def clear_host_heal_require_machine_on_ack(row: dict, nick: str) -> bool:
     return True
 
 
-# FR #9469: GIVEUP blocked:depends-on / blocked-on / depends_unresolved with a
-# parseable issue ref must stamp a plain Depends-on: line on the issue body.
+# FR #9469 / #9665: GIVEUP blocked:depends-on / blocked-on / depends_unresolved /
+# depends_open with a parseable issue ref must stamp Depends-on: + durable block.
 _BLOCKED_DEPENDS_CUE_RE = re.compile(
-    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved|"
+    r"depends[_-]?open)\b"
 )
 _BLOCKED_DEPENDS_QUAL_RE = re.compile(
-    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved|"
+    r"depends[_-]?open)\b"
     r"[^\n]*?\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
 )
 _BLOCKED_DEPENDS_REL_RE = re.compile(
-    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved|"
+    r"depends[_-]?open)\b"
     r"[^\n]*?#(\d+)\b"
+)
+# FR #9665: also ``depends_open:#N`` / ``depends_open=#N`` (structured reason).
+_DEPENDS_OPEN_EQ_QUAL_RE = re.compile(
+    r"(?i)\bdepends[_-]?open\s*[:=]\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
+)
+_DEPENDS_OPEN_EQ_REL_RE = re.compile(
+    r"(?i)\bdepends[_-]?open\s*[:=]\s*#?(\d+)\b"
 )
 
 
@@ -3671,29 +3702,39 @@ def parse_blocked_depends_giveup_refs(
     *,
     home_repo: str = "",
 ) -> list[tuple[str, int]]:
-    """FR #9469: ``(repo, number)`` refs from a blocked Depends-on GIVEUP reason."""
+    """FR #9469 / #9665: ``(repo, number)`` refs from a blocked Depends-on GIVEUP reason.
+
+    Accepts ``blocked:depends-on #N``, ``depends_unresolved``, and structured
+    ``depends_open:#N`` / ``reason=depends_open:#N`` (FR #9665).
+    """
     text = str(reason or "").strip()
-    if not text or not _BLOCKED_DEPENDS_CUE_RE.search(text):
+    if not text:
         return []
     home = str(home_repo or "").strip()
     out: list[tuple[str, int]] = []
     seen: set[tuple[str, int]] = set()
-    for m in _BLOCKED_DEPENDS_QUAL_RE.finditer(text):
-        pair = (m.group(1), int(m.group(2)))
-        key = (pair[0].lower(), pair[1])
+
+    def _add(repo: str, num: int) -> None:
+        repo_s = str(repo or home or "").strip()
+        if not repo_s or num <= 0:
+            return
+        key = (repo_s.lower(), int(num))
         if key in seen:
-            continue
+            return
         seen.add(key)
-        out.append(pair)
-    if out:
-        return out
-    for m in _BLOCKED_DEPENDS_REL_RE.finditer(text):
-        pair = (home, int(m.group(1)))
-        key = (pair[0].lower(), pair[1])
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(pair)
+        out.append((repo_s, int(num)))
+
+    for m in _DEPENDS_OPEN_EQ_QUAL_RE.finditer(text):
+        _add(m.group(1), int(m.group(2)))
+    for m in _DEPENDS_OPEN_EQ_REL_RE.finditer(text):
+        _add(home, int(m.group(1)))
+    if _BLOCKED_DEPENDS_CUE_RE.search(text):
+        for m in _BLOCKED_DEPENDS_QUAL_RE.finditer(text):
+            _add(m.group(1), int(m.group(2)))
+        # Prefer qualified owner/repo#N when present (same as FR #9469).
+        if not out:
+            for m in _BLOCKED_DEPENDS_REL_RE.finditer(text):
+                _add(home, int(m.group(1)))
     return out
 
 
@@ -3721,6 +3762,116 @@ def _load_common_depends_on():
     return mod
 
 
+def _normalize_depends_open_block(raw) -> list[tuple[str, int]]:
+    """Parse ``row['depends_open']`` into ``(repo, number)`` tuples (FR #9665)."""
+    out: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    if raw is None:
+        return out
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    for item in items:
+        repo = ""
+        num = 0
+        if isinstance(item, dict):
+            repo = str(item.get("repo") or "").strip()
+            try:
+                num = int(str(item.get("id") or item.get("number") or "").lstrip("#"))
+            except ValueError:
+                num = 0
+        else:
+            s = str(item or "").strip()
+            m = re.match(
+                r"(?i)^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#|#)?(\d+)$", s
+            )
+            if m:
+                repo = str(m.group(1) or "").strip()
+                num = int(m.group(2))
+        if num <= 0:
+            continue
+        key = (repo.lower(), num)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((repo, num))
+    return out
+
+
+def _serialize_depends_open_block(
+    refs: list[tuple[str, int]], *, home_repo: str = ""
+) -> list[str]:
+    """Stable queue tokens for ``depends_open`` (FR #9665)."""
+    home = str(home_repo or "").strip()
+    out: list[str] = []
+    for repo, num in refs:
+        repo_s = str(repo or home or "").strip()
+        if not repo_s:
+            out.append(f"#{int(num)}")
+        elif home and repo_s.lower() == home.lower():
+            out.append(f"#{int(num)}")
+        else:
+            out.append(f"{repo_s}#{int(num)}")
+    return out
+
+
+def merge_depends_open_block(
+    row: dict, refs: list[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """Union ``refs`` into ``row['depends_open']``; return the full block list (FR #9665)."""
+    if not isinstance(row, dict) or not refs:
+        return _normalize_depends_open_block(row.get("depends_open") if isinstance(row, dict) else None)
+    home = str(row.get("repo") or "").strip()
+    merged = _normalize_depends_open_block(row.get("depends_open"))
+    seen = {(r.lower(), n) for r, n in merged}
+    for repo, num in refs:
+        repo_s = str(repo or home or "").strip()
+        key = (repo_s.lower(), int(num))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append((repo_s, int(num)))
+    row["depends_open"] = _serialize_depends_open_block(merged, home_repo=home)
+    return merged
+
+
+def clear_closed_depends_open_block(
+    row: dict,
+    *,
+    open_keys: set[tuple[str, int]] | None = None,
+    issue_open=None,
+) -> list[tuple[str, int]]:
+    """Drop CLOSED refs from ``depends_open``; return remaining open block (FR #9665)."""
+    if not isinstance(row, dict):
+        return []
+    home = str(row.get("repo") or "").strip()
+    cur = _normalize_depends_open_block(row.get("depends_open"))
+    if not cur:
+        row.pop("depends_open", None)
+        return []
+    keys = open_keys if open_keys is not None else set()
+    keep: list[tuple[str, int]] = []
+    for repo, num in cur:
+        repo_s = str(repo or home or "").strip()
+        still_open = (repo_s.lower(), int(num)) in {
+            (r.lower(), n) for r, n in keys
+        } or (repo_s, int(num)) in keys
+        if not still_open and issue_open is not None:
+            try:
+                still_open = bool(issue_open(repo_s, str(num)))
+            except Exception:
+                # Unknown: keep the block (fail closed).
+                still_open = True
+        elif not still_open and issue_open is None and open_keys is None:
+            # No checker: keep until a checker says CLOSED.
+            still_open = True
+        if still_open:
+            keep.append((repo_s, int(num)))
+    if keep:
+        row["depends_open"] = _serialize_depends_open_block(keep, home_repo=home)
+    else:
+        row.pop("depends_open", None)
+    return keep
+
+
 def apply_depends_on_giveup_stamp(
     row: dict,
     reason: str,
@@ -3728,12 +3879,12 @@ def apply_depends_on_giveup_stamp(
     patch_github: bool = True,
     filer=None,
 ) -> list[tuple[str, int]]:
-    """FR #9469: union Depends-on refs from a blocked GIVEUP into body + GitHub.
+    """FR #9469 / #9665: stamp Depends-on body + durable ``depends_open`` block.
 
-    Updates ``row["body"]`` with a plain ``Depends-on:`` line (unions existing).
-    When ``patch_github`` is true, PATCHes the issue body via ``gh`` so BOB-D3
-    skips re-offer while any ref stays OPEN. Returns the refs that were stamped
-    from the reason (empty when the reason is not a blocked-depends cue).
+    Updates ``row["body"]`` with a plain ``Depends-on:`` line (unions existing)
+    and ``row["depends_open"]`` so offer/assign skip until those issues CLOSE
+    (bypasses unheld fr-digest soft-allow — FR #9665). When ``patch_github`` is
+    true, PATCHes the issue body via ``gh``. Returns refs stamped from the reason.
     """
     if not isinstance(row, dict):
         return []
@@ -3741,10 +3892,11 @@ def apply_depends_on_giveup_stamp(
     refs = parse_blocked_depends_giveup_refs(reason, home_repo=home)
     if not refs:
         return []
+    merge_depends_open_block(row, refs)
     try:
         _dep = _load_common_depends_on()
     except Exception:
-        return []
+        return refs
     body = str(row.get("body") or "")
     new_body, changed = _dep.merge_depends_on_body(body, refs, repo=home)
     if changed:
@@ -6273,6 +6425,15 @@ def _coerce_row(row: dict) -> dict | None:
             out["sticky_skip_seats"] = [str(x) for x in skips if str(x).strip()]
         else:
             out["sticky_skip_seats"] = [str(skips)]
+    # FR #9665: durable GIVEUP depends_open block must survive queue reload.
+    dep_open = row.get("depends_open")
+    if dep_open:
+        if isinstance(dep_open, list):
+            cleaned = [str(x).strip() for x in dep_open if str(x).strip()]
+        else:
+            cleaned = [str(dep_open).strip()] if str(dep_open).strip() else []
+        if cleaned:
+            out["depends_open"] = cleaned
     # FR #7966: per-seat unanswered-offer outcomes survive reload for the digest.
     if row.get("offer_refused_by"):
         refused = row.get("offer_refused_by")
