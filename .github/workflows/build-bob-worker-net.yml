@@ -1,6 +1,7 @@
-# Isolated bob-worker-net.exe build (FR #9800 Phase 0).
+# Isolated bob-worker-net.exe build (FR #9800 / #9804).
 # .NET 8 SDK publish (self-contained win-x64). Airc Framework 4 / no-SDK floor does NOT apply.
 # Not a release, MSI, install, or seat restart. Build-BobWorkerNet.ps1 owns dotnet publish.
+# FR #9804: after PE + --version, run --self-test-irc (hermetic JOIN gate; no live Ergo).
 name: build-bob-worker-net
 
 on:
@@ -12,6 +13,7 @@ on:
       - bob/scripts/Build-BobWorkerNet.ps1
       - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr9800_bob_worker_net_build_ci.py
+      - bob/tests/test_fr9804_irc_seat_join_gate.py
       - bob/docs/bob-worker-net.md
   push:
     branches: [main]
@@ -21,6 +23,7 @@ on:
       - bob/scripts/Build-BobWorkerNet.ps1
       - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr9800_bob_worker_net_build_ci.py
+      - bob/tests/test_fr9804_irc_seat_join_gate.py
       - bob/docs/bob-worker-net.md
 
 permissions:
@@ -70,6 +73,18 @@ jobs:
           if ($vcode -ne 0 -or $verText.ToLowerInvariant() -ne $expected) {
             throw "bob-worker-net.exe --version='$verText' expected '$expected' (exit $vcode)"
           }
+          # FR #9804: hermetic IrcSeat JOIN gate (FakeIrcTransport; no live Ergo).
+          $ErrorActionPreference = 'Continue'
+          $st = & $exe --self-test-irc 2>&1
+          $stcode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          $stText = ($st | Out-String)
+          if ($stcode -ne 0) {
+            throw "bob-worker-net.exe --self-test-irc failed (exit $stcode): $stText"
+          }
+          if ($stText -notmatch 'all passed') {
+            throw "bob-worker-net.exe --self-test-irc missing 'all passed': $stText"
+          }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
           $size = (Get-Item -LiteralPath $exe).Length
           $builtAt = [DateTime]::UtcNow.ToString("o")
@@ -87,7 +102,8 @@ jobs:
             "builder=Build-BobWorkerNet.ps1"
             "runtime=win-x64"
             "target=net8.0"
-            "fr=9800"
+            "fr=9800,9804"
+            "self_test_irc=pass"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
 
       - uses: actions/upload-artifact@v4
