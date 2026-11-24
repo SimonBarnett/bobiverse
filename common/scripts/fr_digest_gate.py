@@ -20,7 +20,9 @@ from typing import Any, Iterable
 DIGEST_LABELS = frozenset({"fr-digest", "digest"})
 HOLD_LABELS = frozenset({"hold", "on-hold"})
 DIGEST_KIND_RE = re.compile(
-    r"(?im)^\s*(?:\*\*)?Kind\s*:\s*(?:\*\*)?[^\S\n]*(fr-digest|digest)\b"
+    # Parity with gitclaim.DIGEST_KIND_BODY_RE (optional bold/backtick around Kind / colon).
+    r"(?im)^[^\S\n]*(?:\*{0,2}|`{0,2})Kind(?:\*{0,2}|`{0,2})[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?[^\S\n]*(fr-digest|digest)\b"
 )
 DIGEST_TITLE_RE = re.compile(r"(?i)^\s*Digest\s*:")
 

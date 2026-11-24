@@ -696,10 +696,11 @@ function Test-BobTrayDigestEarOffline {
 function Get-BobTrayIrcBobServiceStatus {
     <#
     .SYNOPSIS
-      FR #9144 / #9496 / #9743: local ircBob Status
-      (Running/Running-no-child/Running-duplicate/Stopped/missing/skipped).
+      FR #9144 / #9496 / #9743 / #9863: local ircBob Status
+      (Running/Running-no-child/Running-duplicate/Paused/Stopped/missing/skipped).
       Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
       Running-duplicate when more than one bob-ear / irc_agent child shares the machine (FR #9743).
+      Paused = NSSM AppThrottle after unexpected ear death (FR #9863); heal with Resume/Restart, never Stop-Process.
     #>
     if ($env:OS -notmatch 'Windows') { return 'skipped' }
     try {

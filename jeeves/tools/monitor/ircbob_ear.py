@@ -251,7 +251,12 @@ def _heal_local_ear(
     *,
     child_alive: bool | None = None,
 ) -> tuple[str, str | None, bool | None]:
-    """Heal Stopped via Start-Service; Running-without-child via Restart-Service.
+    """Heal Stopped via Start-Service; Paused / Running-without-child via Restart-Service.
+
+    FR #9863: NSSM AppThrottle after an unexpected bob-ear child kill leaves
+    ``Get-Service ircBob`` as **Paused**. ``Start-Service`` does not clear Pause;
+    only ``Restart-Service`` brings the ear back. Never ``Stop-Process`` the
+    service ear under NSSM — use ``Restart-Service ircBob`` / ``Restart-BobEar.ps1``.
 
     Returns (status_after, heal_result, ear_child_alive).
     heal_result: 'started'|'restarted'|'failed'|None.
@@ -259,7 +264,37 @@ def _heal_local_ear(
     if svc in ("skipped", "missing"):
         return svc, None, child_alive
 
-    if svc.lower() != "running":
+    st = (svc or "").strip().lower()
+
+    # FR #9863: Paused / PausePending — AppThrottle after twin kill or crash loop.
+    if st in ("paused", "pausepending"):
+        findings.append(
+            f"local {SERVICE_NAME} Status={svc} "
+            f"(NSSM AppThrottle / unexpected ear death; FR #9863 — never Stop-Process "
+            f"bob-ear under NSSM; use Restart-Service)"
+        )
+        ok, detail = _restart_service(SERVICE_NAME)
+        after = _service_state(SERVICE_NAME)
+        alive_after = _ear_child_alive()
+        if ok and after.lower() == "running" and alive_after:
+            notes.append(
+                f"local {SERVICE_NAME} healed Restart-Service "
+                f"(was Status={svc}; now Running + ear child; FR #9863)"
+            )
+            findings[:] = [
+                f
+                for f in findings
+                if "FR #9863" not in f
+            ]
+            return after, "restarted", True
+        findings.append(
+            f"local {SERVICE_NAME} Restart-Service heal failed "
+            f"status={after or svc} child_alive={alive_after} detail={detail!r} "
+            f"(FR #9863 Paused)"
+        )
+        return after or svc, "failed", alive_after
+
+    if st != "running":
         ok, detail = _start_service(SERVICE_NAME)
         after = _service_state(SERVICE_NAME)
         if ok and after.lower() == "running":
@@ -317,6 +352,7 @@ def _heal_local_ear(
         f"status={after or svc} child_alive={alive_after} detail={detail!r}"
     )
     return after or svc, "failed", alive_after
+
 
 
 def check(args):
