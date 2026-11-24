@@ -113,7 +113,7 @@ namespace BobDialogs
         // FR #9097: Access Denied when the parent job forbids breakaway (compiled-menu path).
         const int ErrorAccessDenied = 5;
 
-        public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
+        public const int MaxWorkers = 2;   // t815u / FR #2667: hard Workers AGENT-seat cap (plan/maintenance/jeeves uncapped)
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
         public const string DefaultOpencodeFreeModel = "opencode/deepseek-v4.1-flash-free";
         public const string DefaultOpencodePaidModel = "opencode-go/deepseek-v4-pro";
@@ -121,7 +121,8 @@ namespace BobDialogs
         public const string DefaultPriorityMcpUrl = "https://mcp.ntsa.uk/mcp";
 
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
-        static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance)\b", RegexOptions.IgnoreCase);
+        // FR #9640: jeeves = Agents > Jeeves (agent-like IRC, outside Workers MaxWorkers=2).
+        static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance|jeeves)\b", RegexOptions.IgnoreCase);
 
         // FR #3180: LaunchCalls counts WorkerLauncher.Launch invocations (headless --watchdog-ticks harness).
         public static int LaunchCalls = 0;
@@ -324,6 +325,8 @@ namespace BobDialogs
 
         public static string CapRefusal(string mode = "agent")
         {
+            // FR #9640: Workers submenu only. Agents > Plan/Priority (vendored) and Agents > Jeeves
+            // (--mode jeeves) never hit this cap; Seats() counts agent roots only.
             if (!string.Equals(mode ?? "agent", "agent", StringComparison.OrdinalIgnoreCase))
                 return "";
             int n = Seats();
@@ -1165,7 +1168,8 @@ namespace BobDialogs
                 System.Collections.Hashtable jeevesEnv = new System.Collections.Hashtable();
                 jeevesEnv[JeevesJMcp.EnvName] = JeevesJMcp.SkillsRoot;
                 TrayLifecycle.Write("jeeves", "via", "bob-tray-Jeeves", "action", "grok start");
-                StartWorker("agent", "grok", jeevesEnv, "", @"J:\");
+                // FR #9640: --mode jeeves is agent-like but outside Workers MaxWorkers=2 CapRefusal/Seats.
+                StartWorker("jeeves", "grok", jeevesEnv, "", @"J:\");
             };
             miAgents.DropDownItems.Add(miJeeves);
             MenuItems.Add("Jeeves");
@@ -2572,8 +2576,8 @@ namespace BobDialogs
             return false;
         }
 
-        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605: Agents > Plan starts vendor\plan\PlanAgent.exe
-        // (Pack/Sync mirror; live installs often lack plan\PlanAgent.exe). Not bob-worker --mode plan / bob-plan.exe.
+        // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605 / #9641: Agents > Plan starts
+        // vendor\plan\PlanAgent.exe (Pack/Sync mirror). Not bob-worker --mode plan / bob-plan.exe.
         void StartPlanExe()
         {
             string exe = Path.Combine(root, "vendor", "plan", "PlanAgent.exe");

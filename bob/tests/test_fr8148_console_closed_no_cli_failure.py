@@ -10,6 +10,8 @@ def test_fr8148_report_reason_console_closed_is_console_close_not_cli_failure():
     bw.report_agent_cli_nonzero_exit(
         exit_code=1,
         reason="console-closed",
+        # FR #9656: free-idle (no job_key) skips intake; ACK-open still classifies console-close.
+        job_key="FR SimonBarnett/bobiverse#8148",
         machine="flamingo",
         nick="flamingo-18800",
         kind="grok",

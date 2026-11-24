@@ -26,3 +26,6 @@ Plan tree or PlanAgent.exe missing from bob-ear MSI stage / sha256 mismatch / he
 ## Unblocks
 
 FR #8833 (delete bobiverse Plan source copy after release vendoring).
+
+FR #9641: Pack/Sync `Assert-BobiversePlanAgentNotBobWorker` fail-closed when PlanAgent SHA-256 equals `worker\bob-worker.exe`.
+

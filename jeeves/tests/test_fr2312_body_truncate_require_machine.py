@@ -35,11 +35,21 @@ def test_fr2312_body_for_queue_preserves_trailing_ionos_pin():
     assert "require_machine: ionos" not in full[:500]
     stored = gitclaim._body_for_queue(full)
     assert _has_ionos_pin(stored)
-    # Use a non-hard-pinned id so inference must come from preserved body text.
+    # FR #9637: body line preserved as ops note; bobiverse pin needs label/hard pin.
+    assert (
+        gitclaim.infer_require_machine(
+            title="FR: clear workers map on orphan MRB DONE",
+            body=stored,
+            labels=["feature-request", "via-intake"],
+            repo="SimonBarnett/bobiverse",
+            ident="#999901",
+        )
+        == ""
+    )
     mid = gitclaim.infer_require_machine(
         title="FR: clear workers map on orphan MRB DONE",
         body=stored,
-        labels=["feature-request", "via-intake"],
+        labels=["feature-request", "needs-walrus"],
         repo="SimonBarnett/bobiverse",
         ident="#999901",
     )
@@ -58,7 +68,7 @@ def test_fr2312_append_unaccepted_stamps_and_preserves_pin():
         line="",
         title="FR: clear workers map + machine working_on on orphan MRB DONE",
         body=body,
-        labels=["feature-request", "via-intake"],
+        labels=["feature-request", "needs-walrus"],
         state="open",
     )
     assert gitclaim._append_unaccepted(doc, claim) == "added"
@@ -101,6 +111,16 @@ def test_fr2312_naive_truncate_would_miss_pin_but_helper_does_not():
             title="FR: clear workers map",
             body=gitclaim._body_for_queue(full),
             labels=["feature-request", "via-intake"],
+            repo="SimonBarnett/bobiverse",
+            ident="#999903",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="FR: clear workers map",
+            body=gitclaim._body_for_queue(full),
+            labels=["feature-request", "needs-walrus"],
             repo="SimonBarnett/bobiverse",
             ident="#999903",
         )
