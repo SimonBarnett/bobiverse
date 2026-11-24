@@ -121,6 +121,22 @@ jobs:
           python -m pytest "$root\jeeves\tests" -q --tb=short -rfE -p no:cacheprovider --timeout=180 --timeout-method=thread
           if ($LASTEXITCODE -ne 0) { throw "jeeves pytest exit $LASTEXITCODE" }
 
+      - name: Pytest common models catalog (FR #9746)
+        timeout-minutes: 10
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jeeves/scripts;${{ github.workspace }}/common/scripts;${{ github.workspace }}/common/tests;${{ github.workspace }}/jeeves/tests
+          PYTHONUNBUFFERED: "1"
+        run: |
+          $root = (Get-Location).Path
+          python -m pytest `
+            "$root\common\tests\test_bob03_models_catalog.py" `
+            "$root\common\tests\test_fr8707_models_webhook_get.py" `
+            "$root\common\tests\test_fr8708_models_webhook_put.py" `
+            "$root\common\tests\test_fr8819_models_webhook_clis.py" `
+            "$root\common\tests\test_fr8820_models_refresh.py" `
+            -q --tb=short -rfE -p no:cacheprovider --timeout=180 --timeout-method=thread
+          if ($LASTEXITCODE -ne 0) { throw "common models catalog pytest exit $LASTEXITCODE" }
+
       - name: Build jeeves.exe with Build-Jeeves.ps1
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
