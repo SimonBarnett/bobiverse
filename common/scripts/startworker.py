@@ -50,6 +50,13 @@ ENGINE_ALIVE_FILE = "engine.alive"  # FR #4136: PS engine queue-tick stamp
 ENGINE_ALIVE_MAX_AGE_S = 120.0     # aligned with bob-tray EngineAliveStamp.MaxAgeSeconds
 ENGINE_WAKE_FILE = "engine.wake"  # FR #9513: ear nudge after engine_stale NACK
 ENGINE_WAKE_MIN_INTERVAL_S = 60.0  # rate-limit tray-cmd reload storms
+# FR #9556: TipForm session missing (tray.alive stale) — stuck rule + 30m stamp.
+TRAY_SESSION_MISSING_STAMP = "tray_session_missing.json"
+TRAY_SESSION_MISSING_SUPPRESS_S = 1800.0
+TRAY_SESSION_MISSING_REASON = "no_interactive_session"
+TRAY_SESSION_MISSING_TEXT = (
+    "nobody is logged in with the Bob tray running (start the tray from the Start menu)"
+)
 DISABLE_FILE = "startworker.disabled"
 WORKER_EXE_RE = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 _MACHINE_RE = re.compile(r"^#?[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
@@ -236,6 +243,59 @@ def tray_alive(qdir, now: float | None = None, max_age: float = TRAY_ALIVE_MAX_A
         return False
 
 
+
+def is_tray_session_missing_nack(reason: str = "", text: str = "") -> bool:
+    """FR #9556: True for startworker tray-not-logged-in / no TipForm session NACK."""
+    r = (reason or "").strip().lower()
+    if r in (TRAY_SESSION_MISSING_REASON, "tray_session_missing", "tray-not-logged-in"):
+        return True
+    blob = f"{reason or ''}\n{text or ''}".lower()
+    return "nobody is logged in with the bob tray" in blob
+
+
+def note_tray_session_missing(qdir, machine: str = "", now: float | None = None) -> Path:
+    """Persist a host stamp so stuck sweep / digest can classify tray_session_missing."""
+    now = time.time() if now is None else float(now)
+    d = Path(qdir)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / TRAY_SESSION_MISSING_STAMP
+    payload = {
+        "v": 1,
+        "ts": now,
+        "machine": (machine or "").strip().lower(),
+        "reason": TRAY_SESSION_MISSING_REASON,
+        "text": TRAY_SESSION_MISSING_TEXT,
+        "rule": "tray_session_missing",
+    }
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return path
+
+
+def tray_session_missing_stamp(qdir, now: float | None = None, max_age: float = TRAY_SESSION_MISSING_SUPPRESS_S):
+    """Return stamp dict when fresh; else None (expired / absent)."""
+    now = time.time() if now is None else float(now)
+    path = Path(qdir) / TRAY_SESSION_MISSING_STAMP
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        ts = float(raw.get("ts") or 0)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0 or (now - ts) > float(max_age):
+        return None
+    return raw
+
+
+def clear_tray_session_missing(qdir) -> None:
+    try:
+        (Path(qdir) / TRAY_SESSION_MISSING_STAMP).unlink()
+    except OSError:
+        pass
+
 def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_MAX_AGE_S) -> bool:
     """FR #4136: PS engine queue-tick stamp must be fresh (tray.alive alone can lie while the engine is hung)."""
     now = time.time() if now is None else now
@@ -395,8 +455,18 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     if home is not None and ((Path(home) / DISABLE_FILE).exists() or os.environ.get("BOB_STARTWORKER_DISABLE")):
         return nack("disabled", "remote start is disabled on this machine", mode=mode, kind=kind)
     if not tray_alive(qdir, now):
-        return nack("no_interactive_session",
-                    "nobody is logged in with the Bob tray running (start the tray from the Start menu)", mode=mode, kind=kind)
+        # FR #9556: stamp tray_session_missing for !stuck / digest (no needs_human).
+        if write:
+            try:
+                note_tray_session_missing(qdir, machine=local, now=now)
+            except OSError:
+                pass
+        return nack(
+            TRAY_SESSION_MISSING_REASON,
+            TRAY_SESSION_MISSING_TEXT,
+            mode=mode,
+            kind=kind,
+        )
     # FR #4136: tray.alive is host-written; a hung PS engine still looks "alive" without engine.alive.
     if not engine_alive(qdir, now):
         # FR #9513 / #9522: keep NACK; wake TipForm via tray-cmd reload + engine.wake.
