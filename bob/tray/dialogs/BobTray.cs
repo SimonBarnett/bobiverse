@@ -1184,9 +1184,26 @@ namespace BobDialogs
             // FR #9261 / BOB-TRAY-UI-01: no top-level Seats: or Open log (About Show logs opens the tray log).
             // FR #9264 / BOB-TRAY-UI-04: OpenCode keys live on About (no top-level menu item).
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
-            Item("Restart", delegate { Restart(); });
-            Item("Reload engine", delegate { ReloadEngine(); });
-            Item("Exit", delegate { ExitTray(); });
+            // FR #8706 / BOB-07 (operator 2026-11-24): Exit > Restart / Reload Engine / --- / Exit.
+            // Restart = host relaunch (Restart); Reload Engine = engine-only (ReloadEngine); leaf Exit = ExitTray.
+            // Parent Exit has no Click handler (opens submenu only).
+            ToolStripMenuItem miExitMenu = new ToolStripMenuItem("Exit");
+            MenuItems.Add("Exit");
+            ToolStripMenuItem miRestart = new ToolStripMenuItem("Restart");
+            miRestart.Click += delegate { Restart(); };
+            miExitMenu.DropDownItems.Add(miRestart);
+            MenuItems.Add("Restart");
+            ToolStripMenuItem miReloadEngine = new ToolStripMenuItem("Reload Engine");
+            miReloadEngine.Click += delegate { ReloadEngine(); };
+            miExitMenu.DropDownItems.Add(miReloadEngine);
+            MenuItems.Add("Reload Engine");
+            miExitMenu.DropDownItems.Add(new ToolStripSeparator());
+            MenuItems.Add("-");
+            ToolStripMenuItem miExitLeaf = new ToolStripMenuItem("Exit");
+            miExitLeaf.Click += delegate { ExitTray(); };
+            miExitMenu.DropDownItems.Add(miExitLeaf);
+            MenuItems.Add("Exit");
+            menu.Items.Add(miExitMenu);
             notify.ContextMenuStrip = menu;
             notify.Icon = idle; notify.Text = "Bob";
             notify.MouseClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { Acknowledge(); ShowStatus(); } };
@@ -1235,6 +1252,29 @@ namespace BobDialogs
         ToolStripMenuItem Item(string text, EventHandler h)
         {
             ToolStripMenuItem mi = new ToolStripMenuItem(text); mi.Click += h; menu.Items.Add(mi); MenuItems.Add(text); return mi;
+        }
+
+        // FR #8706 / BOB-07: --dump-menu walks the real ContextMenuStrip tree (paths like Exit > Restart).
+        // Do not open DropDowns (that starts background refreshes). Separators emit as "-".
+        public List<string> DumpMenuTree()
+        {
+            List<string> lines = new List<string>();
+            WalkMenuItems(menu.Items, "", lines);
+            return lines;
+        }
+
+        static void WalkMenuItems(ToolStripItemCollection items, string prefix, List<string> lines)
+        {
+            if (items == null) return;
+            foreach (ToolStripItem it in items)
+            {
+                string label = (it is ToolStripSeparator) ? "-" : (it.Text ?? "");
+                string path = prefix.Length == 0 ? label : (prefix + " > " + label);
+                lines.Add(path);
+                ToolStripMenuItem mi = it as ToolStripMenuItem;
+                if (mi != null && mi.HasDropDownItems)
+                    WalkMenuItems(mi.DropDownItems, path, lines);
+            }
         }
 
         // ---- engine (hidden PowerShell: all slow data work) ----
@@ -1315,6 +1355,7 @@ namespace BobDialogs
             }
             try { ObserveWorkerSeats(); } catch { }
             try { HealIrcBobIfIdle(); } catch { }
+            try { DetectDuplicateBobEar(); } catch { }
         }
 
         // FR #5195: if ircBob is Stopped and no update is in progress, start it (do not heal worker seats).
@@ -1339,6 +1380,43 @@ namespace BobDialogs
                         return;
                     }
                 }
+            }
+            catch { }
+        }
+
+        // FR #9743: detect duplicate bob-ear / irc_agent children (disconnected twin
+        // can advance outbox.pos). Log once per quiet spell; ear.lock refuses a second start.
+        int _dupEarLastLogTick;
+        void DetectDuplicateBobEar()
+        {
+            if (exiting) return;
+            try
+            {
+                int n = 0;
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT ProcessId, Name, CommandLine FROM Win32_Process"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        string name = (mo["Name"] ?? "").ToString();
+                        string cmd = (mo["CommandLine"] ?? "").ToString();
+                        bool hit =
+                            (name.IndexOf("bob-ear", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                            (cmd.IndexOf("bob-ear.exe", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                            (cmd.IndexOf("irc_agent.py", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                             cmd.IndexOf("bobiverse", StringComparison.OrdinalIgnoreCase) >= 0);
+                        if (hit) n++;
+                    }
+                }
+                if (n <= 1) return;
+                int now = Environment.TickCount;
+                // ~5 min quiet spell between lifecycle lines
+                if (_dupEarLastLogTick != 0 && unchecked(now - _dupEarLastLogTick) < 300000) return;
+                _dupEarLastLogTick = now;
+                TrayLifecycle.Write(
+                    "ircbob-duplicate-ear",
+                    "count", n.ToString(),
+                    "via", "bob-tray-watchdog-fr9743");
             }
             catch { }
         }
@@ -3428,7 +3506,8 @@ namespace BobDialogs
             Environment.SetEnvironmentVariable("BOB_MACHINE_ID", machine);
             Environment.SetEnvironmentVariable("BOB_AI_ROOT", Environment.GetEnvironmentVariable("BOB_AI_ROOT") ?? (string.Equals(Path.GetFileName(root.TrimEnd('\\')), "bob", StringComparison.OrdinalIgnoreCase) ? Path.GetDirectoryName(root.TrimEnd('\\')) : ""));
             TrayContext ctx = new TrayContext(root, machine, Common.Flag(args, "--no-engine") || timing || dumpMenu.Length > 0, args);
-            if (dumpMenu.Length > 0) { File.WriteAllText(dumpMenu, string.Join("\r\n", ctx.MenuItems.ToArray()), new UTF8Encoding(false)); return 0; }
+            // FR #8706: dump real tree paths (Exit > Restart), not the flat MenuItems recording.
+            if (dumpMenu.Length > 0) { File.WriteAllText(dumpMenu, string.Join("\r\n", ctx.DumpMenuTree().ToArray()), new UTF8Encoding(false)); return 0; }
             TrayLifecycle.Write("tray-up", "via", "bob-tray.exe", "machine", machine);
             Application.Run(ctx);
             string reason = string.IsNullOrEmpty(ctx.ExitReason) ? "unexpected" : ctx.ExitReason;

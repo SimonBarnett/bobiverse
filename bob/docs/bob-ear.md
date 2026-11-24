@@ -57,6 +57,13 @@ Park drafts: `bob/docs/fr/digest-ear-publish/` (Refs, not Closes, for impl FRs).
 
 `GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (flat nick list) plus `airc_console_details` (`[{nick, machine, channel}]`) and per-machine `console_nicks`. Chair NAMES on **every** channel Jeeves sits in (registered shops and customer channels) record live `*_console` nicks; PART/QUIT clears them. No NickServ, no secrets. Priority Agent airc picker can verify presence without IRC credentials.
 
+## Single-instance (FR #9861 / #9743)
+
+- **OS named mutex** `Global\BobiverseBobEar-<hash(home|nick)>` is acquired in `irc_agent.main` **before** prior-clean / Client / outbox (FR #9861). A second process exits **3**.
+- File advisory `ear.<nick>.lock` (FR #9743) remains complementary when present; the mutex covers NSSM same-second twin starts that file locks can lose.
+- `Start-BobEar.ps1` refuses a second python/exe start when a process already has the same `--home`.
+- `--once` (smoke/UAT) skips the mutex.
+
 ## Outbox (send) â€” identical on every machine
 
 UTF-8 **no BOM**. Append one complete line per send to `<bob home>\outbox.txt`. Only lines starting with `PRIVMSG ` are sent raw (same interface on Ionos / MarchHare / Flamingo):
@@ -69,6 +76,8 @@ PRIVMSG {machine}_console :<short-cmd>
 ```
 
 Offset is tracked in `outbox.txt.pos` (FR #9862: canonical name; legacy `outbox.pos` is migrated then deleted on load/save so a stale 0 cannot replay the file after ear restart). Up to 8 lines drain per tick. If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox â€” use a talk-seat / worker run home for agent replies.
+
+**FR #9743 (duplicate / disconnected ear):** only an ear with live IRC (`sock` + JOIN + not dead/stop) may advance `outbox.txt.pos`. A send `OSError` stops the tick and leaves that line for retry — a half-open twin must not consume `!assign`. Startup takes an exclusive `ear.<nick>.lock` under `--home` (PID stamped); a second process with the same home/nick exits. Tray watchdog logs `ircbob-duplicate-ear` when more than one bob-ear/irc_agent child is present; TipForm status can show `Running-duplicate`; the jeeves `ircbob_ear` monitor raises the same finding.
 
 Raw shop-op verbs (bob-* ear, own `#{machine}` only; `shop_ops.raw_op_line`): `KICK`, `NAMES`, and `MODE +/-o|v|h <nick>` (FR #4069 adds half-op `+h`/`-h` alongside op/voice).
 

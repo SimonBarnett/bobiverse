@@ -61,13 +61,15 @@ def test_fr8819_get_returns_nested_clis_and_agents(tmp_path: Path):
         "Cursor",
         "Opencode",
         "Opencode-Free",
+        "Copilot",
     ]
     for row in doc["agents"]:
         assert "cli" in row and row["cli"]
         assert set(row.keys()) >= {"agent", "cli", "model", "context", "effort"}
 
     clis = doc["clis"]
-    assert set(clis.keys()) == {"Grok", "Cursor", "Opencode"}
+    assert set(clis.keys()) == {"Grok", "Cursor", "Opencode", "Copilot"}
+    assert clis["Copilot"]["models"] == {}
     grok_models = clis["Grok"]["models"]
     assert list(grok_models.keys()) == ["grok-fixture-a", "grok-fixture-b"]
     assert grok_models["grok-fixture-a"]["contexts"]["256"]["efforts"] == [
@@ -101,8 +103,8 @@ def test_fr8819_cli_without_catalog_returns_empty_models_200(tmp_path: Path):
     doc = json.loads(payload.decode("utf-8"))
     assert isinstance(doc.get("agents"), list)
     clis = doc["clis"]
-    assert set(clis.keys()) == {"Grok", "Cursor", "Opencode"}
-    for name in ("Grok", "Cursor", "Opencode"):
+    assert set(clis.keys()) == {"Grok", "Cursor", "Opencode", "Copilot"}
+    for name in ("Grok", "Cursor", "Opencode", "Copilot"):
         assert clis[name] == {"models": {}}
 
 
