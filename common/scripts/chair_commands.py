@@ -155,11 +155,12 @@ COMMANDS: tuple = (
         "Under the queue lock: stamp require_machine + require_machine_operator on matching rows and save. Survives cue re-inference and !resync (including bobiverse FR #4512). Refuses retired ce-priority-dev1 / non-machine tokens.",
         ("unpin", "assign", "list"),
     ),
-    CommandSpec("recycle", "!recycle [machine|all|dry-run [machine|all]]",
-                "route recycle to bob seats: bare/all = fleet; machine = one box; dry-run = plan only", OPS_ROLES,
-                "!recycle marchhare",
+    CommandSpec("recycle", "!recycle [machine|seat|all|dry-run [machine|seat|all]]",
+                "route recycle to bob seats: bare/all = fleet; machine|seat = one box; dry-run = plan only", OPS_ROLES,
+                "!recycle flamingo-17160",
                 "Jeeves routes only. Bare !recycle or !recycle all = every roster seat. !recycle <machine> = that "
-                "machine only. !recycle dry-run [..] authorises and plans but sends nothing. Local bob-* "
+                "machine only. !recycle <machine>-<pid> (FR #9780) maps the shop seat nick to that machine. "
+                "!recycle dry-run [..] authorises and plans but sends nothing. Local bob-* "
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
     CommandSpec(
         "build",
@@ -689,6 +690,7 @@ class RecycleDecision:
     scope: str = "local"         # local | fleet
     dry_run: bool = False
     route: str = ""              # wire line to post in #bobiverse (empty for dry-run / chair-local / jeeves)
+    seat: str = ""               # FR #9780: optional ``<machine>-<pid>`` when arg was a seat nick
 
 
 def decide_recycle(*, who: Principal, arg, dry_run: bool, roster: tuple, resolve: Callable,
@@ -696,12 +698,24 @@ def decide_recycle(*, who: Principal, arg, dry_run: bool, roster: tuple, resolve
     if not may("recycle", who):
         return RecycleDecision(False, "denied", [denied_line("recycle")])
     raw = (arg or "").strip().lower() or None
+    seat = ""
     if raw in (None, "all", "fleet"):
         mid, scope = "fleet", "fleet"
     elif raw in ("jeeves", "ircjeeves"):
         mid, scope = "jeeves", "local"
     else:
-        mid, scope = resolve(raw) or "", "local"
+        # FR #9780: seat nick maps to machine; keep seat for ACK / ops note.
+        try:
+            import bob_recycle as _br
+
+            seat_hit = _br.resolve_recycle_seat(raw)
+        except Exception:
+            seat_hit = None
+        if seat_hit:
+            mid, seat = seat_hit[0], seat_hit[1]
+            scope = "local"
+        else:
+            mid, scope = resolve(raw) or "", "local"
         if not mid:
             return RecycleDecision(False, "unknown_machine",
                                    [f"recycle: unknown machine {raw} (want: {', '.join(roster)}, all)"],
@@ -710,19 +724,32 @@ def decide_recycle(*, who: Principal, arg, dry_run: bool, roster: tuple, resolve
     if not dry_run and not gate.allow(key, now):
         return RecycleDecision(False, "cooldown",
                                [f"recycle: cooldown {int(gate.remaining(key, now) + 0.999)}s (duplicate prevented)"],
-                               mid, scope)
+                               mid, scope, seat=seat)
     steps = ", ".join(RECYCLE_STEPS)
     route = f"RECYCLE machine={mid} by={who.nick or '-'} scope={scope} exec=local-bob-seat"
-    ack = f"Recycling all seats ({', '.join(roster)})." if scope == "fleet" else f"Recycling {mid}."
+    if seat:
+        route = f"{route} seat={seat}"
+    if scope == "fleet":
+        ack = f"Recycling all seats ({', '.join(roster)})."
+    elif seat:
+        ack = f"Recycling {mid} (seat {seat})."
+    else:
+        ack = f"Recycling {mid}."
     if dry_run:
+        dry_target = f"{mid} seat={seat}" if seat else mid
         return RecycleDecision(True, "dry_run", [
-            f"recycle dry-run: would recycle {mid} ({scope}) as {who.kind}; nothing sent",
+            f"recycle dry-run: would recycle {dry_target} ({scope}) as {who.kind}; nothing sent",
             f"recycle dry-run: route={route}",
             f"recycle dry-run: steps={steps}",
-        ], mid, scope, True, "")
+        ], mid, scope, True, "", seat=seat)
+    routed = (
+        f"recycle: routed to bob seat(s) ({scope} {mid}"
+        + (f" seat={seat}" if seat else "")
+        + "); Jeeves runs no host ops"
+    )
     return RecycleDecision(True, "ok", [
         ack,
-        f"recycle: routed to bob seat(s) ({scope} {mid}); Jeeves runs no host ops",
+        routed,
         f"recycle: steps={steps}",
         "recycle: bob must announce restarting then execute (deterministic)",
-    ], mid, scope, False, route)
+    ], mid, scope, False, route, seat=seat)

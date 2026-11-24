@@ -320,6 +320,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Infra-soft give-up reasons must not black out auto-offer. Persist the raw needs_human bit separately from the offer gate so heal can still see a false stamp.
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
+- BOB-51 S1: Invoke-BobPriorityModelsDryRun resolves agent=priority from GET /bob/v1/models (or fixture) and writes LOCALAPPDATA\Bobiverse\logs\priority-models-dry-run.log citing webhook=; fixture covers until BOB-01 lands.
 - BOB-09 About Show logs: bottom button on AboutForm + PS fallback opens watch_bob_tray.log via notepad (same path as Open log)
 - BOB-08 About rename: menu label Acknowledge->About on BobTray.cs and Watch-BobTray.ps1; keep Acknowledge() attention clear; pin mock home.html
 - BOB-11 Status keep pool dialog: when Item(Status)/ShowStatus/StatusForm already on main, DONE with covering PR URL (#7521) and close the twin --- do not re-implement
@@ -467,12 +468,16 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - bob_git_hook announce_seen must match Ergo nick case-insensitively (:jeeves! and :Jeeves!); seed ~/.grok/ergo/connect.password from bob config\ergo.password before Start-BobiverseGitAnnounceListen
 - When flamingo authors dominate the MRB queue, prefer no-flamingo-author MERGEABLE rows for flamingo seats (exact-nick self-MRB is tip #9574/#9579; host lag may still false-refuse — #9672). Sticky assign-sent + digest-idle is #9633.
 - TrayContext cannot call WorkerLauncher.Quote - inline ProcessStartInfo Arguments path quoting for PlanAgent --root (CS0103 on build-bob-tray); companion fix #9684
+- CAST IRON FR #9698: disk GIVEUP/NACK (worktree-create-failed:disk / disk-low) auto-files one open bobiverse issue per machine with require_machine: <machine> body + needs-<machine> label; twin-comment instead of a second file
+- flamingo disk: Clear-BobiverseJobWorktrees needs git safe.directory for SYSTEM-owned C:\ai\bob; orphan C:\Users\simon\.grok\bob-bridge\worktrees not in git worktree list must be bulk-reclaimed; set BOB_JOB_WORKTREE_BASE=D:\ai\worktrees
 - FIX on CONFLICTING tip: rebuild from fresh origin/main; if empty force-push closes or sticks PR head, reopen and verify ls-remote refs/pull/N/head matches branch
 - CAST IRON FR #9669: needs-walrus / require_machine=walrus NACK->GIVEUP is a hand-off to the Jeeves agent on walrus (Slab/Si-yes); split mixed work into code FR (no pin) + walrus FR (needs-walrus, Depends-on code) under one Digest; stop wrong-machine re-offer thrash
 - Seat hold on closed MRB survives !cleargiveup ledger=0; !stuck shows held; need chair clear of seat_job hold for closed tips (#9633)
 - pool_for_digest sticky allowance exhausted wins over fresher observation ok/unlimited --- clear exhaust on observe ok or prefer fresher obs
 - CCA task POST accepts model=claude-haiku-4.5; chair build_task_body must grow BOB_COPILOT_MODEL to avoid Auto/Luna-only
+- If outbox len barely grows after UTF-8 appends and pos stays 0, a twin bob-ear or tray rewriter is truncating outbox --- kill socketless :6697 peers before re-appending assigns.
 - open_pr_mrb_missing default-heals missing expected MRB rows (incl lesson tips) via heal_open_prs_missing_mrb; --no-heal for report-only (FR #9635).
 - !assign <nick> clears that nick+row giveup (queue giveup_seats + seat-ledger) instead of refusing already gave this row up; no separate !cleargiveup required (FR #9634).
 - If outbox pos==len but no Bob-* jeeves replies for >60s, check duplicate bob-ear TCP: keep only PID with Established IRC; dead peer can steal pos.
 - disk_starvation: never for-seat in giveup_seats when it may be a JSON string --- wrap via iter_giveup_seats or chars become WinRM hosts (FR #9728).
+- On /report 502 use IRC inbound; if redqueen workers=[] with offerable>0 escalate TipForm #9462 only --- never Start-BobWorker from monitor
