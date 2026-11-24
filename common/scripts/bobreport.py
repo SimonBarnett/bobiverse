@@ -5672,7 +5672,14 @@ def summarize_public_queue(
     try:
         import stuck_job_sweep
 
-        offerable_n = int(stuck_job_sweep.ungated_unaccepted_count(rows))
+        # FR #9553: pass accepted so Depends-on OPEN parents in accepted[] gate children.
+        qdoc = {
+            "v": 1,
+            "unaccepted": rows,
+            "accepted": [r for r in (accepted or []) if isinstance(r, dict)],
+            "done": [],
+        }
+        offerable_n = int(stuck_job_sweep.ungated_unaccepted_count(rows, doc=qdoc))
     except Exception:
         offerable_n = max(0, len(rows) - needs_human_n)
     out = {

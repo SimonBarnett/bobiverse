@@ -911,6 +911,9 @@ def depends_gate_reason(
 ) -> str | None:
     """FR #9455 ``bob_g1_shared_gate``: one Depends-on reason for offer, assign, stuck.
 
+    FR #9553: also the shared gate for ``!list`` / digest ``offerable_count`` /
+    monitor ungated counts (token-free when ``issue_open`` is unset).
+
     Returns ``depends-held`` / ``depends-open`` / ``depends-unresolved`` / None.
     Prefer this over calling ``row_depends_open_reason`` and
     ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
@@ -1536,15 +1539,41 @@ def format_unaccepted_list(
 ) -> list[str]:
     """PM lines for !list: optional one summary + one line per job + optional more.
 
-    Updated FR #208: no header spam; default max 10 jobs; ``N unaccepted (showing M)``.
+    Updated FR #208: no header spam; default max 10 jobs; `N unaccepted (showing M)`.
+    FR #9553: omit Depends-on gated FRs (`depends_gate_reason`) so !list matches
+    digest `offerable_count` / !assign; `!stuck` still surfaces those rows.
     """
-    rows = ordered_unaccepted(home, list(load_unaccepted(home)))
+    try:
+        doc = load_queue(home)
+    except Exception:
+        doc = {
+            "v": 1,
+            "unaccepted": list(load_unaccepted(home)),
+            "accepted": [],
+            "done": [],
+        }
+    if not isinstance(doc, dict):
+        doc = {"v": 1, "unaccepted": [], "accepted": [], "done": []}
+    rows = ordered_unaccepted(home, list(doc.get("unaccepted") or []))
     if task_filter:
         tf = task_filter.upper()
         rows = [r for r in rows if str(r.get("task") or "").upper() == tf]
     if repo_filter:
         rf = repo_filter.lower()
         rows = [r for r in rows if str(r.get("repo") or "").lower() == rf]
+    try:
+        open_keys = open_fr_issue_keys(doc)
+    except Exception:
+        open_keys = set()
+    rows = [
+        r
+        for r in rows
+        if not (
+            isinstance(r, dict)
+            and _canon_task(r) == "FR"
+            and depends_gate_reason(r, doc, open_keys=open_keys)
+        )
+    ]
     if not rows:
         return ["queue empty"]
     total = len(rows)
@@ -1557,13 +1586,15 @@ def format_unaccepted_list(
         out.append(f"{total} unaccepted (showing {len(show)})")
     elif total > 1:
         out.append(f"{total} unaccepted (showing {len(show)})")
-    # single job: no summary spam ΓÇö just the job line
+    # single job: no summary spam - just the job line
     for i, row in enumerate(show, start=1):
         out.append(format_list_line(i, row, line_max=line_max, now=now))
     more = total - len(show)
     if more > 0:
         out.append(f"+{more} more; !list all")
     return out
+
+
 
 
 def parse_accept(body: str) -> tuple[str, str, str] | None:

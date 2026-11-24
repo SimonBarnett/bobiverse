@@ -166,6 +166,14 @@ def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str
     if home is not None and hasattr(gc, "row_blocked_for_opencode_seat"):
         if gc.row_blocked_for_opencode_seat(cand_eff, me, home):
             return False
+    # FR #9553 / #9455: Depends-on gate shared with !assign / !stuck / offerable_count.
+    if str(row.get("task") or "").upper() == "FR":
+        try:
+            open_keys = gc.open_fr_issue_keys(doc) if isinstance(doc, dict) else set()
+        except Exception:
+            open_keys = set()
+        if gc.depends_gate_reason(cand_eff, doc if isinstance(doc, dict) else None, open_keys=open_keys):
+            return False
     return True
 
 
