@@ -153,3 +153,37 @@ def test_offer_skips_tipform_restore_escalate(tmp_path, monkeypatch):
     assert job is None
     doc = gitclaim.load_queue(home)
     assert doc["unaccepted"] == []
+
+def test_assign_refuses_tipform_restore_escalate(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    row = {
+        "repo": "SimonBarnett/bobiverse",
+        "task": "FR",
+        "id": "#9824",
+        "seq": 1,
+        "title": "redqueen online workers=[] while offerable>0 (TipForm restore)",
+        "body": ESCALATE_BODY_9824,
+        "labels": ["via-intake"],
+        "state": "open",
+        "url": "https://github.com/SimonBarnett/bobiverse/issues/9824",
+        "event": "issues",
+        "line": "FR",
+        "ts": "t",
+    }
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {"v": 1, "unaccepted": [row], "accepted": [], "done": []},
+    )
+    st, why = gitclaim.assign_row(
+        home,
+        "redqueen-6400",
+        "SimonBarnett/bobiverse",
+        "FR",
+        "#9824",
+        issue_open=lambda *_a, **_k: True,
+        is_pull=lambda *_a, **_k: False,
+        pr_exists=lambda *_a, **_k: False,
+    )
+    assert st == "refused"
+    assert "tipform_restore_escalate" in str(why).lower()
+

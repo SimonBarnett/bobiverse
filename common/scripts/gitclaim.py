@@ -18377,10 +18377,16 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
-            # FR #9411: refuse ops-monitor trackers even when hold was cleared.
+            # FR #9411 / #9827: refuse ops-monitor + TipForm-restore escalate even when hold cleared.
             _assign_skip = row_skip_fr_reason(cand)
-            if task_u == "FR" and _assign_skip == "ops_monitor_tracker":
-                return "refused", "ops-monitor tracker (not shop FR; FR #9411)"
+            if task_u == "FR" and _assign_skip in (
+                "ops_monitor_tracker",
+                "tipform_restore_escalate",
+            ):
+                return (
+                    "refused",
+                    f"{_assign_skip} (not shop FR; FR #9411/#9827)",
+                )
             # FR #9411: unbudgeted closed check when caller omitted issue_open.
             _fr_open = (
                 issue_open
