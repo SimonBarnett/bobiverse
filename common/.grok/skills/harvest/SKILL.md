@@ -438,4 +438,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When folding #9588 onto #9586, keep AddOpencodeTopLevelChoices and retarget fr9263/fr9588 pins to WeightsLaunchField (drop OpencodeWebhookModel catalog asserts).
 - Never stage bob-plan.exe alongside PlanAgent.exe; TipForm Plan uses plan\PlanAgent.exe (9271); Copy-BobTrayVendorExes mirrors vendor\plan\PlanAgent.exe only and deletes leftover bob-plan twins.
 - all-gave-up stall fingerprint must be per-repo class key (like bored-latency machine key); intake msgfp keeps #N so it will not collapse twins --- fix stall_detectors.fingerprint key, not fuzzy intake.
+- When build-jeeves is red on an MRB tip, repro the failing tests on origin/main before FAIL or fold; same failures on main are a separate FR, not a fold of the assigned PR (FR #4649).
 - ConPTY twins: keep oldest #9612 as canonical, close Depends-on companions as Duplicate after merging acceptance; tray recycleseat stays its own FR
