@@ -1,4 +1,4 @@
-﻿// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
+// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
 // windows (hosted in-process) all run natively, so the menu opens at once and nothing waits on PowerShell.
 // The slow DATA work (digest webhook, Cursor/Grok usage, stall alerts, IRC watcher, !startworker queue) stays in the existing
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
@@ -1466,8 +1466,23 @@ namespace BobDialogs
         {
             if (exiting || noEngine) return;
             TrayLifecycle.Write("engine-reload", "via", "bob-tray-reload", "pid", SafeEnginePid());
+            // FR #9526: ear/operator reload must clear HealEngine storm latch (in-memory engineStarts
+            // + engine.storm). Otherwise tip stays stuck after reload when prior storm gated relaunch.
+            engineStarts = 0;
+            engineWindow = DateTime.Now;
+            try
+            {
+                string stormPath = Path.Combine(aliveDir, "engine.storm");
+                if (File.Exists(stormPath)) File.Delete(stormPath);
+            }
+            catch { }
             KillEngineTree();
             StartEngine();
+            bool up = false;
+            try { up = engine != null && !engine.HasExited; } catch { up = false; }
+            TrayLifecycle.Write("engine-reload", "result", up ? "ok" : "fail", "pid", SafeEnginePid(), "via", "bob-tray-reload-fr9526");
+            if (!up)
+                TrayEngineFailure.Report(root, "relaunch-fail", machine, snapFile, lastEngineExitCode, "ReloadEngine StartEngine left engine down");
         }
 
         void KillEngineTree()
@@ -1488,11 +1503,51 @@ namespace BobDialogs
                 try { if (engine != null && !engine.HasExited) engine.Kill(); } catch { }
             }
             engine = null;
+            // FR #9526: sweep orphan Watch-BobTray engines TipForm no longer tracks.
+            try { KillOrphanTrayEngines(); } catch { }
+            try
+            {
+                string alive = Path.Combine(aliveDir, EngineAliveStamp.FileName);
+                if (File.Exists(alive)) File.Delete(alive);
+            }
+            catch { }
         }
 
-        // FR #3180: seats are manual only (Agent/Plan click, !startworker, or human bob-worker).
-        // Watchdog may log a seat drop; it must never call WorkerLauncher.Launch.
-        // FR #8568 / #9226: always heal vanished runs (console-closed vs external-kill); log seat-exit on drop.
+        // FR #9526: taskkill orphan engine powershells whose command line cites Watch-BobTray.
+        void KillOrphanTrayEngines()
+        {
+            try
+            {
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT ProcessId,CommandLine FROM Win32_Process WHERE Name='powershell.exe' OR Name='pwsh.exe'"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        string cl = "";
+                        try { cl = (mo["CommandLine"] as string) ?? ""; } catch { cl = ""; }
+                        if (cl.Length == 0) continue;
+                        if (cl.IndexOf("Watch-BobTray", StringComparison.OrdinalIgnoreCase) < 0
+                            && cl.IndexOf("BOB_TRAY_ENGINE", StringComparison.OrdinalIgnoreCase) < 0)
+                            continue;
+                        int opid = 0;
+                        try { opid = Convert.ToInt32(mo["ProcessId"]); } catch { opid = 0; }
+                        if (opid <= 0) continue;
+                        try
+                        {
+                            ProcessStartInfo tk = new ProcessStartInfo(
+                                Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\taskkill.exe"),
+                                "/PID " + opid + " /T /F");
+                            tk.UseShellExecute = false; tk.CreateNoWindow = true;
+                            Process.Start(tk);
+                            TrayLifecycle.Write("engine-orphan-kill", "pid", opid.ToString(), "via", "fr9526");
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
         void ObserveWorkerSeats()
         {
             int n = WorkerLauncher.Seats();
