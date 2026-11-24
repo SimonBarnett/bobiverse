@@ -14,7 +14,7 @@ FIXTURE = {
         "grok": [
             {
                 "model": "fixture-grok-a",
-                "contexts": ["128k", "256k"],
+                "contexts": ["256", "500"],
                 "efforts": ["low", "medium", "high"],
             },
             {
@@ -26,14 +26,14 @@ FIXTURE = {
         "cursor": [
             {
                 "model": "fixture-cursor-a",
-                "contexts": ["200k"],
+                "contexts": [],
                 "efforts": [],
             }
         ],
         "opencode": [
             {
                 "model": "fixture-oc-a",
-                "contexts": ["default"],
+                "contexts": [],
                 "efforts": [],
             }
         ],
@@ -78,17 +78,20 @@ def test_load_valid_combos_keeps_first_duplicate_and_skips_aider(tmp_path: Path)
     assert "aider" not in cat.clis
     grok_models = [r.model for r in cat.clis["grok"]]
     assert grok_models == ["fixture-grok-a"]
-    assert cat.clis["grok"][0].contexts == ["128k", "256k"]
+    assert cat.clis["grok"][0].contexts == ["256", "500"]
+    assert cat.clis["cursor"][0].contexts == []
+    assert cat.clis["opencode"][0].contexts == []
 
 
 def test_validate_combo_accepts_valid(tmp_path: Path):
     _write_combos(tmp_path)
     ok, err, field = mc.validate_combo(
-        "Grok", "fixture-grok-a", "128k", "HIGH", home=tmp_path
+        "Grok", "fixture-grok-a", "256", "HIGH", home=tmp_path
     )
     assert ok and err is None and field is None
+    # FR #9258: Cursor/OpenCode — empty context + no effort is valid.
     ok2, err2, field2 = mc.validate_combo(
-        "cursor", "fixture-cursor-a", "200k", None, home=tmp_path
+        "cursor", "fixture-cursor-a", "", None, home=tmp_path
     )
     assert ok2 and err2 is None and field2 is None
 
@@ -100,7 +103,7 @@ def test_validate_combo_rejects_each_field(tmp_path: Path):
         mc.ERROR_UNKNOWN_CLI,
         "cli",
     )
-    assert mc.validate_combo("grok", "nope", "128k", "low", home=tmp_path) == (
+    assert mc.validate_combo("grok", "nope", "256", "low", home=tmp_path) == (
         False,
         mc.ERROR_UNKNOWN_MODEL,
         "model",
@@ -109,15 +112,18 @@ def test_validate_combo_rejects_each_field(tmp_path: Path):
         "grok", "fixture-grok-a", "bad-ctx", "low", home=tmp_path
     ) == (False, mc.ERROR_INVALID_CONTEXT, "context")
     assert mc.validate_combo(
-        "grok", "fixture-grok-a", "128k", "turbo", home=tmp_path
+        "grok", "fixture-grok-a", "256", "turbo", home=tmp_path
     ) == (False, mc.ERROR_INVALID_EFFORT, "effort")
     assert mc.validate_combo(
-        "cursor", "fixture-cursor-a", "200k", "low", home=tmp_path
+        "cursor", "fixture-cursor-a", "", "low", home=tmp_path
     ) == (False, mc.ERROR_EFFORT_NOT_SUPPORTED, "effort")
     assert mc.validate_combo(
-        "grok", "cursor-models", "128k", "low", home=tmp_path
+        "cursor", "fixture-cursor-a", "200k", None, home=tmp_path
+    ) == (False, mc.ERROR_INVALID_CONTEXT, "context")
+    assert mc.validate_combo(
+        "grok", "cursor-models", "256", "low", home=tmp_path
     ) == (False, mc.ERROR_UNKNOWN_MODEL, "model")
-    assert mc.validate_combo("grok", "auto", "128k", "low", home=tmp_path) == (
+    assert mc.validate_combo("grok", "auto", "256", "low", home=tmp_path) == (
         False,
         mc.ERROR_UNKNOWN_MODEL,
         "model",

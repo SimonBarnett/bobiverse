@@ -74,7 +74,11 @@ def test_offer_focus_top_http_403_purges_zero_of_130(tmp_path: Path):
 
 
 def test_offer_focus_top_at_most_one_github_call_per_bored(tmp_path: Path):
-    """FR #3212: !bored budget is 0 — live issue_open must not dial out at all."""
+    """FR #3212 budget is 0; FR #9411 allows unbudgeted CLOSED ``issue_open`` only.
+
+    Budgeted ``pr_exists`` / ``is_pull`` stay at zero. Injected ``issue_open`` is
+    reused for the unbudgeted closed gate (same pattern as Depends-on FR #8754).
+    """
     home = _home(tmp_path)
     rows = [_fr(i) for i in range(1, 131)]
     gitclaim._write_queue(
@@ -91,12 +95,13 @@ def test_offer_focus_top_at_most_one_github_call_per_bored(tmp_path: Path):
         home, "marchhare-40596", "#marchhare", issue_open=counting
     )
     assert st == "ok" and job is not None
-    assert calls == [], f"expected 0 GitHub calls, got {len(calls)}: {calls[:5]}"
+    # One unbudgeted closed check per FR walked until the pick (at least the winner).
+    assert len(calls) >= 1, f"expected unbudgeted closed checks, got {calls[:5]}"
     assert gitclaim.BORED_GITHUB_CALL_BUDGET == 0
 
 
 def test_offer_focus_top_closed_first_row_purges_only_that_row(tmp_path: Path):
-    """Budget 0: live False is never dialed; stamped closed still purges at bulk."""
+    """Stamped closed purges at bulk; remaining FRs get unbudgeted live closed checks."""
     home = _home(tmp_path)
     rows = [_fr(1, state="closed"), _fr(2), _fr(3)]
     gitclaim._write_queue(
@@ -119,7 +124,9 @@ def test_offer_focus_top_closed_first_row_purges_only_that_row(tmp_path: Path):
     assert "#1" not in left
     assert "#2" in left or job["id"] == "#2"
     assert "#3" in left
-    assert calls == []
+    # Stamped #1 never needs a live call; #2/#3 may be live-checked (FR #9411).
+    assert "1" not in calls
+    assert "2" in calls
 
 
 def test_purge_closed_fr_logs_reason_per_row():

@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # Bob Systray launcher (Start Menu / Desktop shortcut target).
 # t794u: the tray does NOT update anything. Updating is the ircBob service's job (Start-Bob -> Update-BobiverseService / work-tree
 # sync). Starting the tray RESTARTS the ircBob service (detached, never waited for), so a tray start also picks up a pending update.
@@ -82,10 +82,19 @@ function Ensure-BobSystraySeatWrapper {
 function Get-BobSystrayTrayExe {
     # t832u: the compiled tray (icon + menu + clicks). When present it IS the systray; the PowerShell tray script runs as its hidden engine.
     # FR #9044: un-park bob-tray.exe.clickfix-park when the live exe is the only thing missing.
+    # FR #9199: intentional clickfalse/clicktrue park => Watch-only (never return/start live bob-tray.exe).
     param([string]$Root)
     $life = Join-Path $Root 'tools\BobTrayLifecycle.ps1'
     if (-not (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue)) {
         if (Test-Path -LiteralPath $life) { . $life }
+    }
+    if (Get-Command Test-BobTrayIntentionalExeParkPresent -ErrorAction SilentlyContinue) {
+        if (Test-BobTrayIntentionalExeParkPresent -Root $Root) {
+            if (Get-Command Remove-BobTrayLiveExeWhileParked -ErrorAction SilentlyContinue) {
+                [void](Remove-BobTrayLiveExeWhileParked -Root $Root)
+            }
+            return $null
+        }
     }
     if (Get-Command Restore-BobTrayExeFromClickfixPark -ErrorAction SilentlyContinue) {
         return Restore-BobTrayExeFromClickfixPark -Root $Root
@@ -100,22 +109,53 @@ function Get-BobSystrayTrayProcesses {
     # Wrapper CommandLine does not contain "Watch-BobTray.ps1", so a strict .ps1
     # suffix miss made ForceNew leave ghosts and "failed to stay up" false-fail.
     # FR #2585: match bob-tray.exe by Name (ExecutablePath is often null on CIM) or CommandLine.
+    # FR #9509: prefer timed prior helper (no bare Get-CimInstance hang on marchhare-class CIM stalls).
     param([string]$Root = '')
     if (-not $Root) { $Root = $RepoRoot }
+    if (Get-Command Get-BobTrayPriorProcessHits -ErrorAction SilentlyContinue) {
+        return @(Get-BobTrayPriorProcessHits -TimeoutSec 8 -ExcludePid $PID -InstallRoot $Root)
+    }
     $toolsPrefix = ''
     try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $Root 'tools')) } catch { $toolsPrefix = Join-Path $Root 'tools' }
-    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            ($_.CommandLine -and (
-                $_.CommandLine -match 'Watch-BobTray\.ps1' -or
-                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1' -or
-                $_.CommandLine -match '(?i)bob-tray\.exe'
-            )) -or (
-                $_.Name -eq 'bob-tray.exe' -and (
-                    -not $_.ExecutablePath -or
-                    $_.ExecutablePath.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
-                )
-            )
-        })
+    $hits = New-Object System.Collections.Generic.List[object]
+    try {
+        $scope = New-Object System.Management.ManagementScope
+        $query = New-Object System.Management.ObjectQuery 'SELECT ProcessId, Name, CommandLine, ExecutablePath FROM Win32_Process'
+        $opt = New-Object System.Management.EnumerationOptions
+        $opt.Timeout = [TimeSpan]::FromSeconds(8)
+        $opt.ReturnImmediately = $false
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+        foreach ($mo in @($searcher.Get())) {
+            $cmd = [string]$mo['CommandLine']
+            $name = [string]$mo['Name']
+            $exe = [string]$mo['ExecutablePath']
+            $ok = $false
+            if ($cmd -and (
+                    $cmd -match 'Watch-BobTray\.ps1' -or
+                    $cmd -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                    $cmd -match '(?i)bob-tray\.exe'
+                )) { $ok = $true }
+            elseif ($name -eq 'bob-tray.exe' -and (
+                    -not $exe -or
+                    $exe.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
+                )) { $ok = $true }
+            if ($ok) {
+                $hits.Add([pscustomobject]@{
+                        ProcessId = [int]$mo['ProcessId']; Name = $name; CommandLine = $cmd; ExecutablePath = $exe
+                    })
+            }
+        }
+    } catch { }
+    if ($hits.Count -eq 0) {
+        try {
+            foreach ($p in @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue)) {
+                $hits.Add([pscustomobject]@{
+                        ProcessId = [int]$p.Id; Name = 'bob-tray.exe'; CommandLine = ''; ExecutablePath = try { [string]$p.Path } catch { '' }
+                    })
+            }
+        } catch { }
+    }
+    return @($hits.ToArray())
 }
 
 function Invoke-BobSystrayTidy {
@@ -155,7 +195,9 @@ function Invoke-BobSystrayTidy {
     if (Test-Path -LiteralPath $icons) {
         Write-Output 'tidy: Clear-BobOrphanNotifyIcons'
         try {
-            & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons 2>&1 | ForEach-Object { Write-Output $_ }
+            # FR #9169: HealLadder escalates to explorer recycle when toolbars=0.
+            $clearOut = & $psExe -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder 2>&1
+            $clearOut | ForEach-Object { Write-Output $_ }
         }
         catch {
             Write-Warning ("tidy notify icons failed: {0}" -f $_.Exception.Message)
@@ -168,7 +210,7 @@ function Invoke-BobSystrayTidy {
 
 # FR #2928: dot-source (tests loading Ensure-BobSystraySeatWrapper) must define
 # functions only. Never reach Invoke-BobSystrayTidy / Stop-BobSystrayPriorAgents /
-# Cleanup-OrphanAgents / tray start — that kills Grok Bot and every python/pwsh.
+# Cleanup-OrphanAgents / tray start - that kills Grok Bot and every python/pwsh.
 if ($MyInvocation.InvocationName -eq '.') {
     return
 }
@@ -182,7 +224,7 @@ $hits = @(Get-BobSystrayTrayProcesses)
 
 if ($ForceNew -and $hits.Count -gt 0) {
     # FR #453 / FR #2943: announce into the *service* ear home (InstallRoot\home) that
-    # LocalSystem ircBob drains — not %USERPROFILE%\.bobiverse (orphan undrained outbox).
+    # LocalSystem ircBob drains - not %USERPROFILE%\.bobiverse (orphan undrained outbox).
     try {
         $commonFn = Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1'
         if (-not (Test-Path -LiteralPath $commonFn)) {
@@ -219,6 +261,8 @@ if ($ForceNew -and $hits.Count -gt 0) {
                     $needAnnounce = $false
                 }
             }
+            # FR #9496: process match only. Never treat Get-Service ircBob=Running alone as
+            # ear-up - nssm can report Running with zero bob-ear.exe / irc_agent children.
             $agentStillUp = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                     $_.CommandLine -and (
                         ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
@@ -226,14 +270,7 @@ if ($ForceNew -and $hits.Count -gt 0) {
                         ($_.Name -match '(?i)^bob-ear')
                     )
                 }).Count -gt 0
-            # Also treat ircBob Running as "ear up" when process match misses (NSSM / frozen exe).
-            if (-not $agentStillUp) {
-                try {
-                    $svcFn = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-                    if ($svcFn -and $svcFn.Status -eq 'Running') { $agentStillUp = $true }
-                } catch { }
-            }
-            # Skip if Restart already logged out (agent gone) — avoid orphan announce for next join.
+            # Skip if Restart already logged out (agent gone) - avoid orphan announce for next join.
             if ($needAnnounce -and $agentStillUp) {
                 if (Test-Path -LiteralPath $obFn) {
                     $lenFn = 0
@@ -260,11 +297,29 @@ if ($ForceNew -and $hits.Count -gt 0) {
     catch {
         Write-Warning ("ForceNew IRC departure announce failed: {0}" -f $_.Exception.Message)
     }
+    # FR #9205: do not kill tray/Watch PIDs that still parent TipForm OpenCode seats.
+    $lifeFn = Join-Path $RepoRoot 'tools\BobTrayLifecycle.ps1'
+    if ((Test-Path -LiteralPath $lifeFn) -and -not (Get-Command Test-BobTrayProcessHasSeatChildren -ErrorAction SilentlyContinue)) {
+        . $lifeFn
+    }
+    $keptForSeats = @()
     foreach ($h in $hits) {
-        try { Stop-Process -Id ([int]$h.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+        $killPid = 0
+        try { $killPid = [int]$h.ProcessId } catch { continue }
+        if ((Get-Command Test-BobTrayProcessHasSeatChildren -ErrorAction SilentlyContinue) -and
+            (Test-BobTrayProcessHasSeatChildren -ParentProcessId $killPid)) {
+            Write-Output ("FR #9205 skip ForceNew kill pid={0} (parents TipForm seats)" -f $killPid)
+            $keptForSeats += $h
+            continue
+        }
+        try { Stop-Process -Id $killPid -Force -ErrorAction SilentlyContinue } catch { }
     }
     Start-Sleep -Milliseconds 800
-    $hits = @()
+    if ($keptForSeats.Count -gt 0) {
+        $hits = @($keptForSeats)
+    } else {
+        $hits = @()
+    }
 }
 
 # Always tidy on start/restart (after ForceNew kill so dead tray is not "kept").
@@ -351,11 +406,12 @@ else {
 
 Start-Sleep -Seconds 2
 # Second icon sweep: Explorer drops ghosts from the ForceNew kill once the new tray is up.
+# FR #9169: HealLadder recycles explorer when the first pass still reports toolbars=0.
 if (-not $SkipTidy) {
     $icons = Join-Path $RepoRoot 'tools\Clear-BobOrphanNotifyIcons.ps1'
     if (Test-Path -LiteralPath $icons) {
         try {
-            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons | Out-Null
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $icons -HealLadder | Out-Null
         }
         catch { }
     }

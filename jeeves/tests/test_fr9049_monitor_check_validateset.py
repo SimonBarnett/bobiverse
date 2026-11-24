@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 INVOKE = ROOT / "scripts" / "Invoke-JeevesMonitorCheck.ps1"
 MONITOR = ROOT / "tools" / "monitor"
 
-SKIP = frozenset({"__init__", "_common"})
+# Helpers imported/called by other paths, not Invoke-JeevesMonitorCheck -Check names:
+# ear_down_gate (FR #9503 / ircbob_ear); intervention_fr_gate (FR #9627 harvest gate).
+SKIP = frozenset({"__init__", "_common", "ear_down_gate", "intervention_fr_gate"})
 
 
 def _shipped_checks() -> set[str]:

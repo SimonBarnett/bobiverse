@@ -19,6 +19,7 @@ ACK_STALE_ID = "ack-stale"
 BORED_LATENCY_ID = "bored-latency"
 STALE_DIGEST_ID = "stale-digest"
 IDLE_WITH_WORK_ID = "idle-with-work"
+ONLINE_ZERO_WORKERS_ID = "online-zero-workers"
 
 # FR #6462: operator / FR #6407 unpin tokens on require_machine. These mean "no
 # machine pin" (same set as gitclaim.row_require_machine / _stamp_require_machine).
@@ -156,11 +157,27 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _all_gave_up_stable_key(row: dict) -> str:
+    """FR #9602: fingerprint key is ``owner/repo``, not ``owner/repo#N``.
+
+    Per-row keys filed a twin stall tip for every abandoned job. Keep the
+    abandoned row id in evidence so humans still see every parent; stall_filer
+    comments later rows onto the open class tip.
+    """
+    rid = _row_id(row)
+    if "#" in rid:
+        return rid.rsplit("#", 1)[0].strip() or rid
+    repo = str(row.get("repo") or "").strip()
+    return repo or rid or "unknown"
+
+
 def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
     """Report rows abandoned by every live seat unless already parked for a human.
 
     FR #5181: ``needs_human`` rows are intentional parks — skip them so the
     stall filer does not keep re-alerting (class of a-search#5139).
+
+    FR #9602: fingerprint key is the product repo (stable class), not ``#N``.
     """
     live = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("live") or [])}
     live = {n for n in live if n}
@@ -185,14 +202,16 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
             return gitclaim.row_gave_up_by(row, nick, live=live)
         if live and all(_abandoned(n) for n in live):
             rid = _row_id(row)
+            key = _all_gave_up_stable_key(row)
             out.append(
                 {
                     "id": ALL_GAVE_UP_ID,
-                    "key": rid,
-                    "title": f"stall:all-gave-up:{rid}",
+                    "key": key,
+                    "title": f"stall:all-gave-up:{key}",
                     "evidence": {
                         "live": sorted(live),
                         "row": rid,
+                        "repo": key,
                         "giveup_seats": sorted(gitclaim.giveup_seat_set(row)),
                         "needs_human": False,
                     },
@@ -209,14 +228,23 @@ def stamp_needs_human_for_all_gave_up(
 
     Returns the number of rows stamped. Subsequent scans skip via
     ``row_needs_human`` in ``detect_all_gave_up``.
+
+    FR #9602: match on ``evidence.row`` (full ``owner/repo#N``). Finding ``key``
+    is the repo class only; legacy findings still keyed the full row id.
     """
-    keys = {
-        str(f.get("key") or "").strip()
-        for f in (findings or [])
-        if isinstance(f, dict) and str(f.get("id") or "") == ALL_GAVE_UP_ID
-    }
-    keys.discard("")
-    if not keys:
+    row_ids: set[str] = set()
+    for f in findings or []:
+        if not isinstance(f, dict) or str(f.get("id") or "") != ALL_GAVE_UP_ID:
+            continue
+        ev = f.get("evidence") if isinstance(f.get("evidence"), dict) else {}
+        rid = str((ev or {}).get("row") or "").strip()
+        if rid:
+            row_ids.add(rid)
+        k = str(f.get("key") or "").strip()
+        # Pre-FR #9602 findings used the full row id as key.
+        if k and "#" in k:
+            row_ids.add(k)
+    if not row_ids:
         return 0
     stamped = 0
     try:
@@ -227,7 +255,7 @@ def stamp_needs_human_for_all_gave_up(
                 for row in list(doc.get(bucket) or []):
                     if not isinstance(row, dict):
                         continue
-                    if _row_id(row) not in keys:
+                    if _row_id(row) not in row_ids:
                         continue
                     if gitclaim.row_needs_human(row):
                         continue
@@ -474,6 +502,72 @@ def _idle_has_offerable(home: Any, idle: list[str]) -> bool:
     return False
 
 
+def _row_offer_gated_for_stall(row: dict[str, Any], snap: dict[str, Any]) -> bool:
+    """FR #9374: True when offer would skip this FR (Depends-on / digest).
+
+    Matches ``gitclaim.depends_gate_reason`` / ``digest_issue_reason`` so
+    ``idle_with_work`` does not treat blocked FRs as waiting work (FR #9455).
+    """
+    if str(row.get("task") or "").upper() != "FR":
+        return False
+    try:
+        if gitclaim.digest_issue_reason(row):
+            return True
+    except Exception:
+        pass
+    doc: dict[str, Any] = {}
+    open_keys: set = set()
+    issue_open = snap.get("depends_issue_open")
+    issue_fetch = snap.get("depends_issue_fetch")
+    home = snap.get("home")
+    if home is not None:
+        try:
+            from pathlib import Path
+
+            home_p = home if isinstance(home, Path) else Path(str(home))
+            doc = gitclaim.load_queue(home_p) or {}
+        except Exception:
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        try:
+            open_keys = gitclaim.open_fr_issue_keys(doc)
+        except Exception:
+            open_keys = set()
+        if issue_open is None:
+            try:
+                issue_open = gitclaim.depends_issue_open_checker()
+            except Exception:
+                issue_open = None
+        # FR #9434 / #9418 / #9455: unheld fr-digest absent from queue needs issue_fetch.
+        if issue_fetch is None:
+            try:
+                issue_fetch = gitclaim.depends_issue_fetch_checker()
+            except Exception:
+                issue_fetch = None
+    else:
+        doc = {
+            "unaccepted": list(snap.get("unaccepted") or []),
+            "accepted": list(snap.get("accepted") or []),
+        }
+        try:
+            open_keys = gitclaim.open_fr_issue_keys(doc)
+        except Exception:
+            open_keys = set()
+    try:
+        return bool(
+            gitclaim.depends_gate_reason(
+                row,
+                doc or None,
+                open_keys=open_keys,
+                issue_open=issue_open,
+                issue_fetch=issue_fetch,
+            )
+        )
+    except Exception:
+        return False
+
+
 def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
     """FR #6439: idle seats + unaccepted work waiting > N min with no live offer.
 
@@ -482,6 +576,8 @@ def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
     not file ``stall:idle-with-work:queue``. When ``home`` is in the snap, also
     require ``summarize_empty_offer`` offerable > 0 for some idle seat (same
     ungated gate as quiet-idle), fail-closed on errors.
+
+    FR #9374: skip FRs blocked by open Depends-on / digest (same as offer).
     """
     idle_raw = snap.get("idle") or []
     idle = [n for n in idle_raw if str(n or "").strip()]
@@ -500,6 +596,8 @@ def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(row, dict):
             continue
         if row.get("needs_human"):
+            continue
+        if _row_offer_gated_for_stall(row, snap):
             continue
         if not _idle_seat_can_take_row(row, idle):
             continue
@@ -570,6 +668,66 @@ def detect_stale_digest(snap: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _machine_worker_count(ent: dict) -> int | None:
+    if not isinstance(ent, dict):
+        return None
+    if "worker_list" in ent and ent.get("worker_list") is not None:
+        wl = ent.get("worker_list")
+        if isinstance(wl, (list, dict)):
+            return len(wl)
+        return 0
+    if "workers" not in ent:
+        return None
+    raw = ent.get("workers")
+    if isinstance(raw, (list, dict)):
+        return len(raw)
+    return 0
+
+
+def detect_online_zero_workers(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    """FR #9462: online digest machine with zero workers while offerable_count > 0.
+
+    Fingerprint ``stall:online-zero-workers:<machine>`` (rate-capped by stall_filer).
+    Does not start seats — TipForm Agents only (FR #3180).
+    """
+    try:
+        offerable = int(snap.get("offerable_count") or 0)
+    except (TypeError, ValueError):
+        offerable = 0
+    if offerable < 1:
+        try:
+            offerable = int(snap.get("ungated_unaccepted") or 0)
+        except (TypeError, ValueError):
+            offerable = 0
+    if offerable < 1:
+        return []
+    machines = snap.get("machines")
+    if not isinstance(machines, dict):
+        return []
+    found: list[dict[str, Any]] = []
+    for mid, ent in sorted(machines.items(), key=lambda kv: str(kv[0]).lower()):
+        if not isinstance(ent, dict) or not ent.get("online"):
+            continue
+        count = _machine_worker_count(ent)
+        if count is None or count > 0:
+            continue
+        mid_s = str(mid)
+        found.append(
+            {
+                "id": ONLINE_ZERO_WORKERS_ID,
+                "key": mid_s.lower(),
+                "title": f"stall:online-zero-workers:{mid_s.lower()}",
+                "evidence": {
+                    "machine": mid_s,
+                    "offerable_count": offerable,
+                    "workers": 0,
+                    "remediation": "TipForm Agents (no silent auto-start; FR #3180)",
+                },
+            }
+        )
+    return found
+
+
 DETECTORS = (
     detect_self_review_deadlock,
     detect_all_gave_up,
@@ -579,6 +737,7 @@ DETECTORS = (
     detect_bored_latency,
     detect_stale_digest,
     detect_idle_with_work,
+    detect_online_zero_workers,
 )
 
 

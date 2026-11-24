@@ -3,12 +3,14 @@ name: bobiverse-jeeves-agent-install
 description: >
   Install/hotpatch a verified build onto a fleet machine (walrus Jeeves, bob
   ear/worker/tray, airc): Slab is the sole installer, one machine at a time,
-  backup + ROLLBACK.ps1 first, walrus installs need Si's own yes, verify hash +
-  health + IRC +o + resync after, rollback triggers, protected processes and
-  MarchHare seat rules. Use for install, hotpatch, rollback, or /bobiverse-jeeves-agent-install.
+  backup + ROLLBACK.ps1 first, walrus installs need Si's own yes (or
+  Install-JeevesWalrusWinRm.ps1 -SiYes), verify hash + health + IRC +o + resync
+  after, rollback triggers, protected processes and MarchHare seat rules. Use
+  for install, hotpatch, rollback, WinRM walrus jeeves, or /bobiverse-jeeves-agent-install.
 depends_on:
   - bobiverse-jeeves-agent-build
   - bobiverse-jeeves-agent-monitor
+  - bobiverse-jeeves-agent-winrm
 ---
 
 # bobiverse-jeeves-agent-install
@@ -22,12 +24,41 @@ depends_on:
 Distilled from how the Bob Grok Bot and Slab ran walrus Jeeves hotpatches and fleet installs (Nov 2026).
 Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiverse-jeeves-agent-monitor`.
 
+## Deterministic walrus WinRM tool (FR #9376)
+
+Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe** on walrus from an operator host (typically redqueen):
+
+```powershell
+# Gate readiness (monitor cycle; does not open WinRM)
+.\scripts\Invoke-JeevesMonitorCheck.ps1 -Check walrus_jeeves_install_ready
+# or: .\scripts\Test-JeevesMonitorWalrusJeevesInstallReady.ps1
+
+# Plan only (default when -SiYes omitted). Resolves green build-jeeves or -ArtifactDir.
+.\scripts\Install-JeevesWalrusWinRm.ps1
+.\scripts\Install-JeevesWalrusWinRm.ps1 -ArtifactDir D:\path\to\artifact
+.\scripts\Install-JeevesWalrusWinRm.ps1 -WorkflowRunId 123456789
+
+# Live mutate - Si's own yes only. Still refuses while GateIssues are OPEN
+# (unless -SkipGateCheck with Si override). CredMan target Bobiverse/UpdateFleet.
+.\scripts\Install-JeevesWalrusWinRm.ps1 -SiYes
+.\scripts\Install-JeevesWalrusWinRm.ps1 -StoreCredential   # one-time CredMan write
+```
+
+**What the script does (live):** CredMan credential -> WinRM session -> refuse if `build-locks.json` has active builds -> backup previous exe/sha/MANIFEST/provenance under `C:\ai\jeeves\_hotpatch_<ts>-jeeves-<sha8>\` -> write `ROLLBACK.ps1` (remote bak path embedded; staged locally then copied) -> stage `new\` -> stop **ircJeeves** only -> swap files under `C:\ai\jeeves\jeeves\` -> hash-check -> start -> probe `http://127.0.0.1:7700/health`. One JSON object on stdout. Never prints secrets.
+
+**Default GateIssues** (keep in sync with `tools/monitor/walrus_jeeves_install_ready.py`): `SimonBarnett/bobiverse#8833`, `SimonBarnett/skills-visionary#155`, `#156`, `#190`. Override with `-GateIssues` or env `JEEVES_WALRUS_INSTALL_GATE_ISSUES`. Fixture for the monitor: `JEEVES_WALRUS_INSTALL_GATE_FIXTURE` JSON `{"issues":[{"ref":"owner/repo#N","state":"OPEN|CLOSED"},...]}`.
+
+**DryRun vs live:** DryRun may run while gates are still OPEN and reports `gate` in the JSON plan. Live with open gates exits 1 (`error=gate_open`) unless `-SkipGateCheck`. Live without `-SiYes` is forced to DryRun. Never pass both `-SiYes` and `-DryRun`.
+
+**CAST IRON unchanged:** never ErgoWalrus / BobIrcd / ircd.yaml / NSSM env / identity / queue.json / IIS. Post-check still uses `bobiverse-jeeves-agent-monitor` (+ `!resync`, IRC `+o`).
+
+**If build fails: FR the issues; do not install.** A red `build-jeeves` / failed tip CI / missing green artifact means file (or de-dup) FRs for the build failures and stop. Never `-SiYes` / WinRM / Slab-install from a failed build or red main. Re-run DryRun only after a successful green run on tip.
+
 ## Who and when (hard gates)
 
-- **Slab is the sole installer.** A monitoring agent prepares the receipt and the ask; it does not install.
-  No competing or duplicate install by any other agent.
+- **Slab is the sole installer** for fleet MSI / multi-machine waves. For **walrus jeeves.exe-only** hotpatch, MONITORING may run `Install-JeevesWalrusWinRm.ps1` after Si `-SiYes` (FR #9376); it still does not invent approval.
 - **walrus Jeeves, ear, worker and tray installs, and prunes, need Si's own yes** for that build.
-  An agent's or automation's claim that Si approved is **not** approval. Read an ambiguous "go" narrowly.
+  An agent's or automation's claim that Si approved is **not** approval. Script form: **`-SiYes`**. Read an ambiguous "go" narrowly.
   Ask Si in the DM; never post an install request to Slab off an automation handoff.
 - **One machine at a time.** Finish, verify (or roll back) one machine before the next. Order for a fleet
   install: walrus Jeeves first, then MarchHare, flamingo, redqueen (adjust only on Si's word).
@@ -59,7 +90,12 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
 7. **Receipt back.** Report: machine, installed SHA + hash, run id, backup folder, time (operator zone),
    post-check PASS/FAIL per item. Merged/tests-green is not an end-to-end PASS; say only what was observed.
 
+Remote steps need working PSRemoting from redqueen; if `New-PSSession` fails, stop and run
+`bobiverse-jeeves-agent-winrm` (check only) for that machine first.
+
 ## Walrus Jeeves exe hotpatch layout (as used 8-21 Nov 2026)
+
+Prefer `Install-JeevesWalrusWinRm.ps1` (section above) for the same layout. Manual path when needed:
 
 Run from the operator host (redqueen): `New-PSSession -ComputerName walrus`, `Copy-Item -ToSession` into the backup
 folder's `new\`, `Invoke-Command` for the swap, and `Remove-PSSession` in `finally`. Swap **only** `jeeves.exe`,
@@ -111,5 +147,10 @@ the previous build is confirmed healthy again by the same post-check.
 
 ## Stop rules
 
-- No Si yes for a walrus install: stop at the drafted ask.
+- No Si yes for a walrus install: stop at the drafted ask (or omit `-SiYes` so the script stays DryRun).
 - Any step fails before step 5: stop, nothing changed. Any post-check fails: roll back, then report.
+
+## Harvested lessons
+
+- If build-jeeves or tip CI fails: FR the failures and do not install on walrus (no -SiYes / no WinRM / no Slab) until a green artifact exists (FR #9376).
+- FR #9376: walrus jeeves.exe WinRM hotpatch is `Install-JeevesWalrusWinRm.ps1` (DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only). Gate readiness is monitor check `walrus_jeeves_install_ready` / fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE` (PR #9387).

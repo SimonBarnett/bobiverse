@@ -56,8 +56,10 @@ def test_fr7652_each_trigger_writes_a_seat_start_line(tmp_path: Path):
 
 def test_fr7652_tray_call_sites_name_each_trigger():
     w = WATCH.read_text(encoding="utf-8")
+    start = HELPER.read_text(encoding="utf-8")
     assert "-Trigger 'menu'" in w
-    assert "-Trigger 'auto-start'" in w
+    # FR #9240: queue picks auto-start vs startworker; Watch Launch forwards $t.
+    assert "auto-start" in w or "auto-start" in start
     assert "-Trigger 'restore-after-recycle'" in w
     assert "Write-BobTraySeatStart" in w
     body = w[w.index("function Start-BobTrayWorkerExe"): w.index("$script:attention = $false")]

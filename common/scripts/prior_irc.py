@@ -47,6 +47,11 @@ WAIT_MIN_S = 2.0
 WAIT_MAX_S = 5.0
 CURSOR_GHOST_HOME = ".bobiverse-cursor"
 BARE_BOB_NICK = "bob"
+# FR #9236: absorb transient CIM / PowerShell scan failures within one startup.
+PRIOR_SCAN_ATTEMPTS_ENV = "BOB_PRIOR_SCAN_ATTEMPTS"
+DEFAULT_PRIOR_SCAN_ATTEMPTS = 3
+PRIOR_SCAN_BACKOFF_ENV = "BOB_PRIOR_SCAN_BACKOFF_S"
+DEFAULT_PRIOR_SCAN_BACKOFF_S = 2.0
 
 _SCRIPT_RE = {
     # FR #2351: frozen bob-ear.exe is the same process family as irc_agent.py.
@@ -70,6 +75,7 @@ class PriorCleanResult:
     wait_s: float = 0.0
     scanned: bool = True
     rounds: int = 0
+    scan_attempts: int = 0
 
 
 def is_bob_builder_nick(nick: str) -> bool:
@@ -317,25 +323,10 @@ def _list_posix() -> list[tuple[int, str]]:
     return rows
 
 
-def _list_windows() -> list[tuple[int, str]]:
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Where-Object { $_.CommandLine -and "
-        "($_.CommandLine -like '*irc_agent.py*' -or $_.CommandLine -like '*irc_listen.py*' "
-        "-or $_.CommandLine -like '*bob-ear.exe*' -or $_.CommandLine -like '*\\bob-ear *' "
-        "-or $_.CommandLine -like '*\\bob-ear\"*') } | "
-        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-    )
-    out = subprocess.check_output(
-        ["powershell", "-NoProfile", "-Command", script],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-    )
+def _parse_windows_process_json(text: str) -> list[tuple[int, str]]:
     import json
 
-    text = (out or "").strip()
+    text = (text or "").strip()
     if not text:
         return []
     try:
@@ -355,6 +346,150 @@ def _list_windows() -> list[tuple[int, str]]:
             continue
         rows.append((pid, cmd))
     return rows
+
+
+def _list_windows_wmic() -> list[tuple[int, str]]:
+    """FR #9496: WMIC fallback when Get-CimInstance powershell hangs/times out."""
+    out = subprocess.check_output(
+        [
+            "wmic",
+            "process",
+            "where",
+            "CommandLine is not null",
+            "get",
+            "ProcessId,CommandLine",
+            "/FORMAT:LIST",
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        stderr=subprocess.PIPE,
+    )
+    rows: list[tuple[int, str]] = []
+    cmd = ""
+    pid: int | None = None
+    for raw in (out or "").splitlines():
+        line = raw.strip()
+        if not line:
+            if pid is not None and cmd:
+                low = cmd.casefold()
+                if (
+                    "irc_agent.py" in low
+                    or "irc_listen.py" in low
+                    or "bob-ear.exe" in low
+                    or "\\bob-ear " in low
+                    or "\\bob-ear\"" in low
+                ):
+                    rows.append((pid, cmd))
+            cmd = ""
+            pid = None
+            continue
+        if line.lower().startswith("commandline="):
+            cmd = line.split("=", 1)[1]
+        elif line.lower().startswith("processid="):
+            try:
+                pid = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                pid = None
+    if pid is not None and cmd:
+        low = cmd.casefold()
+        if (
+            "irc_agent.py" in low
+            or "irc_listen.py" in low
+            or "bob-ear.exe" in low
+            or "\\bob-ear " in low
+            or "\\bob-ear\"" in low
+        ):
+            rows.append((pid, cmd))
+    return rows
+
+
+def _list_windows() -> list[tuple[int, str]]:
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.CommandLine -and "
+        "($_.CommandLine -like '*irc_agent.py*' -or $_.CommandLine -like '*irc_listen.py*' "
+        "-or $_.CommandLine -like '*bob-ear.exe*' -or $_.CommandLine -like '*\\bob-ear *' "
+        "-or $_.CommandLine -like '*\\bob-ear\"*') } | "
+        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    # FR #9236: capture stderr so TimeoutExpired / CalledProcessError carry a diagnosable tail.
+    # FR #9496: on CIM timeout/failure fall back to WMIC (marchhare WinRM/CIM class).
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", script],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            stderr=subprocess.PIPE,
+        )
+        return _parse_windows_process_json(out)
+    except (OSError, subprocess.SubprocessError):
+        print("INFO prior-clean windows-list fallback=wmic", flush=True)
+        return _list_windows_wmic()
+
+
+def _prior_scan_attempts() -> int:
+    try:
+        return max(1, int(os.environ.get(PRIOR_SCAN_ATTEMPTS_ENV) or DEFAULT_PRIOR_SCAN_ATTEMPTS))
+    except ValueError:
+        return DEFAULT_PRIOR_SCAN_ATTEMPTS
+
+
+def _prior_scan_backoff_s() -> float:
+    try:
+        return max(0.0, float(os.environ.get(PRIOR_SCAN_BACKOFF_ENV) or DEFAULT_PRIOR_SCAN_BACKOFF_S))
+    except ValueError:
+        return DEFAULT_PRIOR_SCAN_BACKOFF_S
+
+
+def _redact_scan_stderr(raw: str | None, *, limit: int = 200) -> str:
+    text = (raw or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) > limit:
+        text = text[-limit:]
+    # Never echo credential-looking fragments.
+    low = text.casefold()
+    for needle in ("password", "token", "secret", "authorization"):
+        if needle in low:
+            return "<redacted>"
+    return text
+
+
+def _list_processes_with_retry(
+    lister,
+    *,
+    pause,
+    label: str = "scan",
+) -> tuple[list[tuple[int, str]] | None, int]:
+    """FR #9236: retry OSError / SubprocessError only. Returns (procs|None, attempts)."""
+    attempts = _prior_scan_attempts()
+    backoff = _prior_scan_backoff_s()
+    last_exc: BaseException | None = None
+    for n in range(1, attempts + 1):
+        try:
+            procs = lister()
+            if n > 1:
+                print(f"INFO prior-clean scan-recovered attempt={n} ({label})", flush=True)
+            return procs, n
+        except (OSError, subprocess.SubprocessError) as exc:
+            last_exc = exc
+            rc = getattr(exc, "returncode", None)
+            err_out = getattr(exc, "stderr", None)
+            if isinstance(err_out, bytes):
+                err_out = err_out.decode("utf-8", errors="replace")
+            stderr_s = _redact_scan_stderr(str(err_out) if err_out else "")
+            print(
+                f"INFO prior-clean scan-failed attempt={n}/{attempts} "
+                f"err={type(exc).__name__} rc={rc if rc is not None else '-'} "
+                f"stderr={stderr_s or '-'} ({label})",
+                flush=True,
+            )
+            if n < attempts and backoff > 0:
+                pause(backoff)
+    _ = last_exc
+    return None, attempts
 
 
 def kill_pid(pid: int) -> bool:
@@ -388,7 +523,11 @@ def clean_priors(
     killer=None,
     sleeper=None,
 ) -> PriorCleanResult:
-    """Kill matching priors. Prints pid and kind only — never command lines."""
+    """Kill matching priors. Prints pid and kind only — never command lines.
+
+    FR #9236: each list_processes call retries OSError / SubprocessError within
+    BOB_PRIOR_SCAN_ATTEMPTS before returning scanned=False (fail-closed).
+    """
     lister = list_processes or list_irc_processes
     kill = killer or kill_pid
     pause = sleeper or time.sleep
@@ -396,11 +535,11 @@ def clean_priors(
     me = os.getpid() if self_pid is None else int(self_pid)
     keep = set(keep_pids or ())
     keep.add(me)
-    try:
-        procs = lister()
-    except (OSError, subprocess.SubprocessError):
-        print("INFO prior-clean scan-failed", flush=True)
-        return PriorCleanResult(scanned=False)
+    procs, scan_attempts = _list_processes_with_retry(
+        lister, pause=pause, label="initial"
+    )
+    if procs is None:
+        return PriorCleanResult(scanned=False, scan_attempts=scan_attempts)
     victims = select_victims(
         procs, nick, home, keep_pids=keep, include_listens=include_listens
     )
@@ -408,7 +547,9 @@ def clean_priors(
         for pid, kind in victims:
             print(f"INFO prior-clean would-kill kind={kind} pid={pid}", flush=True)
         print(f"INFO prior-clean dry-run count={len(victims)}", flush=True)
-        return PriorCleanResult(would_kill=victims, scanned=True, rounds=1)
+        return PriorCleanResult(
+            would_kill=victims, scanned=True, rounds=1, scan_attempts=scan_attempts
+        )
     killed: list[tuple[int, str]] = []
     waited = 0.0
     rounds = 0
@@ -424,12 +565,17 @@ def clean_priors(
         if wait > 0:
             pause(wait)
             waited += wait
-        try:
-            procs = lister()
-        except (OSError, subprocess.SubprocessError):
-            print("INFO prior-clean scan-failed", flush=True)
+        procs, rescan_attempts = _list_processes_with_retry(
+            lister, pause=pause, label="rescan"
+        )
+        scan_attempts += rescan_attempts
+        if procs is None:
             return PriorCleanResult(
-                killed=killed, wait_s=waited, scanned=False, rounds=rounds
+                killed=killed,
+                wait_s=waited,
+                scanned=False,
+                rounds=rounds,
+                scan_attempts=scan_attempts,
             )
         current = select_victims(
             procs, nick, home, keep_pids=keep, include_listens=include_listens
@@ -438,7 +584,13 @@ def clean_priors(
         f"INFO prior-clean done killed={len(killed)} wait_s={waited:g}",
         flush=True,
     )
-    return PriorCleanResult(killed=killed, wait_s=waited, scanned=True, rounds=rounds)
+    return PriorCleanResult(
+        killed=killed,
+        wait_s=waited,
+        scanned=True,
+        rounds=rounds,
+        scan_attempts=scan_attempts,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

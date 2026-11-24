@@ -127,7 +127,10 @@ def test_hold_without_fr_digest_is_not_this_check(tmp_path: Path):
 def test_live_homes_soft_ok_when_product_not_on_tip():
     code, payload = _run(None, None)
     assert code == 0
-    assert payload["soft_ok"] == "product_not_on_tip"
+    # FR #9455: BOB-G1 shared gate is on tip — never soft_ok=product_not_on_tip.
+    # Empty live homes soft-ok as no_fr_digest_rows (or fr_digest_clear).
+    assert payload["soft_ok"] != "product_not_on_tip"
+    assert payload["soft_ok"] in ("no_fr_digest_rows", "fr_digest_clear")
 
 
 def test_monitor_start_lists_fr_digest():

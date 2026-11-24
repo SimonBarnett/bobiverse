@@ -22,7 +22,7 @@ def test_jeeves_click_quits_before_start_when_j_missing():
     ps = WATCH.read_text(encoding="utf-8-sig")
     click = _fn(cs, 'new ToolStripMenuItem("Jeeves")', 'MenuItems.Add("Jeeves")')
     missing = click.find("J: map missing")
-    start = click.find('StartWorker("agent", "grok")')
+    start = click.find('StartWorker("agent", "grok"')
     assert 0 <= missing < start
     assert "return;" in click[missing:start]
     ps_click = _fn(ps, "$miJeeves.Add_Click({", "$miWeights.Add_Click({")

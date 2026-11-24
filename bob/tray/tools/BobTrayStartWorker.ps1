@@ -36,20 +36,131 @@ function Test-BobTraySeatsOff {
     return ($null -ne $t -and [int]$t -eq 0)
 }
 
+function Test-BobTrayEmptyOnlineDisabled {
+    <#
+    FR #9142 / #9240: operator kill switch without seat_target=0.
+    Presence of <root>\run\startworker\empty-online.disabled skips every auto
+    seat-start path (empty-online fill, under-cap fill, startworker kind=auto,
+    recycle restore). TipForm Agents / Workers clicks and explicit !startworker
+    (non-auto req) still work.
+    #>
+    param([Parameter(Mandatory)][string]$Root)
+    $dir = Get-BobTrayStartWorkerDir -Root $Root
+    return (Test-Path -LiteralPath (Join-Path $dir 'empty-online.disabled') -PathType Leaf)
+}
+
+function Test-BobTraySeatStartTriggerIsManual {
+    <#
+    FR #9346 / #9240: TipForm click and explicit !startworker triggers only.
+    Fail-closed: anything else (other, empty, unknown, auto-start, restore-*,
+    empty-online, under-cap, engine-restart, ...) is treated as automatic.
+    #>
+    param([string]$Trigger = '')
+    $t = ([string]$Trigger).Trim().ToLowerInvariant()
+    if (-not $t) { return $false }
+    if ($t -eq 'menu' -or $t -eq 'jeeves-menu' -or $t -eq 'startworker') { return $true }
+    if ($t.StartsWith('workers-')) { return $true }
+    return $false
+}
+
+function Test-BobTraySeatStartTriggerIsAuto {
+    <#
+    FR #9240 / #9346: tray/chair auto paths (auto-start, restore-after-recycle,
+    empty-online, under-cap, other, unknown). Fail-closed — not an explicit
+    TipForm / !startworker trigger means auto (blocked when empty-online.disabled).
+    #>
+    param([string]$Trigger = '')
+    return -not [bool](Test-BobTraySeatStartTriggerIsManual -Trigger $Trigger)
+}
+
+function Test-BobTrayEmptyOnlineBlocksAutoStart {
+    <#
+    FR #9240 / #9346: true when empty-online.disabled is present AND Trigger is
+    not an explicit manual TipForm / !startworker trigger (fail-closed).
+    Manual TipForm triggers (menu, workers-*, jeeves-menu) and explicit
+    startworker stay false (allowed).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Trigger = ''
+    )
+    if (-not (Test-BobTrayEmptyOnlineDisabled -Root $Root)) { return $false }
+    return [bool](Test-BobTraySeatStartTriggerIsAuto -Trigger $Trigger)
+}
+
+function Write-BobTrayUnrequestedSeatStartIntake {
+    <#
+    FR #9240: deduped intake when an auto seat start is attempted (or refused)
+    while empty-online.disabled is present. Stamp
+    run/startworker/unrequested-start.intake — one filing per 6h per machine.
+    Returns $true when a filing was attempted, $false when skipped (dedup / error).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Trigger = 'auto-start',
+        [string]$Site = 'Start-BobTrayWorkerExe'
+    )
+    try {
+        $dir = Get-BobTrayStartWorkerDir -Root $Root
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        }
+        $stamp = Join-Path $dir 'unrequested-start.intake'
+        if (Test-Path -LiteralPath $stamp) {
+            $ageH = ([datetime]::UtcNow - (Get-Item -LiteralPath $stamp).LastWriteTimeUtc).TotalHours
+            if ($ageH -ge 0 -and $ageH -lt 6) { return $false }
+        }
+        $trig = ([string]$Trigger -replace '[^A-Za-z0-9._-]', '')
+        if (-not $trig) { $trig = 'auto-start' }
+        $siteSafe = ([string]$Site -replace '[^A-Za-z0-9._-]', '')
+        if (-not $siteSafe) { $siteSafe = 'tray' }
+        $title = 'Tray auto seat start while empty-online.disabled (FR #9240)'
+        $body = @"
+Unrequested tray seat-start attempt while run/startworker/empty-online.disabled is present.
+
+trigger=$trig
+site=$siteSafe
+root=$Root
+
+Standing rule: seats start only from TipForm clicks (or explicit !startworker).
+Auto paths (empty-online fill, under-cap, kind=auto startworker, recycle restore) must refuse.
+"@
+        Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+        $report = $null
+        foreach ($rel in @(
+                'common\scripts\Report-BobiverseIntakeIssue.ps1',
+                'scripts\Report-BobiverseIntakeIssue.ps1'
+            )) {
+            $cand = Join-Path $Root $rel
+            if (Test-Path -LiteralPath $cand) { $report = $cand; break }
+        }
+        if ($report) {
+            try {
+                & $report -Repo 'SimonBarnett/bobiverse' -Kind issue -Title $title -Body $body | Out-Null
+            } catch { }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Get-BobTrayEmptyOnlineFillCount {
     <#
     FR #8429: an online shop with zero agent seats should be filled to the hard cap.
     FR #3180 still owns a partial heal (1 of 2). Seats-off, a pending req, or a
     recent fill stamp means do not write another request.
+    FR #9142: -Disabled (empty-online.disabled) also returns 0 without seats-off.
     #>
     param(
         [int]$LiveAgents = 0,
         [int]$PendingReqs = 0,
         [bool]$SeatsOff = $false,
         [bool]$Cooldown = $false,
-        [int]$Cap = 2
+        [int]$Cap = 2,
+        [bool]$Disabled = $false
     )
-    if ($SeatsOff -or $Cooldown) { return 0 }
+    if ($Disabled -or $SeatsOff -or $Cooldown) { return 0 }
     if ($LiveAgents -gt 0 -or $PendingReqs -gt 0) { return 0 }
     if ($Cap -lt 1) { return 0 }
     return [Math]::Min([int]$Cap, 2)
@@ -73,14 +184,19 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
     <#
     FR #9000: when grok weekly remaining is known 0, empty-online fill pins
     agent=opencode slot=free so auto does not burn the 2-seat cap on hard-402.
-    Unknown grok remaining keeps auto. Known free remaining 0 keeps auto.
-    Does not invent fuel numbers. Menu/auto elsewhere is unchanged.
+    Unknown grok remaining keeps auto (skip=false, agent empty).
+    FR #9142 / #9023: when grok is known 0 and opencode free is not viable
+    (known free 0, or no free leaf), return skip=true reason=no-fuel instead of
+    falling through to kind=auto -> Grok zombies. Menu/auto elsewhere unchanged.
+    Does not invent fuel numbers.
     #>
     param(
         $GrokRemaining,
         $OpencodeFreeRemaining,
         [string]$Root = ''
     )
+    $auto = [pscustomobject]@{ agent = ''; slot = ''; skip = $false; reason = '' }
+    $nofuel = [pscustomobject]@{ agent = ''; slot = ''; skip = $true; reason = 'no-fuel' }
     if (-not $PSBoundParameters.ContainsKey('GrokRemaining')) {
         $GrokRemaining = $null
         if (Get-Command Get-BobTrayGrokFuelRemaining -ErrorAction SilentlyContinue) {
@@ -88,13 +204,13 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
         }
     }
     if ($null -eq $GrokRemaining -or [string]$GrokRemaining -eq '') {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $auto
     }
     try { $g = [int]$GrokRemaining } catch {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $auto
     }
     if ($g -ne 0) {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $auto
     }
 
     if (-not $PSBoundParameters.ContainsKey('OpencodeFreeRemaining')) {
@@ -103,7 +219,7 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
     if ($null -ne $OpencodeFreeRemaining -and [string]$OpencodeFreeRemaining -ne '') {
         try {
             if ([int]$OpencodeFreeRemaining -lt 1) {
-                return [pscustomobject]@{ agent = ''; slot = '' }
+                return $nofuel
             }
         } catch { }
     }
@@ -113,9 +229,9 @@ function Get-BobTrayEmptyOnlineFillAgentChoice {
         try { $leaf = [string](Resolve-BobTrayOpencodeSlotModel -Root $Root -Slot 'free') } catch { $leaf = '' }
     }
     if (-not $leaf) {
-        return [pscustomobject]@{ agent = ''; slot = '' }
+        return $nofuel
     }
-    return [pscustomobject]@{ agent = 'opencode'; slot = 'free' }
+    return [pscustomobject]@{ agent = 'opencode'; slot = 'free'; skip = $false; reason = 'opencode-free' }
 }
 
 function Get-BobTrayUnderCapFillCount {
@@ -123,6 +239,7 @@ function Get-BobTrayUnderCapFillCount {
       FR #8890: one busy seat is not a full shop. When offerable work remains
       and live agent seats are below the hard cap, ask for one more seat.
       Zero live seats stay on Get-BobTrayEmptyOnlineFillCount.
+      FR #9195: -Disabled (empty-online.disabled) also returns 0 (no under-cap auto starts).
     #>
     param(
         [int]$LiveAgents = 0,
@@ -130,9 +247,10 @@ function Get-BobTrayUnderCapFillCount {
         [bool]$SeatsOff = $false,
         [bool]$Cooldown = $false,
         [int]$Cap = 2,
-        [int]$Offerable = 0
+        [int]$Offerable = 0,
+        [bool]$Disabled = $false
     )
-    if ($SeatsOff -or $Cooldown -or $PendingReqs -gt 0) { return 0 }
+    if ($Disabled -or $SeatsOff -or $Cooldown -or $PendingReqs -gt 0) { return 0 }
     if ($Offerable -lt 1 -or $LiveAgents -lt 1 -or $Cap -lt 1) { return 0 }
     if ($LiveAgents -ge $Cap) { return 0 }
     return 1
@@ -152,6 +270,171 @@ function Get-BobTrayCachedOfferableCount {
         } catch { }
     }
     return 0
+}
+
+function Get-BobTrayDigestMachineWorkerCount {
+    <#
+    FR #9462: count live workers on a digest/report machine node.
+    Returns $null when the workers shape is unknown (do not alert).
+    #>
+    param($Ent)
+    if (-not $Ent) { return $null }
+    $names = @()
+    try { $names = @($Ent.PSObject.Properties.Name) } catch { $names = @() }
+    if ($names -contains 'worker_list' -and $null -ne $Ent.worker_list) {
+        return @($Ent.worker_list).Count
+    }
+    if ($names -contains 'workers') {
+        $w = $Ent.workers
+        if ($null -eq $w) { return 0 }
+        # Nick-map digest shape is a Hashtable/Dictionary — use .Count (not PSObject.Properties).
+        if ($w -is [System.Collections.IDictionary]) {
+            return [int]$w.Count
+        }
+        if ($w -is [System.Collections.IList] -and -not ($w -is [string])) {
+            return @($w).Count
+        }
+        try {
+            $props = @($w.PSObject.Properties)
+            return $props.Count
+        } catch { return 0 }
+    }
+    return $null
+}
+
+function Get-BobTrayOnlineZeroWorkerAlerts {
+    <#
+    FR #9462: durable TipForm/Status alerts when an online machine (local or
+    fleet peer on the digest) has zero workers while offerable_count > 0.
+    Alert only - never silent auto-start (FR #3180); operator uses TipForm Agents.
+    #>
+    param(
+        $Machines,
+        [int]$OfferableCount = 0
+    )
+    if ($OfferableCount -lt 1) { return @() }
+    $alerts = New-Object System.Collections.Generic.List[string]
+    $entries = @()
+    if ($null -eq $Machines) { return @() }
+    if ($Machines -is [System.Collections.IDictionary]) {
+        foreach ($k in @($Machines.Keys)) {
+            $entries += [pscustomobject]@{ id = [string]$k; ent = $Machines[$k] }
+        }
+    } elseif ($Machines.PSObject -and $Machines.PSObject.Properties) {
+        $looksLikeTiles = $false
+        foreach ($p in @($Machines.PSObject.Properties)) {
+            $v = $p.Value
+            $vNames = @()
+            try { if ($v) { $vNames = @($v.PSObject.Properties.Name) } } catch { $vNames = @() }
+            if ($v -and ($vNames -contains 'online' -or $vNames -contains 'workers' -or $vNames -contains 'worker_list')) {
+                $entries += [pscustomobject]@{ id = [string]$p.Name; ent = $v }
+            } else {
+                $looksLikeTiles = $true
+            }
+        }
+        if ($entries.Count -eq 0 -and $looksLikeTiles) {
+            foreach ($m in @($Machines)) {
+                if (-not $m) { continue }
+                $entries += [pscustomobject]@{ id = [string]$m.id; ent = $m }
+            }
+        }
+    } else {
+        foreach ($m in @($Machines)) {
+            if (-not $m) { continue }
+            $mid = $null
+            try { $mid = [string]$m.id } catch { $mid = $null }
+            if (-not $mid) { try { $mid = [string]$m.machine } catch { $mid = $null } }
+            $entries += [pscustomobject]@{ id = $mid; ent = $m }
+        }
+    }
+    foreach ($row in $entries) {
+        $mid = [string]$row.id
+        $ent = $row.ent
+        if (-not $mid -or -not $ent) { continue }
+        $online = $false
+        $entNames = @()
+        try { $entNames = @($ent.PSObject.Properties.Name) } catch { $entNames = @() }
+        try {
+            if ($entNames -contains 'online' -and $null -ne $ent.online) { $online = [bool]$ent.online }
+            elseif ($entNames -contains 'reach') {
+                $online = ([string]$ent.reach -match '(?i)online|up|ok')
+            }
+        } catch { $online = $false }
+        if (-not $online) { continue }
+        $count = $null
+        if ($entNames -contains 'workers' -and ($ent.workers -is [System.Collections.IList] -or ($ent.workers -is [System.Array]))) {
+            try { $count = @($ent.workers).Count } catch { $count = $null }
+        }
+        if ($null -eq $count -and $entNames -contains 'worker_lines') {
+            try { $count = @($ent.worker_lines | Where-Object { $_ }).Count } catch { $count = $null }
+        }
+        if ($null -eq $count) { $count = Get-BobTrayDigestMachineWorkerCount -Ent $ent }
+        if ($null -eq $count -or [int]$count -gt 0) { continue }
+        [void]$alerts.Add((
+            'ACTION_REQUIRED: online_zero_workers machine={0} offerable={1} start seats via TipForm Agents (FR #9462 / #3180)' -f $mid, $OfferableCount
+        ))
+    }
+    return @($alerts.ToArray())
+}
+
+function Format-BobTrayOnlineZeroCaption {
+    <#
+    FR #9462: TipForm / Status caption naming empty online machines while work is offerable.
+    #>
+    param(
+        $Machines,
+        [int]$OfferableCount = 0
+    )
+    $alerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $Machines -OfferableCount $OfferableCount)
+    if ($alerts.Count -lt 1) { return $null }
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach ($a in $alerts) {
+        if ($a -match 'machine=([^\s]+)') { [void]$ids.Add($Matches[1]) }
+    }
+    if ($ids.Count -lt 1) { return $null }
+    return ('online_zero_workers={0} offerable={1} - TipForm Agents (no auto-start)' -f (($ids | Select-Object -Unique) -join ','), $OfferableCount)
+}
+
+
+function Get-BobTrayEngineWakeAlert {
+    <#
+    FR #9513: ear wrote engine.wake after engine_stale NACK (tray-cmd reload also queued).
+    FR #9522: TipForm host TakeWake consumes engine.wake -> ReloadEngine (alert clears when taken).
+    TipForm-only alert sibling of engine_restart_storm while the stamp is still present.
+    #>
+    param(
+        [string]$Root = '',
+        [double]$MaxAgeSeconds = 300
+    )
+    try {
+        if (-not $Root) { return $null }
+        $wake = Join-Path (Join-Path (Join-Path $Root 'run') 'startworker') 'engine.wake'
+        if (-not (Test-Path -LiteralPath $wake)) { return $null }
+        $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $wake).LastWriteTimeUtc).TotalSeconds
+        if ($age -lt 0) { $age = 0 }
+        if ($age -gt $MaxAgeSeconds) { return $null }
+        return ('engine_stale_wake age={0:0}s - ReloadEngine requested (FR #9513)' -f $age)
+    } catch { return $null }
+}
+
+function Get-BobTrayEngineStormAlert {
+    <#
+    FR #9471: TipForm alert while HealEngine storm stamp run/startworker/engine.storm is fresh.
+    Operator: TipForm Reload engine / restart tray so !startworker can ACK again.
+    #>
+    param(
+        [string]$Root = '',
+        [double]$MaxAgeSeconds = 600
+    )
+    try {
+        if (-not $Root) { return $null }
+        $storm = Join-Path (Join-Path (Join-Path $Root 'run') 'startworker') 'engine.storm'
+        if (-not (Test-Path -LiteralPath $storm)) { return $null }
+        $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $storm).LastWriteTimeUtc).TotalSeconds
+        if ($age -lt 0) { $age = 0 }
+        if ($age -gt $MaxAgeSeconds) { return $null }
+        return ('engine_restart_storm age={0:0}s - TipForm Reload engine (FR #9471)' -f $age)
+    } catch { return $null }
 }
 
 function Get-BobTrayAgentSeatUnionCount {
@@ -355,7 +638,11 @@ function Get-BobTrayLaunchPidFromOutput {
 function Invoke-BobTrayStartWorkerQueue {
     <#
     .SYNOPSIS
-      One tick: heartbeat, then consume every req-*.json. -Launch is { param($mode) ... return pid } (Start-BobTrayWorkerExe in the tray).
+      One tick: heartbeat, then consume every req-*.json. -Launch is
+      { param($mode, $agent, $model, $trigger) ... return pid } (Start-BobTrayWorkerExe in the tray).
+      FR #9240: kind=auto / empty-* / undercap-* use trigger auto-start and are refused when
+      empty-online.disabled is present (reason empty-online-disabled + dedupe intake).
+      Explicit !startworker (no kind=auto) uses trigger startworker and still launches.
     .OUTPUTS
       One object per request: id, ok, reason, mode, pid.
     #>
@@ -363,9 +650,12 @@ function Invoke-BobTrayStartWorkerQueue {
         [Parameter(Mandatory)][string]$Dir,
         [Parameter(Mandatory)][scriptblock]$Launch,
         [scriptblock]$Log = { param($m) },
-        [datetime]$Now = [datetime]::UtcNow
+        [datetime]$Now = [datetime]::UtcNow,
+        [string]$Root = ''
     )
     [void](Write-BobTrayAlive -Dir $Dir)
+    $gateRoot = $Root
+    if (-not $gateRoot) { $gateRoot = [string]$script:RepoRoot }
     $reqs = @(Get-ChildItem -LiteralPath $Dir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)
     foreach ($f in $reqs) {
         $req = $null
@@ -386,13 +676,22 @@ function Invoke-BobTrayStartWorkerQueue {
             $slot = ''
             if ($req.PSObject.Properties.Name -contains 'slot') { $slot = ([string]$req.slot).Trim().ToLowerInvariant() }
             $model = ''
+            $resolveRoot = $gateRoot
+            if (-not $resolveRoot) { $resolveRoot = [string]$script:RepoRoot }
             if ($agent -eq 'opencode' -and $slot -in @('free', 'paid')) {
                 if (Get-Command Resolve-BobTrayOpencodeSlotModel -ErrorAction SilentlyContinue) {
-                    $model = [string](Resolve-BobTrayOpencodeSlotModel -Root $script:RepoRoot -Slot $slot)
+                    $model = [string](Resolve-BobTrayOpencodeSlotModel -Root $resolveRoot -Slot $slot)
                 }
                 elseif ((Get-Command Get-BobTrayClickedLaunchModel -ErrorAction SilentlyContinue) -and $slot -eq 'free') {
-                    $model = [string](Get-BobTrayClickedLaunchModel -Root $script:RepoRoot -Kind 'opencode')
+                    $model = [string](Get-BobTrayClickedLaunchModel -Root $resolveRoot -Kind 'opencode')
                 }
+            }
+            # FR #9240: auto fill reqs vs explicit !startworker.
+            $kind = ''
+            if ($req.PSObject.Properties.Name -contains 'kind') { $kind = ([string]$req.kind).Trim().ToLowerInvariant() }
+            $launchTrigger = 'startworker'
+            if ($kind -eq 'auto' -or $id -match '^(empty-|undercap-)') {
+                $launchTrigger = 'auto-start'
             }
             # FR #8517: never throw on expires; always leave a res-*.json reason.
             $expires = ConvertTo-BobTrayStartWorkerExpires -Raw $req.expires
@@ -403,14 +702,28 @@ function Invoke-BobTrayStartWorkerQueue {
             elseif ($slot -and $agent -ne 'opencode') { $reason = 'bad-slot' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
             elseif ($mode -eq 'agent' -and (Test-BobTraySeatsOff)) { $reason = 'seats-off' }
+            elseif (
+                $mode -eq 'agent' -and $gateRoot -and
+                (Get-Command Test-BobTrayEmptyOnlineBlocksAutoStart -ErrorAction SilentlyContinue) -and
+                (Test-BobTrayEmptyOnlineBlocksAutoStart -Root $gateRoot -Trigger $launchTrigger)
+            ) {
+                # FR #9240: kill switch blocks kind=auto / empty-* / undercap-* launches.
+                $reason = 'empty-online-disabled'
+                try {
+                    if (Get-Command Write-BobTrayUnrequestedSeatStartIntake -ErrorAction SilentlyContinue) {
+                        [void](Write-BobTrayUnrequestedSeatStartIntake -Root $gateRoot -Trigger $launchTrigger -Site 'Invoke-BobTrayStartWorkerQueue')
+                    }
+                } catch { }
+                try { & $Log ('startworker {0}: refused empty-online.disabled trigger={1}' -f $id, $launchTrigger) } catch { }
+            }
             elseif ((Get-BobTrayWorkerCapRefusal -Mode $mode)) { $reason = 'cap' }
             else {
                 try {
                     if ($agent -and $agent -ne 'auto') {
-                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode $agent $model))
+                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode $agent $model $launchTrigger))
                     }
                     else {
-                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode '' ''))
+                        $pidOut = [int](Get-BobTrayLaunchPidFromOutput -Output @(& $Launch $mode '' '' $launchTrigger))
                     }
                     if ($pidOut -gt 0) { $ok = $true } else { $reason = 'launch-failed' }
                 }
@@ -475,11 +788,12 @@ function Get-BobTrayWorkerSeatMode {
     if (-not $cl) {
         try { $cl = [string]$Proc.mode } catch { $cl = '' }
     }
-    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance)\b') {
+    # FR #9640: jeeves = Agents > Jeeves (parsed so Measure/CapRefusal never treat it as agent).
+    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance|jeeves)\b') {
         return $Matches[1].ToLowerInvariant()
     }
     $low = ($cl).Trim().ToLowerInvariant()
-    if ($low -in @('agent', 'plan', 'monitor', 'maintenance')) { return $low }
+    if ($low -in @('agent', 'plan', 'monitor', 'maintenance', 'jeeves')) { return $low }
     return 'unknown'
 }
 
@@ -552,7 +866,7 @@ function Measure-BobTrayWorkerSeats {
 function Get-BobTrayWorkerCapRefusal {
     <#
     '' when another worker may start, else the short refusal text (tray dialog / log).
-    FR #2667: -Mode plan|monitor|maintenance never refused; only agent starts are capped.
+    FR #2667 / FR #9640: -Mode plan|monitor|maintenance|jeeves never refused; only agent (Workers) starts are capped.
     Count agent seat roots only (same as startworker.count_workers / bob_worker.worker_cap_refusal).
     -Procs is for tests.
     #>

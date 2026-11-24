@@ -251,6 +251,21 @@ class GhCliFiler:
             err = (proc.stderr or proc.stdout or "gh issue comment failed").strip()
             raise GitHubDown(err[:500])
 
+    def edit_issue_body(self, repo: str, number: int, body: str) -> None:
+        """FR #9469: PATCH issue body via ``gh api`` (plain Depends-on stamp)."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        repo_s = str(repo or "").strip()
+        num = int(number)
+        if not repo_s or "/" not in repo_s or num < 1:
+            raise GitHubDown("edit_issue_body: bad repo/number")
+        self._api(
+            "PATCH",
+            f"repos/{repo_s}/issues/{num}",
+            {"body": str(body or "")},
+        )
+
     def reopen_issue(self, repo: str, number: int) -> None:
         """FR #4963: ``gh issue reopen``."""
         ensure_gh_token_env()
@@ -262,6 +277,28 @@ class GhCliFiler:
             raise GitHubDown(str(exc)) from exc
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "gh issue reopen failed").strip()
+            raise GitHubDown(err[:500])
+
+    def close_issue(
+        self,
+        repo: str,
+        number: int,
+        comment: str = "",
+    ) -> None:
+        """FR #9552: ``gh issue close`` with optional ``--comment``."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        args = ["close", str(int(number)), "-R", str(repo)]
+        body = str(comment or "").strip()
+        if body:
+            args.extend(["--comment", body])
+        try:
+            proc = self._run_issue(*args)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubDown(str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "gh issue close failed").strip()
             raise GitHubDown(err[:500])
 
     def get_issue_state(self, repo: str, number: int) -> str:
@@ -618,12 +655,26 @@ class GhCliFiler:
         if not number or not url:
             raise GitHubDown(f"{tag}: pull create returned no number/url")
 
-        if labels:
+        # BOB-G3 / FR #9108: never stamp digest / fr-digest on PRs (issues-only).
+        # Also strip issues-only hold labels when gitclaim helpers are available.
+        labs = [str(x) for x in (labels or []) if str(x).strip()]
+        try:
+            import gitclaim as _gc
+
+            labs = _gc.strip_issues_only_digest_labels(labs)
+            labs = _gc.strip_issues_only_hold_labels(labs)
+        except Exception:
+            labs = [
+                x
+                for x in labs
+                if x.strip().lower() not in ("digest", "fr-digest", "hold", "on-hold")
+            ]
+        if labs:
             try:
                 self._api(
                     "POST",
                     f"repos/{repo}/issues/{number}/labels",
-                    {"labels": [str(x) for x in labels if str(x).strip()]},
+                    {"labels": labs},
                 )
             except GitHubDown:
                 pass

@@ -28,13 +28,17 @@ def test_mrb3895_hostile_release_via_includes_done():
 def test_mrb3895_hostile_contiguous_irc_agent_done_branch():
     irc = IRC.read_text(encoding="utf-8")
     # FR #4624: ok + missing both push; offer_after_done enforces one-open-job (FR #4089).
+    # FR #9460: same-tick fleet idle push after DONE expands the branch; keep WARN in window.
     done_at = irc.find('verb == "DONE" and status in ("ok", "missing")')
     assert done_at > 0
-    window = irc[done_at : done_at + 2200]
+    window = irc[done_at : done_at + 3200]
     assert "offer_after_done" in window
     assert "done-offer" in window
     assert "done-offer empty" in window
     assert "WARN done-offer" in window
+    assert "push_idle_offers_via_chair_outbox" in window
+    assert "idle-offer-after-done" in window
+    assert "FR #9460" in window
     # Must not wait only on !bored for the next hand-out after DONE.
     assert "do not wait for the seat's next !bored" in window or "FR #3893" in window
     assert "FR #4624" in window

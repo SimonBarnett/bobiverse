@@ -1,35 +1,42 @@
-"""FR #8732 / BOB-30: Workers > Open Code launch cites Opencode webhook rows."""
+"""FR #8732 / BOB-30 + FR #9586: Workers > Open Code cites Opencode Weights rows."""
 import subprocess
 
 from repo_layout import REPO
 
 TRAY = REPO / "bob" / "tray" / "dialogs" / "BobTray.cs"
 WATCH = REPO / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
+WEBHOOK = REPO / "bob" / "tray" / "src" / "Private" / "Get-BobModelsWebhook.ps1"
 FIXTURE = REPO / "bob" / "tests" / "fixtures" / "models-catalog-opencode.json"
 
 
 def test_opencode_click_cites_webhook_rows():
     cs = TRAY.read_text(encoding="utf-8-sig")
     ps = WATCH.read_text(encoding="utf-8-sig")
-    assert "OpencodeWebhookModel" in cs
+    assert "WeightsLaunchField" in cs or "ResolveAgentLaunchRow" in cs
     assert '"Opencode-Free"' in cs
     assert '"Opencode"' in cs
     assert '"webhook model"' in cs
     assert "BOB_OPENCODE_MODEL" in cs
+    assert "source" in cs and "models-webhook" in cs
     assert "Workers Open Code: webhook model" in ps
-    assert "-AgentName 'Opencode-Free'" in ps
-    assert "-Model $model" in ps
+    assert "'Opencode-Free'" in ps
+    assert "Get-BobTrayWeightsLaunchField" in ps or "Get-BobTrayOpencodeWebhookModel" in ps
+    assert "source=models-webhook" in ps
+    assert "-Model $model" in ps or "-Model $ocModel" in ps
 
 
 def test_fixture_returns_opencode_rows_not_grok():
-    watch = WATCH.read_text(encoding="utf-8-sig")
-    start = watch.find("function Get-BobTrayOpencodeWebhookModel {")
-    end = watch.find("function Update-BobTrayWorkerAgentsMenu {", start)
-    fn = watch[start:end]
-    script = fn + (
-        "\nWrite-Output (Get-BobTrayOpencodeWebhookModel -CatalogPath '%s' -AgentName 'Opencode')"
-        "\nWrite-Output (Get-BobTrayOpencodeWebhookModel -CatalogPath '%s' -AgentName 'Opencode-Free')"
-    ) % (str(FIXTURE), str(FIXTURE))
+    script = (
+        ". '%s'\n"
+        "$paid = Get-BobModelsWebhookAgentRow -AgentId 'Opencode' -FixturePath '%s'\n"
+        "$free = Get-BobModelsWebhookAgentRow -AgentId 'Opencode-Free' -FixturePath '%s'\n"
+        "Write-Output ([string]$paid.model)\n"
+        "Write-Output ([string]$free.model)\n"
+    ) % (
+        str(WEBHOOK).replace("'", "''"),
+        str(FIXTURE).replace("'", "''"),
+        str(FIXTURE).replace("'", "''"),
+    )
     proc = subprocess.run(
         ["powershell.exe", "-NoProfile", "-Command", script],
         capture_output=True,

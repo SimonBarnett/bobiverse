@@ -11,9 +11,13 @@ HELPERS = REPO / "common" / "scripts" / "Bobiverse-FetchHelpers.ps1"
 
 def test_mrb7550_workflow_bootstraps_filehash_and_git_before_pytest():
     text = WF.read_text(encoding="utf-8")
-    assert "Pytest jeeves/tests (FR #7547)" in text
+    # FR #9529 renamed the step to include the pytest-timeout pin.
+    marker = "Pytest jeeves/tests (FR #7547 / #9529)"
+    if marker not in text:
+        marker = "Pytest jeeves/tests (FR #7547)"
+    assert marker in text
     # Bootstrap must sit in the pytest step, before python -m pytest.
-    step = text[text.index("Pytest jeeves/tests (FR #7547)") :]
+    step = text[text.index(marker) :]
     step = step[: step.index("Build jeeves.exe")]
     assert "Import-Module Microsoft.PowerShell.Utility" in step
     assert "Get-FileHash" in step

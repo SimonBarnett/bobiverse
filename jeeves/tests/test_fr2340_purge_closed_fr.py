@@ -115,10 +115,16 @@ def test_offer_focus_top_purges_closed_fr_before_offer(tmp_path: Path, monkeypat
     assert "#2340" in left
 
 
-def test_offer_focus_top_budget0_keeps_closed_fr_when_issue_open_exhausted(
+def test_offer_focus_top_budget0_still_purges_closed_fr_unbudgeted(
     tmp_path: Path, monkeypatch
 ):
-    """FR #4264: with budget 0, injected issue_open is not called; unknown → still offer."""
+    """FR #9411 supersedes FR #4264 budget-0 soft-offer for CLOSED FRs.
+
+    BORED_GITHUB_CALL_BUDGET=0 must not leave CLOSED issues offerable: the closed
+    live check is unbudgeted (same pattern as Depends-on FR #8754). Budgeted
+    issue_open stays unused for other paths; closed rows are purged and the open
+    FR is offered.
+    """
     monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 0)
     home = _home(tmp_path)
     gitclaim._write_queue(
@@ -161,10 +167,11 @@ def test_offer_focus_top_budget0_keeps_closed_fr_when_issue_open_exhausted(
         home, "marchhare-40208", "#marchhare", issue_open=issue_open
     )
     assert st == "ok" and job is not None
-    assert job["id"] == "#2218"
-    assert calls == []
+    assert job["id"] == "#2340"
+    assert "2218" in calls
     left = {r["id"] for r in gitclaim.load_unaccepted(home)}
-    assert "#2218" in left and "#2340" in left
+    assert "#2218" not in left
+    assert "#2340" in left
 
 
 def test_claim_from_payload_refuses_opened_when_state_closed():

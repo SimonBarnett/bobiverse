@@ -675,7 +675,145 @@ function Format-BobTrayXaiWeeklyRow {
     }
 }
 
+
+function Test-BobTrayDigestEarOffline {
+    <#
+    .SYNOPSIS
+      FR #9144: True when a digest/pools machine node reports ear offline (online=false / I am offline).
+    #>
+    param($Node)
+    if (-not $Node) { return $false }
+    try {
+        if ($null -ne $Node.online -and [bool]$Node.online -eq $false) { return $true }
+    } catch { }
+    try {
+        $st = [string]$Node.status
+        if ($st -and ($st -match '(?i)i am offline|(?i)^\s*offline\s*$')) { return $true }
+    } catch { }
+    return $false
+}
+
+function Get-BobTrayIrcBobServiceStatus {
+    <#
+    .SYNOPSIS
+      FR #9144 / #9496 / #9743 / #9863: local ircBob Status
+      (Running/Running-no-child/Running-duplicate/Paused/Stopped/missing/skipped).
+      Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
+      Running-duplicate when more than one bob-ear / irc_agent child shares the machine (FR #9743).
+      Paused = NSSM AppThrottle after unexpected ear death (FR #9863); heal with Resume/Restart, never Stop-Process.
+    #>
+    if ($env:OS -notmatch 'Windows') { return 'skipped' }
+    try {
+        $svc = Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue
+        if (-not $svc) { return 'missing' }
+        $st = [string]$svc.Status
+        if ($st -ieq 'Running') {
+            $child = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                    $_.CommandLine -and (
+                        ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
+                        ($_.CommandLine -match 'bob-ear\.exe') -or
+                        ($_.Name -match '(?i)^bob-ear')
+                    )
+                }).Count
+            if ($child -lt 1) { return 'Running-no-child' }
+            if ($child -gt 1) { return 'Running-duplicate' }
+        }
+        return $st
+    } catch {
+        return 'error'
+    }
+}
+
+function Resolve-BobTrayDigestFailNote {
+    <#
+    .SYNOPSIS
+      FR #9144 / #9496: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      Running-no-child (nssm Running, no bob-ear process) paints ear-offline.
+      Running-duplicate (FR #9743) also paints ear-offline so a dead twin cannot hide.
+    #>
+    param(
+        [string]$DigestErr,
+        $Doc,
+        [string]$LocalMachineId = '',
+        [string]$IrcBobStatus = ''
+    )
+    $err = [string]$DigestErr
+    if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
+    $svc = ([string]$IrcBobStatus).Trim()
+    # Exact Running/skipped/missing/error stay non-offline; Running-no-child,
+    # Running-duplicate and Stopped paint ear-offline.
+    if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
+        return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
+    }
+    $hit = $false
+    $localHit = $false
+    if ($Doc -and $Doc.machines) {
+        try {
+            foreach ($prop in @($Doc.machines.PSObject.Properties)) {
+                if (Test-BobTrayDigestEarOffline -Node $prop.Value) {
+                    $hit = $true
+                    if ($LocalMachineId -and ([string]$prop.Name -ieq $LocalMachineId)) {
+                        $localHit = $true
+                        return ('digest ear-offline: {0} online=false (HTTP fail: {1})' -f $prop.Name, $err)
+                    }
+                }
+            }
+        } catch { }
+    }
+    if ($localHit -or $hit) {
+        return ('digest ear-offline: digest shows machine(s) offline (HTTP fail: {0})' -f $err)
+    }
+    return ('digest unreachable: {0}' -f $err)
+}
+
+function Get-BobTrayHoverXaiPoolLabel {
+    <#
+    .SYNOPSIS
+      FR #8987 / BOB-HOVER-XAI: NotifyIcon hover labels the xAI weekly pool "xAI"
+      (never "SG"). Premium stays "P+".
+    #>
+    param([string]$SubscriptionTierDisplay = '')
+    $t = [string]$SubscriptionTierDisplay
+    if ($t -match 'Premium') { return 'P+' }
+    if ($t -match 'SuperGrok' -or $t -match '(?i)^xAI' -or -not $t) { return 'xAI' }
+    if ($t -eq 'SG') { return 'xAI' }
+    $out = $t
+    if ($out.Length -gt 8) { $out = $out.Substring(0, 8) }
+    if ($out -eq 'SG') { return 'xAI' }
+    return $out
+}
+
+function Format-BobTrayHoverXaiShort {
+    <#
+    .SYNOPSIS
+      FR #8987: hover NotifyIcon.Text short line - xAI label + same remaining_pct as Status.
+    #>
+    param(
+        [string]$TierLabel = 'xAI',
+        $RemainingPct = $null,
+        [int]$RunningCount = 0,
+        [string]$IdleCaption = ''
+    )
+    $tier = Get-BobTrayHoverXaiPoolLabel -SubscriptionTierDisplay $TierLabel
+    if ($tier -eq '?' -or -not $tier) { $tier = 'xAI' }
+    if ($RunningCount -le 0) {
+        if ($IdleCaption -match 'needs_human') { $short = '{0} idle · needs_human queue' -f $tier }
+        elseif ($IdleCaption) { $short = '{0} idle · offerable=0' -f $tier }
+        elseif ($null -eq $RemainingPct -or [string]$RemainingPct -eq '') { $short = '{0} idle' -f $tier }
+        else { $short = '{0} idle  {1}%' -f $tier, [int]$RemainingPct }
+    }
+    elseif ($null -eq $RemainingPct -or [string]$RemainingPct -eq '') {
+        $short = '{0} {1} run' -f $tier, $RunningCount
+    }
+    else {
+        $short = '{0} {1} run  {2}%' -f $tier, $RunningCount, [int]$RemainingPct
+    }
+    if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
+    return $short
+}
+
 function Select-BobTrayXaiWeeklyFromDigestNode {
+
     <#
     .SYNOPSIS
       FR #6285: return machines.<m>.xai_weekly only. Ignore node.weekly / local log.
@@ -1258,6 +1396,7 @@ function Get-BobTrayAlertKind {
     )
     foreach ($a in @($Alerts)) {
         if (-not $a) { continue }
+        if ($a -match 'online_zero_workers') { return 'online_zero_workers' }
         if ($a -match 'watcher_down') { return 'watcher' }
         if ($a -match 'agent_stall') { return 'stall' }
         if ($a -match 'ACTION_REQUIRED') { return 'stall' }
@@ -1588,18 +1727,11 @@ function Get-BobCopilotFreshness {
     $st = ''
     try { $st = ([string]$Pool.state).Trim().ToLowerInvariant() } catch { }
     if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
-    # FR #6317: unlimited is not a 0% hold. Do not let remaining 0 plus a future
-    # reset paint an old fetched_at as fresh. Used-up quota (overage off) stays a hold.
+    # FR #6317 / FR #9781: unlimited is not a 0% hold. Trust unlimited=true even
+    # when remaining=0 and overage_permitted=false (digest publishes state=ok).
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    $overageOk = $true
-    try {
-        if ($null -ne $Pool.overage_permitted -and [string]$Pool.overage_permitted -ne '') {
-            $overageOk = [bool]$Pool.overage_permitted
-        }
-    } catch { }
-    $usedUp = ($unlimited -and $null -ne $rem -and $rem -le 0 -and -not $overageOk)
-    if ($unlimited -and -not $usedUp) { $rem = $null }
+    if ($unlimited) { $rem = $null }
     $reset = $null
     try { if ($Pool.reset_at) { $reset = [string]$Pool.reset_at } } catch { }
     try { if (-not $reset -and $Pool.period_end) { $reset = [string]$Pool.period_end } } catch { }
@@ -2419,6 +2551,20 @@ function Update-BobTrayDigestPools {
         if (-not $wroteFail) {
             if (-not $doc) { throw 'digest empty' }
             $digestOk = $true
+            # FR #9144: successful HTTP still paint ear-offline when digest says so.
+            try {
+                $off = @()
+                if ($doc.machines) {
+                    foreach ($prop in @($doc.machines.PSObject.Properties)) {
+                        if (Test-BobTrayDigestEarOffline -Node $prop.Value) {
+                            $off += [string]$prop.Name
+                        }
+                    }
+                }
+                if ($off.Count -gt 0 -and -not $note) {
+                    $note = ('digest ear-offline: {0}' -f ($off -join ','))
+                }
+            } catch { }
         }
     }
     catch {
@@ -2427,7 +2573,23 @@ function Update-BobTrayDigestPools {
         if ($digestErr.Length -gt 240) { $digestErr = $digestErr.Substring(0, 240) }
         # Strip anything that looks like a bearer/token fragment from the note.
         $digestErr = ($digestErr -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***')
-        $note = ('digest unreachable: {0}' -f $digestErr)
+        # FR #9144: distinguish ear-offline (ircBob Stopped / digest online=false) from GetResponse timeout.
+        $earDoc = $null
+        try {
+            if (Get-Command Read-BobTrayDigestPoolsFallback -ErrorAction SilentlyContinue) {
+                $fb = Read-BobTrayDigestPoolsFallback
+                if ($fb -and $fb.machines) { $earDoc = $fb }
+            }
+        } catch { }
+        $localMid = ''
+        try {
+            if (Get-Command Get-ThisMachineId -ErrorAction SilentlyContinue) {
+                $localMid = [string](Get-ThisMachineId)
+            }
+        } catch { }
+        $ircStatus = ''
+        try { $ircStatus = [string](Get-BobTrayIrcBobServiceStatus) } catch { $ircStatus = '' }
+        $note = Resolve-BobTrayDigestFailNote -DigestErr $digestErr -Doc $earDoc -LocalMachineId $localMid -IrcBobStatus $ircStatus
         [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $note -ErrorText $digestErr -Report)
         $wroteFail = $true
     }
@@ -2595,6 +2757,7 @@ function Update-BobTrayDigestPools {
             try { if ($prev.copilot_stale_line) { $copilotStaleLine = [string]$prev.copilot_stale_line } } catch { }
             try { if ($null -ne $prev.copilot_fresh_until) { $copilotFreshUntil = [int64]$prev.copilot_fresh_until } } catch { }
             try { if ($prev.copilot_bar) { $copilotBar = $prev.copilot_bar } } catch { }
+            try { $copilotTaskLines = @($prev.copilot_task_lines) } catch { $copilotTaskLines = @() }
             try { if ($prev.opencode_line) { $opencodeLine = [string]$prev.opencode_line } } catch { }
             try { $opencodeFree = $prev.opencode_free } catch { }
             try { $opencodeGo = $prev.opencode_go } catch { }
@@ -2644,6 +2807,7 @@ function Update-BobTrayDigestPools {
         copilot_stale_line  = $copilotStaleLine
         copilot_fresh_until = $copilotFreshUntil
         copilot_bar         = $copilotBar
+        copilot_task_lines  = $(try { @($copilotTaskLines) } catch { @() })
         digest_pools        = @($digestPools)
     }
 
@@ -2754,8 +2918,8 @@ function Format-BobCopilotPoolLine {
     $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    # FR #7371: do not paint unlimited when remaining is 0 and overage is not permitted
-    # (GitHub used-up business quota). Genuine unlimited keeps overage_permitted=true.
+    # FR #9781: trust digest/API unlimited=true even when remaining=0 and
+    # overage_permitted=false (CCA create still works). Do not remap to exhausted.
     $remProbe = $null
     try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $remProbe = [int]$Pool.remaining } } catch { }
     $overageOk = $true
@@ -2764,10 +2928,6 @@ function Format-BobCopilotPoolLine {
             $overageOk = [bool]$Pool.overage_permitted
         }
     } catch { }
-    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
-        $unlimited = $false
-        if ($stLow -in @('ok', '')) { $state = 'exhausted'; $stLow = 'exhausted' }
-    }
     # FR #7299: unlimited never paints as 0%; prefer the word unlimited (or 100%).
     if ($unlimited) {
         if ($isStale) { return ('Copilot - unlimited {0}' -f $staleMark) }
@@ -2808,6 +2968,41 @@ function Format-BobCopilotPoolLine {
     return ('Copilot - {0}' -f $mid)
 }
 
+
+function Format-BobCopilotTaskLines {
+    <#
+    .SYNOPSIS
+      FR #9750: one TipForm/hover line per digest.copilot.tasks row (model + working_on).
+      Soft-allow after #9748: empty/missing tasks => no lines. Never invent machines.copilot.
+    #>
+    param($Tasks)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($t in @($Tasks)) {
+        if (-not $t) { continue }
+        $model = ''
+        try {
+            $model = [string]$t.model
+            if (-not $model) { $model = [string]$t.start_model }
+        } catch { $model = '' }
+        $model = ([string]$model).Trim()
+        $work = ''
+        try { $work = [string]$t.working_on } catch { $work = '' }
+        $work = ([string]$work).Trim()
+        if (-not $work) {
+            $task = ''
+            $id = ''
+            try { $task = ([string]$t.task).Trim() } catch { }
+            try { $id = ([string]$t.id).Trim() } catch { }
+            $work = ('{0} {1}' -f $task, $id).Trim()
+        }
+        if (-not $work -and -not $model) { continue }
+        if ($model -and $work) { [void]$out.Add(('{0}: {1}' -f $model, $work)) }
+        elseif ($work) { [void]$out.Add($work) }
+        else { [void]$out.Add($model) }
+    }
+    return @($out)
+}
+
 function Get-BobCopilotMeterBarPct {
     <#
       FR #6301 / FR #6317: bar is % left. Unlimited uses 100 - historical-max used pct.
@@ -2826,10 +3021,7 @@ function Get-BobCopilotMeterBarPct {
             $overageOk = [bool]$Pool.overage_permitted
         }
     } catch { }
-    # FR #7371: used-up quota must not draw a full green unlimited bar.
-    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
-        $unlimited = $false
-    }
+    # FR #9781: trust unlimited=true (do not clear for rem=0 + !overage).
     if ($unlimited) {
         # FR #7299: unlimited bar is 100% left (never 0% from historical-max math).
         return 100
@@ -4144,7 +4336,8 @@ function Get-BobTrayHover {
       Startup hover must finish inside the 45s engine step.
     #>
     param([switch]$LocalOnly)
-    $tier = '?'
+    # FR #8987 / BOB-HOVER-XAI: hover weekly pool label is xAI (never SG / SuperGrok abbrev).
+    $tier = 'xAI'
     try {
         $path = Join-Path $env:USERPROFILE '.grok\settings_cache.json'
         if (Test-Path $path) {
@@ -4152,10 +4345,7 @@ function Get-BobTrayHover {
             $payload = $wrap.payload
             if ($payload -is [string]) { $payload = $payload | ConvertFrom-Json }
             $t = [string]$payload.settings.subscription_tier_display
-            if ($t -match 'Premium') { $tier = 'P+' }
-            elseif ($t -match 'SuperGrok') { $tier = 'SG' }
-            elseif ($t) { $tier = $t }
-            if ($tier.Length -gt 8) { $tier = $tier.Substring(0, 8) }
+            $tier = Get-BobTrayHoverXaiPoolLabel -SubscriptionTierDisplay $t
         }
     }
     catch { }
@@ -4364,12 +4554,11 @@ function Get-BobTrayHover {
             }
         } catch { }
     }
-    # FR #6285: hover/alert remainPct from digest xai_weekly for this host only when fresh.
+    # FR #6285 / #8987: hover remainPct from digest xai_weekly for this host.
+    # Same remaining_pct Status Format-BobTrayXaiWeeklyRow uses (incl. stale last %).
     if ($digestPresent -and $weeklyBy.ContainsKey($machineId) -and $null -ne $weeklyBy[$machineId]) {
-        if (-not ($fuelStaleBy.ContainsKey($machineId) -and $fuelStaleBy[$machineId])) {
-            $remainPct = [int]$weeklyBy[$machineId]
-            if ($weekFetchedBy.ContainsKey($machineId)) { $weekFetched = [string]$weekFetchedBy[$machineId] }
-        }
+        $remainPct = [int]$weeklyBy[$machineId]
+        if ($weekFetchedBy.ContainsKey($machineId)) { $weekFetched = [string]$weekFetchedBy[$machineId] }
     }
     # FR #6997: hover/engine poll is digest-only for Cursor fuel — never start
     # Get-CursorAgentUsage.py (unbounded provider I/O stalled engine.alive >120s).
@@ -5055,6 +5244,26 @@ function Get-BobTrayHover {
         $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
     }
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
+    # FR #9750: live CCA jobs under digest.copilot.tasks (once; never machines.copilot).
+    $copilotTaskLines = @()
+    try {
+        $rawTasks = $null
+        if ($copilotPoolObj -and $null -ne $copilotPoolObj.PSObject.Properties['tasks']) {
+            $rawTasks = $copilotPoolObj.tasks
+        }
+        $copilotTaskLines = @(Format-BobCopilotTaskLines -Tasks $rawTasks)
+    } catch { $copilotTaskLines = @() }
+    if ($copilotTaskLines.Count -gt 0) {
+        $ctBlock = @()
+        foreach ($ctl in @($copilotTaskLines)) { if ($ctl) { $ctBlock += (('  {0}' -f $ctl)) } }
+        if ($ctBlock.Count -gt 0) {
+            $rest = @($jobLines)
+            if ($rest.Count -gt 0 -and [string]$rest[0] -eq ('  {0}' -f $copilotLine)) {
+                $rest = @($rest | Select-Object -Skip 1)
+            }
+            $jobLines = @(('  {0}' -f $copilotLine)) + $ctBlock + $rest
+        }
+    }
     # FR #7243: hover lists every digest pool (six canonical + extra pcent keys).
     $digestPoolCatalog = @()
     try { $digestPoolCatalog = @(Get-BobTrayDigestPoolCatalog -Digest $reportDigest -MachineId $machineId) } catch { $digestPoolCatalog = @() }
@@ -5069,11 +5278,9 @@ function Get-BobTrayHover {
     $lines = New-Object System.Collections.Generic.List[string]
     if ($null -eq $remainPct) {
         $lines.Add(('{0}  weekly remaining  n/a' -f $tier))
-        $short = '{0} {1} run' -f $tier, @($running).Count
     }
     else {
         $lines.Add(('{0}  weekly remaining  {1}%' -f $tier, $remainPct))
-        $short = '{0} {1} run  {2}%' -f $tier, @($running).Count, $remainPct
     }
     foreach ($pl in $poolLines) { $lines.Add($pl) }
     foreach ($jl in $jobLines) { $lines.Add($jl) }
@@ -5089,15 +5296,33 @@ function Get-BobTrayHover {
         if ($jobsText) { $jobsText = $jobsText + "`n  " + $queueIdleCaption }
         else { $jobsText = '  ' + $queueIdleCaption }
     }
-    if (@($running).Count -eq 0) {
-        if ($null -eq $remainPct) { $short = '{0} idle' -f $tier }
-        else { $short = '{0} idle  {1}%' -f $tier, $remainPct }
-        if ($queueIdleCaption) {
-            if ($queueIdleCaption -match 'needs_human') { $short = '{0} idle · needs_human queue' -f $tier }
-            else { $short = '{0} idle · offerable=0' -f $tier }
+    # FR #9462: durable caption when online machine(s) have zero workers + offerable work.
+    $onlineZeroCaption = $null
+    $onlineZeroAlerts = @()
+    $fleetOfferable = 0
+    try {
+        if ($reportDigest -and $reportDigest.queue -and $null -ne $reportDigest.queue.offerable_count) {
+            $fleetOfferable = [int]$reportDigest.queue.offerable_count
         }
+    } catch { $fleetOfferable = 0 }
+    try {
+        $ozMachines = $null
+        if ($reportDigest -and $reportDigest.machines) { $ozMachines = $reportDigest.machines }
+        elseif ($tiles) { $ozMachines = $tiles }
+        $onlineZeroAlerts = @(Get-BobTrayOnlineZeroWorkerAlerts -Machines $ozMachines -OfferableCount $fleetOfferable)
+        $onlineZeroCaption = Format-BobTrayOnlineZeroCaption -Machines $ozMachines -OfferableCount $fleetOfferable
+    } catch {
+        $onlineZeroAlerts = @()
+        $onlineZeroCaption = $null
     }
-    if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
+    if ($onlineZeroCaption) {
+        $lines.Add(('  {0}' -f $onlineZeroCaption))
+        if ($jobsText) { $jobsText = $jobsText + "`n  " + $onlineZeroCaption }
+        else { $jobsText = '  ' + $onlineZeroCaption }
+    }
+    # FR #8987: short uses xAI label helper + same remainPct as Status xAI weekly.
+    $idleForShort = $(if ($onlineZeroCaption) { [string]$onlineZeroCaption } elseif ($queueIdleCaption) { [string]$queueIdleCaption } else { '' })
+    $short = Format-BobTrayHoverXaiShort -TierLabel $tier -RemainingPct $remainPct -RunningCount @($running).Count -IdleCaption $idleForShort
 
     return [pscustomobject]@{
         title          = $title
@@ -5112,6 +5337,8 @@ function Get-BobTrayHover {
         job_count      = @($running).Count
         queued         = $queued
         queue_idle_caption = $queueIdleCaption
+        online_zero_caption = $onlineZeroCaption
+        online_zero_alerts = @($onlineZeroAlerts)
         jobs           = @($jobs)
         machines       = $tiles
         peer_peek      = $peerPeek
@@ -5138,6 +5365,7 @@ function Get-BobTrayHover {
         copilot_freshness   = $copilotFresh
         copilot_fresh_until = $(if ($copilotFresh -and $null -ne $copilotFresh.fresh_until) { [int64]$copilotFresh.fresh_until } else { [int64]0 })
         copilot_bar         = $copilotBar
+        copilot_task_lines  = @($copilotTaskLines)
         digest_pools        = @($digestPoolCatalog)
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {
@@ -5190,9 +5418,21 @@ function Get-BobPointCoord {
     return $Default
 }
 
+function Test-BobTrayIconRectUsable {
+    <#
+      FR #9186: true when IconRect has complete numeric Left/X and Top/Y plus positive size.
+      Empty Left with Width set (UiDiag iconRect=,-, w=32 h=48) is irBad and must not park tip.
+    #>
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    $r = ConvertTo-BobTrayRect $Value
+    return [bool]$r
+}
+
 function ConvertTo-BobTrayRect {
     param($Value)
     if ($null -eq $Value) { return $null }
+    # FR #9186: treat blank Left/X (or Top/Y) as missing even when Width/Height are set.
     $x = Get-BobPointCoord $Value @('X', 'x', 'Left', 'left') -Default $null
     $y = Get-BobPointCoord $Value @('Y', 'y', 'Top', 'top') -Default $null
     $w = Get-BobPointCoord $Value @('Width', 'width') -Default $null
@@ -5205,6 +5445,7 @@ function ConvertTo-BobTrayRect {
         $bottom = Get-BobPointCoord $Value @('Bottom', 'bottom') -Default $null
         if ($null -ne $bottom -and $null -ne $y) { $h = $bottom - $y }
     }
+    # irBad: any missing axis or non-positive size (empty Left + Width was still src=icon).
     if ($null -eq $x -or $null -eq $y -or $null -eq $w -or $null -eq $h) { return $null }
     if ($w -le 0 -or $h -le 0) { return $null }
     return [pscustomobject]@{
@@ -5215,6 +5456,47 @@ function ConvertTo-BobTrayRect {
         Right  = [int]($x + $w)
         Bottom = [int]($y + $h)
     }
+}
+
+function Test-BobTrayRectIntersectsAny {
+    <#
+      FR #9178: true when $Rect overlaps any area in $Areas (WorkingArea rects).
+      Pure geometry for tip/menu on-screen checks (stale iconRect after explorer recycle).
+    #>
+    param(
+        $Rect,
+        $Areas
+    )
+    $r = ConvertTo-BobTrayRect $Rect
+    if (-not $r) { return $false }
+    foreach ($a in @($Areas)) {
+        $area = ConvertTo-BobTrayRect $a
+        if (-not $area) { continue }
+        if ($r.Right -le $area.X) { continue }
+        if ($r.X -ge $area.Right) { continue }
+        if ($r.Bottom -le $area.Y) { continue }
+        if ($r.Y -ge $area.Bottom) { continue }
+        return $true
+    }
+    return $false
+}
+
+function Get-BobTrayCursorTipPlacement {
+    <#
+      FR #9178: place tip near cursor then clamp to WorkArea (TipRelocateCursor).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$TipWidth,
+        [Parameter(Mandatory = $true)][int]$TipHeight,
+        $Cursor,
+        $WorkArea,
+        [int]$Gap = 12,
+        [int]$Margin = 8
+    )
+    return Get-BobTrayTipPlacement -TipWidth $TipWidth -TipHeight $TipHeight `
+        -IconRect $null -Cursor $Cursor -WorkArea $WorkArea -AlreadyVisible $false `
+        -Gap $Gap -Margin $Margin
 }
 
 function Get-BobTrayTipPlacement {
@@ -5229,7 +5511,9 @@ function Get-BobTrayTipPlacement {
         [int]$CurrentX = 0,
         [int]$CurrentY = 0,
         [int]$Gap = 12,
-        [int]$Margin = 8
+        [int]$Margin = 8,
+        # Optional extra WorkingArea rects (all screens). Stale iconRect outside these is ignored.
+        $ScreenAreas = $null
     )
     if ($AlreadyVisible) {
         return [pscustomobject]@{
@@ -5240,13 +5524,38 @@ function Get-BobTrayTipPlacement {
         }
     }
 
-    $icon = ConvertTo-BobTrayRect $IconRect
+    # FR #9186: incomplete Left/X (irBad) must not become src=icon.
+    $icon = $null
+    if ($null -ne $IconRect) {
+        if (Test-BobTrayIconRectUsable $IconRect) {
+            $icon = ConvertTo-BobTrayRect $IconRect
+        }
+        else {
+            Write-Verbose 'FR #9186 TipPlace: irBad=True incomplete iconRect; using cursor'
+        }
+    }
     $work = ConvertTo-BobTrayRect $WorkArea
     $cx = Get-BobPointCoord $Cursor @('X', 'x')
     $cy = Get-BobPointCoord $Cursor @('Y', 'y')
     $source = 'cursor'
     $x = $cx - $TipWidth
     $y = $cy - $TipHeight - $Gap
+
+    # FR #9178: after explorer recycle, Shell may return a stale iconRect off every
+    # WorkingArea. Prefer cursor placement so tip/menu are not parked off-screen.
+    if ($icon) {
+        $areas = @()
+        if ($work) { $areas += $work }
+        foreach ($a in @($ScreenAreas)) {
+            $ar = ConvertTo-BobTrayRect $a
+            if ($ar) { $areas += $ar }
+        }
+        if ($areas.Count -gt 0 -and -not (Test-BobTrayRectIntersectsAny -Rect $icon -Areas $areas)) {
+            Write-Verbose 'FR #9178 TipPlace: stale iconRect outside WorkingArea; using cursor'
+            $icon = $null
+            $source = 'cursor-stale-icon'
+        }
+    }
 
     if ($icon) {
         $source = 'icon'

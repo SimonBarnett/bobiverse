@@ -80,9 +80,9 @@ function Resolve-SyncBobiverseFromRepoPath {
         [string]$BobRoot
     )
     $name = 'Sync-BobiverseFromRepo.ps1'
+    # FR #9309: prefer Bob tip Sync (has sync-monitor-force) over a stale composed
+    # flat copy beside Start on J:\ (class of missing opencode_seats.py after #8583).
     $cands = @(
-        (Join-Path $ScriptRoot $name),
-        (Join-Path $JeevesInstallRoot ('scripts\' + $name)),
         (Join-Path $BobRoot ('common\scripts\' + $name)),
         (Join-Path $BobRoot ('scripts\' + $name))
     )
@@ -91,10 +91,24 @@ function Resolve-SyncBobiverseFromRepoPath {
         $cands += (Join-Path $parent ('common\scripts\' + $name))
         $cands += (Join-Path $parent ('scripts\' + $name))
     }
+    $cands += @(
+        (Join-Path $ScriptRoot $name),
+        (Join-Path $JeevesInstallRoot ('scripts\' + $name))
+    )
+    $fallback = ''
     foreach ($c in $cands) {
-        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+        if (-not ($c -and (Test-Path -LiteralPath $c))) { continue }
+        # Prefer a Sync that force-copies tools\monitor (FR #8860 marker).
+        $hit = $false
+        try {
+            foreach ($line in [IO.File]::ReadLines($c)) {
+                if ($line -match 'sync-monitor-force') { $hit = $true; break }
+            }
+        } catch { }
+        if ($hit) { return $c }
+        if (-not $fallback) { $fallback = $c }
     }
-    return ''
+    return $fallback
 }
 $syncMon = Resolve-SyncBobiverseFromRepoPath -ScriptRoot $PSScriptRoot -JeevesInstallRoot $InstallRoot -BobRoot $BobInstallRoot
 if ($syncMon) {
@@ -103,6 +117,10 @@ if ($syncMon) {
             & $syncMon -Product jeeves -InstallRoot $InstallRoot -DryRun
         } else {
             & $syncMon -Product jeeves -InstallRoot $InstallRoot
+        }
+        # FR #9100: warn when Sync fails; do not block monitor startup.
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-Warning ("FR #9100 sync-monitor exit={0}; tools/monitor may be stale" -f $LASTEXITCODE)
         }
     } catch {
         Write-Warning ("FR #8860 sync-monitor: {0}" -f $_.Exception.Message)
@@ -127,7 +145,7 @@ if (-not (Test-Path -LiteralPath $run)) {
 # health/queue/stale_digest soft-pass via live /bob/v1/report when fresh).
 $chairProbe = Join-Path $env:USERPROFILE '.jeeves\queue.json'
 if (-not (Test-Path -LiteralPath $chairProbe)) {
-    Write-Warning "FR #8579: no local chair queue at $chairProbe - this looks like a non-chair host. Monitor checks soft-pass local chair probes when live https://irc.ntsa.uk/bob/v1/report is fresh; prefer running monitor on the ionos chair for local service truth."
+    Write-Warning "FR #8579: no local chair queue at $chairProbe - this looks like a non-chair host. Monitor checks soft-pass local chair probes when live https://bob.ntsa.uk/bob/v1/report is fresh; prefer running monitor on the ionos chair for local service truth."
 }
 $argv = @('--mode', 'monitor', '--install-root', $BobInstallRoot, '--work-root', $InstallRoot)
 if ($DryRun) {

@@ -1,6 +1,7 @@
-# Isolated jeeves.exe build (FR #6395 / #7547).
+# Isolated jeeves.exe build (FR #6395 / #7547 / #9529).
 # Not a release, MSI, install, or service restart. Build-Jeeves.ps1 owns PyInstaller.
 # FR #7547: pytest jeeves/tests before PyInstaller so a red suite never ships an artifact.
+# FR #9529: job/step timeout + per-test pytest-timeout so a hung suite fails instead of sitting ~25m+.
 # Uploads SHA-256 provenance (MANIFEST.json) so Slab can install from a known artifact.
 name: build-jeeves
 
@@ -16,7 +17,10 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - common/tests/test_fr8841_wire_open_children_build_jeeves.py
+      - common/scripts/open_children_gate.py
       - jeeves/tests/test_fr7547_build_jeeves_pytest.py
+      - jeeves/tests/test_fr9529_build_jeeves_pytest_timeout.py
       - common/requirements-freeze.txt
       - common/scripts/assert_jeeves_yaml_embed.py
   push:
@@ -30,16 +34,28 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - common/tests/test_fr8841_wire_open_children_build_jeeves.py
+      - common/scripts/open_children_gate.py
       - jeeves/tests/test_fr7547_build_jeeves_pytest.py
+      - jeeves/tests/test_fr9529_build_jeeves_pytest_timeout.py
       - common/requirements-freeze.txt
       - common/scripts/assert_jeeves_yaml_embed.py
 
+# FR #9529: supersede stacked tip builds so hung runners do not pile behind newer pushes.
+concurrency:
+  group: build-jeeves-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   build-jeeves:
     runs-on: windows-latest
+    # Healthy tip ~18m; fail the job if hung well before the default 6h runner limit.
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -57,17 +73,38 @@ jobs:
         run: |
           # FR #6553: Install-BobiversePythonDeps also pip -r common/requirements-freeze.txt (PyYAML).
           # FR #7547: pytest must be present before the suite step (failing tests block the build).
-          python -m pip install --upgrade pip pyinstaller pytest
+          # FR #9529: pytest-timeout fails a single stuck test instead of the whole step going silent.
+          python -m pip install --upgrade pip pyinstaller pytest pytest-timeout
           if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller/pytest failed: $LASTEXITCODE" }
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
-      - name: Pytest jeeves/tests (FR #7547)
+      # CI-G2 / FR #8841: run CI-G1 open-children gate on pull_request only.
+      # Reuse: same script for other SimonBarnett repos via --repo / --pr (or --parent).
+      # Fail-when: open issues still Depends-on a Closes parent of this PR.
+      - name: Open-children gate (CI-G1 / FR #8841)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}/common/scripts
+        run: |
+          $root = (Get-Location).Path
+          $repo = "${{ github.repository }}"
+          $pr = "${{ github.event.pull_request.number }}"
+          python "$root\common\scripts\open_children_gate.py" --repo $repo --pr $pr
+          if ($LASTEXITCODE -ne 0) { throw "open-children-gate exit $LASTEXITCODE" }
+
+      - name: Pytest jeeves/tests (FR #7547 / #9529)
+        # FR #9529: step cap tighter than job so a silent hang fails before PyInstaller waits.
+        timeout-minutes: 30
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           PYTHONPATH: ${{ github.workspace }}/jeeves/scripts;${{ github.workspace }}/common/scripts;${{ github.workspace }}/common/tests;${{ github.workspace }}/jeeves/tests
           # FR #7355 / MRB #7550: never leave Get-FileHash missing under Autoload=None.
           PSModuleAutoLoadingPreference: All
+          PYTHONFAULTHANDLER: "1"
+          PYTHONUNBUFFERED: "1"
         run: |
           $root = (Get-Location).Path
           $head = (git rev-parse HEAD).Trim()
@@ -80,7 +117,8 @@ jobs:
           git config --global user.email 'ci-bobiverse@users.noreply.github.com'
           git config --global user.name 'bobiverse-ci'
           # -q prints the collected/passed count in the log (acceptance: count visible on main).
-          python -m pytest "$root\jeeves\tests" -q --tb=short -rfE -p no:cacheprovider
+          # FR #9529: --timeout=180 per test (thread method on Windows); dump hangs via faulthandler.
+          python -m pytest "$root\jeeves\tests" -q --tb=short -rfE -p no:cacheprovider --timeout=180 --timeout-method=thread
           if ($LASTEXITCODE -ne 0) { throw "jeeves pytest exit $LASTEXITCODE" }
 
       - name: Build jeeves.exe with Build-Jeeves.ps1

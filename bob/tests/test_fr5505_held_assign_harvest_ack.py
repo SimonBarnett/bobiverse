@@ -95,8 +95,8 @@ def test_fr5505_nack_harvest_hold_ack_on_receipt_injects_when_hold_ends():
     relay.hold_assigns_while = lambda: bored.holding_incoming_assigns
     relay.on_hold_assign = lambda line: bored.note_held_assign()
 
-    # Prior turn already ended; NACK starts post-free harvest hold (issue sequence).
-    bored.turn_ended(at=clock())
+    # NACK while turn still open so harvest hold arms (FR #9364: no open turn → skip).
+    bored.turn_started(at=clock())
     clock.advance(0.1)
     bored.on_outbox(NACK_LINE)
     assert bored.holding_incoming_assigns is True
@@ -110,7 +110,9 @@ def test_fr5505_nack_harvest_hold_ack_on_receipt_injects_when_hold_ends():
         "ACK-on-receipt must not cancel harvest hold while assign is still held"
     )
 
-    # No turn follows. Past harvest_hold_s the parked assign must inject.
+    # Miss turn_ended: clear open-turn so harvest expiry flushes the parked assign.
+    with bored._cv:
+        bored._turn_open = False
     clock.advance(6.0)
     assert _wait(lambda: len(injected) >= 1, clock, timeout=4.0), (
         f"held assign must inject after harvest expiry; injected={injected!r} logs={logs[-8:]!r}"

@@ -15,12 +15,20 @@ description: >
 > 4. Monitoring observes and reports; may run Jeeves commands **to keep the queue moving** (FR #8827); never touch Ergo, never merge/UAT/VERSION.
 > 5. Prefer deterministic fixes. When tested, FR them into the Jeeves token-less service so what we learn becomes
 >    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
+> 6. **CAST IRON â€” interventions â†’ ircJeeves FR (#9627).** Any keep-queue-moving / heal action owes a product FR the
+>    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
+> 7. **CAST IRON â€” idle + open work is FAIL (#9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` chair-heals
+>    (`push_idle` / `offer_to_idle`); not report-only. Same-turn bridge still owes #9627.
+> 8. **CAST IRON â€” multi-FR batch needs Digest parent (#9652).** â‰¥2 related FRs in one batch: `fr-digest` Digest first;
+
+> 9. **CAST IRON --- Jeeves on IRC => webhooks up (#9826).** `Start-Service ircJeeves` / `Start-Jeeves.ps1` => same-turn local report 200 + heal; monitor `webhooks_up_with_chair`.
+>    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
 Skills live under **`.grok\skills`** (there is **no** top-level `.\skills` directory).
 
-You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / `!focus` / `!assign` / `!sweep` / … **to keep the queue moving**; never touch Ergo; never merge/UAT/VERSION.
+You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / `!focus` / `!assign` / `!sweep` / â€¦ **to keep the queue moving**; never touch Ergo; never merge/UAT/VERSION.
 
 ## First turn (exact sequence)
 
@@ -35,13 +43,15 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Check | Script / name | Why |
 |---|---|---|
 | Health | `health` | ircJeeves / chair home / webhook surface |
-| Idle seats | `idle_seats` | seats idle while unaccepted work exists (**report only** - keep seats busy; no `clear_seat_doing`) |
+| Webhooks up with chair | webhooks_up_with_chair | FR #9826 CAST IRON: ircJeeves Running requires local /bob/v1/report HTTP 200; heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
+| Idle seats | `idle_seats` | seats idle while ungated work exists â€” EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
 | Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019). **Report only** unless explicit `--force-orphan-busy` and `accepted` empty (harvest #1967 keep seats busy) |
-| OpenCode seats | `opencode_seats` | live GET `/bob/v1/report` flamingo `kind=opencode` stuck age / model_mismatch / week-exhausted while busy (FR #8583). **Report only** — digest alone misses remote OpenCode |
+| OpenCode seats | `opencode_seats` | live GET `/bob/v1/report` flamingo `kind=opencode` stuck age / model_mismatch / week-exhausted while busy (FR #8583). **Report only** â€” digest alone misses remote OpenCode |
 | Stale digest | `stale_digest` | digest not updating |
+| Orphan last-good workers | `workers_last_good_orphan` | `workers_stale` + empty live workers + non-empty `workers_last_good` (FR #9145; token-free; local digest only) |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |
 | Auto-feed | `auto_feed` | BobAutoFeed / auto-offer liveness |
@@ -54,6 +64,10 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
 | Depends-on open | `depends_on` | offered or accepted row whose `Depends-on:` ref is still OPEN (FR #8848 / BOB-D3). Soft-ok when the product skip is not on tip or no Depends-on rows. Distinct from hold and from `fr_digest` (see `bobiverse-jeeves-agent-depends-on`) |
 | FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
+| Walrus install gate | `walrus_jeeves_install_ready` | FR #9376 Depends-on / Plan-agent gate issues CLOSED before DryRun / `-SiYes` WinRM hotpatch (`Install-JeevesWalrusWinRm.ps1`). Fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE`. Does not open WinRM. |
+| Redqueen bob-tray install | `redqueen_bob_tray_install_ready` | FR #9419 live `bob-tray.exe` vs green `build-bob-tray.yml` / fixture drift before DryRun / `-Install` local hotpatch (`Install-BobTrayRedqueen.ps1`). Fixture `BOB_TRAY_REDQUEEN_INSTALL_FIXTURE`. Does not mutate the tray. |
+| MRB same-machine starve | `mrb_same_machine_starve` | FR #9478 idle same-machine siblings blocked from offerable MRBs with no free cross-machine reviewer (hard #9401 / free= omit). Prefer cross-machine `!assign`; tip soft free-other-machine; install waits on #9475/#9476. |
+| Models PUT forward | `models_put_forward` | FR #9585 Weights Save: public `PUT /bob/v1/models` must reach bobcallback (not IIS HTML 404). Remediation: re-run `Install-BobWebhooks.ps1` on walrus so `BobModelsWebhook` uses `^(GET\|HEAD\|POST\|PUT)$` (FR #9273). Fixture `JEEVES_MODELS_PUT_FORWARD_FIXTURE`. |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
@@ -64,13 +78,20 @@ After the script checks, if BOB-D / BOB-G product is on tip, open and follow `.g
 Title: short delay symptom. Body: what / where / evidence (script JSON / exit) / fix. De-dup first. Never print secrets.
 
 
-## Non-chair hosts (FR #8579)
+## Non-chair hosts (FR #8579 / #8866 / #9557)
 
 Monitor may run on a worker box (e.g. redqueen) that has no local `~/.jeeves/queue.json`
 and no ircJeeves/BobCallback services. Those local probes **soft-pass** when live
-`GET https://irc.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
-`non_chair_overlay` in the JSON. Prefer the ionos chair host for local service truth.
+`GET https://bob.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
+`non_chair_overlay` in the JSON. Prefer the walrus chair host for local service truth.
 Start-JeevesMonitor warns when the local queue file is absent; it does not refuse.
+
+**FR #9557:** an empty or stale local ops home (present `queue.json` with zero rows,
+or digest that misses live ACC/doing seats) must prefer the live report for
+`idle_seats` seat paint, or soft-skip EXIT 0 with `skipped=stale_local_home` when
+the report is unusable â€” never EXIT 1 false starve from Admin `~/.jeeves`. Optional
+env `JEEVES_MONITOR_DIGEST_HOME` (UNC/shared chair digest) overrides seat-local
+`BOB_DIGEST_HOME` for token-free checks.
 
 ## Do not
 
@@ -78,7 +99,7 @@ Start-JeevesMonitor warns when the local queue file is absent; it does not refus
 - Touch Ergo / merge / stamp UAT / bump VERSION / claim shop jobs as a worker
 - Conclude "no skills" because `.\skills` is missing - use `.grok\skills`
 
-Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep`) are allowed per FR #8827 — see `bobiverse-jeeves-monitor` playbook.
+Keep-queue-moving commands (`!ignore` / `!focus` / `!assign` / `!sweep`) are allowed per FR #8827 â€” see `bobiverse-jeeves-monitor` playbook.
 
 - Intake URL: https://bob.ntsa.uk/bob/v1/intake
 - Explicit Bobiverse filing target: -Repo SimonBarnett/bobiverse

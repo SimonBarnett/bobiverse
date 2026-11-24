@@ -66,7 +66,8 @@ def test_fr8768_offer_focus_skips_walrus_pin_for_marchhare(tmp_path, monkeypatch
         "line": "chair offer gate",
         "title": "chair: do not offer require_machine=walrus FRs into #marchhare shop",
         "body": gitclaim._body_for_queue(body),
-        "labels": ["feature-request"],
+        # FR #9637: body pin alone no longer stamps; needs-walrus label does.
+        "labels": ["feature-request", "needs-walrus"],
         "state": "open",
     }
     assert gitclaim.row_require_machine(row) == "walrus"

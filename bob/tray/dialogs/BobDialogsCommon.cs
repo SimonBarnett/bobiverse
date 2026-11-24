@@ -53,6 +53,29 @@ namespace BobDialogs
             return false;
         }
 
+        // FR #9165: drop the single-instance mutex when the dialog never got a visible HWND
+        // so a windowless zombie cannot block TipForm left-click Status forever.
+        public static void AbandonSingle()
+        {
+            if (keep == null) return;
+            try { keep.Close(); } catch { }
+            keep = null;
+        }
+
+        // FR #9166: ReleaseMutex + Dispose (stronger than Close alone) so TipForm left-click
+        // recovers when a windowless holder kept the mutex.
+        public static void ReleaseSingle()
+        {
+            try
+            {
+                if (keep == null) return;
+                try { keep.ReleaseMutex(); } catch { }
+                try { keep.Dispose(); } catch { }
+                keep = null;
+            }
+            catch { }
+        }
+
         public static string Arg(string[] args, string name)
         {
             for (int i = 0; i + 1 < args.Length; i++) if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return args[i + 1];
@@ -324,6 +347,28 @@ namespace BobDialogs
         public static Dictionary<string, object> Dict(object o) { return o as Dictionary<string, object>; }
 
         public static IList List(object o) { return o as IList; }
+
+        public static string[] StrArray(object v)
+        {
+            if (v == null) return new string[0];
+            string[] sa = v as string[];
+            if (sa != null) return sa;
+            IList listObj = v as IList;
+            if (listObj != null)
+            {
+                var list = new System.Collections.Generic.List<string>();
+                foreach (object o in listObj)
+                {
+                    if (o == null) continue;
+                    string s = Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture);
+                    if (!string.IsNullOrWhiteSpace(s)) list.Add(s.Trim());
+                }
+                return list.ToArray();
+            }
+            string one = Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture);
+            if (string.IsNullOrWhiteSpace(one)) return new string[0];
+            return new[] { one.Trim() };
+        }
 
         public static string Str(Dictionary<string, object> d, string key)
         {

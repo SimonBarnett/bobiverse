@@ -8,9 +8,10 @@
 .NOTES
   t794u: the tray never updates. Product Sync/ff and the release self-update run only on ircBob service start (Start-Bob).
   Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart) restarts ircBob via
-  Start-BobFleetTray, so a start also applies a pending update. Tray Exit stops ircBob (detached).
+  Start-BobFleetTray, so a start also applies a pending update. TipForm Exit never stops ircBob
+  (FR #9034 / #9146; ear is a machine service). Under #9011 park, Exit uses a 5m watchdog suppress.
   FR #1636: autostart/shortcuts pass -SkipTidy (ForceNew replaces the prior tray only). TipForm Restart
-  still tidies seats. Lifecycle lines append to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log.
+  still tidies seats. FR #9509: prior sweep uses timed Win32_Process + Get-Process bob-tray fallback (no bare CIM hang). Lifecycle lines append to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log.
 #>
 [CmdletBinding()]
 param(
@@ -117,18 +118,56 @@ if (-not $env:BOBIVERSE_BOB_VERSION) {
 }
 
 # One TipForm only: stop other Watch-BobTray / seat wrappers (and legacy minimal Start-BobTray hosts).
-$prior = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -and [int]$_.ProcessId -ne $PID -and (
-            $_.CommandLine -match 'Watch-BobTray\.ps1' -or
-            $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1' -or
-            ($_.CommandLine -match 'Start-BobTray\.ps1' -and $_.CommandLine -notmatch [regex]::Escape($MyInvocation.MyCommand.Path))
-        )
+# FR #9509: never bare Get-CimInstance Win32_Process here - hung CIM stalls ForceNew with no bob-tray.exe.
+if (-not (Get-Command Get-BobTrayPriorProcessHits -ErrorAction SilentlyContinue)) {
+    # Lifecycle may be missing in sparse trees; define a minimal timed+fallback copy.
+    function Get-BobTrayPriorProcessHits {
+        param([int]$TimeoutSec = 8, [int]$ExcludePid = 0, [string]$InstallRoot = '')
+        if ($ExcludePid -le 0) { $ExcludePid = $PID }
+        $hits = New-Object System.Collections.Generic.List[object]
+        try {
+            $scope = New-Object System.Management.ManagementScope
+            $query = New-Object System.Management.ObjectQuery 'SELECT ProcessId, Name, CommandLine, ExecutablePath FROM Win32_Process'
+            $opt = New-Object System.Management.EnumerationOptions
+            $opt.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
+            $opt.ReturnImmediately = $false
+            $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+            foreach ($mo in @($searcher.Get())) {
+                $procId = 0
+                try { $procId = [int]$mo['ProcessId'] } catch { continue }
+                if ($procId -eq $ExcludePid) { continue }
+                $cmd = [string]$mo['CommandLine']
+                $name = [string]$mo['Name']
+                if ($cmd -and (
+                        $cmd -match 'Watch-BobTray\.ps1' -or
+                        $cmd -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                        ($cmd -match 'Start-BobTray\.ps1' -and $cmd -notmatch [regex]::Escape($MyInvocation.MyCommand.Path)) -or
+                        ($cmd -match '(?i)bob-tray\.exe')
+                    ) -or ($name -eq 'bob-tray.exe')) {
+                    $hits.Add([pscustomobject]@{ ProcessId = $procId; Name = $name; Source = 'wmi-timed' })
+                }
+            }
+        } catch { }
+        if ($hits.Count -eq 0) {
+            try {
+                foreach ($p in @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue)) {
+                    if ([int]$p.Id -eq $ExcludePid) { continue }
+                    $hits.Add([pscustomobject]@{ ProcessId = [int]$p.Id; Name = 'bob-tray.exe'; Source = 'get-process' })
+                }
+            } catch { }
+        }
+        return @($hits.ToArray())
+    }
+}
+$prior = @(Get-BobTrayPriorProcessHits -TimeoutSec 8 -ExcludePid $PID -InstallRoot $InstallRoot | Where-Object {
+        # Keep Start-BobTray self out even when CommandLine matched loosely.
+        -not ($_.CommandLine -and $_.CommandLine -match 'Start-BobTray\.ps1' -and $_.CommandLine -match [regex]::Escape($MyInvocation.MyCommand.Path))
     })
 if ($ForceNew -or $prior.Count -gt 0) {
     foreach ($p in $prior) {
         try {
             Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue
-            Write-Host ("INFO stopped prior tray pid={0}" -f $p.ProcessId)
+            Write-Host ("INFO stopped prior tray pid={0} source={1}" -f $p.ProcessId, $(if ($p.Source) { $p.Source } else { 'n/a' }))
         } catch { }
     }
     Start-Sleep -Milliseconds 600

@@ -853,6 +853,19 @@ def return_job_to_unaccepted(
             # FR #8937: it must still keep the row, record giveup_seats, and set
             # cooldown_until. Dropping those fields let an open FR leave the queue.
             no_terminal_giveup = gitclaim.is_no_terminal_reply_reason(reason)
+            # FR #9339: already-finished NACK is terminal only when a verdict covers
+            # the current head (or PR closed). Otherwise re-offer; do not needs_human.
+            already_finished_nack = gitclaim.is_already_finished_nack_reason(reason)
+            already_finished_nonterminal = False
+            if already_finished_nack:
+                covered = False
+                with contextlib.suppress(Exception):
+                    covered = bool(
+                        gitclaim.mrb_verdict_covers_current_head(
+                            job, doc, home=home
+                        )
+                    )
+                already_finished_nonterminal = not covered
             seat_not_job_giveup = (
                 self_mrb_giveup
                 or out_of_fuel_giveup
@@ -861,6 +874,7 @@ def return_job_to_unaccepted(
             or no_terminal_giveup
             or head_mismatch_giveup
             or infra_soft_giveup
+            or already_finished_nonterminal
         )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
@@ -929,6 +943,7 @@ def return_job_to_unaccepted(
                 and not console_closed_giveup
                 and not head_mismatch_giveup
                 and not busy_nack
+                and not already_finished_nonterminal
             ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
@@ -958,8 +973,37 @@ def return_job_to_unaccepted(
             if reason and not console_closed_giveup:
                 with contextlib.suppress(Exception):
                     gitclaim.apply_require_machine_giveup_stamp(job, reason)
-            if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
+            # FR #9469 / #9665: blocked:depends-on / depends_open:#N stamps plain
+            # Depends-on: + durable depends_open so offer skips until CLOSED
+            # (bypasses unheld fr-digest soft-allow).
+            if reason and not console_closed_giveup:
+                with contextlib.suppress(Exception):
+                    gitclaim.apply_depends_on_giveup_stamp(job, reason)
+            # FR #9554 bob_host_heal_tipform_auto_pin: tipform/tray/engine.alive host-heal
+            # churn pins require_machine (counts infra-soft too) and never needs_human.
+            host_heal_pinned = ""
+            with contextlib.suppress(Exception):
+                host_heal_pinned = gitclaim.apply_host_heal_require_machine_stamp(
+                    job, reason or "", nick=gave_up_by or ""
+                )
+            if host_heal_pinned:
+                job.pop("needs_human", None)
+            elif (not seat_not_job_giveup) and count >= int(
+                gitclaim.GIVEUP_NEEDS_HUMAN_COUNT
+            ):
                 job["needs_human"] = True
+            if (
+                (not seat_not_job_giveup)
+                and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT)
+                and gitclaim.row_is_host_heal_tipform(job)
+            ):
+                # Divert late: tipform class must not park needs_human even if pin
+                # missed (no machine inferred yet).
+                job.pop("needs_human", None)
+                with contextlib.suppress(Exception):
+                    gitclaim.apply_host_heal_require_machine_stamp(
+                        job, reason or "", nick=gave_up_by or ""
+                    )
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so
             # recycled OpenCode nicks do not keep re-taking the same job.
             # FR #8008 still records the agent class. FR #8375: that must not
@@ -1154,6 +1198,19 @@ def handle_shop_worker_line(
                             home, nick=nick, repo=parsed.repo
                         ):
                             out["no_clone_repo"] = True
+                # FR #9698: pre-ACK disk NACK still files the machine-pinned tip.
+                with contextlib.suppress(Exception):
+                    import disk_starvation_chair_file as _dscf
+
+                    filed = _dscf.maybe_file_from_giveup(
+                        nick=nick,
+                        reason=reason,
+                        repo=parsed.repo,
+                        task=parsed.task,
+                        ident=parsed.id,
+                    )
+                    if filed is not None:
+                        out["disk_starvation_issue"] = filed
             return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
@@ -1175,6 +1232,19 @@ def handle_shop_worker_line(
                 )
                 if stamped is not None:
                     out["deterministic_nack"] = True
+        # FR #9698: disk GIVEUP/NACK -> one machine-pinned Jeeves-agent issue.
+        with contextlib.suppress(Exception):
+            import disk_starvation_chair_file as _dscf
+
+            filed = _dscf.maybe_file_from_giveup(
+                nick=nick,
+                reason=reason,
+                repo=parsed.repo,
+                task=parsed.task,
+                ident=parsed.id,
+            )
+            if filed is not None:
+                out["disk_starvation_issue"] = filed
         # FR #6439: wake Bob on shop GIVEUP (same HTTPS wake URL as close notices).
         if parsed.verb == "GIVEUP":
             with contextlib.suppress(Exception):

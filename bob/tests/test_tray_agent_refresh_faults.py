@@ -21,6 +21,7 @@ WATCH = REPO / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
 PS = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
 needs_ps = pytest.mark.skipif(not PS, reason="needs powershell.exe or pwsh to execute the tray function")
 
+# FR #9262 / BOB-TRAY-UI-02: Get-BobTrayWorkerAgentChoices omits auto from returned rows.
 FIRST = {
     "refresh": True,
     "agents": [
@@ -33,6 +34,9 @@ FIRST = {
         {"id": "opencode", "label": "OpenCode", "available": False, "installed": True,
          "reason": "", "fuel_state": "known"},
     ],
+}
+FIRST_MENU = {
+    "agents": [a for a in FIRST["agents"] if a["id"] != "auto"],
 }
 UNKNOWN = {
     "refresh": False,
@@ -47,6 +51,9 @@ UNKNOWN = {
          "reason": "", "fuel_state": "unknown"},
     ],
 }
+UNKNOWN_MENU = {
+    "agents": [a for a in UNKNOWN["agents"] if a["id"] != "auto"],
+}
 REAL = {
     "refresh": False,
     "agents": [
@@ -59,6 +66,9 @@ REAL = {
         {"id": "opencode", "label": "OpenCode", "available": True, "installed": True,
          "reason": "", "fuel_state": "known"},
     ],
+}
+REAL_MENU = {
+    "agents": [a for a in REAL["agents"] if a["id"] != "auto"],
 }
 
 
@@ -161,12 +171,12 @@ exit 0
 @needs_ps
 @pytest.mark.parametrize("fault", ["timeout", "empty", "unknown", "malformed", "throw"])
 def test_refresh_fault_keeps_exact_first_rows(tmp_path: Path, fault: str):
-    assert _run(tmp_path, fault) == _rows(FIRST)
+    assert _run(tmp_path, fault) == _rows(FIRST_MENU)
 
 
 @needs_ps
 def test_refresh_real_reading_replaces_first_rows(tmp_path: Path):
-    assert _run(tmp_path, "real") == _rows(REAL)
+    assert _run(tmp_path, "real") == _rows(REAL_MENU)
 
 
 def test_harness_uses_the_repo_function():

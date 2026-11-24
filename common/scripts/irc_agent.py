@@ -402,6 +402,11 @@ def note_overlong_console_privmsg_reject(
 
 # FR #68: cap each outbox tick so chair +o and ChanServ sync cannot starve.
 OUTBOX_LINES_PER_TICK = 8
+# FR #9239: never path.read_bytes() the whole outbox — a multi-MB backlog OOMs
+# the ear (MemoryError in outbox_loop). Bounded seek+read per call.
+OUTBOX_READ_MAX_BYTES = int(
+    os.environ.get("BOB_OUTBOX_READ_MAX_BYTES", str(1 << 20)) or str(1 << 20)
+)
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
 # Safe default for PRIVMSG *text* when LINELEN/prefix unknown (~400 bytes of UTF-8 text).
 DEFAULT_PRIVMSG_TEXT_MAX = 400
@@ -574,7 +579,11 @@ def is_cred_seal_outbox_line(norm: str) -> bool:
 
 
 def take_outbox_records(
-    path: Path, last: int, max_lines: int | None = None
+    path: Path,
+    last: int,
+    max_lines: int | None = None,
+    *,
+    max_bytes: int | None = None,
 ) -> tuple[list[tuple[str, int, int, bytes]], int]:
     """Complete newline-terminated outbox records from byte offset `last`.
 
@@ -586,22 +595,45 @@ def take_outbox_records(
     FR #226 / FR #68 / FR #5826: same BOM/CRLF/max_lines rules as
     ``take_outbox_lines``; spans are the original file bytes so CRED-SEAL
     scrubbing can blank in place without rewriting unrelated records.
+
+    FR #9239: seek + bounded read (default ``OUTBOX_READ_MAX_BYTES``). Never
+    ``Path.read_bytes()`` the whole file — a huge backlog raised MemoryError
+    in ``outbox_loop``. Soft-return ``([], last)`` on MemoryError.
     """
     try:
-        data = path.read_bytes()
+        size = path.stat().st_size
     except OSError:
         return [], last
-    file_bom = 0
-    if data.startswith(_BOM_UTF8):
-        file_bom = len(_BOM_UTF8)
-    if last > len(data):
+    if size <= 0:
+        return [], last
+    if last > size:
         last = 0
-    if last < file_bom:
-        buf = data[file_bom:]
-        base = file_bom
-    else:
-        buf = data[last:]
-        base = last
+    cap = OUTBOX_READ_MAX_BYTES if max_bytes is None else max(0, int(max_bytes))
+    if cap <= 0:
+        return [], last
+    try:
+        with path.open("rb") as fh:
+            file_bom = 0
+            head = fh.read(len(_BOM_UTF8))
+            if head.startswith(_BOM_UTF8):
+                file_bom = len(_BOM_UTF8)
+            if last < file_bom:
+                base = file_bom
+            else:
+                base = last
+            if base >= size:
+                return [], base
+            fh.seek(base)
+            to_read = min(cap, size - base)
+            buf = fh.read(to_read)
+    except MemoryError:
+        info(
+            f"ERROR outbox take_outbox_records MemoryError path={path.name} "
+            f"size={size} last={last} cap={cap}"
+        )
+        return [], last
+    except OSError:
+        return [], last
     records: list[tuple[str, int, int, bytes]] = []
     consumed = 0
     limit = None if max_lines is None else max(0, int(max_lines))
@@ -729,47 +761,268 @@ def sweep_cred_seal_prefix(path: Path, upto: int) -> bool:
     """Blank CRED-SEAL records in ``[0, upto)`` (legacy / failed scrub; FR #5826).
 
     Returns True when the sweep completed with no write failures.
+
+    FR #9239: walk the prefix in ``OUTBOX_READ_MAX_BYTES`` chunks — never load
+    the whole consumed prefix when ``upto`` is multi-MB.
     """
     if upto <= 0 or not path.exists():
         return True
+    spans: list[tuple[int, int, bytes]] = []
+    offset = 0
     try:
-        records, _ = take_outbox_records(path, 0, max_lines=None)
+        while offset < upto:
+            chunk_cap = min(OUTBOX_READ_MAX_BYTES, upto - offset)
+            records, new_off = take_outbox_records(
+                path, offset, max_lines=None, max_bytes=chunk_cap
+            )
+            for norm, start, end, raw in records:
+                if end > upto:
+                    break
+                if is_cred_seal_outbox_line(norm):
+                    # Only blank if payload still has non-space content.
+                    payload = raw.rstrip(b"\r\n")
+                    if payload.strip(b" "):
+                        spans.append((start, end, raw))
+            if new_off <= offset:
+                break
+            offset = new_off
     except OSError as exc:
         info(
             "WARN outbox CRED-SEAL sweep read failed "
             f"{type(exc).__name__} path={path.name}"
         )
         return False
-    spans: list[tuple[int, int, bytes]] = []
-    for norm, start, end, raw in records:
-        if end > upto:
-            break
-        if is_cred_seal_outbox_line(norm):
-            # Only blank if payload still has non-space content (already scrubbed stay).
-            payload = raw.rstrip(b"\r\n")
-            if payload.strip(b" "):
-                spans.append((start, end, raw))
     _blanked, failures = blank_cred_seal_spans(path, spans, batch_end=upto)
     return failures == 0
 
 def outbox_pos_path(outbox: Path) -> Path:
+    """Canonical cursor: ``<outbox-name>.pos`` (e.g. ``outbox.txt.pos``)."""
     return Path(str(outbox) + ".pos")
+
+
+def legacy_outbox_pos_path(outbox: Path) -> Path | None:
+    """FR #9862: legacy ``outbox.pos`` beside ``outbox.txt`` (``stem.pos`` when suffix is ``.txt``).
+
+    ``Path.with_suffix('.pos')`` on ``outbox.txt`` wrongly yields ``outbox.pos``. Some older
+    monitors/tools wrote that name; the ear drain must use ``outbox.txt.pos`` only.
+    """
+    outbox = Path(outbox)
+    if outbox.suffix.lower() != ".txt":
+        return None
+    legacy = outbox.with_name(outbox.stem + ".pos")
+    if legacy == outbox_pos_path(outbox):
+        return None
+    return legacy
+
+
+def _read_outbox_pos_file(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    try:
+        n = int(path.read_text(encoding="utf-8").strip().split()[0])
+    except (ValueError, OSError, IndexError):
+        return None
+    return n if n >= 0 else None
+
+
+def _unlink_legacy_outbox_pos(outbox: Path) -> None:
+    legacy = legacy_outbox_pos_path(outbox)
+    if legacy is None or not legacy.is_file():
+        return
+    canonical = outbox_pos_path(outbox)
+    try:
+        if legacy.resolve() == canonical.resolve():
+            return
+    except OSError:
+        pass
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
+def ensure_canonical_outbox_pos(outbox: Path) -> Path:
+    """FR #9862: prefer ``outbox.txt.pos``; migrate/delete legacy ``outbox.pos``.
+
+    Never leave a stale ``outbox.pos=0`` competing with an active ``outbox.txt.pos``.
+    When only a legacy ``0`` exists beside a non-empty outbox, seal at EOF (FR #68 class)
+    so a service restart does not replay the whole file. Missing both cursors still
+    loads as 0 (first drain / JOIN) — do not invent a pos file in that case.
+    """
+    outbox = Path(outbox)
+    canonical = outbox_pos_path(outbox)
+    legacy = legacy_outbox_pos_path(outbox)
+    c_val = _read_outbox_pos_file(canonical)
+    l_val = _read_outbox_pos_file(legacy) if legacy is not None else None
+    size: int | None = None
+    if outbox.is_file():
+        try:
+            size = int(outbox.stat().st_size)
+        except OSError:
+            size = None
+
+    if c_val is None and l_val is None:
+        return canonical
+
+    if c_val is not None and (l_val is None or c_val >= l_val):
+        best = c_val
+    elif l_val is not None and l_val > 0:
+        best = l_val
+    elif l_val == 0 and size is not None and size > 0 and c_val is None:
+        # Stale legacy reset while body remains — seal EOF to avoid full replay.
+        best = size
+    else:
+        best = l_val if l_val is not None else 0
+
+    if size is not None:
+        best = min(best, size)
+
+    if c_val is None or c_val != best:
+        try:
+            canonical.write_text(str(int(best)) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    _unlink_legacy_outbox_pos(outbox)
+    return canonical
 
 
 def load_outbox_pos(outbox: Path) -> int:
     """Byte offset of last successfully drained complete line. Missing → 0 (restart sends JOIN)."""
+    ensure_canonical_outbox_pos(outbox)
     p = outbox_pos_path(outbox)
-    if not p.exists():
-        return 0
-    try:
-        n = int(p.read_text(encoding="utf-8").strip() or "0")
-    except (ValueError, OSError):
-        return 0
-    return n if n >= 0 else 0
+    n = _read_outbox_pos_file(p)
+    return 0 if n is None else n
 
 
 def save_outbox_pos(outbox: Path, pos: int) -> None:
+    """Write canonical ``*.txt.pos`` only; drop legacy ``outbox.pos`` (FR #9862)."""
     outbox_pos_path(outbox).write_text(str(int(pos)) + "\n", encoding="utf-8")
+    _unlink_legacy_outbox_pos(outbox)
+
+
+# --- FR #9743: single-instance ear.lock per home/nick -----------------------------
+_EAR_INSTANCE_LOCK_HELD: dict[str, object] = {"fh": None, "path": None}
+
+
+def ear_instance_lock_path(home: Path, nick: str) -> Path:
+    """Lock file path under home for this nick (FR #9743)."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (nick or "ear").strip()) or "ear"
+    return Path(home) / f"ear.{safe}.lock"
+
+
+def _pid_alive_ear(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            h = ctypes.windll.kernel32.OpenProcess(0x00100000, 0, int(pid))
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return int(ctypes.windll.kernel32.GetLastError()) == 5
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _try_ear_advisory_lock(fh, timeout_s: float = 0.25) -> bool:
+    deadline = time.monotonic() + max(0.05, float(timeout_s))
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _unlock_ear_advisory(fh) -> None:
+    with contextlib.suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def release_ear_instance_lock(holder: object | None = None) -> None:
+    """Release process-held ear.lock (FR #9743)."""
+    fh = holder if holder is not None else _EAR_INSTANCE_LOCK_HELD.get("fh")
+    if fh is None:
+        return
+    with contextlib.suppress(Exception):
+        _unlock_ear_advisory(fh)
+    with contextlib.suppress(Exception):
+        fh.close()
+    if _EAR_INSTANCE_LOCK_HELD.get("fh") is fh:
+        _EAR_INSTANCE_LOCK_HELD["fh"] = None
+        path = _EAR_INSTANCE_LOCK_HELD.get("path")
+        _EAR_INSTANCE_LOCK_HELD["path"] = None
+        if path is not None:
+            with contextlib.suppress(OSError):
+                Path(str(path)).unlink(missing_ok=True)
+
+
+def acquire_ear_instance_lock(home: Path | str, nick: str) -> object | None:
+    """Exclusive ear.lock for home+nick. Returns open fh holder, or None if busy (FR #9743).
+
+    Stale locks whose stamped PID is dead are broken and retaken. The returned
+    file handle must stay open for the process lifetime (advisory lock).
+    """
+    root = Path(home)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = ear_instance_lock_path(root, nick)
+    # Break stale file when holder PID is gone (no open advisory holder).
+    if lock_path.exists():
+        try:
+            raw = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            raw = ""
+        stale_pid = None
+        if raw:
+            first = raw.splitlines()[0].strip()
+            if first.isdigit():
+                stale_pid = int(first)
+        if stale_pid is None or not _pid_alive_ear(stale_pid):
+            with contextlib.suppress(OSError):
+                lock_path.unlink()
+        elif stale_pid == os.getpid() and _EAR_INSTANCE_LOCK_HELD.get("fh") is not None:
+            return _EAR_INSTANCE_LOCK_HELD["fh"]
+    fh = open(lock_path, "a+b")
+    if not _try_ear_advisory_lock(fh, 0.35):
+        with contextlib.suppress(Exception):
+            fh.close()
+        return None
+    payload = f"{os.getpid()}\n{nick}\n{time.time():.3f}\n".encode("utf-8")
+    with contextlib.suppress(OSError):
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(payload)
+        fh.flush()
+    _EAR_INSTANCE_LOCK_HELD["fh"] = fh
+    _EAR_INSTANCE_LOCK_HELD["path"] = str(lock_path)
+    return fh
 
 
 def is_enospc(exc: BaseException) -> bool:
@@ -2374,6 +2627,18 @@ class Client:
         if dec.dry_run:
             return
         mid = dec.machine
+        # FR #9784: drop digest ghosts + free offered/held/accepted for recycled seats
+        # before the wire/local restart so the chair cannot PRIVMSG pre-recycle PIDs.
+        if mid.lower() not in {"jeeves", "ircjeeves"}:
+            with contextlib.suppress(Exception):
+                cleared = gitclaim.clear_after_machine_recycle(
+                    self._digest_home(),
+                    "fleet" if dec.scope == "fleet" else mid,
+                )
+                info(
+                    "INFO recycle clear-ghosts machine=%s machines=%s"
+                    % (mid, ",".join(cleared.get("machines") or []) or mid)
+                )
         # !recycle jeeves → restart chair (MSI self-update on start).
         if mid.lower() in {"jeeves", "ircjeeves"}:
             try:
@@ -3286,10 +3551,38 @@ class Client:
             )
         except Exception as e:  # never let a command kill the reader
             info(f"WARN startworker decide failed: {type(e).__name__}: {e}")
+            # FR #9471: never silent when this ear owns the target machine (marchhare class).
+            if startworker.targets_local(body, local, chan):
+                line = (
+                    f"NACK startworker: decide failed ({type(e).__name__}); "
+                    "restart the tray or wait for watchdog"
+                )
+                info(f"INFO startworker nick={who} ok=False reason=decide_failed machine={local} chan={chan or 'pm'}")
+                try:
+                    if to_channel and chan:
+                        self.send_privmsg_lines("PRIVMSG " + chan + " :" + line)
+                        time.sleep(FLOOD_S)
+                    else:
+                        self.whisper(who, line)
+                except Exception as send_exc:
+                    info(f"WARN startworker NACK send failed: {type(send_exc).__name__}: {send_exc}")
             return True
         if dec is None:
             return True
         info(f"INFO startworker nick={who} kind={dec.kind or '-'} ok={dec.ok} reason={dec.reason} mode={dec.mode} machine={local} chan={chan or 'pm'}")
+        # FR #9556: surface tray_session_missing on digest / !stuck (no needs_human).
+        try:
+            if (not dec.ok) and startworker.is_tray_session_missing_nack(dec.reason, dec.line):
+                bobreport.set_machine_tray_session_missing(
+                    self.home,
+                    local,
+                    reason=dec.reason,
+                    text=dec.line,
+                )
+            elif dec.ok and local:
+                bobreport.clear_machine_tray_session_missing(self.home, local)
+        except Exception as stamp_exc:
+            info(f"WARN startworker tray_session_missing stamp failed: {type(stamp_exc).__name__}: {stamp_exc}")
         if dec.reason == "unverified":
             try:
                 self._whois_hint(who)
@@ -4723,6 +5016,13 @@ class Client:
 
     def _finish_assign_result(self, src, wnick, repo, task, ident, status, res) -> None:
         if status != "ok" or not isinstance(res, dict):
+            why = str(res or "")
+            # FR #9347: presence refuse after NAMES also drops the ghost roster row.
+            if "not in the shop channel" in why.lower() or "names timeout" in why.lower():
+                with contextlib.suppress(Exception):
+                    gitclaim.drop_ghost_seat_after_names_miss(
+                        self.home, wnick, reason=why
+                    )
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
             info(
                 gitclaim.format_assign_refusal_log(
@@ -4770,6 +5070,12 @@ class Client:
             if now < float(job.get("deadline") or 0.0):
                 continue
             pend.pop(shop, None)
+            why = "NAMES timeout (seat still not in shop)"
+            # FR #9347: drop ghost from digest roster so auto-offer prefers live seats.
+            with contextlib.suppress(Exception):
+                gitclaim.drop_ghost_seat_after_names_miss(
+                    self.home, job["wnick"], reason=why
+                )
             self._finish_assign_result(
                 job["src"],
                 job["wnick"],
@@ -4777,7 +5083,7 @@ class Client:
                 job["task"],
                 job["ident"],
                 "refused",
-                "NAMES timeout (seat still not in shop)",
+                why,
             )
 
     def _maybe_cleargiveup(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
@@ -4844,7 +5150,20 @@ class Client:
         repo, ident = parsed
         out = gitclaim.set_require_machine_job(self.home, repo, ident, "any")
         if not out.get("ok"):
-            err = out.get("error") or "lock"
+            err = str(out.get("error") or "lock")
+            # FR #9708 CAST IRON: never leave needs-* + require_machine=any.
+            if err.startswith("needs_labels:"):
+                labs = err.split(":", 1)[1]
+                self._cmd_reply(
+                    src,
+                    "unpin",
+                    [
+                        f"unpin: refused - needs-* still present ({labs}); "
+                        f"remove labels then !unpin (FR #9708 CAST IRON)"
+                    ],
+                )
+                info(f"INFO unpin refused needs_labels={labs} {repo}{ident} by={src}")
+                return True
             self._cmd_reply(src, "unpin", [f"unpin: refused - {err}"])
             return True
         self._cmd_reply(
@@ -5021,6 +5340,17 @@ class Client:
             )
             with contextlib.suppress(Exception):
                 self._workers().on_done(src, target)
+        # FR #9633: sticky offered-but-not-ACKed — clear before busy gate so !bored
+        # can re-offer instead of NAK busy (offered …) while digest paints idle.
+        try:
+            _sticky = gitclaim.release_sticky_offer_on_bored(self.home, src, now) or ""
+        except Exception as exc:  # noqa: BLE001
+            _sticky = ""
+            info(f"WARN git-claim sticky-offer bored {type(exc).__name__}")
+        if _sticky:
+            info(f"INFO git-claim sticky-offer cleared via=!bored nick={src} job={_sticky}")
+            with contextlib.suppress(Exception):
+                self._workers().on_done(src, target)
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
         session_started = getattr(self, "_irc_session_started", None)
         if session_started is None:
@@ -5157,6 +5487,11 @@ class Client:
                     info(f"WARN workers ack error {type(exc).__name__}")
             self._git_say(target, f"{src}: accepted {line}")
             info(f"INFO git-claim ack accepted {line} nick={src}")
+            return
+        # FR #9254: twin ACK while seat already accepted elsewhere — refuse, keep first.
+        if status == "twin" and isinstance(job, dict):
+            line = gitclaim.format_claimed(job)
+            info(f"INFO git-claim ack twin-refuse holding={line} nick={src}")
             return
         info(f"INFO git-claim ack no offer nick={src}")
 
@@ -5344,6 +5679,15 @@ class Client:
                             except Exception:  # noqa: BLE001
                                 _detail = f"{src}: nothing queued"
                             info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
+                        # FR #9460: same tick, feed other digest-idle seats.
+                        with contextlib.suppress(Exception):
+                            n_idle = gitclaim.push_idle_offers_via_chair_outbox(
+                                self._digest_home()
+                            )
+                            if n_idle:
+                                info(
+                                    f"INFO git-claim idle-offer-after-giveup sent={n_idle}"
+                                )
                     except Exception as offer_exc:  # noqa: BLE001
                         info(f"WARN giveup-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status in ("ok", "missing"):
@@ -5380,6 +5724,13 @@ class Client:
                     except Exception:  # noqa: BLE001
                         _detail = f"{src}: nothing queued"
                     info(f"INFO git-claim done-offer empty nick={src} {_detail}")
+                # FR #9460: same tick, feed other digest-idle seats (no !bored wait).
+                with contextlib.suppress(Exception):
+                    n_idle = gitclaim.push_idle_offers_via_chair_outbox(
+                        self._digest_home()
+                    )
+                    if n_idle:
+                        info(f"INFO git-claim idle-offer-after-done sent={n_idle}")
             except Exception as offer_exc:  # noqa: BLE001
                 info(f"WARN done-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status not in ("ok", "missing"):
@@ -5978,8 +6329,28 @@ class Client:
         why = (trailing or "").strip().replace("\n", " ")[:80] or "Cannot send to channel"
         info(f"WARN outbox/send ERR_CANNOTSENDTOCHAN {cmd} {ch}: {why}")
 
+    def irc_live_for_outbox(self) -> bool:
+        """True when this ear may drain/advance outbox.pos (FR #9743).
+
+        Requires a socket, JOIN completed, and neither dead nor stop set. A
+        disconnected duplicate ear must not consume outbox lines.
+        """
+        if self.sock is None:
+            return False
+        joined = getattr(self, "joined", None)
+        if joined is not None and not joined.is_set():
+            return False
+        dead = getattr(self, "dead", None)
+        if dead is not None and dead.is_set():
+            return False
+        stop = getattr(self, "stop", None)
+        if stop is not None and stop.is_set():
+            return False
+        return True
+
     def _drain_outbox_path(self, path: Path) -> list[str]:
-        if self.sock is None or not path.exists():
+        # FR #9743: never advance outbox.pos without live IRC.
+        if not self.irc_live_for_outbox() or not path.exists():
             return []
         last = load_outbox_pos(path)
         # FR #5826: one-shot / pending sweep of already-consumed CRED-SEAL ciphertext.
@@ -5999,12 +6370,18 @@ class Client:
         # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
         refuse_job_wire = not getattr(self.args, "chair", False)
         seal_spans: list[tuple[int, int, bytes]] = []
+        # FR #9743: only checkpoint past lines successfully sent or intentionally consumed.
+        committed = last
+        stop_drain = False
         for norm0, abs_start, abs_end, raw_span in records:
+            if stop_drain or not self.irc_live_for_outbox():
+                break
             line = norm0
             try:
                 # FR #226: re-normalize (BOM / pre-wrapped) before classify
                 kind, norm = normalize_outbox_line(line)
                 if kind == "empty":
+                    committed = abs_end
                     continue
                 line = norm
                 if is_cred_seal_outbox_line(line):
@@ -6014,8 +6391,10 @@ class Client:
                     if len(preview) > 160:
                         preview = preview[:157] + "..."
                     info(f"WARN outbox refused misplaced worker job-wire (FR #2384): {preview}")
+                    committed = abs_end
                     continue
                 if gate_fleet and bobreport.outbox_line_spam_for_fleet_channel(line, default_channel=self.chan):
+                    committed = abs_end
                     continue
                 op = shop_ops.raw_op_line(line, self.original_nick)
                 if kind == "privmsg" or line.upper().startswith("PRIVMSG "):
@@ -6029,7 +6408,9 @@ class Client:
                         info(
                             f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
                         )
-                        continue
+                        # FR #9743: leave this line and the rest for a live ear; do not advance.
+                        stop_drain = True
+                        break
                     for w in wire:
                         head = w.split(" :", 1)[0]
                         prev = scrub_cred_seal_preview(w)
@@ -6037,30 +6418,48 @@ class Client:
                             prev = prev[:157] + "..."
                         info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                     sent.extend(wire)
+                    committed = abs_end
                     # FR #8622: own PRIVMSG is not echoed; decide !startworker from this outbox locally.
                     self._maybe_local_outbox_startworker(line)
                     # FR #4796: pace *_console Commands slower than shop chat.
                     time.sleep(flood_s_for_outbox_line(line))
                 elif op:
                     # bob-* shop ops (A23): KICK / MODE / NAMES on own #{machine}, raw.
-                    self.send(op)
+                    try:
+                        self.send(op)
+                    except OSError as exc:
+                        info(
+                            f"ERROR outbox: shop-op send failed {type(exc).__name__}"[:220]
+                        )
+                        stop_drain = True
+                        break
                     info(f"INFO shop-op sent {op.split(' :', 1)[0]}")
+                    committed = abs_end
                     time.sleep(FLOOD_S)
                 else:
                     self.say(line)
                     sent.append(line)
+                    committed = abs_end
                     self._maybe_local_outbox_startworker(line)
             except Exception as exc:  # noqa: BLE001 -- FR #5157
                 preview = scrub_cred_seal_preview(str(line))
                 if len(preview) > 160:
                     preview = preview[:157] + "..."
                 info(f"ERROR outbox: line failed {type(exc).__name__}: {preview}"[:220])
+                # Non-OSError line failures still consume (legacy FR #5157); keep going.
+                committed = abs_end
                 continue
         # FR #5826: blank CRED-SEAL after send loop, before checkpoint (best-effort).
+        batch_end = committed if stop_drain else new_last
+        if not stop_drain and records:
+            # All records in this tick handled; take take_outbox_records new_last
+            # (includes blank lines past the last nonempty record).
+            batch_end = new_last
+            committed = new_last
         if seal_spans:
             try:
                 _blanked, failures = blank_cred_seal_spans(
-                    path, seal_spans, batch_end=new_last
+                    path, seal_spans, batch_end=batch_end
                 )
                 if failures:
                     self._cred_seal_sweep_pending = True
@@ -6070,8 +6469,8 @@ class Client:
                     "WARN outbox CRED-SEAL scrub error "
                     f"{type(exc).__name__} path={path.name}"
                 )
-        if new_last != last:
-            save_outbox_pos(path, new_last)
+        if committed != last:
+            save_outbox_pos(path, committed)
         return sent
 
     def drain_outbox_once(self) -> list[str]:
@@ -6081,7 +6480,8 @@ class Client:
                 grok_talk.drain_completions_to_outbox(self.home, outbox=self.outbox)
             except OSError:
                 pass
-        if self.sock is None:
+        # FR #9743: live IRC gate (sock + joined + not dead/stop).
+        if not self.irc_live_for_outbox():
             return []
         sent = self._drain_outbox_path(self.outbox)
         if getattr(self.args, "chair", False):
@@ -6436,8 +6836,16 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
         include_listens=prior_irc.is_bob_builder_nick(nick),
     )
     if not result.scanned:
-        info("INFO prior-clean aborted connect")
-        raise SystemExit(1)
+        # FR #9236 logs attempt count. FR #9496: do not abort connect — a permanent
+        # CIM/WMI scan failure (marchhare class) previously SystemExit'd into an nssm
+        # restart loop with no IRC session. Prefer connect with a WARN; operators can
+        # still set BOB_IRC_SKIP_PRIOR_CLEAN=1 or fix process listing.
+        attempts = getattr(result, "scan_attempts", 0) or 0
+        info(
+            f"WARN prior-clean scan-failed continuing connect attempts={attempts} "
+            "(FR #9496 fail-open)"
+        )
+        return
 
 
 def main() -> None:
@@ -6550,6 +6958,25 @@ def main() -> None:
     except Exception as e:  # pragma: no cover - never block connect on guard bugs
         info(f"WARN live-tree guard skipped {type(e).__name__}")
     clean_crashed_priors(args.nick, home, once=bool(args.once))
+    # FR #9743: single-instance lock per home/nick so a disconnected duplicate
+    # cannot drain outbox.txt.pos ahead of the live ear.
+    ear_lock_home = home
+    if not ear_lock_home:
+        try:
+            ear_lock_home = str(seal.home())
+        except Exception:
+            ear_lock_home = ""
+    if ear_lock_home and not bool(args.once):
+        holder = acquire_ear_instance_lock(ear_lock_home, args.nick)
+        if holder is None:
+            info(
+                f"ERROR ear instance lock busy home={ear_lock_home} nick={args.nick} "
+                "(FR #9743); refusing duplicate bob-ear"
+            )
+            sys.exit(3)
+        import atexit
+
+        atexit.register(release_ear_instance_lock, holder)
     c = Client(args)
 
     def _stop(*_a: object) -> None:
@@ -6564,7 +6991,10 @@ def main() -> None:
         except TimeoutError:
             sys.exit(1)
         return
-    c.run_forever()
+    try:
+        c.run_forever()
+    finally:
+        release_ear_instance_lock()
 
 
 if __name__ == "__main__":

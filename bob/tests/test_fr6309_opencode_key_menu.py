@@ -54,8 +54,10 @@ def dialogs(tmp_path_factory) -> Path:
 
 
 def test_fr6309_tray_source_has_opencode_keys_menu_and_masked_input():
+    """FR #6309 store + masked dialogs remain; FR #9264 moved the menu off the top strip onto About."""
     src = TRAY_CS.read_text(encoding="utf-8-sig")
-    assert 'MenuItems.Add("OpenCode keys")' in src or '"OpenCode keys"' in src
+    assert "SeedOpencodeKeyChoices" in src
+    assert "ShowOpencodeKeysFromAbout" in src
     assert "PasswordChar" in src
     assert "opencode-keys" in src
     assert "selected.txt" in src

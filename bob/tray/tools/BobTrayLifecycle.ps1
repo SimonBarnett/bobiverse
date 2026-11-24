@@ -149,14 +149,121 @@ function Test-BobTrayWatchdogSuppressed {
     }
 }
 
+function Test-BobTrayExeParked {
+    # FR #9011 / #9146: bob-tray.exe renamed aside while Watch TipForm owns the icon
+    # (clickfix-park / clickfalse-park / clicktrue-park). TipForm Exit under park must
+    # use a short watchdog suppress so Watch can recover TipForm within minutes.
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $tools = Join-Path $Root 'tools'
+    foreach ($name in @('bob-tray.exe.clickfix-park', 'bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        if ([IO.File]::Exists((Join-Path $tools $name))) { return $true }
+    }
+    return $false
+}
+
+function Test-BobTrayIntentionalExeParkPresent {
+    # FR #9199: clickfalse/clicktrue park means TipForm Watch owns the UI.
+    # Sync/ForceNew/hotpatch must not leave a live tools\bob-tray.exe beside it.
+    # Distinct from bob-tray.exe.clickfix-park (FR #9044 restore-when-missing).
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $tools = Join-Path $Root 'tools'
+    foreach ($leaf in @('bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        if ([IO.File]::Exists((Join-Path $tools $leaf))) { return $true }
+    }
+    return $false
+}
+
+function Remove-BobTrayLiveExeWhileParked {
+    # FR #9199: if intentional park is present and live bob-tray.exe exists, remove the live exe.
+    # Keeps the park file. Safe no-op when not parked or live already absent.
+    param([string]$Root)
+    $out = [pscustomobject]@{ Parked = $false; Removed = $false; Live = $null; Park = $null }
+    if (-not $Root) { return $out }
+    $tools = Join-Path $Root 'tools'
+    $live = Join-Path $tools 'bob-tray.exe'
+    $out.Live = $live
+    if (-not (Test-BobTrayIntentionalExeParkPresent -Root $Root)) { return $out }
+    $out.Parked = $true
+    foreach ($leaf in @('bob-tray.exe.clickfalse-park', 'bob-tray.exe.clicktrue-park')) {
+        $p = Join-Path $tools $leaf
+        if ([IO.File]::Exists($p)) { $out.Park = $p; break }
+    }
+    if (-not [IO.File]::Exists($live)) { return $out }
+    try {
+        [IO.File]::Delete($live)
+        $out.Removed = -not [IO.File]::Exists($live)
+    } catch {
+        try {
+            Remove-Item -LiteralPath $live -Force -ErrorAction Stop
+            $out.Removed = -not [IO.File]::Exists($live)
+        } catch {
+            $out.Removed = $false
+        }
+    }
+    return $out
+}
+
+function Test-BobTrayProcessHasSeatChildren {
+    # FR #9205: true when ParentProcessId has a child whose CommandLine looks like a TipForm seat
+    # (bob-worker.exe / bob_worker.py / seat-wrapper). Killing that parent drops OpenCode seats.
+    param([Parameter(Mandatory)][int]$ParentProcessId)
+    if ($ParentProcessId -le 0) { return $false }
+    try {
+        $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                [int]$_.ParentProcessId -eq $ParentProcessId -and $_.CommandLine -and (
+                    $_.CommandLine -match '(?i)bob-worker\.exe' -or
+                    $_.CommandLine -match '(?i)bob_worker\.py' -or
+                    $_.CommandLine -match '(?i)seat-wrapper' -or
+                    $_.CommandLine -match '(?i)opencode.*seat' -or
+                    ($_.Name -match '(?i)^bob-worker')
+                )
+            })
+        return ($kids.Count -gt 0)
+    } catch {
+        return $false
+    }
+}
+
+function Stop-BobTrayProcessesProtectingSeats {
+    # FR #9205: stop bob-tray.exe processes only when they do not parent live TipForm seats.
+    # Prefer file-delete of staged exe (Remove-BobTrayLiveExeWhileParked) over kill while seats run.
+    param([string]$Root = '')
+    $out = [pscustomobject]@{ Killed = 0; SkippedForSeats = 0; Examined = 0 }
+    $procs = @()
+    try { $procs = @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue) } catch { $procs = @() }
+    foreach ($pr in $procs) {
+        $out.Examined++
+        # Never assign $pid / $PID --- automatic read-only in WinPS 5.1 (MRB #9206 FAIL).
+        $trayPid = 0
+        try { $trayPid = [int]$pr.Id } catch { continue }
+        if ($trayPid -le 0) { continue }
+        if (Test-BobTrayProcessHasSeatChildren -ParentProcessId $trayPid) {
+            $out.SkippedForSeats++
+            continue
+        }
+        try {
+            Stop-Process -Id $trayPid -Force -ErrorAction SilentlyContinue
+            $out.Killed++
+        } catch { }
+    }
+    return $out
+}
+
 function Restore-BobTrayExeFromClickfixPark {
     # FR #9044: tools\bob-tray.exe missing while tools\bob-tray.exe.clickfix-park remains.
     # Test-Path is falsely False on that dotted name. File.Copy restores the live exe and keeps the park.
+    # FR #9199: never restore (or keep) live when clickfalse/clicktrue intentional park is present.
     param([string]$Root)
     if (-not $Root) { return $null }
     $tools = Join-Path $Root 'tools'
     $live = Join-Path $tools 'bob-tray.exe'
     $park = Join-Path $tools 'bob-tray.exe.clickfix-park'
+    if (Test-BobTrayIntentionalExeParkPresent -Root $Root) {
+        [void](Remove-BobTrayLiveExeWhileParked -Root $Root)
+        return $null
+    }
     if ([IO.File]::Exists($live)) { return $live }
     if (-not [IO.File]::Exists($park)) { return $null }
     try {
@@ -168,11 +275,84 @@ function Restore-BobTrayExeFromClickfixPark {
     return $null
 }
 
+
+function Get-BobTrayPriorProcessHits {
+    <#
+      FR #9509: Start-BobTray / ForceNew prior sweep must not hang forever on
+      Get-CimInstance Win32_Process (same CIM class that stalls prior-clean on
+      marchhare). Use EnumerationOptions.Timeout, then non-CIM Get-Process
+      bob-tray fallback so ForceNew can still kill a stuck TipForm.
+    #>
+    param(
+        [int]$TimeoutSec = 8,
+        [int]$ExcludePid = 0,
+        [string]$InstallRoot = ''
+    )
+    if ($ExcludePid -le 0) { $ExcludePid = $PID }
+    $toolsPrefix = ''
+    if ($InstallRoot) {
+        try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $InstallRoot 'tools')) } catch { $toolsPrefix = Join-Path $InstallRoot 'tools' }
+    }
+    function Test-BobTrayPriorCmd {
+        param([string]$Cmd, [string]$Name, [string]$Exe)
+        if ($Cmd -and (
+                $Cmd -match 'Watch-BobTray\.ps1' -or
+                $Cmd -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                ($Cmd -match 'Start-BobTray\.ps1') -or
+                ($Cmd -match '(?i)bob-tray\.exe')
+            )) { return $true }
+        if ($Name -eq 'bob-tray.exe') {
+            if (-not $toolsPrefix) { return $true }
+            if (-not $Exe) { return $true }
+            return $Exe.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
+        }
+        return $false
+    }
+    $hits = New-Object System.Collections.Generic.List[object]
+    try {
+        $scope = New-Object System.Management.ManagementScope
+        $query = New-Object System.Management.ObjectQuery 'SELECT ProcessId, Name, CommandLine, ExecutablePath FROM Win32_Process'
+        $opt = New-Object System.Management.EnumerationOptions
+        $opt.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
+        $opt.ReturnImmediately = $false
+        $searcher = New-Object System.Management.ManagementObjectSearcher($scope, $query, $opt)
+        foreach ($mo in @($searcher.Get())) {
+            $procId = 0
+            try { $procId = [int]$mo['ProcessId'] } catch { continue }
+            if ($procId -eq $ExcludePid) { continue }
+            $cmd = [string]$mo['CommandLine']
+            $name = [string]$mo['Name']
+            $exe = [string]$mo['ExecutablePath']
+            if (Test-BobTrayPriorCmd -Cmd $cmd -Name $name -Exe $exe) {
+                $hits.Add([pscustomobject]@{ ProcessId = $procId; Name = $name; CommandLine = $cmd; ExecutablePath = $exe; Source = 'wmi-timed' })
+            }
+        }
+    } catch { }
+    if ($hits.Count -gt 0) { return @($hits.ToArray()) }
+    # Non-CIM fallback: Name only (no CommandLine). Enough to unblock ForceNew when WMI hangs/times out empty.
+    try {
+        foreach ($p in @(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue)) {
+            if ([int]$p.Id -eq $ExcludePid) { continue }
+            # WinPS 5.1: try/catch is not a valid hashtable-value expression (blocks ForceNew after #9528).
+            $exePath = ''
+            try { $exePath = [string]$p.Path } catch { $exePath = '' }
+            $hits.Add([pscustomobject]@{
+                    ProcessId      = [int]$p.Id
+                    Name           = 'bob-tray.exe'
+                    CommandLine    = ''
+                    ExecutablePath = $exePath
+                    Source         = 'get-process'
+                })
+        }
+    } catch { }
+    return @($hits.ToArray())
+}
+
 function Test-BobTrayProcessPresent {
     # True when bob-tray.exe or Watch-BobTray / seat-wrapper is alive (FR #1642 watchdog).
     # FR #2585: Name -eq bob-tray.exe is enough (ExecutablePath may be null); already-running
     # duplicate exits must not look like a missing tray to the watchdog.
-    # FR #3909: Get-Process bob-tray first — Win32_Process CIM can take ~1 minute on a busy box
+    # FR #3909: Get-Process bob-tray first - Win32_Process CIM can take ~1 minute on a busy box
     # and made the Interactive BobiverseTrayWatchdog host look hung (blank console steal focus).
     param([string]$InstallRoot = '')
     if (@(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
@@ -182,6 +362,9 @@ function Test-BobTrayProcessPresent {
     if ($root) {
         $bobRoot = if ((Split-Path -Leaf $root) -ieq 'bob') { $root } else { Join-Path $root 'bob' }
         try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $bobRoot 'tools')) } catch { $toolsPrefix = Join-Path $bobRoot 'tools' }
+    }
+    if (Get-Command Get-BobTrayPriorProcessHits -ErrorAction SilentlyContinue) {
+        return (@(Get-BobTrayPriorProcessHits -TimeoutSec 8 -ExcludePid $PID -InstallRoot $root).Count -gt 0)
     }
     $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             ($_.CommandLine -and (

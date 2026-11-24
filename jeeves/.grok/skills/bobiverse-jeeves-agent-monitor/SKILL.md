@@ -44,6 +44,9 @@ try { Invoke-Command -Session $s -ScriptBlock { <# read-only checks #> } }
 finally { Remove-PSSession $s }
 ```
 
+If the session cannot be opened (Test-WSMan / PSSession error), see `bobiverse-jeeves-agent-winrm`; report
+the machine as unreachable rather than guessing its state.
+
 ## Rules
 
 - **Read-only by default.** Observe, then report. No `!assign`, `!focus`, `!ignore`, queue/outbox edits,
@@ -103,6 +106,8 @@ finally { Remove-PSSession $s }
 | Mid-turn assign / done-miss (#8738) | Chair offers the next job to a seat whose last ACKed job has no DONE yet; seat GIVEUPs or the earlier job is lost | Report seat, both issue numbers and cmd-trace times; comment on #8738, do not twin |
 | Stale START tiles | Digest/TipForm shows a START job on an idle seat (`running=0`, no process) | Report; the worker must clear its own activity. Never edit the digest |
 | Self-review deadlock | `mrb-reviewer-deadlock.json` fresh, MRB offered only to the author seat | Report (FR #5164 / #6256 class) |
+| Disk offer starvation | Repeated `worktree-create-failed:disk` on one machine; seats look idle while MRBs pile up (FR #6240 class) | See `bobiverse-jeeves-agent-disk-starvation` (read-only FreeGB first; Si's go before any delete; Slab cleans) |
+| Hung / out-of-tokens seat | Busy with no wire progress past hung age, or quota 0 / refusal / `seat-out-of-fuel.json` | See `bobiverse-jeeves-agent-seat-health` (classify + recommend only; Si recycles) |
 | Empty `!build` list | Bare `!build` shows nothing | Step 6: route or `builds-catalog.json` missing |
 | Red main blocks installs | `build-jeeves` failing on main HEAD | See `bobiverse-jeeves-agent-build` (last green commit only) |
 
@@ -114,7 +119,7 @@ finally { Remove-PSSession $s }
 | Single finding with a script exit 1 | De-dup open issues, then intake FR/comment with the JSON as evidence. |
 | Jeeves down, not in `#bobiverse`, lost `+o`, crash loop, digest stale > 30 min, webhooks DOWN | **Escalate to Si** in the DM with evidence. Do not restart or roll back from here; recovery is the install skill's ROLLBACK path and needs the operator's go. |
 | Just after an install | Report PASS/FAIL per step above back to whoever ran the install; a FAIL is a rollback trigger. |
-| Stuck seat / GIVEUP loop | Report only. Never `clear_seat_doing` a working seat (harvest #1967). |
+| Stuck seat / GIVEUP loop | Report only. Never `clear_seat_doing` a working seat (harvest #1967). Classify with `bobiverse-jeeves-agent-seat-health` (recommend only). |
 
 ## Verify
 
