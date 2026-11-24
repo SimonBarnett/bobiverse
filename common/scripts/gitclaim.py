@@ -3366,28 +3366,32 @@ def row_require_machine(row: dict) -> str:
     # FR #4422 hard unpin before hard pins / stamped machine.
     if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
         return ""
-    # Hard issue pins win over unpin tokens (any/none) — FR #1093 WP0 must not leak
-    # back to win-mpre after a monitor ``require_machine=any`` clear.
-    hard = infer_require_machine(
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    label_tuple = tuple(str(x) for x in labels)
+    # Hard issue pins + needs-<machine> labels win over unpin tokens (any/none).
+    # FR #1093: hard pin must not leak after monitor any-clear.
+    # FR #9664: label needs-walrus must still gate offer when !unpin left rm=any
+    # (else non-walrus seats ACK then GIVEUP require_machine=walrus in a loop).
+    hard_or_label = infer_require_machine(
         title="",
         body="",
-        labels=(),
+        labels=label_tuple,
         line="",
         repo=str(row.get("repo") or ""),
         ident=str(row.get("id") or ""),
     )
-    if hard:
-        return hard
+    if hard_or_label:
+        return hard_or_label
     stamped = str(row.get("require_machine") or "").strip().lower()
     # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
     # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
+    # Labels already applied above (FR #9664).
     if stamped in {"*", "any", "none", "-"}:
         return ""
     if stamped and _is_retired_require_machine(stamped):
         return ""
-    labels = row.get("labels") or ()
-    if isinstance(labels, str):
-        labels = [labels]
     # FR #4512: bobiverse never trusts a persisted text-cue stamp — re-infer
     # (labels / dedicated pin / hard pin only). Stale ionos stamps clear.
     # FR #4745: harvest-lesson rows re-infer too (sticky Day Works DEV1 must not stick).
@@ -3404,7 +3408,7 @@ def row_require_machine(row: dict) -> str:
         return infer_require_machine(
             title=title_s,
             body=str(row.get("body") or ""),
-            labels=tuple(str(x) for x in labels),
+            labels=label_tuple,
             line=str(row.get("line") or ""),
             repo=str(row.get("repo") or ""),
             ident=str(row.get("id") or ""),
@@ -3417,7 +3421,7 @@ def row_require_machine(row: dict) -> str:
     return infer_require_machine(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
-        labels=tuple(str(x) for x in labels),
+        labels=label_tuple,
         line=str(row.get("line") or ""),
         repo=str(row.get("repo") or ""),
         ident=str(row.get("id") or ""),
@@ -5095,6 +5099,8 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     Operator unpin (``any`` / ``none`` / ``*`` / ``-``) must survive title/body cues that
     merely *mention* ``require_machine=ce-priority-dev1`` as evidence (e.g. #1116) —
     otherwise monitor clears are wiped on the next offer/resync stamp.
+    FR #9664: ``needs-<machine>`` labels still overwrite operator/monitor ``any``
+    (label is the GitHub pin; bare any must not re-open wrong shops).
     """
     title = str((claim.title if claim else "") or row.get("title") or "")
     body = str((claim.body if claim else "") or row.get("body") or "")
@@ -5122,6 +5128,13 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     if stamped in {"*", "any", "none", "-"}:
         if hard and not _is_retired_require_machine(hard):
             row["require_machine"] = hard
+            return
+        # FR #9664: labels win over any (do not re-infer soft title/body cues).
+        label_pin = infer_require_machine(
+            title="", body="", labels=labels, line="", repo=repo, ident=ident
+        )
+        if label_pin and not _is_retired_require_machine(label_pin):
+            row["require_machine"] = label_pin
         return
     req = infer_require_machine(
         title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
@@ -5133,12 +5146,22 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
     # FR #4745: harvest-lesson rows clear sticky DEV1 (or other) stamps the same way.
     # FR #6592: operator !pin/!unpin stamps survive; do not wipe them to any.
+    # FR #9664: needs-* labels still overwrite operator any (handled above).
     if req and _is_retired_require_machine(req):
         req = ""
     if repo_l == _BOBIVERSE_REPO_L or harvest_lesson:
         if _is_operator_require_machine(row):
             if hard and not _is_retired_require_machine(hard):
                 row["require_machine"] = hard
+                return
+            # Label pin may still win when stamp drifted back to any mid-path.
+            cur = fold_chair_host(str(row.get("require_machine") or "").strip().lower())
+            if cur in {"*", "any", "none", "-", ""}:
+                label_pin = infer_require_machine(
+                    title="", body="", labels=labels, line="", repo=repo, ident=ident
+                )
+                if label_pin and not _is_retired_require_machine(label_pin):
+                    row["require_machine"] = label_pin
             return
         if req:
             row["require_machine"] = req
