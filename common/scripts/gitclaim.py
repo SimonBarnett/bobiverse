@@ -1617,13 +1617,18 @@ def format_unaccepted_list(
         open_keys = open_fr_issue_keys(doc)
     except Exception:
         open_keys = set()
+    # FR #9821 / #9553: same issue_fetch as offer/assign so held digests absent
+    # from the local queue still gate !list (token-free when digests are queued).
+    _list_fetch = depends_issue_fetch_checker()
     rows = [
         r
         for r in rows
         if not (
             isinstance(r, dict)
             and _canon_task(r) == "FR"
-            and depends_gate_reason(r, doc, open_keys=open_keys)
+            and depends_gate_reason(
+                r, doc, open_keys=open_keys, issue_fetch=_list_fetch
+            )
         )
     ]
     if not rows:
@@ -5116,14 +5121,24 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                 )
             ]
             return "skipped"
+    # FR #9821 / BOB-G3: digest gate rows must enter unaccepted even when
+    # label:fr-digest is SKIP_FR or the digest carries hold — otherwise the
+    # token-free Depends-on held-digest gate cannot see them (class of #9803).
+    _digest_probe = {
+        "task": "FR",
+        "title": claim.title,
+        "body": claim.body,
+        "labels": list(claim.labels),
+    }
+    _is_digest_gate = claim.task == "FR" and bool(digest_issue_reason(_digest_probe))
     if claim.task == "FR":
         _skip_fr = issue_skip_fr_reason(
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
         )
-        if _skip_fr:
+        if _skip_fr and not _is_digest_gate:
             # FR #9402: ops/monitor trackers drop any twin + clear offered_to.
             # Other skip_fr reasons keep prior behaviour (return skipped; digests
-            # and needs-human paths are handled by prune / label mutation).
+            # fall through so they stay as go-gate records).
             if _skip_fr == "ops_monitor_tracker":
                 store_repo = canonical_queue_repo(claim.repo)
                 _clear_unaccepted_offer_pins_for_job(
@@ -5143,28 +5158,23 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     # FR #4009: never enqueue FR for issues on hold (label or owner HOLD body stamp).
     # Drop any already-queued twin so webhook edited / resync clears the offer path.
     # FR #9402: also clear offered_to / seat-holds so the pin cannot block !assign.
-    # BOB-G3: held digests stay as gate records (do not drop).
+    # BOB-G3 / FR #9821: held digests stay as gate records (enqueue, do not drop).
     if claim.task == "FR" and fr_hold_reason(
         title=claim.title, body=claim.body, labels=claim.labels
     ):
-        _digest_probe = {
-            "task": "FR",
-            "title": claim.title,
-            "body": claim.body,
-            "labels": list(claim.labels),
-        }
-        if digest_issue_reason(_digest_probe):
+        if _is_digest_gate:
+            pass  # fall through to append/refresh below
+        else:
+            store_repo = canonical_queue_repo(claim.repo)
+            _clear_unaccepted_offer_pins_for_job(
+                home, doc, store_repo, claim.task, claim.id
+            )
+            doc["unaccepted"] = [
+                r
+                for r in (doc.get("unaccepted") or [])
+                if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
+            ]
             return "skipped"
-        store_repo = canonical_queue_repo(claim.repo)
-        _clear_unaccepted_offer_pins_for_job(
-            home, doc, store_repo, claim.task, claim.id
-        )
-        doc["unaccepted"] = [
-            r
-            for r in (doc.get("unaccepted") or [])
-            if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
-        ]
-        return "skipped"
     # FR #3928 / #9080: never enqueue MRB for PRs on hold; purge any twin already queued
     # (done-fix requeue used to stamp labels=() and leave a held tip offerable).
     if claim.task == "MRB" and pr_hold_reason(
@@ -5388,7 +5398,9 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
         hold = fr_hold_reason(
             title=claim.title, body=claim.body, labels=claim.labels
         )
-        # BOB-G3: digest gate records stay queued even when held / fr-digest skip.
+        # BOB-G3 / FR #9821: digest gate records stay queued even when held /
+        # fr-digest SKIP_FR. If the digest was never enqueued (old skip path),
+        # backfill it so Depends-on children see hold without GitHub fetch.
         _digest_probe = {
             "task": "FR",
             "title": claim.title,
@@ -5396,6 +5408,17 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             "labels": list(claim.labels),
         }
         if digest_issue_reason(_digest_probe):
+            if (
+                not found_unaccepted
+                and not repo_archived_for_queue(claim.repo)
+            ):
+                ch = _append_unaccepted(doc, claim, home=home)
+                if ch == "added":
+                    return "added"
+                if ch == "duplicate":
+                    return "updated"
+                if ch == "skipped":
+                    return "noop"
             return "updated" if updated else "noop"
         if skip or hold:
             cleared = _clear_unaccepted_offer_pins_for_job(
@@ -18519,12 +18542,13 @@ def prune_unassignable_queue(home: Path) -> dict:
             dropped_detail: list[str] = []
             for row in doc["unaccepted"]:
                 task = str(row.get("task") or "").upper()
-                if task == "FR" and row_skip_fr_reason(row):
-                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
-                    continue
-                # BOB-G3: keep digest gate rows even when held (do not fr_hold-drop).
+                # BOB-G3 / FR #9821: keep digest gate rows even when fr-digest is
+                # SKIP_FR or the digest carries hold (token-free Depends-on gate).
                 if task == "FR" and digest_issue_reason(row):
                     keep.append(row)
+                    continue
+                if task == "FR" and row_skip_fr_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue
                 # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
                 if task == "FR" and row_fr_hold_reason(row):
@@ -19921,6 +19945,10 @@ def resync_from_github(
                         # offers must not survive after a blocking FR opens.
                         dropped_detail.append(f"{_row_drop_label(row)} uat_repo_not_clear")
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
+                # BOB-G3 / FR #9821: digest gate rows survive skip_fr + hold prune.
+                if task_u == "FR" and digest_issue_reason(row):
+                    keep.append(row)
+                    continue
                 if task_u == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk
