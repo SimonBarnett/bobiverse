@@ -311,7 +311,7 @@ function Stage-BobAgentFolders([string]$Stage) {
         Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
         # FR #9641: after worker lands, refuse identical bytes under PlanAgent (Workers seat via Agents > Plan).
-        # FR #9843: Assert returns a Hashtable — capture or heat Stage becomes
+        # FR #9843: Assert returns a Hashtable - capture or heat Stage becomes
         # "System.Collections.Hashtable <path>" (FR #6969 resurfaced).
         $null = Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
     }
