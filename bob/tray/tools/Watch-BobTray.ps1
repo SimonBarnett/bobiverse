@@ -2218,7 +2218,10 @@ function Test-BobTrayPlanFuelEmpty {
 function Start-BobTrayPlanExe {
     # FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605: vendor\plan\PlanAgent.exe (Pack/Sync mirror).
     # Do not fall back to bob-worker --mode plan or plan\PlanAgent.exe.
+    # FR #9661: pass --root <install>\plan (+ PLAN_AGENT_ROOT); vendor exe FATAL without the plan seat tree.
     $exe = Join-Path $RepoRoot 'vendor\plan\PlanAgent.exe'
+    $planRoot = Join-Path $RepoRoot 'plan'
+    $agentsMd = Join-Path $planRoot 'AGENTS.md'
     $hook = $env:BOB_MODELS_WEBHOOK_FILE
     if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
     if (Test-Path -LiteralPath $hook) {
@@ -2239,7 +2242,7 @@ function Start-BobTrayPlanExe {
     $mcpUrl = 'https://plan.ntsa.uk/mcp'
     Set-Content -LiteralPath $mcpPath -Encoding utf8 -Value ('{"mcpServers":{"plan":{"url":"' + $mcpUrl + '"}}}')
     Write-TrayLog ('plan-mcp url=' + $mcpUrl + ' config=' + $mcpPath)
-    Write-TrayLog ('Plan: start exe ' + $exe)
+    Write-TrayLog ('Plan: start exe ' + $exe + ' --root ' + $planRoot)
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-TrayLog ('Plan exe missing: ' + $exe)
         [void][System.Windows.Forms.MessageBox]::Show(
@@ -2249,7 +2252,24 @@ function Start-BobTrayPlanExe {
             [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
-    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    if (-not (Test-Path -LiteralPath $agentsMd)) {
+        Write-TrayLog ('Plan AGENTS.md missing: ' + $agentsMd)
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ('Plan seat tree not found at:{0}{1}{0}{0}Install or repair the bob MSI (plan\AGENTS.md + .grok\skills).' -f [Environment]::NewLine, $agentsMd),
+            'Plan - missing AGENTS.md',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    # FR #2585 / #2590: do not embed quotes in ArgumentList values (they become part of --root).
+    $prevPlanRoot = $env:PLAN_AGENT_ROOT
+    $env:PLAN_AGENT_ROOT = $planRoot
+    try {
+        Start-Process -FilePath $exe -ArgumentList @('--root', $planRoot) -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    } finally {
+        if ($null -eq $prevPlanRoot) { Remove-Item Env:PLAN_AGENT_ROOT -ErrorAction SilentlyContinue }
+        else { $env:PLAN_AGENT_ROOT = $prevPlanRoot }
+    }
 }
 
 function Start-BobTrayWorkerExe {
