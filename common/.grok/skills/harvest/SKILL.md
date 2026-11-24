@@ -25,22 +25,27 @@ depends_on: []
 >    `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
-> 5. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
+> 5. **CAST IRON FR #9906 - Never set GIT_ASKPASS to echo GH_TOKEN / GITHUB_TOKEN / `gh auth token`.**
+>     AskPass that echoes the token prints it into the terminal transcript (harvest-MRB fold class). Prefer
+>     `GH_TOKEN` / `GITHUB_TOKEN` env alone, or `gh` credential helper / `gh auth setup-git`. Never Write-Output /
+>     echo the token into AskPass. If a transcript leaked a `github_pat_` / `ghp_` value: redact, rotate that token,
+>     and file intake - do not paste the secret into skills or PRs.
+> 6. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
 >    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
 >    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
 >    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
-> 6. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
+> 7. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
 >    or `bobiverse-jeeves-*` must open or update a `lesson(<book>):` / `harvest/…` PR that patches the owning
 >    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
 >    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
 >    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
-> 7. **CAST IRON — interventions → ircJeeves FR (#9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
+> 8. **CAST IRON — interventions → ircJeeves FR (#9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
 >    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, …) must create or de-dup-comment a product FR against
 >    ircJeeves (`SimonBarnett/bobiverse`) the same turn so the chair performs it deterministically. FR #8827 is bridge-only.
 >    Closed-COMPLETED but still bridged live ⇒ regression FR with evidence.
-> 8. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
+> 9. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
 >    chair path same turn. Ungated idle+work is never report-only.
-> 9. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
+> 10. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
 >    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>` (plain grammar).
 >    Never leave a multi-FR batch free-floating. Digests stay useful when unheld; `hold` parks the whole batch. Same-turn
 >    repair: if ≥2 related FRs already filed without a digest, file the digest immediately and add Depends-on on children.
