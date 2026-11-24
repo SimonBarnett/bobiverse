@@ -47,10 +47,10 @@ def test_fr2604_done_fr_queues_mrb_with_pull_url(tmp_path, monkeypatch):
     assert gitclaim.mrb_row_offerable(mrbs[0]) is True
 
 
-def test_fr2604_sibling_same_machine_blocked_when_other_machine_live(
+def test_fr2604_sibling_same_machine_allowed_exact_seat(
     tmp_path, monkeypatch
 ):
-    """FR #9401 supersedes multi-machine sibling allow from FR #2604."""
+    """FR #9574 / #2604: exact author blocked; same-machine sibling eligible."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
@@ -77,12 +77,12 @@ def test_fr2604_sibling_same_machine_blocked_when_other_machine_live(
     live = gitclaim.live_seat_nicks(tmp_path)
     assert "flamingo-9" in live
     assert gitclaim.review_blocked_for_author(row, "marchhare-39912", live) is True
-    assert gitclaim.review_blocked_for_author(row, "marchhare-9524", live) is True
+    assert gitclaim.review_blocked_for_author(row, "marchhare-9524", live) is False
     assert gitclaim.review_blocked_for_author(row, "flamingo-9", live) is False
 
 
-def test_fr2604_offer_focus_top_other_machine_not_sibling(tmp_path, monkeypatch):
-    """When another machine is live, offer the other machine — not the sibling."""
+def test_fr2604_offer_focus_top_sibling_and_other_machine(tmp_path, monkeypatch):
+    """FR #9574: sibling and other-machine seats both offerable; exact author empty."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
@@ -121,7 +121,8 @@ def test_fr2604_offer_focus_top_other_machine_not_sibling(tmp_path, monkeypatch)
     st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-39912", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(tmp_path, "marchhare-9524", "#marchhare")
-    assert st2 == "empty"
+    assert st2 == "ok" and job2["id"] == "#2602"
+    gitclaim._write_queue(gitclaim.queue_path(tmp_path), doc)
     st3, job3 = gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")
     assert st3 == "ok" and job3["id"] == "#2602"
 
