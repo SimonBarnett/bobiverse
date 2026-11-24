@@ -128,6 +128,10 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * **a-search CDK trees (FR #3717):** before your own `git worktree remove`, `cmd /c rmdir /s /q <wt>\cdk.out*` (and prefer Clear). Deep `cdk.out` / Lambda asset hashes hit Windows **Filename too long**; git deregisters then leaves the directory; `Remove-Item -Recurse` fails the same way — `cmd rmdir /s /q` clears leftovers. Clear does this pre-rmdir automatically.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 
+## Ear-down / bob-ear-dead FRs — Refs until gate (FR #9503)
+
+Issues whose title/body are ear-down class (`bob-ear dead`, `ircBob Running without` child, `ear-offline`, ENOSPC ear) must **not** use `Closes` from a product tip that only ships monitor/heal code. Use **`Refs #N`**. Close the living issue only after `jeeves/tools/monitor/ear_down_gate.py` passes: live bob-ear child, digest `online=true` + fresh `lastSeen`, and `!startworker` ACK on that shop (operator evidence). Monitor `ircbob_ear` EXIT 0 requires the digest+child half of that gate on ircBob hosts.
+
 ## Issue still open before `gh pr create` (FR #4851)
 
 Before `gh pr create`, confirm the assigned issue is still **open**:
