@@ -15,6 +15,22 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'IrcProcess.ps1')
+# FR #9861: do not Start-Process a second ear while one already holds this --home
+# (NSSM/service path uses bob-ear.exe; this helper is Watch-Bobiverse / python path).
+$homeNorm = [string]$Home
+if ($homeNorm) {
+  $alive = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $cl = [string]($_.CommandLine)
+    if (-not $cl) { return $false }
+    if ($cl -notmatch '(?i)(bob-ear\.exe|irc_agent\.py)') { return $false }
+    $escaped = [regex]::Escape($homeNorm.TrimEnd('\'))
+    return $cl -match ("(?i)--home\s+[\"']?{0}[\"']?" -f $escaped)
+  })
+  if ($alive.Count -gt 0) {
+    Write-Output ("ERROR ear already running for home=$Home pids={0} (FR #9861); refusing second start" -f (($alive | ForEach-Object { $_.ProcessId }) -join ','))
+    exit 3
+  }
+}
 $prior = Join-Path $PSScriptRoot 'prior_irc.py'
 Invoke-PriorIrcClean -Python $Python -ScriptPath $prior -Nick $Nick -Home $Home
 $argList = @(
