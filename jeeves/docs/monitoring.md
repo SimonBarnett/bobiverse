@@ -84,6 +84,9 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 **Remediation:** TipForm â†’ **Agents** on the empty shop (FR #3180). Do **not** silent auto-start seats from monitor. Digest stuck[] already carries `rule=online_zero_workers` (FR #8429 / MRB #8445); this check makes the gap EXIT 1 on monitor hosts that only read `/report`. TipForm paints a durable `online_zero_workers` alert/caption while the condition holds.
 
+
+**FR #9827 offer skip:** escalate filings (titles like <machine> online workers=[] while offerable>0 (TipForm restore) or fingerprint stall:online-zero-workers:<machine>) stay visible on GitHub; chair issue_skip_fr_reason returns 	ipform_restore_escalate / stall_receipt so they are not assignable FR work (product FRs with eature-request like #9462 stay offerable).
+
 ### FR #9471 startworker silence / HealEngine storm
 
 When an online shop has `workers=[]` and `!startworker` gets **no** ACK/NACK, the target ear is down or swallowed a decide exception. FR #9471 makes the owning ear NACK `decide failed` instead of staying silent, and HealEngine storm forces one ReloadEngine + `engine.storm` TipForm alert. Keep `online_zero_workers` firing until workers>0 (FR #9462 / #3180 TipForm Agents only).
