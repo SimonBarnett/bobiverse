@@ -323,14 +323,17 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
         "Open Code",
         "Weights",
         "About",
-        "OpenCode keys",
-        "Set key...",
-        "Remove key...",
         "-",
         "Restart",
         "Reload engine",
         "Exit",
     ]
+    # FR #9261: no top-level Seats: / Open log. FR #9264: OpenCode keys on About only.
+    assert "Seats: on" not in items
+    assert "Open log" not in items
+    assert "OpenCode keys" not in items
+    assert "Set key..." not in items
+    assert "Remove key..." not in items
     assert "Agent" not in items
     src = (DIALOGS / "BobTray.cs").read_text(encoding="utf-8-sig")
     assert 'miStatus.Font = new Font(miStatus.Font, FontStyle.Bold)' in src and "DoubleClick" in src or "MouseClick" in src

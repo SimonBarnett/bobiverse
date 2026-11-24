@@ -1175,12 +1175,7 @@ namespace BobDialogs
             Item("Weights", delegate { ShowWeights(); });
             Item("About", delegate { Acknowledge(); ShowAbout(); });
             // FR #9261 / BOB-TRAY-UI-01: no top-level Seats: or Open log (About Show logs opens the tray log).
-            // FR #6309: TipForm masked OpenCode key set/select/remove.
-            ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");
-            MenuItems.Add("OpenCode keys");
-            SeedOpencodeKeyChoices(miOcKeys, true);
-            miOcKeys.DropDownOpening += delegate { SeedOpencodeKeyChoices(miOcKeys, false); };
-            menu.Items.Add(miOcKeys);
+            // FR #9264 / BOB-TRAY-UI-04: OpenCode keys live on About (no top-level menu item).
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
             Item("Restart", delegate { Restart(); });
             Item("Reload engine", delegate { ReloadEngine(); });
@@ -1768,9 +1763,25 @@ namespace BobDialogs
             try
             {
                 if (aboutForm != null && !aboutForm.IsDisposed) { aboutForm.Activate(); aboutForm.BringToFront(); return; }
-                aboutForm = new AboutForm(root);
+                // FR #9264: wire OpenCode keys button to the same set/select/remove UI as former top menu.
+                aboutForm = new AboutForm(root, ShowOpencodeKeysFromAbout);
                 aboutForm.FormClosed += delegate { aboutForm = null; };
                 aboutForm.Show();
+            }
+            catch { }
+        }
+
+        // FR #9264 / BOB-TRAY-UI-04: same SeedOpencodeKeyChoices UI, shown from About.
+        void ShowOpencodeKeysFromAbout(Control anchor)
+        {
+            try
+            {
+                ContextMenuStrip cms = new ContextMenuStrip();
+                SeedOpencodeKeyChoices(cms.Items, false);
+                if (anchor != null && !anchor.IsDisposed)
+                    cms.Show(anchor, new Point(0, anchor.Height));
+                else
+                    cms.Show(Cursor.Position);
             }
             catch { }
         }
@@ -2418,12 +2429,18 @@ namespace BobDialogs
         }
 
 
+        // FR #6309 / #9264: seed Set/Select/Remove into a dropdown or About ContextMenuStrip.
         void SeedOpencodeKeyChoices(ToolStripMenuItem parent, bool record)
         {
-            parent.DropDownItems.Clear();
+            SeedOpencodeKeyChoices(parent.DropDownItems, record);
+        }
+
+        void SeedOpencodeKeyChoices(ToolStripItemCollection items, bool record)
+        {
+            items.Clear();
             ToolStripMenuItem set = new ToolStripMenuItem("Set key...");
             set.Click += delegate { SetOpencodeKeyInteractive(); };
-            parent.DropDownItems.Add(set);
+            items.Add(set);
             if (record) MenuItems.Add("Set key...");
             string[] labels = OpencodeKeysStore.ListLabels(root);
             string selected = OpencodeKeysStore.ReadSelected(root);
@@ -2433,11 +2450,11 @@ namespace BobDialogs
                 ToolStripMenuItem mi = new ToolStripMenuItem("Select " + lab + mark);
                 string capture = lab;
                 mi.Click += delegate { SelectOpencodeKey(capture); };
-                parent.DropDownItems.Add(mi);
+                items.Add(mi);
             }
             ToolStripMenuItem rem = new ToolStripMenuItem("Remove key...");
             rem.Click += delegate { RemoveOpencodeKeyInteractive(); };
-            parent.DropDownItems.Add(rem);
+            items.Add(rem);
             if (record) MenuItems.Add("Remove key...");
         }
 

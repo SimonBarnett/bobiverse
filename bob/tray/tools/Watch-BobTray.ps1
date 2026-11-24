@@ -3262,11 +3262,106 @@ function Show-BobTrayAbout {
             # FR #8677 / BOB-09 / FR #9261: tray watch log (top-level Open log removed)
             if (Test-Path -LiteralPath $logPath) { Start-Process notepad.exe $logPath }
         })
+        # FR #9264 / BOB-TRAY-UI-04: OpenCode keys on About (TipForm is primary; PS fallback mirrors the button).
+        $keys = New-Object System.Windows.Forms.Button
+        $keys.Name = 'opencodeKeys'
+        $keys.Text = 'OpenCode keys'
+        $keys.Location = New-Object System.Drawing.Point 230, 398
+        $keys.Size = New-Object System.Drawing.Size 110, 23
+        $keys.Add_Click({
+            param($sender, $e)
+            try {
+                $cms = New-Object System.Windows.Forms.ContextMenuStrip
+                $set = $cms.Items.Add('Set key...')
+                $set.Add_Click({
+                    # $RepoRoot defaults to bob/tray (parent of tools); helper lives at bob/scripts or install scripts/.
+                    $helperCandidates = @(
+                        (Join-Path $RepoRoot '..\scripts\Write-BobOpencodeGoApiKey.ps1'),
+                        (Join-Path $RepoRoot 'scripts\Write-BobOpencodeGoApiKey.ps1'),
+                        (Join-Path $RepoRoot 'bob\scripts\Write-BobOpencodeGoApiKey.ps1')
+                    )
+                    $helper = $null
+                    foreach ($cand in $helperCandidates) {
+                        $full = [IO.Path]::GetFullPath($cand)
+                        if (Test-Path -LiteralPath $full) { $helper = $full; break }
+                    }
+                    if ($helper) {
+                        # Quote -File path for spaces (Windows PowerShell 5.1 Start-Process ArgumentList).
+                        $fileArg = '"{0}"' -f $helper
+                        # Do not -Wait: keep About/tray UI responsive while the key prompt runs.
+                        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $fileArg)
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show('Write-BobOpencodeGoApiKey.ps1 not found.', 'OpenCode keys')
+                    }
+                }.GetNewClosure())
+                $keysDir = Join-Path $RepoRoot 'config\opencode-keys'
+                $selected = ''
+                $selFile = Join-Path $keysDir 'selected.txt'
+                if (Test-Path -LiteralPath $selFile) { $selected = (Get-Content -LiteralPath $selFile -ErrorAction SilentlyContinue | Select-Object -First 1) }
+                if (Test-Path -LiteralPath $keysDir) {
+                    Get-ChildItem -LiteralPath $keysDir -Filter '*.apikey' -ErrorAction SilentlyContinue | ForEach-Object {
+                        $lab = [IO.Path]::GetFileNameWithoutExtension($_.Name)
+                        $mark = if ($lab -eq $selected) { ' (selected)' } else { '' }
+                        $mi = $cms.Items.Add(('Select {0}{1}' -f $lab, $mark))
+                        $capture = $lab
+                        $mi.Add_Click({
+                            if (-not (Test-Path -LiteralPath $keysDir)) { New-Item -ItemType Directory -Path $keysDir -Force | Out-Null }
+                            try {
+                                Set-Content -LiteralPath (Join-Path $keysDir 'selected.txt') -Value $capture -Encoding ASCII -ErrorAction Stop
+                                [System.Windows.Forms.MessageBox]::Show(('Selected OpenCode key ''{0}''.' -f $capture), 'OpenCode keys')
+                            } catch {
+                                [System.Windows.Forms.MessageBox]::Show(
+                                    ('Could not select OpenCode key ''{0}'': {1}' -f $capture, $_.Exception.Message),
+                                    'OpenCode keys'
+                                )
+                            }
+                        }.GetNewClosure())
+                    }
+                }
+                $rem = $cms.Items.Add('Remove key...')
+                $rem.Add_Click({
+                    if (-not (Test-Path -LiteralPath $keysDir)) {
+                        [System.Windows.Forms.MessageBox]::Show('No labelled OpenCode keys on this box.', 'OpenCode keys')
+                        return
+                    }
+                    $labs = @(Get-ChildItem -LiteralPath $keysDir -Filter '*.apikey' -ErrorAction SilentlyContinue | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) })
+                    if ($labs.Count -eq 0) {
+                        [System.Windows.Forms.MessageBox]::Show('No labelled OpenCode keys on this box.', 'OpenCode keys')
+                        return
+                    }
+                    $pick = $labs[0]
+                    if ($labs.Count -gt 1) {
+                        $pick = $labs | Out-GridView -Title 'Remove OpenCode key' -OutputMode Single
+                        if (-not $pick) { return }
+                    } else {
+                        $dr = [System.Windows.Forms.MessageBox]::Show(('Remove OpenCode key ''{0}''?' -f $pick), 'OpenCode keys', 'OKCancel', 'Warning')
+                        if ($dr -ne 'OK') { return }
+                    }
+                    try {
+                        Remove-Item -LiteralPath (Join-Path $keysDir ($pick + '.apikey')) -Force -ErrorAction Stop
+                        if ($selected -eq $pick) {
+                            Remove-Item -LiteralPath $selFile -Force -ErrorAction SilentlyContinue
+                        }
+                        [System.Windows.Forms.MessageBox]::Show(('Removed OpenCode key ''{0}''.' -f $pick), 'OpenCode keys')
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            ('Could not remove OpenCode key ''{0}'': {1}' -f $pick, $_.Exception.Message),
+                            'OpenCode keys'
+                        )
+                    }
+                }.GetNewClosure())
+                # Use click sender so the menu still anchors after Show-BobTrayAbout returns.
+                $anchor = if ($sender) { $sender } else { $keys }
+                $cms.Show($anchor, (New-Object System.Drawing.Point 0, $anchor.Height))
+            } catch {
+                Write-TrayLog ('about opencode keys menu error: ' + $_.Exception.Message)
+            }
+        }.GetNewClosure())
         $ok = New-Object System.Windows.Forms.Button
         $ok.Text = 'Close'
         $ok.Location = New-Object System.Drawing.Point 474, 398
         $ok.Add_Click({ $script:aboutForm.Close() })
-        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $logs, $ok)) { $form.Controls.Add($c) }
+        foreach ($c in @($logo, $title, $by, $ver, $agents, $box, $keys, $logs, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
         $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
