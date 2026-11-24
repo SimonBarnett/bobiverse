@@ -6,6 +6,8 @@ with ``hold`` / ``on-hold``; no-ops when the digest is already closed or when an
 other open child still Depends-on it.
 
 Marker ``bob_fr9552_auto_close_digest`` is intentional for tip/monitor soft-ok.
+
+FR #9859: nested cascade (phase closes root in one event) + reconcile fixpoint.
 """
 from __future__ import annotations
 
@@ -162,12 +164,25 @@ def close_comment(child_repo: str, child_number: int | str) -> str:
     )
 
 
+def _issue_key(repo: str, number: int | str) -> tuple[str, int]:
+    return (_canon_repo(repo).lower(), _canon_num(number))
+
+
 def _filter_exclude(
     issues: Iterable[dict[str, Any]],
     *,
-    exclude_nums: set[int],
+    exclude_nums: set[int] | None = None,
+    exclude_keys: set[tuple[str, int]] | None = None,
+    default_repo: str = "",
 ) -> list[dict[str, Any]]:
-    """Drop issues whose number is in ``exclude_nums`` (just-closed child)."""
+    """Drop just-closed issues.
+
+    Prefer repo-qualified ``exclude_keys`` (FR #9859). ``exclude_nums`` remains
+    for same-repo callers that only know the triggering child number.
+    """
+    nums = set(exclude_nums or ())
+    keys = set(exclude_keys or ())
+    home = _canon_repo(default_repo)
     out: list[dict[str, Any]] = []
     for raw in issues:
         if not isinstance(raw, dict):
@@ -176,7 +191,15 @@ def _filter_exclude(
             num = int(str(raw.get("number") or "").strip().lstrip("#"))
         except ValueError:
             continue
-        if num in exclude_nums:
+        repo = _canon_repo(str(raw.get("repo") or ""))
+        if not repo and isinstance(raw.get("repository"), dict):
+            repo = _canon_repo(str(raw["repository"].get("full_name") or ""))
+        if not repo:
+            repo = home
+        key = (repo.lower(), num) if repo else ("", num)
+        if key in keys:
+            continue
+        if num in nums:
             continue
         out.append(raw)
     return out
@@ -193,6 +216,7 @@ def maybe_close_one_digest(
     close_issue: CloseIssue | None = None,
     digest_issue: dict[str, Any] | None = None,
     open_issues: list[dict[str, Any]] | None = None,
+    exclude_keys: set[tuple[str, int]] | None = None,
 ) -> dict[str, Any]:
     """Close one digest when it is an unheld fr-digest with no open children left.
 
@@ -269,12 +293,22 @@ def maybe_close_one_digest(
             }
 
     exclude_nums: set[int] = set()
+    keys: set[tuple[str, int]] = set(exclude_keys or ())
     if last_child_number is not None:
         try:
-            exclude_nums.add(_canon_num(last_child_number))
+            c_num = _canon_num(last_child_number)
+            exclude_nums.add(c_num)
+            c_repo = _canon_repo(last_child_repo) or repo
+            if c_repo:
+                keys.add(_issue_key(c_repo, c_num))
         except ValueError:
             pass
-    candidates = _filter_exclude(open_issues, exclude_nums=exclude_nums)
+    candidates = _filter_exclude(
+        open_issues,
+        exclude_nums=exclude_nums,
+        exclude_keys=keys,
+        default_repo=repo,
+    )
     children = find_open_children(repo, num, candidates)
     if children:
         ids = [
@@ -321,6 +355,8 @@ def maybe_close_one_digest(
         "action": "closed",
         "reason": "last child closed",
         "comment": comment,
+        # FR #9859: cascade uses this body without a second network fetch.
+        "body": str(issue.get("body") or ""),
     }
 
 
@@ -333,7 +369,13 @@ def maybe_close_fr_digest_parents(
     list_open_issues: ListOpenIssues,
     close_issue: CloseIssue,
 ) -> list[dict[str, Any]]:
-    """On child close: close each Depends-on parent that is an unheld fr-digest."""
+    """On child close: close each Depends-on parent that is an unheld fr-digest.
+
+    FR #9859: when a parent digest closes, cascade to *its* Depends-on parents
+    in the same call (leaf -> phase -> root) with a visited-set cycle guard and
+    a repo-qualified closed-key exclusion so stale open lists cannot block the
+    ancestor evaluation.
+    """
     home = _canon_repo(child_repo)
     try:
         cnum = _canon_num(child_number)
@@ -343,8 +385,10 @@ def maybe_close_fr_digest_parents(
     if not refs:
         return []
     results: list[dict[str, Any]] = []
-    seen: set[tuple[str, int]] = set()
-    # Reuse one open-issue list per repo within this call.
+    visited: set[tuple[str, int]] = set()
+    # Issues closed (or known closed) during this invocation - exclude from
+    # open-child scans so a just-closed phase does not keep the root open.
+    closed_keys: set[tuple[str, int]] = {_issue_key(home, cnum)}
     open_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _cached_open(repo: str) -> list[dict[str, Any]]:
@@ -353,26 +397,53 @@ def maybe_close_fr_digest_parents(
             open_cache[key] = list(list_open_issues(repo) or [])
         return open_cache[key]
 
-    for pref, pnum in refs:
-        repo = _canon_repo(pref) or home
-        if not repo:
-            continue
-        key = (repo.lower(), int(pnum))
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append(
-            maybe_close_one_digest(
+    queue: list[tuple[str, int, list[tuple[str, int]]]] = [
+        (home, cnum, [(_canon_repo(r) or home, int(n)) for r, n in refs])
+    ]
+
+    while queue:
+        last_repo, last_num, parents = queue.pop(0)
+        for repo, pnum in parents:
+            repo = _canon_repo(repo) or home
+            if not repo:
+                continue
+            key = (repo.lower(), int(pnum))
+            if key in visited:
+                continue
+            visited.add(key)
+            result = maybe_close_one_digest(
                 repo,
                 int(pnum),
-                last_child_repo=home,
-                last_child_number=cnum,
+                last_child_repo=last_repo,
+                last_child_number=last_num,
                 fetch_issue=fetch_issue,
                 list_open_issues=_cached_open,
                 close_issue=close_issue,
                 open_issues=_cached_open(repo),
+                exclude_keys=closed_keys,
             )
-        )
+            results.append(result)
+            if result.get("action") != "closed":
+                continue
+            closed_keys.add(key)
+            body = str(result.get("body") or "")
+            if not body:
+                try:
+                    fetched = fetch_issue(repo, int(pnum))
+                except Exception:
+                    fetched = None
+                if isinstance(fetched, dict):
+                    body = str(fetched.get("body") or "")
+            next_refs = parse_depends_on(body, repo=repo)
+            if not next_refs:
+                continue
+            queue.append(
+                (
+                    repo,
+                    int(pnum),
+                    [(_canon_repo(r) or repo, int(n)) for r, n in next_refs],
+                )
+            )
     return results
 
 
@@ -384,7 +455,13 @@ def reconcile_open_fr_digests(
     close_issue: CloseIssue,
     fetch_issue: FetchIssue | None = None,
 ) -> list[dict[str, Any]]:
-    """Hourly/resync: close every open unheld fr-digest with zero open children."""
+    """Hourly/resync: close every open unheld fr-digest with zero open children.
+
+    FR #9859: after a digest closes, prune it from the working open snapshot and
+    re-evaluate remaining digests until a pass closes nothing (bounded fixpoint).
+    A later ``closed`` result replaces an earlier ``skipped_open_children`` for
+    the same digest so a root with zero real children closes in one call.
+    """
     home = _canon_repo(repo)
     if not home or "/" not in home:
         return []
@@ -410,7 +487,9 @@ def reconcile_open_fr_digests(
                 "reason": f"list:{type(exc).__name__}",
             }
         ]
-    results: list[dict[str, Any]] = []
+
+    working: list[dict[str, Any]] = list(open_issues)
+    by_num: dict[int, dict[str, Any]] = {}
     for dig in digests:
         if not isinstance(dig, dict):
             continue
@@ -418,20 +497,40 @@ def reconcile_open_fr_digests(
             num = int(str(dig.get("number") or "").strip().lstrip("#"))
         except ValueError:
             continue
-        if num < 1:
-            continue
-        results.append(
-            maybe_close_one_digest(
+        if num >= 1:
+            by_num[num] = dig
+
+    results_by_num: dict[int, dict[str, Any]] = {}
+    bound = max(1, len(by_num))
+    for _ in range(bound):
+        closed_this_pass = 0
+        still_open: list[int] = []
+        for num, dig in list(by_num.items()):
+            result = maybe_close_one_digest(
                 home,
                 num,
                 digest_issue=dig,
                 fetch_issue=fetch_issue,
-                list_open_issues=lambda _r, _issues=open_issues: _issues,
+                list_open_issues=lambda _r, _issues=working: _issues,
                 close_issue=close_issue,
-                open_issues=open_issues,
+                open_issues=working,
+                exclude_keys=set(),
             )
-        )
-    return results
+            results_by_num[num] = result
+            if result.get("action") == "closed":
+                closed_this_pass += 1
+                working = _filter_exclude(
+                    working,
+                    exclude_keys={_issue_key(home, num)},
+                    default_repo=home,
+                )
+            else:
+                still_open.append(num)
+        by_num = {n: by_num[n] for n in still_open if n in by_num}
+        if closed_this_pass == 0:
+            break
+
+    return [results_by_num[n] for n in sorted(results_by_num)]
 
 
 def default_fetch_issue(repo: str, number: int) -> dict[str, Any] | None:

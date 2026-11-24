@@ -12,6 +12,7 @@ on:
       - bob/scripts/Build-BobWorkerNet.ps1
       - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr9800_bob_worker_net_build_ci.py
+      - bob/tests/test_fr9804_irc_seat_join_gate.py
       - bob/tests/test_fr9806_grok_spawn_one_console.py
       - bob/docs/bob-worker-net.md
   push:
@@ -22,6 +23,7 @@ on:
       - bob/scripts/Build-BobWorkerNet.ps1
       - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr9800_bob_worker_net_build_ci.py
+      - bob/tests/test_fr9804_irc_seat_join_gate.py
       - bob/tests/test_fr9806_grok_spawn_one_console.py
       - bob/docs/bob-worker-net.md
 
@@ -72,6 +74,19 @@ jobs:
           if ($vcode -ne 0 -or $verText.ToLowerInvariant() -ne $expected) {
             throw "bob-worker-net.exe --version='$verText' expected '$expected' (exit $vcode)"
           }
+          # FR #9804: hermetic IrcSeat JOIN gate (FakeIrcTransport; no live Ergo).
+          $ErrorActionPreference = 'Continue'
+          $stIrc = & $exe --self-test-irc 2>&1
+          $stIrcCode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          $stIrcText = ($stIrc | Out-String)
+          if ($stIrcCode -ne 0) {
+            throw "bob-worker-net.exe --self-test-irc failed (exit $stIrcCode): $stIrcText"
+          }
+          if ($stIrcText -notmatch 'all passed') {
+            throw "bob-worker-net.exe --self-test-irc missing 'all passed': $stIrcText"
+          }
+
           # FR #9806: assert_fresh + one-console process-tree smoke.
           $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
           $stOut = & $exe --selftest-spawn 2>&1
@@ -96,8 +111,8 @@ jobs:
             "builder=Build-BobWorkerNet.ps1"
             "runtime=win-x64"
             "target=net8.0"
-            "fr=9800"
-            "fr_spawn=9806"
+            "fr=9800,9804,9806"
+            "self_test_irc=pass"
             "selftest_spawn=ok"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
 
