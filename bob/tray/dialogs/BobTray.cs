@@ -1029,6 +1029,7 @@ namespace BobDialogs
         bool engineFailureArmed;  // FR #7505: one open exception report per machine until recovery
         string lastEngineExitCode = "";
         DateTime lastDigestFetchFailReportUtc = DateTime.MinValue; // FR #7580: one CrashHook per failure window
+        DateTime lastRecycleForceReloadUtc = DateTime.MinValue; // FR #9618: pending recycleseat + stale engine
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm; WeightsForm weightsForm;
         public readonly List<string> MenuItems = new List<string>();
@@ -1303,7 +1304,10 @@ namespace BobDialogs
             if (exiting) return;
             if (!noEngine)
             {
+                // FR #9618: ThreadPool path - UI poll may be hung while tray.alive still ticks.
+                try { ConsumeHostReloadTriggers(); } catch { }
                 try { HealEngine(); } catch { }
+                try { HealPendingRecycleSeatWhenEngineStale(); } catch { }
             }
             try { ObserveWorkerSeats(); } catch { }
             try { HealIrcBobIfIdle(); } catch { }
@@ -1465,6 +1469,54 @@ namespace BobDialogs
         string SafeEnginePid()
         {
             try { return engine != null ? engine.Id.ToString() : ""; } catch { return ""; }
+        }
+
+        // FR #5111 / FR #9522 / FR #9618: tray-cmd reload + engine.wake. Shared by UI poll and
+        // ThreadPool Watchdog so a hung WinForms pump still consumes operator/ear reload.
+        void ConsumeHostReloadTriggers()
+        {
+            if (exiting || noEngine) return;
+            bool needReload = TrayHostCmd.TakeReload(cmdFile);
+            if (TrayHostCmd.TakeWake(Path.Combine(aliveDir, "engine.wake"))) needReload = true;
+            if (needReload) ReloadEngine();
+        }
+
+        // FR #9618: recycleseat req-*.json is drained only by the PS engine tick. When the engine
+        // stamp is stale (or the process exited) and reqs are waiting, force ReloadEngine so the
+        // next tick can consume them. Cooldown = MaxAgeSeconds to avoid a kill loop.
+        bool PendingRecycleSeatReqs()
+        {
+            try
+            {
+                string dir = Path.Combine(runDir, "recycleseat");
+                if (!Directory.Exists(dir)) return false;
+                string[] files = Directory.GetFiles(dir, "req-*.json");
+                return files != null && files.Length > 0;
+            }
+            catch { return false; }
+        }
+
+        void HealPendingRecycleSeatWhenEngineStale()
+        {
+            if (exiting || noEngine) return;
+            if (!PendingRecycleSeatReqs()) return;
+            bool exited = true;
+            try { exited = engine == null || engine.HasExited; } catch { exited = true; }
+            double ageS = -1;
+            bool stale = false;
+            if (!exited)
+                stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
+            if (!exited && !stale) return;
+            if (lastRecycleForceReloadUtc != DateTime.MinValue
+                && (DateTime.UtcNow - lastRecycleForceReloadUtc).TotalSeconds < EngineAliveStamp.MaxAgeSeconds)
+                return;
+            lastRecycleForceReloadUtc = DateTime.UtcNow;
+            TrayLifecycle.Write(
+                "engine-reload",
+                "via", "fr9618-recycleseat-stale",
+                "age", ageS.ToString("0.0"),
+                "pid", SafeEnginePid());
+            ReloadEngine();
         }
 
         // FR #5111: operator/ear writes reload to tray-cmd.txt; host (elevated) recycles engine only.
@@ -1716,10 +1768,8 @@ namespace BobDialogs
         {
             try
             {
-                // FR #5111 tray-cmd reload; FR #9522 also consume engine.wake (ear nudge after engine_stale).
-                bool needReload = TrayHostCmd.TakeReload(cmdFile);
-                if (TrayHostCmd.TakeWake(Path.Combine(aliveDir, "engine.wake"))) needReload = true;
-                if (needReload) ReloadEngine();
+                // FR #5111 / #9522 / #9618: shared helper (also ThreadPool Watchdog).
+                ConsumeHostReloadTriggers();
             }
             catch { }
             try
