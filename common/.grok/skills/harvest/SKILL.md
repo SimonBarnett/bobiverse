@@ -455,3 +455,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - CAST IRON FR #9652: filing >=2 related FRs in one turn MUST create/reuse Digest parent (feature-request + fr-digest) with Depends-on on each child; digests stay useful when unheld; rule FR itself is not fr-digest
 - After bobiverse body require_machine stop pinning, update every pin expect to needs-<machine> or assert empty; keep _body_for_queue preserve asserts separate from infer stamps
 - TipForm Plan must start vendor\plan\PlanAgent.exe --root <install>\plan (or PLAN_AGENT_ROOT); bare vendor PlanAgent FATAL plan-agent tree not found; ops workaround --root C:\ai\bob\plan
+- When flamingo authors dominate MRB queue, only no-flamingo-author rows (#9674/#9677) feed flamingo seats until exact-nick self-MRB (#9622) is on tip; sticky assign-sent+digest-idle is #9633.
