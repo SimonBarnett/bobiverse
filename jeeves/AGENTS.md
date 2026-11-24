@@ -19,6 +19,11 @@
 > 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
 >    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
 >    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
+> 6. **CAST IRON — interventions → ircJeeves FR (FR #9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
+>    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, …) **must** create (or de-dup-comment) a product FR
+>    against ircJeeves (`SimonBarnett/bobiverse`) so the chair performs that intervention **deterministically**. FR #8827
+>    keep-queue-moving is a bridge only; never leave an LLM-only loop without the matching chair FR. If a prior FR was
+>    closed COMPLETED but live tip still needs the bridge, file a regression FR with evidence.
 
 ## First turn (FR #954) â€” do this NOW
 

@@ -15,6 +15,8 @@ description: >
 > 4. Monitoring observes and reports; may run Jeeves commands **to keep the queue moving** (FR #8827); never touch Ergo, never merge/UAT/VERSION.
 > 5. Prefer deterministic fixes. When tested, FR them into the Jeeves token-less service so what we learn becomes
 >    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
+> 6. **CAST IRON — interventions → ircJeeves FR (#9627).** Any keep-queue-moving / heal action owes a product FR the
+>    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
