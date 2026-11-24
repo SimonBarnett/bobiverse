@@ -2520,6 +2520,19 @@ def _labels_for(norm: dict, *, quarantine: bool) -> list[str]:
     # blocked !bored offers (FR #1363) while open counts climbed on skill/ops FRs.
     if quarantine:
         labels.append("via-intake-untriaged")
+    # FR #9821: Digest parents are created with fr-digest + digest + hold so
+    # children that Depends-on them stay gated until the digest is unheld.
+    if kind in ("issue", "fr"):
+        try:
+            import fr_digest_gate as _fdg
+
+            labels = _fdg.ensure_digest_hold_labels(
+                labels,
+                title=str(norm.get("title") or ""),
+                body=str(norm.get("body") or ""),
+            )
+        except Exception:
+            pass
     return labels
 
 

@@ -796,23 +796,108 @@ def sweep_cred_seal_prefix(path: Path, upto: int) -> bool:
     return failures == 0
 
 def outbox_pos_path(outbox: Path) -> Path:
+    """Canonical cursor: ``<outbox-name>.pos`` (e.g. ``outbox.txt.pos``)."""
     return Path(str(outbox) + ".pos")
+
+
+def legacy_outbox_pos_path(outbox: Path) -> Path | None:
+    """FR #9862: legacy ``outbox.pos`` beside ``outbox.txt`` (``stem.pos`` when suffix is ``.txt``).
+
+    ``Path.with_suffix('.pos')`` on ``outbox.txt`` wrongly yields ``outbox.pos``. Some older
+    monitors/tools wrote that name; the ear drain must use ``outbox.txt.pos`` only.
+    """
+    outbox = Path(outbox)
+    if outbox.suffix.lower() != ".txt":
+        return None
+    legacy = outbox.with_name(outbox.stem + ".pos")
+    if legacy == outbox_pos_path(outbox):
+        return None
+    return legacy
+
+
+def _read_outbox_pos_file(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    try:
+        n = int(path.read_text(encoding="utf-8").strip().split()[0])
+    except (ValueError, OSError, IndexError):
+        return None
+    return n if n >= 0 else None
+
+
+def _unlink_legacy_outbox_pos(outbox: Path) -> None:
+    legacy = legacy_outbox_pos_path(outbox)
+    if legacy is None or not legacy.is_file():
+        return
+    canonical = outbox_pos_path(outbox)
+    try:
+        if legacy.resolve() == canonical.resolve():
+            return
+    except OSError:
+        pass
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
+def ensure_canonical_outbox_pos(outbox: Path) -> Path:
+    """FR #9862: prefer ``outbox.txt.pos``; migrate/delete legacy ``outbox.pos``.
+
+    Never leave a stale ``outbox.pos=0`` competing with an active ``outbox.txt.pos``.
+    When only a legacy ``0`` exists beside a non-empty outbox, seal at EOF (FR #68 class)
+    so a service restart does not replay the whole file. Missing both cursors still
+    loads as 0 (first drain / JOIN) — do not invent a pos file in that case.
+    """
+    outbox = Path(outbox)
+    canonical = outbox_pos_path(outbox)
+    legacy = legacy_outbox_pos_path(outbox)
+    c_val = _read_outbox_pos_file(canonical)
+    l_val = _read_outbox_pos_file(legacy) if legacy is not None else None
+    size: int | None = None
+    if outbox.is_file():
+        try:
+            size = int(outbox.stat().st_size)
+        except OSError:
+            size = None
+
+    if c_val is None and l_val is None:
+        return canonical
+
+    if c_val is not None and (l_val is None or c_val >= l_val):
+        best = c_val
+    elif l_val is not None and l_val > 0:
+        best = l_val
+    elif l_val == 0 and size is not None and size > 0 and c_val is None:
+        # Stale legacy reset while body remains — seal EOF to avoid full replay.
+        best = size
+    else:
+        best = l_val if l_val is not None else 0
+
+    if size is not None:
+        best = min(best, size)
+
+    if c_val is None or c_val != best:
+        try:
+            canonical.write_text(str(int(best)) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    _unlink_legacy_outbox_pos(outbox)
+    return canonical
 
 
 def load_outbox_pos(outbox: Path) -> int:
     """Byte offset of last successfully drained complete line. Missing → 0 (restart sends JOIN)."""
+    ensure_canonical_outbox_pos(outbox)
     p = outbox_pos_path(outbox)
-    if not p.exists():
-        return 0
-    try:
-        n = int(p.read_text(encoding="utf-8").strip() or "0")
-    except (ValueError, OSError):
-        return 0
-    return n if n >= 0 else 0
+    n = _read_outbox_pos_file(p)
+    return 0 if n is None else n
 
 
 def save_outbox_pos(outbox: Path, pos: int) -> None:
+    """Write canonical ``*.txt.pos`` only; drop legacy ``outbox.pos`` (FR #9862)."""
     outbox_pos_path(outbox).write_text(str(int(pos)) + "\n", encoding="utf-8")
+    _unlink_legacy_outbox_pos(outbox)
 
 
 def is_enospc(exc: BaseException) -> bool:
@@ -2417,6 +2502,18 @@ class Client:
         if dec.dry_run:
             return
         mid = dec.machine
+        # FR #9784: drop digest ghosts + free offered/held/accepted for recycled seats
+        # before the wire/local restart so the chair cannot PRIVMSG pre-recycle PIDs.
+        if mid.lower() not in {"jeeves", "ircjeeves"}:
+            with contextlib.suppress(Exception):
+                cleared = gitclaim.clear_after_machine_recycle(
+                    self._digest_home(),
+                    "fleet" if dec.scope == "fleet" else mid,
+                )
+                info(
+                    "INFO recycle clear-ghosts machine=%s machines=%s"
+                    % (mid, ",".join(cleared.get("machines") or []) or mid)
+                )
         # !recycle jeeves → restart chair (MSI self-update on start).
         if mid.lower() in {"jeeves", "ircjeeves"}:
             try:
