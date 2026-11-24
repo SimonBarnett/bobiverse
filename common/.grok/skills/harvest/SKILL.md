@@ -465,3 +465,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - bob_git_hook announce_seen must match Ergo nick case-insensitively (:jeeves! and :Jeeves!); seed ~/.grok/ergo/connect.password from bob config\ergo.password before Start-BobiverseGitAnnounceListen
 - When flamingo authors dominate the MRB queue, prefer no-flamingo-author MERGEABLE rows for flamingo seats (exact-nick self-MRB is tip #9574/#9579; host lag may still false-refuse — #9672). Sticky assign-sent + digest-idle is #9633.
 - TrayContext cannot call WorkerLauncher.Quote - inline ProcessStartInfo Arguments path quoting for PlanAgent --root (CS0103 on build-bob-tray); companion fix #9684
+- CAST IRON FR #9698: disk GIVEUP/NACK (worktree-create-failed:disk / disk-low) auto-files one open bobiverse issue per machine with require_machine: <machine> body + needs-<machine> label; twin-comment instead of a second file
