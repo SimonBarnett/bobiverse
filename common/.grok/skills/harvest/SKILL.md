@@ -468,3 +468,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FIX on CONFLICTING tip: rebuild from fresh origin/main; if empty force-push closes or sticks PR head, reopen and verify ls-remote refs/pull/N/head matches branch
 - CAST IRON FR #9669: needs-walrus / require_machine=walrus NACK->GIVEUP is a hand-off to the Jeeves agent on walrus (Slab/Si-yes); split mixed work into code FR (no pin) + walrus FR (needs-walrus, Depends-on code) under one Digest; stop wrong-machine re-offer thrash
 - Seat hold on closed MRB survives !cleargiveup ledger=0; !stuck shows held; need chair clear of seat_job hold for closed tips (#9633)
+- open_pr_mrb_missing default-heals missing expected MRB rows (incl lesson tips) via heal_open_prs_missing_mrb; --no-heal for report-only (FR #9635).
