@@ -495,4 +495,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Keep growing held Digest #9830 with every new Jeeves/IRCD lesson same turn; wire Depends-on #9830; tip-red FIX #9840 is priority for merge gate.
 - Treat assign: refused busy holding FIX as evidence seat is not idle even if /report lags; keep bridging exact idle nicks from fresh report
 - On /report 502 use IRC inbound; if redqueen workers=[] with offerable>0 escalate TipForm #9462 only --- never Start-BobWorker from monitor
+- ircJeeves AppStdout without AppRotateFiles/Bytes/Online grows unbounded; pin rotate on Install and re-assert on Update for Product=jeeves
 - After MRB FAIL+FIX tip push (FR #5142), re-review the new head SHA and PASS when the prior finding is fixed; do not FAIL again for the same ascii-bom finding.
