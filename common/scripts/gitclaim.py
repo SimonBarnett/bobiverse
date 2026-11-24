@@ -17768,10 +17768,13 @@ def assign_row(
     Returns ("ok", job) -> caller posts ``format_assign_line`` in the worker's shop channel as Jeeves
     and the worker's ACK accepts it (``accept_offered``); or ("refused", reason).
     The same eligibility as ``offer_focus_top`` applies: real seat nick, not busy, row queued and
-    unaccepted, no self-MRB/UAT, not skip/cooldown/machine-pinned/already given up by this seat,
+    unaccepted, no self-MRB/UAT, not skip/cooldown/machine-pinned,
     not offered to another seat inside OFFER_TIMEOUT_S, and (FR #6211) the automatic MRB
-    CodeRabbit current-head hold. Intentional exception (FR #4336): ordinary ``!assign`` may
-    still hand out ``needs_human`` FR/MRB rows that auto-offer blocks.
+    CodeRabbit current-head hold. Intentional exceptions: ordinary ``!assign`` may still hand
+    out ``needs_human`` FR/MRB rows that auto-offer blocks (FR #4336), and clears this nick's
+    prior give-up on the row (queue ``giveup_seats`` + seat ledger) instead of refusing
+    ``already gave this row up`` (FR #9634) — same effect as ops ``!cleargiveup … <nick>`` then
+    assign.
 
     FR #3400 / #7186: refuse assign to a nick not in #{machine} membership (JOIN/NAMES/PART),
     never because they have not sent ``!bored``. If the named job is only
@@ -17976,10 +17979,19 @@ def assign_row(
                 return "refused", f"{me}: model mismatch or below jobRequiredModelTier (FR #7084)"
             if seat_fuel_pause_reason(home, me, now_f):
                 return "refused", f"{me}: fuel paused until reset (FR #7837)"
-            # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
-            # auto-offer. Ops may !assign needs_human to a recycled successor.
+            # FR #9634: !assign implies clear give-up for this nick+row (queue + ledger),
+            # same as ops ``!cleargiveup owner/repo#N <nick>`` then assign. Exact-nick only;
+            # recycle inherit remains auto-offer (FR #4336 / #5088). Do not call
+            # clear_giveup_job here — it takes the queue lock we already hold.
             if row_gave_up_by(cand, me):
-                return "refused", f"{me} already gave this row up"
+                drop_nick_from_giveup_seats(cand, me)
+                with contextlib.suppress(Exception):
+                    ledger_clear_giveup_entry(
+                        home,
+                        str(cand.get("repo") or repo),
+                        str(cand.get("id") or num),
+                        nick=me,
+                    )
             if row_blocked_for_giveup_agent_kind(cand, seat_agent_kind(home, me)):
                 return "refused", f"{me}: agent class blocked after hard-ceiling GIVEUPs (FR #8008)"
             if mrb_fail_same_head_for_seat(cand, me):
