@@ -463,3 +463,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - TipForm Plan must start vendor\plan\PlanAgent.exe --root <install>\plan (or PLAN_AGENT_ROOT); bare vendor PlanAgent FATAL plan-agent tree not found; ops workaround --root C:\ai\bob\plan
 - Present empty local ops home is not authoritative: detect vs fresh /report (empty_local_queue/seat_state_mismatch), prefer live seats or EXIT 0 skipped=stale_local_home; JEEVES_MONITOR_DIGEST_HOME overrides BOB_DIGEST_HOME
 - bob_git_hook announce_seen must match Ergo nick case-insensitively (:jeeves! and :Jeeves!); seed ~/.grok/ergo/connect.password from bob config\ergo.password before Start-BobiverseGitAnnounceListen
+- When flamingo authors dominate the MRB queue, prefer no-flamingo-author MERGEABLE rows for flamingo seats (exact-nick self-MRB is tip #9574/#9579; host lag may still false-refuse — #9672). Sticky assign-sent + digest-idle is #9633.
