@@ -47,6 +47,17 @@ Open MERGEABLE tips can look "never dispatched" for three distinct reasons:
 2. **needs_human walls** — `giveup_count>=2` stamps `needs_human`; `!bored` will not take them. Digest `needs_human_hint` and queue_flow notes name `!cleargiveup owner/repo#N [seat]` or `!recycle`.
 3. **held-pass** — MRB PASS already done; merge-on-green `skip_hold` (phase-gated). Digest/report `held_pass_count` and queue_flow `held-pass=N` — do not re-chase as MRB.
 
+## Interim MRB author_seat heal (FR #9489)
+
+Self-MRB / machine-id blocks can leave every idle seat refused for a tip the
+fleet still needs reviewed. Queue heal options:
+
+- Stamp `author_seat` + `implementer_seat` to a **roster** dead seat such as
+  `marchhare-99999` (never invent `ghost-1` on older chairs --- enrich drops
+  non-parseable nicks and recovers the real implementer).
+- On tip Jeeves with FR #9489, reserved `ghost-1` (positive pid) also sticks.
+- Durable: install soft machine-free MRB from FR #9478 / #9480 (PR #9482).
+
 ## Monitor (FR #2446)
 
 `jeeves/tools/monitor/queue_flow.py`:
