@@ -37,6 +37,12 @@ Live runs (no `--chair-home`) stay soft-ok until either:
 
 Fixture runs pass `--chair-home`. BOB-G1 should add that marker when the offer path starts skipping held digests.
 
+**FR #9552 auto-close:** when the last open Depends-on child of an unheld
+`fr-digest` closes, ticket-closure (webhook + poll reconcile) and github-resync
+close the digest with a comment citing the child. Marker
+`bob_fr9552_auto_close_digest` in `common/scripts/fr_digest_auto_close.py`.
+Held digests are never auto-closed; already-closed digests are no-ops.
+
 ## Wire
 
 Every monitor cycle after `depends_on`, once BOB-G is live. `monitor-start` lists `fr_digest`. Report exit 1 via intake. Do not edit the queue.
