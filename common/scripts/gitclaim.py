@@ -232,6 +232,28 @@ OPS_MONITOR_TRACKER_BODY_RE = re.compile(
     r")"
 )
 
+# FR #9827: TipForm-restore / online_zero_workers escalate receipts (ops TipForm
+# Agents only; not shop FR). Title shapes from #9824 / #9378 / #9103 / #9310.
+# Never match product FRs that merely name the detector (#9462).
+TIPFORM_RESTORE_ESCALATE_TITLE_RE = re.compile(
+    r"(?i)(?:"
+    r"\(TipForm\s+restore\)"
+    r"|\bonline\s+workers\s*=\s*\[\s*\]\s+while\s+offerable"
+    r"|\bonline\s+with\s+zero\s+workers?(?:\s+seats?)?\b"
+    r"|\bidle\s+seats?\b.{0,60}\bofferable\s*>\s*0\b.{0,60}\bTipForm-only"
+    r")"
+)
+TIPFORM_RESTORE_ESCALATE_BODY_RE = re.compile(
+    r"(?i)(?:"
+    r"TipForm-only\s+seat\s+start"
+    r"|TipForm-only\s+start;\s*report-only"
+    r"|monitor will not Start-BobWorker"
+    r"|Operator:\s*TipForm\s+(?:Agents|->)"
+    r"|fingerprint\s+stall:online-zero-workers:"
+    r")"
+)
+
+
 # Labels safe to detect in free text (title/line only when GitHub labels empty).
 # Bare ``mrb`` is labels-only — otherwise titles like "harden MRB/FR routing" (#595)
 # would false-positive. ``owner-missing`` is also labels-only (FR #3661 / class of
@@ -1617,13 +1639,18 @@ def format_unaccepted_list(
         open_keys = open_fr_issue_keys(doc)
     except Exception:
         open_keys = set()
+    # FR #9821 / #9553: same issue_fetch as offer/assign so held digests absent
+    # from the local queue still gate !list (token-free when digests are queued).
+    _list_fetch = depends_issue_fetch_checker()
     rows = [
         r
         for r in rows
         if not (
             isinstance(r, dict)
             and _canon_task(r) == "FR"
-            and depends_gate_reason(r, doc, open_keys=open_keys)
+            and depends_gate_reason(
+                r, doc, open_keys=open_keys, issue_fetch=_list_fetch
+            )
         )
     ]
     if not rows:
@@ -2356,6 +2383,30 @@ def ops_monitor_tracker_reason(
     return None
 
 
+
+def tipform_restore_escalate_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #9827: TipForm-restore / online_zero_workers escalate receipt (None = ordinary FR).
+
+    Ops TipForm Agents-only filings (class of #9824 / #9378 / #9103). Never skip
+    stamped `feature-request` product work (e.g. #9462). `stall:online-zero-workers:`
+    titles remain `stall_receipt` via the earlier `^stall:` check.
+    """
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "feature-request" in labs:
+        return None
+    title_s = (title or "").strip()
+    if TIPFORM_RESTORE_ESCALATE_TITLE_RE.search(title_s):
+        return "tipform_restore_escalate"
+    if "via-intake" in labs and TIPFORM_RESTORE_ESCALATE_BODY_RE.search(body or ""):
+        return "tipform_restore_escalate"
+    return None
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -2441,6 +2492,12 @@ def issue_skip_fr_reason(
     ops = ops_monitor_tracker_reason(title=title_s, body=body or "", labels=tuple(labs))
     if ops:
         return ops
+    # FR #9827: TipForm-restore / online_zero_workers escalate receipts (no feature-request).
+    tip = tipform_restore_escalate_reason(
+        title=title_s, body=body or "", labels=tuple(labs)
+    )
+    if tip:
+        return tip
     return None
 
 
@@ -5116,15 +5173,25 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                 )
             ]
             return "skipped"
+    # FR #9821 / BOB-G3: digest gate rows must enter unaccepted even when
+    # label:fr-digest is SKIP_FR or the digest carries hold — otherwise the
+    # token-free Depends-on held-digest gate cannot see them (class of #9803).
+    _digest_probe = {
+        "task": "FR",
+        "title": claim.title,
+        "body": claim.body,
+        "labels": list(claim.labels),
+    }
+    _is_digest_gate = claim.task == "FR" and bool(digest_issue_reason(_digest_probe))
     if claim.task == "FR":
         _skip_fr = issue_skip_fr_reason(
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
         )
-        if _skip_fr:
+        if _skip_fr and not _is_digest_gate:
             # FR #9402: ops/monitor trackers drop any twin + clear offered_to.
             # Other skip_fr reasons keep prior behaviour (return skipped; digests
             # and needs-human paths are handled by prune / label mutation).
-            if _skip_fr == "ops_monitor_tracker":
+            if _skip_fr in ("ops_monitor_tracker", "tipform_restore_escalate"):
                 store_repo = canonical_queue_repo(claim.repo)
                 _clear_unaccepted_offer_pins_for_job(
                     home, doc, store_repo, claim.task, claim.id
@@ -5143,28 +5210,23 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     # FR #4009: never enqueue FR for issues on hold (label or owner HOLD body stamp).
     # Drop any already-queued twin so webhook edited / resync clears the offer path.
     # FR #9402: also clear offered_to / seat-holds so the pin cannot block !assign.
-    # BOB-G3: held digests stay as gate records (do not drop).
+    # BOB-G3 / FR #9821: held digests stay as gate records (enqueue, do not drop).
     if claim.task == "FR" and fr_hold_reason(
         title=claim.title, body=claim.body, labels=claim.labels
     ):
-        _digest_probe = {
-            "task": "FR",
-            "title": claim.title,
-            "body": claim.body,
-            "labels": list(claim.labels),
-        }
-        if digest_issue_reason(_digest_probe):
+        if _is_digest_gate:
+            pass  # fall through to append/refresh below
+        else:
+            store_repo = canonical_queue_repo(claim.repo)
+            _clear_unaccepted_offer_pins_for_job(
+                home, doc, store_repo, claim.task, claim.id
+            )
+            doc["unaccepted"] = [
+                r
+                for r in (doc.get("unaccepted") or [])
+                if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
+            ]
             return "skipped"
-        store_repo = canonical_queue_repo(claim.repo)
-        _clear_unaccepted_offer_pins_for_job(
-            home, doc, store_repo, claim.task, claim.id
-        )
-        doc["unaccepted"] = [
-            r
-            for r in (doc.get("unaccepted") or [])
-            if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
-        ]
-        return "skipped"
     # FR #3928 / #9080: never enqueue MRB for PRs on hold; purge any twin already queued
     # (done-fix requeue used to stamp labels=() and leave a held tip offerable).
     if claim.task == "MRB" and pr_hold_reason(
@@ -5388,7 +5450,9 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
         hold = fr_hold_reason(
             title=claim.title, body=claim.body, labels=claim.labels
         )
-        # BOB-G3: digest gate records stay queued even when held / fr-digest skip.
+        # BOB-G3 / FR #9821: digest gate records stay queued even when held /
+        # fr-digest SKIP_FR. If the digest was never enqueued (old skip path),
+        # backfill it so Depends-on children see hold without GitHub fetch.
         _digest_probe = {
             "task": "FR",
             "title": claim.title,
@@ -5396,6 +5460,17 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             "labels": list(claim.labels),
         }
         if digest_issue_reason(_digest_probe):
+            if (
+                not found_unaccepted
+                and not repo_archived_for_queue(claim.repo)
+            ):
+                ch = _append_unaccepted(doc, claim, home=home)
+                if ch == "added":
+                    return "added"
+                if ch == "duplicate":
+                    return "updated"
+                if ch == "skipped":
+                    return "noop"
             return "updated" if updated else "noop"
         if skip or hold:
             cleared = _clear_unaccepted_offer_pins_for_job(
@@ -13977,7 +14052,7 @@ def offer_focus_top(
                 skip_why = row_skip_fr_reason(cand)
                 if skip_why:
                     # FR #9411: ops-monitor trackers leave the unaccepted queue (not sticky).
-                    if skip_why == "ops_monitor_tracker":
+                    if skip_why in ("ops_monitor_tracker", "tipform_restore_escalate"):
                         if _drop_unaccepted_row(
                             doc, cand, kind="ops-monitor", reason=skip_why
                         ):
@@ -14467,7 +14542,7 @@ def offer_top(
                 # offer_focus_top); other skip_fr reasons stay sticky skip.
                 skip_why = row_skip_fr_reason(row)
                 if skip_why:
-                    if skip_why == "ops_monitor_tracker":
+                    if skip_why in ("ops_monitor_tracker", "tipform_restore_escalate"):
                         if _drop_unaccepted_row(
                             doc, row, kind="ops-monitor", reason=skip_why
                         ):
@@ -18302,10 +18377,16 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
-            # FR #9411: refuse ops-monitor trackers even when hold was cleared.
+            # FR #9411 / #9827: refuse ops-monitor + TipForm-restore escalate even when hold cleared.
             _assign_skip = row_skip_fr_reason(cand)
-            if task_u == "FR" and _assign_skip == "ops_monitor_tracker":
-                return "refused", "ops-monitor tracker (not shop FR; FR #9411)"
+            if task_u == "FR" and _assign_skip in (
+                "ops_monitor_tracker",
+                "tipform_restore_escalate",
+            ):
+                return (
+                    "refused",
+                    f"{_assign_skip} (not shop FR; FR #9411/#9827)",
+                )
             # FR #9411: unbudgeted closed check when caller omitted issue_open.
             _fr_open = (
                 issue_open
@@ -18519,12 +18600,13 @@ def prune_unassignable_queue(home: Path) -> dict:
             dropped_detail: list[str] = []
             for row in doc["unaccepted"]:
                 task = str(row.get("task") or "").upper()
-                if task == "FR" and row_skip_fr_reason(row):
-                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
-                    continue
-                # BOB-G3: keep digest gate rows even when held (do not fr_hold-drop).
+                # BOB-G3 / FR #9821: keep digest gate rows even when fr-digest is
+                # SKIP_FR or the digest carries hold (token-free Depends-on gate).
                 if task == "FR" and digest_issue_reason(row):
                     keep.append(row)
+                    continue
+                if task == "FR" and row_skip_fr_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue
                 # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
                 if task == "FR" and row_fr_hold_reason(row):
@@ -19921,6 +20003,10 @@ def resync_from_github(
                         # offers must not survive after a blocking FR opens.
                         dropped_detail.append(f"{_row_drop_label(row)} uat_repo_not_clear")
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
+                # BOB-G3 / FR #9821: digest gate rows survive skip_fr + hold prune.
+                if task_u == "FR" and digest_issue_reason(row):
+                    keep.append(row)
+                    continue
                 if task_u == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk
