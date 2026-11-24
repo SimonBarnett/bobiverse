@@ -200,3 +200,4 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 ## Harvested lessons (intake)
 
 - When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
+- Session reliability backlog for token-less chair: shared offerable predicate (list=assign=stuck), G1 assign when fr-digest not queued (#9548), auto-close fr-digest on last child, auto-pin tipform host-local after repeated GIVEUPs, stuck refresh, tray_session_missing rule, monitor ops_home on non-walrus, seat-hold clear on ACC nick move.
