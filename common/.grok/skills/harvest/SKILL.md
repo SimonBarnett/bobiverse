@@ -427,3 +427,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - marchhare online_zero_workers with tray.alive but no bob-ear: check stderr for ENOSPC then ircBob child; do not trust nssm Running alone; prefer redqueen !assign for flamingo-authored MRBs while marchhare down
 - Clear Remove-BobiversePathForce: wrap cmd rmdir in try/catch (FR #9500); Access denied on PYTEST~1 must warn and continue, not abort StrictMode Stop
 - !assign syntax is worker repo KIND num; flamingo-authored MRB needs redqueen/marchhare; marchhare !startworker agent marchhare NACKs engine.alive stale until interactive tray restart
+- When reviewing PowerShell added by FR seats, assert dollar-signed param/vars in the new function body (count of $ >= N); string-contains of the function name alone misses stripped-$ parse breaks that cascade into tray queue tests.
