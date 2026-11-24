@@ -5082,6 +5082,30 @@ def report_agent_cli_nonzero_exit(
             except Exception:
                 pass
         return {"ok": True, "skipped": True, "reason": "opencode-freeze-recycle"}
+    # FR #9656: console-closed / signal with no ACKed job is free-idle recycle after an
+    # intentional GIVEUP (e.g. require_machine=walrus). Tray may restart the seat; do not
+    # file "agent console closed" / crash twins. Keep filing when job_key is set (ACK open;
+    # FR #8154 WIP GIVEUP path).
+    _job_pending = str(job_key or "").strip()
+    _console_u = None
+    if exit_code is not None:
+        try:
+            _console_u = int(exit_code) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            _console_u = None
+    if not _job_pending and (
+        _fuel_reason in ("console-closed", "signal")
+        or (_console_u is not None and _console_u == CONSOLE_CLOSE_EXIT)
+    ):
+        if log:
+            try:
+                log(
+                    "worker: console-closed with no ACKed job; "
+                    "no console-close intake (FR #9656 free-idle after GIVEUP)"
+                )
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "console-closed-free-idle"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
