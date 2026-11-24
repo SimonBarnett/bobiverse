@@ -20496,13 +20496,84 @@ _HOLDER_OPEN_RX = re.compile(
 )
 
 
+def release_sticky_offer_on_bored(
+    home: Path, nick: str, now: float | None = None
+) -> str:
+    """FR #9633: !bored while only sticky-offered (no accepted) clears the pin.
+
+    Digest-idle seats that NAK ``busy (offered …)`` forever while the chair still
+    holds ``offered_to`` block ``offer_to_idle`` / focus-top. Clear the sticky
+    offer + matching seat-hold so the next ``bored_gate`` / ``offer_focus_top``
+    can re-send work. Accepted rows are untouched (holder_bored / stale-busy
+    paths remain).
+
+    Returns the open-job text that was cleared, else ''.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return ""
+    if _seat_has_accepted(home, nick):
+        return ""
+    open_job = seat_open_job(home, nick, now_f)
+    if not open_job or str(open_job).startswith("accepted "):
+        return ""
+    # seat_open_job paints "offered …" / "held …" (not "accepted …").
+    match = re.match(
+        r"^(offered|held)\s+(\S+)\s+(.+)(#\d+)\s*$",
+        str(open_job).strip(),
+        re.IGNORECASE,
+    )
+    repo = task = ident = ""
+    if match:
+        _kind, task, repo, ident = match.groups()
+        task = str(task or "").upper()
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            changed = False
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them != me:
+                    continue
+                if repo and task and ident and not _same(cand, repo, task, ident):
+                    continue
+                clear_sticky_offer_fields(cand)
+                changed = True
+            if changed:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        return ""
+    with contextlib.suppress(Exception):
+        if repo and task and ident:
+            clear_seat_hold(
+                home, nick, repo=repo, task=task, ident=ident, clear_pins=True
+            )
+        else:
+            clear_seat_hold(home, nick, clear_pins=True)
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick)
+    return open_job
+
+
 def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
     """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
 
     Returns the open-job text when this call released it, else ''. A different
     seat's !bored never touches this nick's row. Offered-but-not-accepted pins
-    stay on the existing busy path. ACK/DONE/progress must call
-    ``reset_holder_bored`` or the streak keeps counting.
+    are cleared by ``release_sticky_offer_on_bored`` (FR #9633) before the busy
+    gate. ACK/DONE/progress must call ``reset_holder_bored`` or the streak keeps
+    counting.
     """
     import time as _time
 
@@ -20593,8 +20664,14 @@ def bored_gate(
         return "busy"
     if seat_fuel_pause_reason(home, nick, now):
         return "busy"
+    # FR #9633: sticky offered-but-not-ACKed must not NAK !bored forever when the
+    # seat is claiming idle — clear the pin so offer_focus_top can re-send.
+    with contextlib.suppress(Exception):
+        release_sticky_offer_on_bored(home, nick, now)
     # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
     # never re-offer the same row and never treat it as stale digest doing.
+    # (After FR #9633 clear above, a fresh pending offer means another path stamped
+    # one mid-gate; still busy.)
     if seat_pending_offer(home, nick, now):
         return "busy"
     # FR #4642: ack-missing hold for a job this seat already DONE'd (no later
