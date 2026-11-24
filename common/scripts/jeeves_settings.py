@@ -256,6 +256,24 @@ SCHEMA: tuple[SettingSpec, ...] = (
         description="Observe-only Copilot dispatch (no live agents/tasks POST).",
     ),
     _spec(
+        "BOB_COPILOT_MODEL",
+        "str",
+        "",
+        group="fuel",
+        description=(
+            "CCA agents/tasks model (e.g. claude-haiku-4.5). Empty = Auto / default "
+            "(FR #9738). Concurrent Copilot seats = length of copilot-jobs.json; "
+            "tick() dispatches one job per pass."
+        ),
+    ),
+    _spec(
+        "BOB_COPILOT_BASE_REF",
+        "str",
+        "main",
+        group="fuel",
+        description="CCA agents/tasks base_ref (default main; FR #9738).",
+    ),
+    _spec(
         "BOB_DIGEST_HOME",
         "str",
         "",

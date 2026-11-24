@@ -71,6 +71,7 @@ Rules:
 2. Walrus child waits until code child is CLOSED/merged tip.
 3. If a seat NACK/GIVEUP is `needs-walrus` / `require_machine=walrus`, the **Jeeves agent** does the walrus action (receipt + Slab/Si-yes) — do not leave ACK→GIVEUP thrash on other machines.
 4. MONITORING on needs-walrus NACK: stop wrong-machine re-offer; ensure this split exists; drive walrus child via Jeeves-agent/Slab — do not only comment.
+5. **CAST IRON FR #9708:** implement-anywhere work — remove `needs-*` **and** `!unpin` together (never leave `needs-*` + `rm=any`). True host-action keeps `needs-*` + `!pin`. Chair `!unpin` refuses while `needs-*` remains on the queue row.
 
 ## remove needs-* + !unpin — CAST IRON (FR #9708)
 
