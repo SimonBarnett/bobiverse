@@ -12305,12 +12305,21 @@ def _note_seat_hold_unlocked(
         return
     # Keyword wins when set; else job["via"]; else offer (FR #4415 / FR #4115).
     via_s = str(via if via is not None else (job.get("via") or "offer")).strip().lower() or "offer"
+    repo = str(job.get("repo") or "")
+    task = str(job.get("task") or "")
+    ident = str(job.get("id") or "")
+    # FR #9558: one job key → one hold nick. Drop other seats before writing.
+    if repo and ident:
+        with contextlib.suppress(Exception):
+            _clear_job_seat_holds_unlocked(
+                home, repo, task, ident, except_nick=nick
+            )
     holds = _load_seat_holds_unlocked(home)
     holds[key] = {
         "nick": (canonical_worker_nick(nick) or nick or "").strip(),
-        "repo": str(job.get("repo") or ""),
-        "task": str(job.get("task") or ""),
-        "id": str(job.get("id") or ""),
+        "repo": repo,
+        "task": task,
+        "id": ident,
         "ts": str(job.get("offered_ts") or _utc_now()),
         # FR #4415: ``offer`` holds void when the queue row is gone; ``ack-missing``
         # (FR #4115) stays busy without a row until DONE/NACK/GIVEUP/QUIT.
@@ -12465,6 +12474,101 @@ def clear_job_seat_holds(
             )
     except (TimeoutError, OSError):
         return False
+
+
+def _purge_orphan_seat_holds_unlocked(home: Path, doc: dict) -> int:
+    """FR #9558: drop offer holds when ACC/offered_to nick is someone else.
+
+    ``ack-missing`` holds stay until DONE/NACK/GIVEUP/QUIT (FR #4115).
+    """
+    holds = _load_seat_holds_unlocked(home)
+    if not holds:
+        return 0
+    acc_by_job: dict[tuple[str, str, str], str] = {}
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        repo = str(row.get("repo") or "")
+        task = str(row.get("task") or "").upper()
+        ident = _norm_row_id(row.get("id"))
+        if not repo or not ident:
+            continue
+        raw = str(
+            row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+        ).strip()
+        nick = (canonical_worker_nick(raw) or raw).strip().lower()
+        if nick:
+            acc_by_job[(_repo_key(repo), task, ident)] = nick
+    offered_by_job: dict[tuple[str, str, str], str] = {}
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        to = str(row.get("offered_to") or "").strip()
+        if not to:
+            continue
+        repo = str(row.get("repo") or "")
+        task = str(row.get("task") or "").upper()
+        ident = _norm_row_id(row.get("id"))
+        if not repo or not ident:
+            continue
+        to_c = (canonical_worker_nick(to) or to).strip().lower()
+        if to_c:
+            offered_by_job[(_repo_key(repo), task, ident)] = to_c
+    cleared = 0
+    for nick_key, h in list(holds.items()):
+        if not isinstance(h, dict):
+            continue
+        via = str(h.get("via") or "offer").strip().lower() or "offer"
+        if via == "ack-missing":
+            continue
+        repo = str(h.get("repo") or "")
+        task = str(h.get("task") or "").upper()
+        ident = _norm_row_id(h.get("id"))
+        if not repo or not ident:
+            continue
+        job_key = (_repo_key(repo), task, ident)
+        hold_nick = (
+            canonical_worker_nick(str(h.get("nick") or nick_key))
+            or str(h.get("nick") or nick_key)
+        ).strip().lower()
+        if not hold_nick:
+            continue
+        acc_nick = acc_by_job.get(job_key, "")
+        offered_nick = offered_by_job.get(job_key, "")
+        # ACC moved to another nick, or live offer is on another nick.
+        # Keep remembered offer holds when the row still exists without a pin
+        # (FR #4089 / #4260); those clear via timeout, DONE, or FR #4415 row-gone.
+        if acc_nick and acc_nick != hold_nick:
+            holds.pop(nick_key, None)
+            cleared += 1
+            continue
+        if offered_nick and offered_nick != hold_nick:
+            holds.pop(nick_key, None)
+            cleared += 1
+    if cleared:
+        with contextlib.suppress(OSError):
+            _save_seat_holds_unlocked(home, holds)
+    return cleared
+
+
+def purge_orphan_seat_holds(
+    home: Path, *, now: float | None = None, locked_doc: dict | None = None
+) -> int:
+    """FR #9558: purge offer holds left behind when ACC/offered_to moved.
+
+    Safe to call from ``!stuck`` / ``seat_open_job`` / monitor sweeps.
+    """
+    if locked_doc is not None:
+        return _purge_orphan_seat_holds_unlocked(home, locked_doc)
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return 0
+            return _purge_orphan_seat_holds_unlocked(home, doc)
+    except (TimeoutError, OSError):
+        return 0
 
 
 def _seat_job_ledger_key(repo: str, task: str, ident: str) -> str:
@@ -12970,6 +13074,9 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
             cleared = purge_stale_offered_pins(
                 home, now=now_f, live=live, locked_doc=doc
             )
+            # FR #9558: drop offer holds left when ACC/offered_to moved to another nick.
+            with contextlib.suppress(Exception):
+                purge_orphan_seat_holds(home, now=now_f, locked_doc=doc)
             out = _seat_open_job_in(home, doc, nick, now_f, live)
             after_offers = [
                 str(r.get("offered_to") or "")
@@ -17444,6 +17551,14 @@ def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | Non
             doc["accepted"].append(job)
             if len(doc["accepted"]) > ACCEPTED_CAP:
                 doc["accepted"] = doc["accepted"][-ACCEPTED_CAP:]
+            # FR #9558: ACC moved — drop every seat-hold for this job (incl. prior offer nick).
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(job.get("repo") or ""),
+                    str(job.get("task") or ""),
+                    str(job.get("id") or ""),
+                )
             try:
                 _write_queue(queue_path(home), doc)
             except OSError:

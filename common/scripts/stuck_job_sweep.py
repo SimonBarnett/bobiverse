@@ -1539,9 +1539,18 @@ def run_stuck_sweep(
         "copilot_settled": 0,
         "nudged": 0,
         "idle_offers": 0,
+        "orphan_holds": 0,
     }
     cleared_doing: list[dict] = []
     if act:
+        # FR #9558: drop offer holds when ACC/offered_to moved to another nick.
+        with contextlib_suppress():
+            n_orphan = int(
+                gitclaim.purge_orphan_seat_holds(home, now=now_f) or 0
+            )
+            actions["orphan_holds"] = n_orphan
+            if n_orphan and log:
+                log(f"stuck-sweep orphan-seat-holds cleared={n_orphan} (FR #9558)")
         # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
         # accepted_holder_gone release can re-dispatch them.
         copilot_stats = settle_copilot_fr_with_open_prs(
