@@ -4,6 +4,11 @@ CCA runs on GitHub cloud. Jeeves POSTs ``agents/repos/{owner}/{repo}/tasks``
 with a ``prompt`` field (not ``problem_statement``), tracks the task + PR
 webhooks instead of IRC ACK/DONE, and falls back to shop seats when allowance
 is exhausted.
+
+FR #9738: optional CCA ``model`` (``BOB_COPILOT_MODEL`` / allowance ``model``;
+omit = Auto) and ``base_ref`` (default ``main``). ``tick()`` dispatches one
+job per pass; concurrent in-flight Copilot seats equal ``copilot-jobs.json``
+length (ops refill / Haiku quota separately).
 """
 from __future__ import annotations
 
@@ -44,6 +49,8 @@ MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 # FR #7251 / #7255: same 60s cadence as EAR_POOL_FETCH_S / FLEET_POOL_FETCH_S.
 CACHE_S = float(bobreport.EAR_POOL_FETCH_S)
+# FR #9745: max concurrent live Copilot tasks to keep
+MAX_CONCURRENT_COPILOT = 2
 COPILOT_COOLDOWN_S = 7 * 86400.0
 MRB_FAST_GIVEUP_S = 120.0
 MRB_FAST_GIVEUP_LIMIT = 3
@@ -1022,7 +1029,57 @@ def record_api_result(
             set_allowance(home, exhausted=False)
 
 
-def build_task_body(row: dict) -> dict:
+def resolve_copilot_model(*, home: Path | None = None) -> str:
+    """CCA ``model`` for ``agents/.../tasks`` (FR #9738).
+
+    Env ``BOB_COPILOT_MODEL`` wins (e.g. ``claude-haiku-4.5``). Else allowance
+    ``model``. Empty = omit from the POST body so GitHub uses Auto / default.
+    """
+    raw = (os.environ.get("BOB_COPILOT_MODEL") or "").strip()
+    if raw:
+        return raw
+    if home is not None:
+        try:
+            doc = load_allowance(home)
+        except Exception:  # noqa: BLE001
+            doc = {}
+        m = str(doc.get("model") or "").strip()
+        if m:
+            return m
+    return ""
+
+
+def resolve_copilot_base_ref(*, home: Path | None = None) -> str:
+    """CCA ``base_ref`` for task POST (FR #9738). Default ``main``.
+
+    Env ``BOB_COPILOT_BASE_REF`` wins when present (empty string omits the field).
+    Else allowance ``base_ref``, else ``main``.
+    """
+    if "BOB_COPILOT_BASE_REF" in os.environ:
+        return (os.environ.get("BOB_COPILOT_BASE_REF") or "").strip()
+    if home is not None:
+        try:
+            doc = load_allowance(home)
+        except Exception:  # noqa: BLE001
+            doc = {}
+        br = str(doc.get("base_ref") or "").strip()
+        if br:
+            return br
+    return "main"
+
+
+def build_task_body(
+    row: dict,
+    *,
+    home: Path | None = None,
+    model: str | None = None,
+    base_ref: str | None = None,
+) -> dict:
+    """Body for ``POST agents/repos/{owner}/{repo}/tasks`` (FR #5174 / #9738).
+
+    Always includes ``prompt``. Optional ``model`` when env/settings set (omit =
+    Auto). ``base_ref`` defaults to ``main`` unless explicitly cleared via env.
+    """
     task = str(row.get("task") or "FR").upper()
     repo = str(row.get("repo") or "")
     ident = str(row.get("id") or "")
@@ -1049,7 +1106,14 @@ def build_task_body(row: dict) -> dict:
             "Implement the issue. Open one PR whose body contains "
             f"Closes {repo}{ident if ident.startswith('#') else '#' + ident}."
         )
-    return {"prompt": "\n".join(prompt_lines)}
+    body: dict[str, str] = {"prompt": "\n".join(prompt_lines)}
+    model_s = resolve_copilot_model(home=home) if model is None else str(model or "").strip()
+    if model_s:
+        body["model"] = model_s
+    br = resolve_copilot_base_ref(home=home) if base_ref is None else str(base_ref or "").strip()
+    if br:
+        body["base_ref"] = br
+    return body
 
 
 def should_dispatch(
@@ -1272,7 +1336,7 @@ def dispatch_row(
         return {"status": "skip"}
     if gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK):
         return {"status": "skip"}
-    body = build_task_body(row)
+    body = build_task_body(row, home=home)
     path = tasks_api_path(str(row.get("repo") or ""))
     # FR #5174: never mark taken / announce without a real tasks POST + task id.
     if post is None:
@@ -2405,6 +2469,9 @@ def tick(
             catalog = list(_sjs5847.load_open_catalog(home) or [])
         qdoc = gitclaim.load_queue(home)
         for row in gitclaim.ordered_unaccepted(home):
+            # FR #9745: fill up to MAX_CONCURRENT_COPILOT live slots
+            if len(active) >= MAX_CONCURRENT_COPILOT:
+                break
             if (row.get("repo"), row.get("task"), row.get("id")) in active:
                 continue
             if gitclaim.ledger_blocks(ledger, row, COPILOT_NICK):
@@ -2433,5 +2500,6 @@ def tick(
                 )
                 if r.get("status") == "dispatched":
                     out["dispatched"] += 1
-                break
+                    # Add to active set after successful dispatch
+                    active.add((row.get("repo"), row.get("task"), row.get("id")))
     return out
