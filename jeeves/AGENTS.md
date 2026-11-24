@@ -37,6 +37,9 @@
 >    ACK→GIVEUP thrash on redqueen/flamingo. Mixed code+walrus work splits under one Digest: **Code** child (no
 >    `needs-walrus`) + **Walrus action** child (`needs-walrus`; `Depends-on: #<code>` + digest). Pure code/docs never
 >    `needs-walrus` (#9637). On needs-walrus NACK: stop wrong-machine re-offer; ensure split; drive via Jeeves-agent/Slab.
+> 10. **CAST IRON — remove `needs-*` when `!unpin` (FR #9708).** Implement-anywhere code: remove every `needs-<machine>`
+>     label **and** `!unpin` (`require_machine=any`) in the **same turn**. Never leave `needs-*` + `rm=any` (ACK→GIVEUP
+>     thrash; #9664). True host-action: keep label **and** pin together — never `!unpin` while `needs-*` remains.
 
 ## First turn (FR #954) â€” do this NOW
 
