@@ -14,13 +14,20 @@ function Get-BobTrayJeevesButlerCachePath {
 
 function Get-BobTrayJeevesButlerFallbackPath {
     param([Parameter(Mandatory)][string]$RepoRoot)
+    # FR #9587: tray-vendored butler beside plan-gantt, then jeeves/assets.
+    $trayAsset = Join-Path $RepoRoot 'bob\tray\assets\jeeves-butler.ico'
+    if (Test-Path -LiteralPath $trayAsset) { return $trayAsset }
     $fallback = Join-Path $RepoRoot 'jeeves\assets\jeeves-butler.ico'
     if (Test-Path -LiteralPath $fallback) { return $fallback }
     $parent = Split-Path -Parent $RepoRoot
     if ($parent) {
+        $altTray = Join-Path $parent 'bob\tray\assets\jeeves-butler.ico'
+        if (Test-Path -LiteralPath $altTray) { return $altTray }
         $alt = Join-Path $parent 'jeeves\assets\jeeves-butler.ico'
         if (Test-Path -LiteralPath $alt) { return $alt }
     }
+    $flat = Join-Path $RepoRoot 'assets\jeeves-butler.ico'
+    if (Test-Path -LiteralPath $flat) { return $flat }
     return $fallback
 }
 
