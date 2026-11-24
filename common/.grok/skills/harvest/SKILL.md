@@ -470,3 +470,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Seat hold on closed MRB survives !cleargiveup ledger=0; !stuck shows held; need chair clear of seat_job hold for closed tips (#9633)
 - pool_for_digest sticky allowance exhausted wins over fresher observation ok/unlimited --- clear exhaust on observe ok or prefer fresher obs
 - CCA task POST accepts model=claude-haiku-4.5; chair build_task_body must grow BOB_COPILOT_MODEL to avoid Auto/Luna-only
+- When updating Digest #9744 pack: comment+edit child bodies with live CCA evidence (model string claude-haiku-4.5, single-slot tick, sticky exhausted vs unlimited); keep TargetHaiku=2 via refill while chair FR-A/E land
