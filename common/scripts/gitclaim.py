@@ -13165,6 +13165,97 @@ def purge_orphan_seat_holds(
         return 0
 
 
+def release_stale_via_offer_holds(
+    home: Path, *, now: float | None = None
+) -> int:
+    """FR #9783: stuck-sweep clears stale via=offer seat-holds past offer timeout.
+
+    After ``offered_to`` ages out (~90s), ``via=offer`` holds can linger until
+    ``SEAT_HOLD_MAX_S`` (1h) and leave digest-idle seats ``busy (held …)`` while
+    stuck-sweep reports ``released=0``. Clear those holds (and matching aged
+    pins). ``ack-missing`` stays (FR #4115). Complements ``release_sticky_offer_on_bored``
+    / ``!cleargiveup`` (FR #9633 / #9771).
+
+    Returns the number of seat-holds cleared.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    timeout = float(offer_timeout_s(None))
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                doc = {"unaccepted": [], "accepted": []}
+            holds = _load_seat_holds_unlocked(home, now_f)
+            if not holds:
+                return 0
+            accepted_nicks = set()
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                raw = str(
+                    row.get("nick")
+                    or row.get("accepted_by")
+                    or row.get("offered_to")
+                    or ""
+                ).strip()
+                nick_c = (canonical_worker_nick(raw) or raw).strip().lower()
+                if nick_c:
+                    accepted_nicks.add(nick_c)
+            cleared = 0
+            dirty_queue = False
+            for nick_key, h in list(holds.items()):
+                if not isinstance(h, dict):
+                    continue
+                via = str(h.get("via") or "offer").strip().lower() or "offer"
+                if via == "ack-missing":
+                    continue
+                hold_nick = (
+                    canonical_worker_nick(str(h.get("nick") or nick_key))
+                    or str(h.get("nick") or nick_key)
+                ).strip().lower()
+                if hold_nick and hold_nick in accepted_nicks:
+                    continue
+                age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
+                if age < timeout:
+                    continue
+                holds.pop(nick_key, None)
+                cleared += 1
+                repo_s = str(h.get("repo") or "")
+                task_u = str(h.get("task") or "").upper()
+                ident_s = _norm_row_id(h.get("id"))
+                for cand in doc.get("unaccepted") or []:
+                    if not isinstance(cand, dict):
+                        continue
+                    to = str(cand.get("offered_to") or "").strip()
+                    if not to:
+                        continue
+                    them = (canonical_worker_nick(to) or to).strip().lower()
+                    if hold_nick and them != hold_nick:
+                        continue
+                    if _repo_key(cand.get("repo")) != _repo_key(repo_s):
+                        continue
+                    if _norm_row_id(cand.get("id")) != ident_s:
+                        continue
+                    if task_u and str(cand.get("task") or "").upper() != task_u:
+                        continue
+                    if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
+                        continue
+                    clear_sticky_offer_fields(cand)
+                    dirty_queue = True
+            if cleared:
+                with contextlib.suppress(OSError):
+                    _save_seat_holds_unlocked(home, holds)
+            if dirty_queue:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+            return cleared
+    except (TimeoutError, OSError):
+        return 0
+
+
 def _seat_job_ledger_key(repo: str, task: str, ident: str) -> str:
     return f"{_lkey(repo, ident)}|{str(task or '').upper()}"
 
@@ -14958,7 +15049,11 @@ def _strip_giveup_seat_from_row(row: dict, seat: str) -> None:
 def clear_giveup_job(
     home: Path, repo: str, ident: str, seat: str | None = None
 ) -> dict:
-    """FR #5135: under the queue lock, clear giveup stamps + matching ledger entry."""
+    """FR #5135 / FR #9771: clear giveup stamps + ledger + matching seat-holds.
+
+    FR #9771: ``!cleargiveup`` with ledger=0 still left ``busy (held …)`` when
+    ``seat-holds.json`` kept a via=offer pin for the closed/stuck MRB.
+    """
     repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
     ident_n = _norm_row_id(ident)
     seat_c = _canon_ledger_nick(seat) if seat else ""
@@ -14987,10 +15082,22 @@ def clear_giveup_job(
     except (TimeoutError, OSError):
         return {"ok": False, "error": "lock", "queue_rows": 0, "ledger": 0}
     ledger_n = ledger_clear_giveup_entry(home, repo_c, ident_n, nick=seat_c or None)
+    # FR #9771: drop seat-holds for this job (all seats, or the named seat).
+    holds_n = 0
+    with contextlib.suppress(Exception):
+        if seat_c:
+            if clear_seat_hold(
+                home, seat_c, repo=repo_c, task="", ident=ident_n, clear_pins=True
+            ):
+                holds_n = 1
+        else:
+            if clear_job_seat_holds(home, repo_c, "", ident_n):
+                holds_n = 1
     return {
         "ok": True,
         "queue_rows": rows_n,
         "ledger": ledger_n,
+        "holds": holds_n,
         "seat": seat_c,
         "repo": repo_c,
         "id": ident_n,
@@ -20924,15 +21031,19 @@ _HOLDER_OPEN_RX = re.compile(
 def release_sticky_offer_on_bored(
     home: Path, nick: str, now: float | None = None
 ) -> str:
-    """FR #9633: !bored clears a *stale* sticky offered_to pin (no accepted row).
+    """FR #9633 / FR #9771: !bored clears *stale* sticky offer pins and via=offer holds.
 
     Within ``offer_timeout_s`` the seat stays busy (FR #3192 / #8738 — fresh
     post-DONE / post-GIVEUP pushes must not be wiped by the next !bored). Past
     the timeout, clear ``offered_to`` + matching seat-hold so digest-idle seats
     are not NAK ``busy (offered …)`` forever (issue #9633).
 
-    Bare ack-missing / closed-PR ``held …`` seat-holds (FR #4115 / #4415) are
-    never cleared here. Does not call ``seat_open_job`` (that would purge first).
+    FR #9771: when the pin is already gone but a ``via=offer`` seat-hold remains
+    (hold reaper is ``SEAT_HOLD_MAX_S`` = 1h while offer timeout is ~90s), clear
+    that stale hold on !bored so seats are not NAK ``busy (held …)`` after #9633.
+
+    Bare ack-missing ``held …`` seat-holds (FR #4115 / #4415) are never cleared
+    here. Does not call ``seat_open_job`` (that would purge first).
 
     Returns the open-job text that was cleared, else ''.
     """
@@ -20974,6 +21085,25 @@ def release_sticky_offer_on_bored(
             if changed:
                 with contextlib.suppress(OSError):
                     _write_queue(queue_path(home), doc)
+            # FR #9771: stale via=offer hold with no live pin on this nick.
+            if not changed:
+                key = _seat_key(nick)
+                holds = _load_seat_holds_unlocked(home, now_f)
+                h = holds.get(key) if key else None
+                if isinstance(h, dict):
+                    via = str(h.get("via") or "offer").strip().lower() or "offer"
+                    if via != "ack-missing":
+                        age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
+                        if age >= offer_timeout_s(None):
+                            repo_s = str(h.get("repo") or "")
+                            task_u = str(h.get("task") or "").upper()
+                            ident_s = str(h.get("id") or "")
+                            cleared_job = f"held {task_u} {repo_s}{ident_s}".strip()
+                            repo, task, ident = repo_s, task_u, ident_s
+                            holds.pop(key, None)
+                            with contextlib.suppress(OSError):
+                                _save_seat_holds_unlocked(home, holds)
+                            changed = True
     except (TimeoutError, OSError):
         return ""
     if not changed:
