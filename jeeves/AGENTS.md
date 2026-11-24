@@ -29,10 +29,14 @@
 >    `idle_with_open_work` and **must chair-heal** (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + ear-relay
 >    `!assign` bridge per #9461) — report-only is opt-in. Gated-only queues are not this fail. Durable chair acceptance
 >    also reaffirms #9628 / #9460 (`offer_to_idle` / `offer_after_done`). Same-turn intervene still owes #9627.
-> 8. **CAST IRON — multi-FR batch needs Digest parent (FR #9652).** Filing ≥2 related FRs in one turn/batch requires a
->    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>`. Never leave a
->    multi-FR batch free-floating. Same-turn repair if already filed without a digest. Last open child close closes the
->    digest (#9552). One issue per issue inside the digest.
+> 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
+> 9. **CAST IRON — needs-walrus NACK → Jeeves agent does walrus (FR #9669).** When a seat NACK/GIVEUP is `needs-walrus` /
+>    `require_machine=walrus`, the **Jeeves agent** owns the walrus action (receipt + Slab/Si-yes) — do not leave
+>    ACK→GIVEUP thrash on redqueen/flamingo. Mixed code+walrus work splits under one Digest: **Code** child (no
+>    `needs-walrus`) + **Walrus action** child (`needs-walrus`; `Depends-on: #<code>` + digest). Pure code/docs never
+>    `needs-walrus` (#9637). On needs-walrus NACK: stop wrong-machine re-offer; ensure split; drive via Jeeves-agent/Slab.
 
 ## First turn (FR #954) â€” do this NOW
 
