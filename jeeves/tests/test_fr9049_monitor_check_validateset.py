@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INVOKE = ROOT / "scripts" / "Invoke-JeevesMonitorCheck.ps1"
 MONITOR = ROOT / "tools" / "monitor"
 
-SKIP = frozenset({"__init__", "_common"})
+# ear_down_gate is a helper library imported by ircbob_ear (FR #9503), not a -Check.
+SKIP = frozenset({"__init__", "_common", "ear_down_gate"})
 
 
 def _shipped_checks() -> set[str]:
