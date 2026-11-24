@@ -951,6 +951,32 @@ def depends_gate_reason(
     return DEPENDS_OPEN_REASON
 
 
+def walk_depends_on_offer_reason(
+    row: dict,
+    doc: dict | None = None,
+    *,
+    open_keys: set[tuple[str, int]] | None = None,
+    issue_open=None,
+    issue_fetch=None,
+    docs_root: Path | None = None,
+) -> str | None:
+    """FR #9857: shared Depends-on walk for !bored / assign / offerable list.
+
+    Alias of `depends_gate_reason` (FR #9455). Resolves relative `#N` against
+    the child row repo and qualified `owner/repo#N`. Multi-ref: every hard ref
+    must be clear (G1: unheld fr-digest may stay OPEN). Fail-closed when
+    `issue_open` raises and a fetch path exists (`depends-unresolved`).
+    """
+    return depends_gate_reason(
+        row,
+        doc,
+        open_keys=open_keys,
+        issue_open=issue_open,
+        issue_fetch=issue_fetch,
+        docs_root=docs_root,
+    )
+
+
 # BOB-D3 / FR #8807: skip offer when any Depends-on issue ref is OPEN.
 # BOB-D5 / FR #8809: fail closed on malformed tokens / lookup Unknown.
 # BOB-D1/D2 own the public parse_depends_on / resolver contract; this gate uses a
