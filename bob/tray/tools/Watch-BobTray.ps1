@@ -5277,7 +5277,7 @@ $poll.Add_Tick({
                     # FR #9462 / #3180: online_zero_workers is TipForm Agents only — skip auto intervene/fill nudge.
                     $ozOnly = $true
                     foreach ($a in @($alerts)) {
-                        if ($a -and ($a -notmatch 'online_zero_workers|engine_restart_storm')) { $ozOnly = $false; break }
+                        if ($a -and ($a -notmatch 'online_zero_workers|engine_restart_storm|engine_stale_wake')) { $ozOnly = $false; break }
                     }
                     if (-not $ozOnly -and (Get-Command Invoke-BobQueueIntervene -ErrorAction SilentlyContinue)) {
                         $qi = Invoke-BobQueueIntervene -Alerts $alerts -StartWorkerDir $script:startWorkerDir

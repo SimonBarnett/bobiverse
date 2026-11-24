@@ -77,6 +77,18 @@ def test_fr9513_tray_has_wake_alert_helper():
     ps = (ROOT / "bob" / "tray" / "tools" / "BobTrayStartWorker.ps1").read_text(encoding="utf-8-sig")
     assert "Get-BobTrayEngineWakeAlert" in ps
     assert "engine.wake" in ps
+    i = ps.index("function Get-BobTrayEngineWakeAlert")
+    j = ps.index("function Get-BobTrayEngineStormAlert")
+    block = ps[i:j]
+    # MRB #9517 FAIL class: FR agent stripped every '$' leaving bare backslash (PS parse error).
+    assert "$Root" in block
+    assert "$MaxAgeSeconds" in block
+    assert "$wake" in block
+    assert "$age" in block
+    assert "$null" in block
+    assert block.count("$") >= 10
     w = (ROOT / "bob" / "tray" / "tools" / "Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
     assert "Get-BobTrayEngineWakeAlert" in w
-
+    # TipForm-only: wake must not flip ozOnly / auto-intervene (storm sibling).
+    assert "engine_stale_wake" in w
+    assert "online_zero_workers|engine_restart_storm|engine_stale_wake" in w
