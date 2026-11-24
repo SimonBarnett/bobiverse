@@ -114,11 +114,17 @@ def write_seat_irc(
     shop: str = "",
     root: Optional[Path | str] = None,
     now: Optional[float] = None,
+    mode: str = "agent",
 ) -> Path:
-    """Register an IRC-joined agent seat. Idempotent overwrite for the nick."""
+    """Register an IRC-joined seat marker. Idempotent overwrite for the nick.
+
+    FR #9640: ``mode=jeeves`` markers are written for Agents > Jeeves but
+    ``list_live_irc_agent_seats`` / CapRefusal count only ``mode=agent``.
+    """
     d = seats_dir(root)
     d.mkdir(parents=True, exist_ok=True)
     path = seat_path(nick, d)
+    mode_l = (mode or "agent").strip().lower() or "agent"
     body = {
         "v": 1,
         "nick": nick,
@@ -126,7 +132,7 @@ def write_seat_irc(
         "machine": (machine or "").strip().lower(),
         "shop": shop or (f"#{machine}" if machine else ""),
         "joined_at": float(time.time() if now is None else now),
-        "mode": "agent",
+        "mode": mode_l,
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
@@ -328,7 +334,7 @@ def worker_cap_refusal_irc(
     pid_alive_fn=None,
     procs: Optional[Iterable] = None,
 ) -> str:
-    """'' = free to start. Plan/monitor/maintenance never refused.
+    """'' = free to start. Plan/monitor/maintenance/jeeves never refused (FR #9640).
 
     Cap = live agent roots plus IRC markers that are not the child of one of those roots (FR #4307 / FR #4458).
     """

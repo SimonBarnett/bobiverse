@@ -454,3 +454,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Workers MaxWorkers=2 is Workers-submenu only; Agents Plan must StartPlanExe vendor\plan\PlanAgent.exe; Agents Jeeves must not CapRefusal via StartWorker agent
 - CAST IRON FR #9652: filing >=2 related FRs in one turn MUST create/reuse Digest parent (feature-request + fr-digest) with Depends-on on each child; digests stay useful when unheld; rule FR itself is not fr-digest
 - TipForm Plan must start vendor\plan\PlanAgent.exe --root <install>\plan (or PLAN_AGENT_ROOT); bare vendor PlanAgent FATAL plan-agent tree not found; ops workaround --root C:\ai\bob\plan
+- After bobiverse body require_machine stop pinning, update every pin expect to needs-<machine> or assert empty; keep _body_for_queue preserve asserts separate from infer stamps
