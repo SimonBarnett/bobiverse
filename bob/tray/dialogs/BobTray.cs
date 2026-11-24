@@ -3259,6 +3259,21 @@ namespace BobDialogs
                 File.WriteAllText(dumpWeightsRefresh, WeightsForm.DumpRefreshButton(), new UTF8Encoding(false));
                 return 0;
             }
+            // FR #9589: headless local CLI discover (fake BOB_*_EXE for tests).
+            string dumpWeightsDiscover = Common.Arg(args, "--dump-weights-discover");
+            if (dumpWeightsDiscover.Length > 0)
+            {
+                BobModelsDiscoverResult disc = BobModelsClient.DiscoverLocalModels();
+                File.WriteAllText(dumpWeightsDiscover, WeightsForm.DumpDiscoverSummary(disc), new UTF8Encoding(false));
+                int total = disc != null ? disc.TotalCount : 0;
+                TrayLifecycle.Write(
+                    "weights_refresh_discover",
+                    "total", total.ToString(),
+                    "grok", disc != null && disc.Reasons.ContainsKey("grok") ? disc.Reasons["grok"] : "",
+                    "cursor", disc != null && disc.Reasons.ContainsKey("cursor") ? disc.Reasons["cursor"] : "",
+                    "opencode", disc != null && disc.Reasons.ContainsKey("opencode") ? disc.Reasons["opencode"] : "");
+                return total > 0 ? 0 : 2;
+            }
             // FR #8716 / BOB-14: dump webhook ``clis`` allow-list (valid-only dropdown evidence).
             string dumpWeightsValid = Common.Arg(args, "--dump-weights-valid");
             if (dumpWeightsValid.Length > 0)
