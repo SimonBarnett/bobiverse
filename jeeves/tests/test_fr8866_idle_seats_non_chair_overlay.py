@@ -134,7 +134,8 @@ def test_workers_stale_ignored(tmp_path, monkeypatch):
     assert any("workers_stale" in n for n in payload["notes"])
 
 
-def test_local_queue_does_not_fetch(tmp_path, monkeypatch):
+def test_local_queue_fetch_fail_falls_back_local(tmp_path, monkeypatch):
+    """FR #9557: empty local probes live once; fetch failure keeps local path."""
     chair, digest = _homes(tmp_path)
     (digest / "queue.json").write_text('{"unaccepted":[]}\n', encoding="utf-8")
     (digest / "digest.json").write_text('{"machines":{}}\n', encoding="utf-8")
@@ -146,9 +147,9 @@ def test_local_queue_does_not_fetch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(common, "fetch_live_report", _boom)
     payload, code = idle_seats.check(_args(chair, digest))
-    assert called["n"] == 0
+    assert called["n"] == 1
     assert code == common.EXIT_OK
-    assert payload.get("source") != "live_report"
+    assert payload.get("source") not in {"live_report", "live_report_stale_local"}
 
 
 def test_auto_feed_alerts_on_live_idle(tmp_path, monkeypatch):
