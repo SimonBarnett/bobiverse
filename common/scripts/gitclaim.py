@@ -12877,16 +12877,16 @@ def purge_stale_offered_pins(
                 else:
                     with contextlib.suppress(Exception):
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
-                # FR #4089: aged-but-live seats keep seat-holds until offer_focus_top
-                # observes the timeout. Dead seats drop holds with the pin.
-                if dead_pin:
-                    with contextlib.suppress(Exception):
-                        _clear_job_seat_holds_unlocked(
-                            home,
-                            str(cand.get("repo") or ""),
-                            str(cand.get("task") or ""),
-                            str(cand.get("id") or ""),
-                        )
+                # FR #9403: always drop seat-holds with the pin (parity with offer_focus_top).
+                # Keeping aged-but-live holds left idle seats busy (held FR …) after
+                # offer-timeout:idle-no-ack while ACC moved to another nick.
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home,
+                        str(cand.get("repo") or ""),
+                        str(cand.get("task") or ""),
+                        str(cand.get("id") or ""),
+                    )
                 cand.pop("offered_to", None)
                 cand.pop("offered_ts", None)
                 cand.pop("offered_channel", None)
