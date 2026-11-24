@@ -426,3 +426,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - MRB author heal: prefer roster dead-pid stamp on older chairs; tip reserved ghost-N (N>=1) must stick through enrich via _reserved_heal_seat_nick; durable path remains soft free=/#9480
 - marchhare online_zero_workers with tray.alive but no bob-ear: check stderr for ENOSPC then ircBob child; do not trust nssm Running alone; prefer redqueen !assign for flamingo-authored MRBs while marchhare down
 - Clear Remove-BobiversePathForce: wrap cmd rmdir in try/catch (FR #9500); Access denied on PYTEST~1 must warn and continue, not abort StrictMode Stop
+- Start-Bob under nssm: never in-process Sync/Update; Start-Process + WaitForExit + taskkill /T (BOB_START_SYNC_TIMEOUT_SEC) so hung git fetch cannot block bob-ear
