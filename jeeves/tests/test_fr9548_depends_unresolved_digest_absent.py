@@ -160,3 +160,13 @@ def test_fr9548_assign_annotated_digest_absent_from_queue(home: Path):
 def test_fr9548_marker_for_monitor():
     text = Path(gitclaim.__file__).read_text(encoding="utf-8")
     assert "bob_g1_depends_annotation_soft" in text or "FR #9548" in text
+
+def test_fr9548_mixed_garbage_token_still_d5_fail_closed():
+    """MRB #9551: soft-allow is annotation-shaped only — garbage-token stays D5."""
+    row = _child("Depends-on: #40404, garbage-token\n")
+    assert gitclaim._row_depends_on_has_bad_ref(row) is True
+    assert (
+        gitclaim.row_depends_open_reason(row, set())
+        == gitclaim.DEPENDS_UNRESOLVED_REASON
+    )
+

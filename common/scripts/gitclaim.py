@@ -962,6 +962,18 @@ _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
 _DEPENDS_VALUE_ANNOTATION_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 
 
+
+# FR #9548 / MRB #9551: bare annotation tokens beside a valid #N (Digest:…, see, digest,
+# BOB-THEME slugs). True garbage (garbage-token) still fails BOB-D5 even when #N present.
+_DEPENDS_ANNOTATION_SOFT_RE = re.compile(
+    r"(?i)^(Digest:.*|see|digest|BOB-[A-Z0-9][A-Z0-9_-]*)$"
+)
+
+
+def _is_depends_annotation_soft_token(tok: str) -> bool:
+    s = (tok or "").strip()
+    return bool(s) and _DEPENDS_ANNOTATION_SOFT_RE.match(s) is not None
+
 def _depends_on_value_tokens(value: str) -> list[str]:
     """Split a Depends-on value into issue-ref tokens; drop ``(...)`` / ``[...]`` notes."""
     cleaned = _DEPENDS_VALUE_ANNOTATION_RE.sub(" ", value or "")
@@ -1059,9 +1071,13 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
                     continue
                 line_good = True
                 continue
+            if _is_depends_annotation_soft_token(tok):
+                continue
             line_bad = True
-        # FR #9548: annotation junk beside a valid ref is soft; junk-only is D5.
-        if line_bad and not line_good:
+        # FR #9548 / MRB #9551: annotation soft-tokens are ignored; any other junk
+        # fails closed even when a valid #N is present (BOB-D5 / fr8809).
+        # Junk-only (no valid ref) also fails closed.
+        if line_bad:
             return True
     return False
 
