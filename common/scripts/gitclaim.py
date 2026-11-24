@@ -6933,6 +6933,140 @@ def list_open_prs_missing_mrb(
     return out
 
 
+def heal_open_prs_missing_mrb(
+    home: Path,
+    pulls,
+    *,
+    repo: str = "",
+    dry_run: bool = False,
+) -> dict:
+    """FR #9635: enqueue MRB for open expected PRs missing from the queue.
+
+    Mirrors ``resync_from_github`` open-PR classification via
+    ``list_open_prs_missing_mrb`` / ``claim_from_github_issue``. Includes
+    ``lesson(...)`` / harvest-lesson tips (same as !resync / !assign; webhook
+    still skips pure intake receipts per FR #2650).
+
+    Returns ``{ok, added, duplicate, skipped, refused, missing_before,
+    missing_after, details, dry_run}``.
+    """
+    pulls_l = [p for p in (pulls if isinstance(pulls, list) else []) if isinstance(p, dict)]
+    by_num: dict[tuple[str, int], dict] = {}
+    for pr in pulls_l:
+        num = pr.get("number")
+        if not isinstance(num, int):
+            continue
+        base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+        pr_repo = (
+            canonical_queue_repo(str(base_repo.get("full_name") or repo or ""))
+            or str(repo or "").strip()
+        )
+        if not pr_repo:
+            continue
+        by_num[(_repo_key(pr_repo), int(num))] = pr
+
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            missing = list_open_prs_missing_mrb(pulls_l, doc, repo=repo)
+            details: list[dict] = []
+            added = duplicate = skipped = refused = 0
+            if dry_run:
+                return {
+                    "ok": True,
+                    "added": 0,
+                    "duplicate": 0,
+                    "skipped": 0,
+                    "refused": 0,
+                    "missing_before": len(missing),
+                    "missing_after": len(missing),
+                    "details": [
+                        {
+                            "repo": m.get("repo"),
+                            "number": m.get("number"),
+                            "planned": "enqueue_mrb",
+                        }
+                        for m in missing
+                    ],
+                    "dry_run": True,
+                }
+            for m in missing:
+                pr_repo = canonical_queue_repo(str(m.get("repo") or repo or "")) or ""
+                num = m.get("number")
+                if not pr_repo or not isinstance(num, int):
+                    refused += 1
+                    details.append({"repo": pr_repo, "number": num, "result": "refused:bad_key"})
+                    continue
+                pr = by_num.get((_repo_key(pr_repo), int(num)))
+                if pr is None:
+                    refused += 1
+                    details.append(
+                        {"repo": pr_repo, "number": num, "result": "refused:pr_not_in_list"}
+                    )
+                    continue
+                # claim_from_github_issue treats /pull/ URLs (and pull_request blobs) as MRB.
+                issue = dict(pr)
+                if "html_url" not in issue or "/pull/" not in str(issue.get("html_url") or ""):
+                    issue["html_url"] = (
+                        str(pr.get("html_url") or "")
+                        or f"https://github.com/{pr_repo}/pull/{num}"
+                    )
+                if "state" not in issue:
+                    issue["state"] = "open"
+                claim = claim_from_github_issue(pr_repo, issue)
+                if claim is None or claim.task != "MRB":
+                    refused += 1
+                    details.append(
+                        {
+                            "repo": pr_repo,
+                            "number": num,
+                            "result": "refused:not_mrb_claim",
+                        }
+                    )
+                    continue
+                url = str(pr.get("html_url") or issue.get("html_url") or "")
+                result = _append_unaccepted(doc, claim, home=home, url=url)
+                if result == "added":
+                    added += 1
+                elif result == "duplicate":
+                    duplicate += 1
+                elif result == "skipped":
+                    skipped += 1
+                else:
+                    refused += 1
+                details.append(
+                    {"repo": pr_repo, "number": num, "result": result or "refused"}
+                )
+            if added or duplicate:
+                _write_queue(queue_path(home), doc)
+            missing_after = list_open_prs_missing_mrb(pulls_l, doc, repo=repo)
+            return {
+                "ok": True,
+                "added": added,
+                "duplicate": duplicate,
+                "skipped": skipped,
+                "refused": refused,
+                "missing_before": len(missing),
+                "missing_after": len(missing_after),
+                "details": details,
+                "dry_run": False,
+            }
+    except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}:{exc}",
+            "added": 0,
+            "duplicate": 0,
+            "skipped": 0,
+            "refused": 0,
+            "missing_before": 0,
+            "missing_after": -1,
+            "details": [],
+            "dry_run": bool(dry_run),
+        }
+
+
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
     if not path.exists():
         return []

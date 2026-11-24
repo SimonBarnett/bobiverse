@@ -42,13 +42,14 @@ The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus
 
 Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync can offer MRB. Do not offer the pull while it is still a draft (FR #2604).
 
-## open_pr_mrb_missing (FR #8377)
+## open_pr_mrb_missing (FR #8377 / #9635)
 
 `Test-JeevesMonitorOpenPrMrbMissing.ps1` / `tools/monitor/open_pr_mrb_missing.py` flags open non-draft non-receipt product PRs that have no matching `unaccepted`/`accepted` MRB **or** FIX row (class of #8353: an open, green, mergeable PR that never reached the MRB queue). Set `JEEVES_OPEN_PR_MRB_MISSING_FIXTURE` to a JSON pull list (optionally `{"repo": "owner/name", "pulls": [...]}`) for offline/ops probes.
 
-- Every expected PR with no MRB/FIX row â†’ EXIT 1 (finding), plus a `queue.json missing` note when the queue file is absent.
-- A FIX row (ci-fail / conflict / dirty fold) also covers the PR â€” it is being handled, not stranded.
-- Shared classification: `common/scripts/gitclaim.py` `open_pr_expects_mrb_or_fix_row` / `list_open_prs_missing_mrb` (drafts, intake harvest receipts, stacked `fix(mrb-N)` tips, `docs/mrb-*` pins and lesson-of-lesson tips are ignored). A `fix(mrb-N)` on `main`/`master` is expected MRB work (FR #8475); the higher-numbered twin of an open parent is not.
+- Every expected PR with no MRB/FIX row -> EXIT 1 (finding), plus a `queue.json missing` note when the queue file is absent.
+- A FIX row (ci-fail / conflict / dirty fold) also covers the PR -- it is being handled, not stranded.
+- Shared classification: `common/scripts/gitclaim.py` `open_pr_expects_mrb_or_fix_row` / `list_open_prs_missing_mrb` (drafts, intake harvest receipts, stacked `fix(mrb-N)` tips, `docs/mrb-*` pins and lesson-of-lesson tips are ignored). A `fix(mrb-N)` on `main`/`master` is expected MRB work (FR #8475); the higher-numbered twin of an open parent is not. `lesson(...)` / harvest-lesson tips **are** expected (same as `!resync` / `!assign`).
+- **FR #9635 heal (default ON):** when findings exist and `queue.json` is writable, `heal_open_prs_missing_mrb` enqueues the missing MRB rows in the same check cycle; EXIT 0 when the queue covers afterward. Report-only: `--no-heal`. Plan without write: `--heal-dry-run`.
 
 ## depends_on (FR #8848)
 
@@ -139,7 +140,7 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
 `tools/monitor/auto_feed.py` treats a missing `auto-feed.json` as configured=false. That stays EXIT 0 when no idle seat has an offerable row. When auto-feed is absent or disabled **and** `idle_seats` would EXIT 1, this check EXIT 1 with the idle and offerable counts and says seats must `!bored` or auto-feed must be enabled. The check does not turn auto-feed on.
 
-Open product PRs with no MRB or FIX row stay on `open_pr_mrb_missing` (FR #8377). This check does not enqueue them.
+Open product PRs with no MRB or FIX row stay on `open_pr_mrb_missing` (FR #8377 / #9635). Default heal enqueues them in the same check cycle (`--no-heal` for report-only).
 
 ## chair tree without git (FR #8493)
 
