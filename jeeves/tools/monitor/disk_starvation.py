@@ -120,6 +120,26 @@ def is_disk_reason(reason: str) -> bool:
     return True
 
 
+def iter_giveup_seats(raw) -> list[str]:
+    """Normalize ``giveup_seats`` to discrete seat tokens (FR #9728).
+
+    A JSON string value (e.g. ``\"flamingo\"``) must NOT be iterated as characters —
+    that spawned WinRM/intake hosts ``f,l,a,m,i,n,g,o``.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        s = raw.strip()
+        return [s] if s else []
+    if isinstance(raw, (list, tuple, set)):
+        out: list[str] = []
+        for x in raw:
+            if isinstance(x, str) and x.strip():
+                out.append(x.strip())
+        return out
+    return []
+
+
 def _coerce_rows(doc: dict) -> list[dict]:
     q = doc.get("queue") if isinstance(doc.get("queue"), dict) else {}
     out: list[dict] = []
@@ -167,9 +187,8 @@ def detect_disk_machines(doc: dict) -> dict[str, dict[str, Any]]:
         job = _row_id(row)
         reason = str(row.get("giveup_reason") or "")
         if is_disk_reason(reason):
-            for seat in row.get("giveup_seats") or []:
-                if isinstance(seat, str):
-                    touch(machine_from_nick(seat), job=job, seat=seat, reason=reason)
+            for seat in iter_giveup_seats(row.get("giveup_seats")):
+                touch(machine_from_nick(seat), job=job, seat=seat, reason=reason)
             # lingering reason with empty seats: infer from disk nacks in outcomes
             for o in row.get("offer_outcomes") or []:
                 if not isinstance(o, dict):

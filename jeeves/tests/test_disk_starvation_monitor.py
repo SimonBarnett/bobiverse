@@ -48,6 +48,44 @@ def test_fr9710_ignores_worktree_collision_and_garbage_seats():
     assert ds.detect_disk_machines(doc) == {}
 
 
+def test_fr9728_string_giveup_seats_not_character_split():
+    """giveup_seats as a JSON string must not spawn per-character machines."""
+    assert ds.iter_giveup_seats("flamingo") == ["flamingo"]
+    assert ds.iter_giveup_seats(["flamingo-17160"]) == ["flamingo-17160"]
+    doc = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9688",
+                    "giveup_reason": "worktree-create-failed:disk-low (FR #6240)",
+                    "giveup_seats": "flamingo",  # string, not list
+                    "offer_outcomes": [],
+                }
+            ]
+        }
+    }
+    hits = ds.detect_disk_machines(doc)
+    # bare "flamingo" is not seat-pid → no machine; must not invent f,l,a,m,i,n,g,o
+    assert hits == {}
+    doc2 = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9688",
+                    "giveup_reason": "worktree-create-failed:disk-low (FR #6240)",
+                    "giveup_seats": "flamingo-17160",
+                    "offer_outcomes": [],
+                }
+            ]
+        }
+    }
+    hits2 = ds.detect_disk_machines(doc2)
+    assert set(hits2.keys()) == {"flamingo"}
+    assert "f" not in hits2 and "o" not in hits2
+
+
 def test_detect_disk_machines_from_offer_outcomes():
     doc = {
         "queue": {
