@@ -19,6 +19,8 @@ description: >
 >    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
 > 7. **CAST IRON — idle + open work is FAIL (#9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` chair-heals
 >    (`push_idle` / `offer_to_idle`); not report-only. Same-turn bridge still owes #9627.
+> 8. **CAST IRON — multi-FR batch needs Digest parent (#9652).** ≥2 related FRs in one batch: `fr-digest` Digest first;
+>    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 

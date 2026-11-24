@@ -1158,11 +1158,32 @@ def row_depends_open_reason(
         return None
     if _row_depends_on_has_bad_ref(row):
         return DEPENDS_UNRESOLVED_REASON
+    keys = open_keys if open_keys is not None else set()
+    fetch = issue_fetch
+    # FR #9665: durable GIVEUP depends_open block bypasses unheld fr-digest soft-allow
+    # until those refs are CLOSED (auto-cleared here when checkers say closed).
+    block_refs = clear_closed_depends_open_block(
+        row, open_keys=keys if open_keys is not None else None, issue_open=issue_open
+    )
+    if block_refs:
+        home = str(row.get("repo") or "").strip()
+        for repo, num in block_refs:
+            repo_s = str(repo or home or "").strip()
+            if (repo_s, int(num)) in keys or (repo_s.lower(), int(num)) in {
+                (r.lower(), n) for r, n in keys
+            }:
+                return DEPENDS_OPEN_REASON
+            if issue_open is None:
+                # No live checker: keep blocking while depends_open is non-empty.
+                return DEPENDS_OPEN_REASON
+            try:
+                if bool(issue_open(repo_s, str(num))):
+                    return DEPENDS_OPEN_REASON
+            except Exception:
+                return DEPENDS_UNRESOLVED_REASON
     refs = _row_depends_on_issue_refs(row)
     if not refs:
         return None
-    keys = open_keys if open_keys is not None else set()
-    fetch = issue_fetch
     for repo, num in refs:
         g1 = _bob_g1_digest_gate_for_pair(
             doc if isinstance(doc, dict) else {}, repo, str(num), issue_fetch=fetch
@@ -2901,17 +2922,43 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
         "gate",
     }
 )
-# FR #8653: Ergo and the Jeeves chair host moved from ionos to walrus.
-# Legacy ionos require_machine cues still match, then fold onto walrus.
-_LIVE_CHAIR_HOST = "walrus"
-_LEGACY_CHAIR_HOSTS = frozenset({"ionos", "bob-ionos"})
+# FR #8653 / #9680: Ergo and the Jeeves chair host used to be ionos, then walrus.
+# Never bake the live hostname into source — resolve from BOB_CHAIR_MACHINE
+# (bob_recycle.CHAIR_ENV) or JEEVES_CHAIR_HOST (jeeves_chair_host). Legacy
+# labels/cues ``needs-walrus`` / ``needs-ionos`` / ``require_machine: walrus|ionos``
+# remain aliases that fold onto the configured live host.
+_LEGACY_CHAIR_HOST_ALIASES = frozenset({"ionos", "bob-ionos", "walrus"})
+
+
+def live_chair_host() -> str:
+    """Resolved Ergo / Jeeves chair machine id (FR #9680).
+
+    Prefer ``BOB_CHAIR_MACHINE``, then ``JEEVES_CHAIR_HOST``, then
+    ``jeeves_chair_host.DEFAULT_CHAIR_HOST``. Tests inject via monkeypatch.
+    """
+    import bob_recycle
+    import jeeves_chair_host as jch
+
+    raw = (os.environ.get(bob_recycle.CHAIR_ENV) or "").strip()
+    if raw:
+        return bobreport.normalize_machine_id(raw) or jch.normalize_host(raw)
+    return jch.configured_chair_host()
 
 
 def fold_chair_host(mid: str) -> str:
-    """Map a retired chair-host id onto the live chair. Other ids stay put."""
+    """Map a retired/alias chair-host id onto the configured live chair.
+
+    Other fleet machine ids stay put. Legacy ``ionos`` / ``walrus`` always fold
+    to ``live_chair_host()`` so a future chair rename only needs env/config.
+    """
     m = (mid or "").strip().lower()
-    if m in _LEGACY_CHAIR_HOSTS:
-        return _LIVE_CHAIR_HOST
+    if not m:
+        return m
+    live = live_chair_host()
+    if m == live:
+        return live
+    if m in _LEGACY_CHAIR_HOST_ALIASES:
+        return live
     return m
 
 
@@ -2960,6 +3007,19 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "walrus"),
     (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "walrus"),
 )
+# FR #9679: bobiverse-only chair-host title/body cues that still pin after FR #9637.
+# Does NOT restore bare ``require_machine: walrus`` body paste (idle starve). Prefer
+# GitHub ``needs-walrus`` labels; these catch CAST IRON walrus-action children filed
+# with a ``chair-host:`` title / Ergo / BOB_CHAIR_MACHINE stamp and no label yet.
+_REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)^chair-host\s*:"), "walrus"),
+    (re.compile(r"(?i)\bchair-host\s*:\s*install\b"), "walrus"),
+    (re.compile(r"(?i)\bErgo(?:/|\s+)chair\b.{0,60}\b(?:server|host|install|heal|from\s+config)\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:server|host)\s+from\s+config\b.{0,80}\bBOB_CHAIR_MACHINE\b"), "walrus"),
+    (re.compile(r"(?i)\bBOB_CHAIR_MACHINE\b.{0,80}\b(?:chair|Ergo|needs-walrus)\b"), "walrus"),
+    (re.compile(r"(?i)\bneeds-walrus\s+alias\b"), "walrus"),
+)
+
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Kept for _body_for_queue preserve
 # and non-bobiverse helpers. FR #9637: bobiverse infer_require_machine ignores these
 # (labels / hard pins / !pin only) so monitor body paste cannot starve idle seats.
@@ -3266,11 +3326,11 @@ def infer_require_machine(
     FR #6229 hard-pin bobiverse#6144 -> marchhare (live MarchHare E2E);
     FR #587 / #852 / #2451 / #3129 / #4427 / #5030 / #6229).
 
-    FR #4512 / #9637: for ``SimonBarnett/bobiverse``, title/body text cues never pin
-    (including dedicated ``require_machine:`` body lines). Only ``needs-<machine>`` /
-    ``require_machine:<machine>`` labels, hard issue pins/unpins, and operator ``!pin``
-    stamps. Monitor filings that paste ``require_machine: walrus`` into implement-anywhere
-    chair FRs starved the idle fleet until ``!unpin`` (FR #9637).
+    FR #4512 / #9637: for ``SimonBarnett/bobiverse``, soft title/body text cues and
+    dedicated ``require_machine:`` body lines do not pin (monitor paste starved idle
+    seats). Only ``needs-<machine>`` / ``require_machine:<machine>`` labels, hard
+    issue pins/unpins, operator ``!pin``, and FR #9679 narrow chair-host cues
+    (``chair-host:`` / Ergo+BOB_CHAIR_MACHINE / needs-walrus alias).
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -3297,10 +3357,6 @@ def infer_require_machine(
                 return fold_chair_host(mid)
         # bare needs-ionos style already covered by cue regex below via label join
     body_blob = str(body or "")
-    # FR #4512 / #9637: bobiverse — labels + hard pins only (no body require_machine:).
-    if repo_l == _BOBIVERSE_REPO_L:
-        return ""
-    # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
     title_blob = "\n".join(
         [
             str(title or ""),
@@ -3308,17 +3364,29 @@ def infer_require_machine(
             " ".join(str(x) for x in labs),
         ]
     )
+    # FR #4512 / #9637: bobiverse — no soft/dedicated paste pins; FR #9679 chair-host ok.
+    if repo_l == _BOBIVERSE_REPO_L:
+        for rx, mid in _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES:
+            blob = title_blob + "\n" + body_blob
+            if rx.search(blob):
+                if _is_retired_require_machine(mid):
+                    return ""
+                return fold_chair_host(mid)
+        return ""
+    # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
     for rx, mid in _REQUIRE_MACHINE_TITLE_CUES:
         if rx.search(title_blob):
             if _is_retired_require_machine(mid):
                 return ""
-            return mid
+            # FR #9680: cue maps may still name legacy aliases (walrus/ionos);
+            # stamp the configured live chair host.
+            return fold_chair_host(mid)
     # Body: only strong WP0 / ionos-ops cues (not bare machine name mentions).
     for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
         if rx.search(body_blob) or rx.search(title_blob):
             if _is_retired_require_machine(mid):
                 return ""
-            return mid
+            return fold_chair_host(mid)
     # FR #4745: harvest-lesson / lesson(<book>) tips never inherit Day Works / UAT
     # auto-pin (docs/skill-only MRB). Explicit needs-<machine> labels and dedicated
     # require_machine lines already returned above.
@@ -3338,28 +3406,32 @@ def row_require_machine(row: dict) -> str:
     # FR #4422 hard unpin before hard pins / stamped machine.
     if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
         return ""
-    # Hard issue pins win over unpin tokens (any/none) — FR #1093 WP0 must not leak
-    # back to win-mpre after a monitor ``require_machine=any`` clear.
-    hard = infer_require_machine(
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    label_tuple = tuple(str(x) for x in labels)
+    # Hard issue pins + needs-<machine> labels win over unpin tokens (any/none).
+    # FR #1093: hard pin must not leak after monitor any-clear.
+    # FR #9664: label needs-walrus must still gate offer when !unpin left rm=any
+    # (else non-walrus seats ACK then GIVEUP require_machine=walrus in a loop).
+    hard_or_label = infer_require_machine(
         title="",
         body="",
-        labels=(),
+        labels=label_tuple,
         line="",
         repo=str(row.get("repo") or ""),
         ident=str(row.get("id") or ""),
     )
-    if hard:
-        return hard
+    if hard_or_label:
+        return hard_or_label
     stamped = str(row.get("require_machine") or "").strip().lower()
     # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
     # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
+    # Labels already applied above (FR #9664).
     if stamped in {"*", "any", "none", "-"}:
         return ""
     if stamped and _is_retired_require_machine(stamped):
         return ""
-    labels = row.get("labels") or ()
-    if isinstance(labels, str):
-        labels = [labels]
     # FR #4512: bobiverse never trusts a persisted text-cue stamp — re-infer
     # (labels / dedicated pin / hard pin only). Stale ionos stamps clear.
     # FR #4745: harvest-lesson rows re-infer too (sticky Day Works DEV1 must not stick).
@@ -3376,7 +3448,7 @@ def row_require_machine(row: dict) -> str:
         return infer_require_machine(
             title=title_s,
             body=str(row.get("body") or ""),
-            labels=tuple(str(x) for x in labels),
+            labels=label_tuple,
             line=str(row.get("line") or ""),
             repo=str(row.get("repo") or ""),
             ident=str(row.get("id") or ""),
@@ -3389,7 +3461,7 @@ def row_require_machine(row: dict) -> str:
     return infer_require_machine(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
-        labels=tuple(str(x) for x in labels),
+        labels=label_tuple,
         line=str(row.get("line") or ""),
         repo=str(row.get("repo") or ""),
         ident=str(row.get("id") or ""),
@@ -3647,18 +3719,28 @@ def clear_host_heal_require_machine_on_ack(row: dict, nick: str) -> bool:
     return True
 
 
-# FR #9469: GIVEUP blocked:depends-on / blocked-on / depends_unresolved with a
-# parseable issue ref must stamp a plain Depends-on: line on the issue body.
+# FR #9469 / #9665: GIVEUP blocked:depends-on / blocked-on / depends_unresolved /
+# depends_open with a parseable issue ref must stamp Depends-on: + durable block.
 _BLOCKED_DEPENDS_CUE_RE = re.compile(
-    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved|"
+    r"depends[_-]?open)\b"
 )
 _BLOCKED_DEPENDS_QUAL_RE = re.compile(
-    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved|"
+    r"depends[_-]?open)\b"
     r"[^\n]*?\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
 )
 _BLOCKED_DEPENDS_REL_RE = re.compile(
-    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved)\b"
+    r"(?i)\b(?:blocked\s*:\s*depends-on|blocked-on|depends[_-]unresolved|"
+    r"depends[_-]?open)\b"
     r"[^\n]*?#(\d+)\b"
+)
+# FR #9665: also ``depends_open:#N`` / ``depends_open=#N`` (structured reason).
+_DEPENDS_OPEN_EQ_QUAL_RE = re.compile(
+    r"(?i)\bdepends[_-]?open\s*[:=]\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
+)
+_DEPENDS_OPEN_EQ_REL_RE = re.compile(
+    r"(?i)\bdepends[_-]?open\s*[:=]\s*#?(\d+)\b"
 )
 
 
@@ -3667,29 +3749,39 @@ def parse_blocked_depends_giveup_refs(
     *,
     home_repo: str = "",
 ) -> list[tuple[str, int]]:
-    """FR #9469: ``(repo, number)`` refs from a blocked Depends-on GIVEUP reason."""
+    """FR #9469 / #9665: ``(repo, number)`` refs from a blocked Depends-on GIVEUP reason.
+
+    Accepts ``blocked:depends-on #N``, ``depends_unresolved``, and structured
+    ``depends_open:#N`` / ``reason=depends_open:#N`` (FR #9665).
+    """
     text = str(reason or "").strip()
-    if not text or not _BLOCKED_DEPENDS_CUE_RE.search(text):
+    if not text:
         return []
     home = str(home_repo or "").strip()
     out: list[tuple[str, int]] = []
     seen: set[tuple[str, int]] = set()
-    for m in _BLOCKED_DEPENDS_QUAL_RE.finditer(text):
-        pair = (m.group(1), int(m.group(2)))
-        key = (pair[0].lower(), pair[1])
+
+    def _add(repo: str, num: int) -> None:
+        repo_s = str(repo or home or "").strip()
+        if not repo_s or num <= 0:
+            return
+        key = (repo_s.lower(), int(num))
         if key in seen:
-            continue
+            return
         seen.add(key)
-        out.append(pair)
-    if out:
-        return out
-    for m in _BLOCKED_DEPENDS_REL_RE.finditer(text):
-        pair = (home, int(m.group(1)))
-        key = (pair[0].lower(), pair[1])
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(pair)
+        out.append((repo_s, int(num)))
+
+    for m in _DEPENDS_OPEN_EQ_QUAL_RE.finditer(text):
+        _add(m.group(1), int(m.group(2)))
+    for m in _DEPENDS_OPEN_EQ_REL_RE.finditer(text):
+        _add(home, int(m.group(1)))
+    if _BLOCKED_DEPENDS_CUE_RE.search(text):
+        for m in _BLOCKED_DEPENDS_QUAL_RE.finditer(text):
+            _add(m.group(1), int(m.group(2)))
+        # Prefer qualified owner/repo#N when present (same as FR #9469).
+        if not out:
+            for m in _BLOCKED_DEPENDS_REL_RE.finditer(text):
+                _add(home, int(m.group(1)))
     return out
 
 
@@ -3717,6 +3809,116 @@ def _load_common_depends_on():
     return mod
 
 
+def _normalize_depends_open_block(raw) -> list[tuple[str, int]]:
+    """Parse ``row['depends_open']`` into ``(repo, number)`` tuples (FR #9665)."""
+    out: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    if raw is None:
+        return out
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    for item in items:
+        repo = ""
+        num = 0
+        if isinstance(item, dict):
+            repo = str(item.get("repo") or "").strip()
+            try:
+                num = int(str(item.get("id") or item.get("number") or "").lstrip("#"))
+            except ValueError:
+                num = 0
+        else:
+            s = str(item or "").strip()
+            m = re.match(
+                r"(?i)^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#|#)?(\d+)$", s
+            )
+            if m:
+                repo = str(m.group(1) or "").strip()
+                num = int(m.group(2))
+        if num <= 0:
+            continue
+        key = (repo.lower(), num)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((repo, num))
+    return out
+
+
+def _serialize_depends_open_block(
+    refs: list[tuple[str, int]], *, home_repo: str = ""
+) -> list[str]:
+    """Stable queue tokens for ``depends_open`` (FR #9665)."""
+    home = str(home_repo or "").strip()
+    out: list[str] = []
+    for repo, num in refs:
+        repo_s = str(repo or home or "").strip()
+        if not repo_s:
+            out.append(f"#{int(num)}")
+        elif home and repo_s.lower() == home.lower():
+            out.append(f"#{int(num)}")
+        else:
+            out.append(f"{repo_s}#{int(num)}")
+    return out
+
+
+def merge_depends_open_block(
+    row: dict, refs: list[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """Union ``refs`` into ``row['depends_open']``; return the full block list (FR #9665)."""
+    if not isinstance(row, dict) or not refs:
+        return _normalize_depends_open_block(row.get("depends_open") if isinstance(row, dict) else None)
+    home = str(row.get("repo") or "").strip()
+    merged = _normalize_depends_open_block(row.get("depends_open"))
+    seen = {(r.lower(), n) for r, n in merged}
+    for repo, num in refs:
+        repo_s = str(repo or home or "").strip()
+        key = (repo_s.lower(), int(num))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append((repo_s, int(num)))
+    row["depends_open"] = _serialize_depends_open_block(merged, home_repo=home)
+    return merged
+
+
+def clear_closed_depends_open_block(
+    row: dict,
+    *,
+    open_keys: set[tuple[str, int]] | None = None,
+    issue_open=None,
+) -> list[tuple[str, int]]:
+    """Drop CLOSED refs from ``depends_open``; return remaining open block (FR #9665)."""
+    if not isinstance(row, dict):
+        return []
+    home = str(row.get("repo") or "").strip()
+    cur = _normalize_depends_open_block(row.get("depends_open"))
+    if not cur:
+        row.pop("depends_open", None)
+        return []
+    keys = open_keys if open_keys is not None else set()
+    keep: list[tuple[str, int]] = []
+    for repo, num in cur:
+        repo_s = str(repo or home or "").strip()
+        still_open = (repo_s.lower(), int(num)) in {
+            (r.lower(), n) for r, n in keys
+        } or (repo_s, int(num)) in keys
+        if not still_open and issue_open is not None:
+            try:
+                still_open = bool(issue_open(repo_s, str(num)))
+            except Exception:
+                # Unknown: keep the block (fail closed).
+                still_open = True
+        elif not still_open and issue_open is None and open_keys is None:
+            # No checker: keep until a checker says CLOSED.
+            still_open = True
+        if still_open:
+            keep.append((repo_s, int(num)))
+    if keep:
+        row["depends_open"] = _serialize_depends_open_block(keep, home_repo=home)
+    else:
+        row.pop("depends_open", None)
+    return keep
+
+
 def apply_depends_on_giveup_stamp(
     row: dict,
     reason: str,
@@ -3724,12 +3926,12 @@ def apply_depends_on_giveup_stamp(
     patch_github: bool = True,
     filer=None,
 ) -> list[tuple[str, int]]:
-    """FR #9469: union Depends-on refs from a blocked GIVEUP into body + GitHub.
+    """FR #9469 / #9665: stamp Depends-on body + durable ``depends_open`` block.
 
-    Updates ``row["body"]`` with a plain ``Depends-on:`` line (unions existing).
-    When ``patch_github`` is true, PATCHes the issue body via ``gh`` so BOB-D3
-    skips re-offer while any ref stays OPEN. Returns the refs that were stamped
-    from the reason (empty when the reason is not a blocked-depends cue).
+    Updates ``row["body"]`` with a plain ``Depends-on:`` line (unions existing)
+    and ``row["depends_open"]`` so offer/assign skip until those issues CLOSE
+    (bypasses unheld fr-digest soft-allow — FR #9665). When ``patch_github`` is
+    true, PATCHes the issue body via ``gh``. Returns refs stamped from the reason.
     """
     if not isinstance(row, dict):
         return []
@@ -3737,10 +3939,11 @@ def apply_depends_on_giveup_stamp(
     refs = parse_blocked_depends_giveup_refs(reason, home_repo=home)
     if not refs:
         return []
+    merge_depends_open_block(row, refs)
     try:
         _dep = _load_common_depends_on()
     except Exception:
-        return []
+        return refs
     body = str(row.get("body") or "")
     new_body, changed = _dep.merge_depends_on_body(body, refs, repo=home)
     if changed:
@@ -5067,6 +5270,8 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     Operator unpin (``any`` / ``none`` / ``*`` / ``-``) must survive title/body cues that
     merely *mention* ``require_machine=ce-priority-dev1`` as evidence (e.g. #1116) —
     otherwise monitor clears are wiped on the next offer/resync stamp.
+    FR #9664: ``needs-<machine>`` labels still overwrite operator/monitor ``any``
+    (label is the GitHub pin; bare any must not re-open wrong shops).
     """
     title = str((claim.title if claim else "") or row.get("title") or "")
     body = str((claim.body if claim else "") or row.get("body") or "")
@@ -5083,10 +5288,10 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
         row["require_machine"] = "any"
         return
-    stamped = fold_chair_host(str(row.get("require_machine") or "").strip().lower())
-    if stamped in _LEGACY_CHAIR_HOSTS or (
-        str(row.get("require_machine") or "").strip().lower() in _LEGACY_CHAIR_HOSTS
-    ):
+    raw_stamp = str(row.get("require_machine") or "").strip().lower()
+    stamped = fold_chair_host(raw_stamp)
+    # FR #9680: rewrite legacy ionos/walrus stamps onto the configured live host.
+    if stamped and (raw_stamp in _LEGACY_CHAIR_HOST_ALIASES or stamped != raw_stamp):
         row["require_machine"] = stamped
     if stamped and _is_retired_require_machine(stamped):
         stamped = "any"
@@ -5094,6 +5299,13 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     if stamped in {"*", "any", "none", "-"}:
         if hard and not _is_retired_require_machine(hard):
             row["require_machine"] = hard
+            return
+        # FR #9664: labels win over any (do not re-infer soft title/body cues).
+        label_pin = infer_require_machine(
+            title="", body="", labels=labels, line="", repo=repo, ident=ident
+        )
+        if label_pin and not _is_retired_require_machine(label_pin):
+            row["require_machine"] = label_pin
         return
     req = infer_require_machine(
         title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
@@ -5105,12 +5317,22 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
     # FR #4745: harvest-lesson rows clear sticky DEV1 (or other) stamps the same way.
     # FR #6592: operator !pin/!unpin stamps survive; do not wipe them to any.
+    # FR #9664: needs-* labels still overwrite operator any (handled above).
     if req and _is_retired_require_machine(req):
         req = ""
     if repo_l == _BOBIVERSE_REPO_L or harvest_lesson:
         if _is_operator_require_machine(row):
             if hard and not _is_retired_require_machine(hard):
                 row["require_machine"] = hard
+                return
+            # Label pin may still win when stamp drifted back to any mid-path.
+            cur = fold_chair_host(str(row.get("require_machine") or "").strip().lower())
+            if cur in {"*", "any", "none", "-", ""}:
+                label_pin = infer_require_machine(
+                    title="", body="", labels=labels, line="", repo=repo, ident=ident
+                )
+                if label_pin and not _is_retired_require_machine(label_pin):
+                    row["require_machine"] = label_pin
             return
         if req:
             row["require_machine"] = req
@@ -5595,6 +5817,15 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                         ] = _utc_now()
 
                     _ledger_update(home, _fd)
+                # FR #9552: last-child close of an unheld fr-digest (ticket-closure peer).
+                with contextlib.suppress(Exception):
+                    import fr_digest_auto_close as _fac
+
+                    _fac.on_issue_closed(
+                        str(claim.repo or ""),
+                        str(claim.id or "").lstrip("#"),
+                        str(getattr(claim, "body", "") or ""),
+                    )
             return changed
     except TimeoutError:
         _spool_pending(home, claim)
@@ -6250,6 +6481,15 @@ def _coerce_row(row: dict) -> dict | None:
             out["sticky_skip_seats"] = [str(x) for x in skips if str(x).strip()]
         else:
             out["sticky_skip_seats"] = [str(skips)]
+    # FR #9665: durable GIVEUP depends_open block must survive queue reload.
+    dep_open = row.get("depends_open")
+    if dep_open:
+        if isinstance(dep_open, list):
+            cleaned = [str(x).strip() for x in dep_open if str(x).strip()]
+        else:
+            cleaned = [str(dep_open).strip()] if str(dep_open).strip() else []
+        if cleaned:
+            out["depends_open"] = cleaned
     # FR #7966: per-seat unanswered-offer outcomes survive reload for the digest.
     if row.get("offer_refused_by"):
         refused = row.get("offer_refused_by")
@@ -19643,7 +19883,20 @@ def resync_from_github(
 
                 with contextlib.suppress(OSError):
                     _ledger_update(home, _clear_stale_done_stamps)
-            return {
+            # FR #9552: reconcile open fr-digest issues with no remaining open children.
+            fr_digest_closed: list[dict] = []
+            with contextlib.suppress(Exception):
+                import fr_digest_auto_close as _fac
+
+                for _repo in list(fetched or []):
+                    if not isinstance(_repo, str) or "/" not in _repo:
+                        continue
+                    fr_digest_closed.extend(
+                        r
+                        for r in (_fac.reconcile_repo(_repo) or [])
+                        if isinstance(r, dict) and r.get("action") == "closed"
+                    )
+            result = {
                 "ok": True,
                 "unaccepted": len(doc["unaccepted"]),
                 "added": added,
@@ -19659,6 +19912,9 @@ def resync_from_github(
                 "failed": list(failed),
                 "unchanged": list(unchanged),
             }
+            if fr_digest_closed:
+                result["fr_digest_auto_close"] = fr_digest_closed
+            return result
     except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -20259,13 +20515,84 @@ _HOLDER_OPEN_RX = re.compile(
 )
 
 
+def release_sticky_offer_on_bored(
+    home: Path, nick: str, now: float | None = None
+) -> str:
+    """FR #9633: !bored clears a *stale* sticky offered_to pin (no accepted row).
+
+    Within ``offer_timeout_s`` the seat stays busy (FR #3192 / #8738 — fresh
+    post-DONE / post-GIVEUP pushes must not be wiped by the next !bored). Past
+    the timeout, clear ``offered_to`` + matching seat-hold so digest-idle seats
+    are not NAK ``busy (offered …)`` forever (issue #9633).
+
+    Bare ack-missing / closed-PR ``held …`` seat-holds (FR #4115 / #4415) are
+    never cleared here. Does not call ``seat_open_job`` (that would purge first).
+
+    Returns the open-job text that was cleared, else ''.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return ""
+    if _seat_has_accepted(home, nick):
+        return ""
+    # Live pending ACK window: leave the pin alone (FR #8738).
+    if seat_pending_offer(home, nick, now_f) is not None:
+        return ""
+    changed = False
+    cleared_job = ""
+    repo = task = ident = ""
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them != me:
+                    continue
+                if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
+                    continue
+                task_u = str(cand.get("task") or "").upper()
+                repo_s = str(cand.get("repo") or "")
+                ident_s = str(cand.get("id") or "")
+                cleared_job = f"offered {task_u} {repo_s}{ident_s}".strip()
+                repo, task, ident = repo_s, task_u, ident_s
+                clear_sticky_offer_fields(cand)
+                changed = True
+            if changed:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        return ""
+    if not changed:
+        return ""
+    with contextlib.suppress(Exception):
+        if repo and task and ident:
+            clear_seat_hold(
+                home, nick, repo=repo, task=task, ident=ident, clear_pins=True
+            )
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick)
+    return cleared_job
+
+
+
 def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
     """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
 
     Returns the open-job text when this call released it, else ''. A different
     seat's !bored never touches this nick's row. Offered-but-not-accepted pins
-    stay on the existing busy path. ACK/DONE/progress must call
-    ``reset_holder_bored`` or the streak keeps counting.
+    are cleared by ``release_sticky_offer_on_bored`` (FR #9633) before the busy
+    gate. ACK/DONE/progress must call ``reset_holder_bored`` or the streak keeps
+    counting.
     """
     import time as _time
 
@@ -20356,8 +20683,14 @@ def bored_gate(
         return "busy"
     if seat_fuel_pause_reason(home, nick, now):
         return "busy"
+    # FR #9633: sticky offered-but-not-ACKed must not NAK !bored forever when the
+    # seat is claiming idle — clear the pin so offer_focus_top can re-send.
+    with contextlib.suppress(Exception):
+        release_sticky_offer_on_bored(home, nick, now)
     # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
     # never re-offer the same row and never treat it as stale digest doing.
+    # (After FR #9633 clear above, a fresh pending offer means another path stamped
+    # one mid-gate; still busy.)
     if seat_pending_offer(home, nick, now):
         return "busy"
     # FR #4642: ack-missing hold for a job this seat already DONE'd (no later
