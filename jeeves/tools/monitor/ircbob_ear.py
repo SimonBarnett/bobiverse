@@ -10,6 +10,10 @@ EXIT 1 with finding and attempt Restart-Service once (Start-Service is a no-op
 while Running). Also scan install logs/stderr for recent ENOSPC / errno 28 and
 raise a loud finding. TipForm wording for ear-offline vs unreachable lives in
 Get-BobTrayHover.ps1.
+
+FR #9743: when more than one bob-ear / irc_agent child is present (duplicate ear),
+EXIT 1 with a Running-duplicate finding so a disconnected twin cannot drain
+outbox.pos ahead of the live ear.
 """
 from __future__ import annotations
 
@@ -164,10 +168,10 @@ def _restart_service(name: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
-def _ear_child_alive() -> bool:
-    """True when a bob-ear.exe or irc_agent.py (bobiverse) process is present."""
+def _ear_child_count() -> int:
+    """Count bob-ear.exe / irc_agent.py (bobiverse) processes (FR #9743)."""
     if sys.platform != "win32":
-        return True  # non-win: skip local child gate
+        return 1  # non-win: skip local child gate
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-Command", _EAR_CHILD_PS],
@@ -176,9 +180,14 @@ def _ear_child_alive() -> bool:
             timeout=30,
         )
         raw = (r.stdout or "").strip()
-        return int(raw or "0") > 0
+        return max(0, int(raw or "0"))
     except Exception:
-        return False
+        return 0
+
+
+def _ear_child_alive() -> bool:
+    """True when a bob-ear.exe or irc_agent.py (bobiverse) process is present."""
+    return _ear_child_count() > 0
 
 
 def _install_root() -> Path:
@@ -302,7 +311,20 @@ def _heal_local_ear(
         return after or svc, "failed", child_alive
 
     # FR #9496: Running without App child is a false-healthy nssm state.
-    alive = _ear_child_alive() if child_alive is None else bool(child_alive)
+    # FR #9743: more than one child is a duplicate-ear hazard for outbox.pos.
+    # Count>1 is report-only; alive still comes from _ear_child_alive so heal
+    # tests that mock alive (not count) keep working.
+    if child_alive is None:
+        count = _ear_child_count()
+        if count > 1:
+            findings.append(
+                f"local {SERVICE_NAME} Running-duplicate bob-ear children={count} "
+                f"(FR #9743; disconnected twin can drain outbox.pos)"
+            )
+            return svc, None, True
+        alive = _ear_child_alive()
+    else:
+        alive = bool(child_alive)
     if alive:
         return svc, None, True
 
