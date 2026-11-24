@@ -87,6 +87,8 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 When an online shop has `workers=[]` and `!startworker` gets **no** ACK/NACK, the target ear is down or swallowed a decide exception. FR #9471 makes the owning ear NACK `decide failed` instead of staying silent, and HealEngine storm forces one ReloadEngine + `engine.storm` TipForm alert. Keep `online_zero_workers` firing until workers>0 (FR #9462 / #3180 TipForm Agents only).
 
+**FR #9513 / #9522 engine_stale after merge:** a merged tip that adds `engine.wake` / TipForm TakeWake does **not** heal the live host. If `!startworker` still NACKs `engine.alive stale` without `wake requested` / `wake pending`, the ear tip lags — recycle ear + TipForm **Reload engine** (or rebuild tray) and keep polling until workers>0; file a residual if NACK persists after tip is on the host.
+
 ## ircbob_ear (FR #9144 / #9496 / #9503)
 
 `tools/monitor/ircbob_ear.py` is **token-free**. It EXIT 1 when digest machines show `online=false` / status `I am offline`, or `lastSeen` older than 900s (same band as `stale_digest`). On win32 it also reads local `Get-Service ircBob`; when Status is Stopped it tries one `Start-Service` and re-checks (`heal=started|failed`).

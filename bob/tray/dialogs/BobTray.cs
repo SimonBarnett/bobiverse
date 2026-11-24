@@ -1655,7 +1655,10 @@ namespace BobDialogs
         {
             try
             {
-                if (TrayHostCmd.TakeReload(cmdFile)) ReloadEngine();
+                // FR #5111 tray-cmd reload; FR #9522 also consume engine.wake (ear nudge after engine_stale).
+                bool needReload = TrayHostCmd.TakeReload(cmdFile);
+                if (TrayHostCmd.TakeWake(Path.Combine(aliveDir, "engine.wake"))) needReload = true;
+                if (needReload) ReloadEngine();
             }
             catch { }
             try
@@ -2887,8 +2890,11 @@ namespace BobDialogs
     }
 
     // FR #5111: host-side verbs in tray-cmd.txt (engine must leave these lines).
+    // FR #9522: engine.wake (run/startworker) is a second ReloadEngine trigger beside tray-cmd reload.
     internal static class TrayHostCmd
     {
+        public const double WakeMaxAgeSeconds = 600;
+
         public static bool TakeReload(string cmdFile)
         {
             if (string.IsNullOrEmpty(cmdFile) || !File.Exists(cmdFile)) return false;
@@ -2910,6 +2916,26 @@ namespace BobDialogs
             }
             catch { }
             return took;
+        }
+
+        // FR #9522: ear wrote engine.wake after engine_stale; TipForm host reloads engine and deletes the stamp.
+        public static bool TakeWake(string wakeFile)
+        {
+            if (string.IsNullOrEmpty(wakeFile) || !File.Exists(wakeFile)) return false;
+            try
+            {
+                DateTime m = File.GetLastWriteTimeUtc(wakeFile);
+                double age = (DateTime.UtcNow - m).TotalSeconds;
+                if (age < 0) age = 0;
+                if (age > WakeMaxAgeSeconds)
+                {
+                    try { File.Delete(wakeFile); } catch { }
+                    return false;
+                }
+                File.Delete(wakeFile);
+                return true;
+            }
+            catch { return false; }
         }
     }
 
@@ -2939,6 +2965,17 @@ namespace BobDialogs
                 bool took = TrayHostCmd.TakeReload(cmdPath);
                 string tout = Common.Arg(args, "--text-out");
                 string body = "reload=" + (took ? "1" : "0") + " host=" + Process.GetCurrentProcess().Id + " service=0 seats_untouched=1\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return 0;
+            }
+            // FR #9522: headless consume of engine.wake (TipForm ReloadEngine path without icon).
+            if (Common.Flag(args, "--consume-wake"))
+            {
+                string wakePath = Path.Combine(root, "run", "startworker", "engine.wake");
+                bool took = TrayHostCmd.TakeWake(wakePath);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "wake=" + (took ? "1" : "0") + " host=" + Process.GetCurrentProcess().Id + " seats_untouched=1\r\n";
                 if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
                 else Console.Write(body);
                 return 0;
