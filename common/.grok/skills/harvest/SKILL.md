@@ -440,3 +440,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - all-gave-up stall fingerprint must be per-repo class key (like bored-latency machine key); intake msgfp keeps #N so it will not collapse twins --- fix stall_detectors.fingerprint key, not fuzzy intake.
 - When build-jeeves is red on an MRB tip, repro the failing tests on origin/main before FAIL or fold; same failures on main are a separate FR, not a fold of the assigned PR (FR #4649).
 - ConPTY twins: keep oldest #9612 as canonical, close Depends-on companions as Duplicate after merging acceptance; tray recycleseat stays its own FR
+- Any !assign/sweep/heal bridge must same-turn FR ircJeeves for deterministic chair behaviour; closed-COMPLETED but still bridged => regression FR
