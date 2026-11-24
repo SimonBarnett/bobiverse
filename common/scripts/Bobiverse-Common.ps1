@@ -1159,7 +1159,7 @@ function Set-BobiverseNssmAppExitRestart {
     leave ircJeeves Stopped after a clean exit even when Default=Restart.
     FR #9863: also pin AppThrottle (default 1500ms). Rapid unexpected bob-ear death
     inside the throttle window leaves Get-Service Status=Paused until Restart-Service;
-    never Stop-Process the NSSM-managed ear — use Restart-Service / Restart-BobEar.ps1.
+    never Stop-Process the NSSM-managed ear - use Restart-Service / Restart-BobEar.ps1.
     #>
     param(
         [Parameter(Mandatory)][string]$Nssm,
