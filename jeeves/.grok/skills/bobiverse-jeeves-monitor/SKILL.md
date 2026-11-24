@@ -26,6 +26,10 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 > 5. Prefer **deterministic** fixes. When tested, FR them into the Jeeves token-less service (`tools\monitor\`,
 >    `jeeves/checks/`, `common/scripts`, chair helpers) so what we learn here becomes part of the chair without an LLM.
 >    Skills are interim; the durable home is the deterministic product. File the product FR the same turn the skill lands.
+> 6. **CAST IRON — interventions → ircJeeves FR (FR #9627).** Every keep-queue-moving or heal intervention **must** file
+>    (or de-dup-comment) a product FR so **ircJeeves** performs it deterministically. FR #8827 commands are a bridge only;
+>    never run `!assign` / `!sweep` / … as a standing LLM loop without the matching chair FR. Closed-COMPLETED but still
+>    bridged live ⇒ regression FR with evidence (`require_machine: walrus` when chair-host).
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -43,6 +47,7 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 ## Keep-queue-moving playbook (FR #8827)
 
 Prefer **de-duped intake** when a product bug is the root. Use chair commands for **operational unblock** only.
+**Same turn as any intervention:** file/comment the ircJeeves product FR that makes that unblock deterministic (CAST IRON FR #9627).
 
 | Symptom | Command | When |
 |---|---|---|

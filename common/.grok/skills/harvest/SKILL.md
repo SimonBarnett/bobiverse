@@ -34,6 +34,10 @@ depends_on: []
 >    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
 >    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
 >    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
+> 7. **CAST IRON — interventions → ircJeeves FR (#9627).** Every MONITORING / ops intervention (`!assign`, `!sweep`,
+>    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, …) must create or de-dup-comment a product FR against
+>    ircJeeves (`SimonBarnett/bobiverse`) the same turn so the chair performs it deterministically. FR #8827 is bridge-only.
+>    Closed-COMPLETED but still bridged live ⇒ regression FR with evidence.
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
