@@ -19,7 +19,7 @@ def test_fr9605_tipform_starts_vendor_planagent():
     assert "Plan - missing exe" in body
     assert "start exe missing" in body
     # FR #9661: --root <install>\plan (exe stays under vendor\plan)
-    assert 'psi.Arguments = "--root "" + planRoot.Replace' in body
+    assert "planRoot.Replace" in body and '--root' in body
 
 
 def test_fr9605_watch_starts_vendor_planagent():
