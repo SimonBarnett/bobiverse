@@ -45,7 +45,7 @@
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, **workers_last_good_orphan** (local digest last-good ghosts), **online_zero_workers** (online shop with workers=[] while offerable_count>0; TipForm Agents, no auto-start), GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**, **walrus_jeeves_install_ready**, **disk_starvation** (live report disk-low / auto Clear+SeatDisk)), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, **workers_last_good_orphan** (local digest last-good ghosts), **online_zero_workers** (online shop with workers=[] while offerable_count>0; TipForm Agents, no auto-start), GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**, **depends_on**, **fr_digest**, **walrus_jeeves_install_ready**, **disk_starvation** (live report disk-low / auto Clear+SeatDisk), **webhooks_up_with_chair** (FR #9826 ircJeeves⇒local report 200)), report delays via intake only, then loop on a schedule.
 
 Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` Ã¢â‚¬â€ deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
@@ -65,6 +65,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Check | Script | Python |
 |---|---|---|
 | Health (services / chair home) | `scripts\Test-JeevesMonitorHealth.ps1` | `tools\monitor\health.py` |
+| Webhooks up with chair (FR #9826) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (ircJeeves Running => local /bob/v1/report 200; heal BobCallback) |
 | Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
 | Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
@@ -135,6 +136,7 @@ Docs in `docs\`:
 
 ## Hard rules (CAST IRON)
 
+- **CAST IRON FR #9826 --- Jeeves on IRC => webhooks up:** after `Start-Service ircJeeves` / `Start-Jeeves.ps1` / join-as-Jeeves, same-turn assert local `http://127.0.0.1:7700/bob/v1/report` HTTP 200 and heal BobCallback (optional W3SVC); never Ergo/`BobIrcd`. Monitor: `webhooks_up_with_chair` / `Test-JeevesMonitorWebhooksUpWithChair.ps1`.
 - **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
   never touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
   commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows
