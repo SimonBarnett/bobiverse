@@ -5105,6 +5105,17 @@ class Client:
             )
             with contextlib.suppress(Exception):
                 self._workers().on_done(src, target)
+        # FR #9633: sticky offered-but-not-ACKed — clear before busy gate so !bored
+        # can re-offer instead of NAK busy (offered …) while digest paints idle.
+        try:
+            _sticky = gitclaim.release_sticky_offer_on_bored(self.home, src, now) or ""
+        except Exception as exc:  # noqa: BLE001
+            _sticky = ""
+            info(f"WARN git-claim sticky-offer bored {type(exc).__name__}")
+        if _sticky:
+            info(f"INFO git-claim sticky-offer cleared via=!bored nick={src} job={_sticky}")
+            with contextlib.suppress(Exception):
+                self._workers().on_done(src, target)
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
         session_started = getattr(self, "_irc_session_started", None)
         if session_started is None:
