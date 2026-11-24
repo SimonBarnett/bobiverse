@@ -475,6 +475,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Seat hold on closed MRB survives !cleargiveup ledger=0; !stuck shows held; need chair clear of seat_job hold for closed tips (#9633)
 - pool_for_digest sticky allowance exhausted wins over fresher observation ok/unlimited --- clear exhaust on observe ok or prefer fresher obs
 - CCA task POST accepts model=claude-haiku-4.5; chair build_task_body must grow BOB_COPILOT_MODEL to avoid Auto/Luna-only
+- If outbox len barely grows after UTF-8 appends and pos stays 0, a twin bob-ear or tray rewriter is truncating outbox --- kill socketless :6697 peers before re-appending assigns.
 - open_pr_mrb_missing default-heals missing expected MRB rows (incl lesson tips) via heal_open_prs_missing_mrb; --no-heal for report-only (FR #9635).
 - !assign <nick> clears that nick+row giveup (queue giveup_seats + seat-ledger) instead of refusing already gave this row up; no separate !cleargiveup required (FR #9634).
 - If outbox pos==len but no Bob-* jeeves replies for >60s, check duplicate bob-ear TCP: keep only PID with Established IRC; dead peer can steal pos.
