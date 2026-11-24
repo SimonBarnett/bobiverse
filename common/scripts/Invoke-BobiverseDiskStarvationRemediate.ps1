@@ -13,7 +13,7 @@
   Runs locally when -Machine matches this host; otherwise WinRM Invoke-Command to -Machine.
   Never touches Ergo / BobIrcd / live seat processes / install roots themselves.
   Never invents hand Remove-Item of arbitrary C:\ai\* trees (FR #2727) beyond Clear helpers
-  and orphan bob-bridge job leaves.
+  and orphan bob-bridge job leaves (skip leaves with git local work; MRB #9700).
 
 .PARAMETER Machine
   Fleet machine id (lowercase hostname), e.g. flamingo.
@@ -54,6 +54,26 @@ function Get-CFreeGB {
         return [math]::Round(([double]$d.Free) / 1GB, 3)
     } catch {
         return $null
+    }
+}
+
+function Test-BridgeLeafHasLocalWork {
+    param([Parameter(Mandatory)][string]$Path)
+    # MRB #9700: mirror Clear's local-work gate before hand-rmdir of bridge orphans.
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    $git = Join-Path $Path '.git'
+    if (-not (Test-Path -LiteralPath $git)) { return $false }
+    try {
+        $porcelain = @(& git -C $Path status --porcelain 2>$null | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { return $true }
+        foreach ($line in $porcelain) {
+            if (-not $line) { continue }
+            if ($line -match '(?i)\.bobiverse-seat') { continue }
+            return $true
+        }
+        return $false
+    } catch {
+        return $true
     }
 }
 
@@ -138,6 +158,10 @@ function Invoke-LocalRemediate {
                         $ageH = ((Get-Date) - (Get-Item -LiteralPath $marker).LastWriteTime).TotalHours
                         if ($ageH -lt 48) { continue }
                     } catch { continue }
+                }
+                if (Test-BridgeLeafHasLocalWork -Path $leaf.FullName) {
+                    $actions.Add(@{ step = 'orphan_bob_bridge_skip_local_work'; path = $leaf.FullName })
+                    continue
                 }
                 try {
                     $size = (Get-ChildItem -LiteralPath $leaf.FullName -Recurse -Force -ErrorAction SilentlyContinue |
@@ -236,6 +260,21 @@ if ($local -eq $mach) {
                                 if (((Get-Date) - (Get-Item $marker).LastWriteTime).TotalHours -lt 48) { return }
                             } catch { return }
                         }
+                        # MRB #9700: skip dirty/unlist trees with local work (mirror Clear).
+                        $git = Join-Path $_.FullName '.git'
+                        $skip = $false
+                        if (Test-Path $git) {
+                            try {
+                                $porc = @(& git -C $_.FullName status --porcelain 2>$null)
+                                if ($LASTEXITCODE -ne 0) { $skip = $true }
+                                else {
+                                    foreach ($ln in $porc) {
+                                        if ($ln -and ($ln -notmatch '(?i)\.bobiverse-seat')) { $skip = $true; break }
+                                    }
+                                }
+                            } catch { $skip = $true }
+                        }
+                        if ($skip) { return }
                         cmd /c "rmdir /s /q `"$($_.FullName)`"" | Out-Null
                         if (-not (Test-Path $_.FullName)) { $script:bridgeRemoved++ }
                     }
