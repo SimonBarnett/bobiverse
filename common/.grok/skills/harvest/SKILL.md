@@ -423,3 +423,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After BOB-G1 issue_fetch on offer/!assign, also wire depends_issue_fetch_checker into stuck_job_sweep.classify_queue_row and stall_detectors; strip Depends-on (...) annotations so BOB-D5 does not mark depends-unresolved
 - Queue refs must stay list[str] of #N: never persist extra["refs"]=",".join; normalize on write/read/load or tuple(str(x) for x in prior) char-splits and poisons ledger keys.
 - After a tip strips BOM from one edited .cs file, check every other edited .cs in the same FR (BobAbout.cs still had BOM while BobTray.cs was clean); extend encoding assert to each edited file
+- MRB author heal: prefer roster dead-pid stamp on older chairs; tip reserved ghost-N (N>=1) must stick through enrich via _reserved_heal_seat_nick; durable path remains soft free=/#9480
