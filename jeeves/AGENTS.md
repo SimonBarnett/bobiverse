@@ -24,6 +24,11 @@
 >    against ircJeeves (`SimonBarnett/bobiverse`) so the chair performs that intervention **deterministically**. FR #8827
 >    keep-queue-moving is a bridge only; never leave an LLM-only loop without the matching chair FR. If a prior FR was
 >    closed COMPLETED but live tip still needs the bridge, file a regression FR with evidence.
+> 7. **CAST IRON — idle + open FRs/PRs = FAIL (FR #9644).** Live digest seat(s) `idle` while open FRs/PRs still exist that
+>    the chair should dispatch is a **fail condition**: intervene the same turn **and** file/de-dup the ircJeeves FR that
+>    makes that feed deterministic (#9628 offer_to_idle and siblings). Gated-only queues (credential needs_human,
+>    require_machine with zero workers, Depends-on OPEN) are different gates — not a free pass to leave seats idle when
+>    ungated work exists.
 
 ## First turn (FR #954) â€” do this NOW
 
