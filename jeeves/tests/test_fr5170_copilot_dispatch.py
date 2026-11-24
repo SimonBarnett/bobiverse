@@ -35,6 +35,40 @@ def test_build_task_body_uses_prompt_not_problem_statement():
         assert REPO in body["prompt"]
 
 
+def test_build_task_body_includes_model_when_env_set(monkeypatch):
+    """FR #9738: model should be included in task body when BOB_COPILOT_MODEL is set."""
+    monkeypatch.setenv("BOB_COPILOT_MODEL", "claude-haiku-4.5")
+    body = cd.build_task_body(_row(task="FR", num=10))
+    assert "model" in body
+    assert body["model"] == "claude-haiku-4.5"
+    assert "prompt" in body
+
+
+def test_build_task_body_omits_model_when_env_unset(monkeypatch):
+    """FR #9738: model should not be included in task body when BOB_COPILOT_MODEL is unset."""
+    monkeypatch.delenv("BOB_COPILOT_MODEL", raising=False)
+    body = cd.build_task_body(_row(task="FR", num=10))
+    assert "model" not in body
+    assert "prompt" in body
+
+
+def test_build_task_body_includes_base_ref_when_env_set(monkeypatch):
+    """FR #9738: base_ref should be included in task body when BOB_COPILOT_BASE_REF is set."""
+    monkeypatch.setenv("BOB_COPILOT_BASE_REF", "develop")
+    body = cd.build_task_body(_row(task="FR", num=10))
+    assert "base_ref" in body
+    assert body["base_ref"] == "develop"
+    assert "prompt" in body
+
+
+def test_build_task_body_omits_base_ref_when_env_unset(monkeypatch):
+    """FR #9738: base_ref should not be included in task body when BOB_COPILOT_BASE_REF is unset."""
+    monkeypatch.delenv("BOB_COPILOT_BASE_REF", raising=False)
+    body = cd.build_task_body(_row(task="FR", num=10))
+    assert "base_ref" not in body
+    assert "prompt" in body
+
+
 def test_tasks_api_path():
     assert cd.tasks_api_path(REPO) == "agents/repos/SimonBarnett/bobiverse/tasks"
 

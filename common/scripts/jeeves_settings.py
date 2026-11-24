@@ -256,6 +256,20 @@ SCHEMA: tuple[SettingSpec, ...] = (
         description="Observe-only Copilot dispatch (no live agents/tasks POST).",
     ),
     _spec(
+        "BOB_COPILOT_MODEL",
+        "str",
+        "",
+        group="fuel",
+        description="Optional Copilot model override (e.g., claude-haiku-4.5) for CCA tasks.",
+    ),
+    _spec(
+        "BOB_COPILOT_BASE_REF",
+        "str",
+        "",
+        group="fuel",
+        description="Optional base reference for Copilot PR creation (e.g., develop).",
+    ),
+    _spec(
         "BOB_DIGEST_HOME",
         "str",
         "",
