@@ -24,11 +24,11 @@
 >    against ircJeeves (`SimonBarnett/bobiverse`) so the chair performs that intervention **deterministically**. FR #8827
 >    keep-queue-moving is a bridge only; never leave an LLM-only loop without the matching chair FR. If a prior FR was
 >    closed COMPLETED but live tip still needs the bridge, file a regression FR with evidence.
-> 7. **CAST IRON — idle + open FRs/PRs = FAIL (FR #9644).** Live digest seat(s) `idle` while open FRs/PRs still exist that
->    the chair should dispatch is a **fail condition**: intervene the same turn **and** file/de-dup the ircJeeves FR that
->    makes that feed deterministic (#9628 offer_to_idle and siblings). Gated-only queues (credential needs_human,
->    require_machine with zero workers, Depends-on OPEN) are different gates — not a free pass to leave seats idle when
->    ungated work exists.
+> 7. **CAST IRON — idle seats with open FRs/PRs is FAIL (FR #9644).** Digest `state=idle` seats while ungated offerable
+>    work exists (or open FR/PR rows the chair should offer) is a fail: monitor `idle_seats` EXIT 1 with fingerprint
+>    `idle_with_open_work` and **must chair-heal** (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + ear-relay
+>    `!assign` bridge per #9461) — report-only is opt-in. Gated-only queues are not this fail. Durable chair acceptance
+>    also reaffirms #9628 / #9460 (`offer_to_idle` / `offer_after_done`). Same-turn intervene still owes #9627.
 > 8. **CAST IRON — multi-FR batch needs Digest parent (FR #9652).** Filing ≥2 related FRs in one turn/batch requires a
 >    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>`. Never leave a
 >    multi-FR batch free-floating. Same-turn repair if already filed without a digest. Last open child close closes the

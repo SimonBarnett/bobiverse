@@ -17,8 +17,8 @@ description: >
 >    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
 > 6. **CAST IRON — interventions → ircJeeves FR (#9627).** Any keep-queue-moving / heal action owes a product FR the
 >    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
-> 7. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
->    chair path same turn (#9628). Never leave idle+ungated work as report-only.
+> 7. **CAST IRON — idle + open work is FAIL (#9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` chair-heals
+>    (`push_idle` / `offer_to_idle`); not report-only. Same-turn bridge still owes #9627.
 > 8. **CAST IRON — multi-FR batch needs Digest parent (#9652).** ≥2 related FRs in one batch: `fr-digest` Digest first;
 >    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
 
@@ -41,7 +41,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Check | Script / name | Why |
 |---|---|---|
 | Health | `health` | ircJeeves / chair home / webhook surface |
-| Idle seats | `idle_seats` | seats idle while unaccepted work exists (**report only** - keep seats busy; no `clear_seat_doing`) |
+| Idle seats | `idle_seats` | seats idle while ungated work exists — EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |

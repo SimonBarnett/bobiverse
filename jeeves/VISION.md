@@ -92,6 +92,7 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - Give-up / NACK exclusions are exact-seat only (FR #5088); recycled fresh nicks are not blocked by a dead predecessor on auto-offer
 - `needs_human` blocks every seat for auto-offer (FR #4336); only `!assign` may hand it out
 - CAST IRON harvest + intake every session; never print secrets
+- CAST IRON FR #9644: idle seats with ungated open FRs/PRs is FAIL (fingerprint idle_with_open_work + chair heal; sibling #9627)
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `ircJeeves`
 - MONITORING agent reports via intake and may keep-queue-moving commands (FR #8827); never Ergo/merge/UAT/VERSION
 - CAST IRON FR #9627: every MONITORING / ops intervention owes a same-turn ircJeeves product FR (deterministic chair; FR #8827 is bridge-only; harvest without a linked FR fails closed)

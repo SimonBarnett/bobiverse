@@ -30,12 +30,12 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 >    (or de-dup-comment) a product FR so **ircJeeves** performs it deterministically. FR #8827 commands are a bridge only;
 >    never run `!assign` / `!sweep` / … as a standing LLM loop without the matching chair FR. Closed-COMPLETED but still
 >    bridged live ⇒ regression FR with evidence (`require_machine: walrus` when chair-host).
-> 7. **CAST IRON — idle + open FRs/PRs = FAIL (FR #9644).** Digest `idle` seats while open FRs/PRs remain that the chair
->    should dispatch is a fail: intervene same turn **and** FR/de-dup the deterministic chair path (#9628 and siblings).
->    Gated-only queues are separate; ungated idle+work is never “wait and see”.
-> 8. **CAST IRON — multi-FR batch needs Digest parent (FR #9652).** Filing ≥2 related FRs in one turn/batch: file
->    `Digest: …` with label `fr-digest` first; each child starts with `Depends-on: #<digest>`. Never leave free-floating
->    multi-FR batches. Same-turn repair if already filed without a digest. Last open child close closes the digest (#9552).
+> 7. **CAST IRON — idle + open work is FAIL (FR #9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` must
+>    chair-heal (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + #9461 ear-relay); report-only is opt-in.
+>    Reaffirm #9628 / #9460. Same-turn bridge still owes #9627.
+> 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
