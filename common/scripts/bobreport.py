@@ -5826,6 +5826,16 @@ def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
             }
 
 
+def _digest_copilot_tasks(home: Path) -> list:
+    """FR #9748: export active copilot tasks to digest."""
+    try:
+        import copilot_dispatch as cd
+
+        return cd.tasks_for_digest(home)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _intake_outbox_public(home: Path) -> dict:
     """FR #5359: queued intake/outbox count + age + gh presence (no secrets)."""
     try:
@@ -5900,6 +5910,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home, doc),
+        "copilot_tasks": _digest_copilot_tasks(home),
         "fleet_pools": _digest_fleet_pools(doc),
         "fleet": _digest_fleet_layout(doc),
         "opencode": doc.get("opencode") if isinstance(doc.get("opencode"), dict) else None,

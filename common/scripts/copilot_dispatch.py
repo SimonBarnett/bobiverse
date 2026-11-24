@@ -757,6 +757,30 @@ def pool_for_digest(home: Path) -> dict:
     return ensure_public_pool(out)
 
 
+def tasks_for_digest(home: Path | None) -> list:
+    """FR #9748: export active copilot tasks to digest."""
+    if home is None:
+        return []
+    try:
+        doc = _load_jobs(home)
+        jobs = doc.get("jobs") or []
+        # Return tasks list for digest; each task includes repo, task type, ID, and task ID.
+        return [
+            {
+                "repo": job.get("repo"),
+                "task": job.get("task"),
+                "id": job.get("id"),
+                "task_id": job.get("task_id"),
+                "task_url": job.get("task_url"),
+                "started": job.get("started"),
+            }
+            for job in jobs
+            if isinstance(job, dict)
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _error_text(blob: object) -> str:
     """Flatten API/session error payloads into a lower-case searchable string."""
     if blob is None:
