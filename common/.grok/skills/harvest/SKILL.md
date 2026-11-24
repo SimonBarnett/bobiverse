@@ -38,6 +38,8 @@ depends_on: []
 >    `!cleargiveup`, `!focus`, `!ignore`, `!pin`, `!recycle`, heal, …) must create or de-dup-comment a product FR against
 >    ircJeeves (`SimonBarnett/bobiverse`) the same turn so the chair performs it deterministically. FR #8827 is bridge-only.
 >    Closed-COMPLETED but still bridged live ⇒ regression FR with evidence.
+> 8. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
+>    chair path same turn. Ungated idle+work is never report-only.
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -248,6 +250,7 @@ The bullet archive is `lessons.md` beside this file (FR #8310). skill-dag refuse
 
 Do not land a second copy of a harvest-lesson MRB playbook in this book. Those playbooks belong in `bobiverse-bob-job-mrb`.
 - CAST IRON point 5 (Jeeves MONITORING): prefer deterministic fixes; when tested, FR them into the Jeeves token-less service (tools/monitor, jeeves/checks, common/scripts, chair helpers) so learnings become chair behaviour without an LLM. Skills are interim; durable home is the deterministic product. Same turn: skill harvest and product FR when the path is clear (PR #8851).
+- CAST IRON idle + open FRs/PRs = FAIL (#9644): intervene same turn and FR/de-dup deterministic chair feed (#9628); ungated idle+work is never report-only.
 - skill-dag index preference: over-cap seat copy yields to a later root at or under SKILL_RESOLVE_CAP_BYTES; an under-cap seat copy still wins (FR #7076 / #8323).
 - Any per-seat click state must persist the launch model next to the kind and every restart path must read it; a saved model that cannot start must refuse and report, never fall through to the free default.
 - When IRC _ssl_recv starts polling settimeout, run test_fr8120_ear_ssl_send_serialize.py and test_fr4980_ear_idle_keepalive.py with the new registration test before PASS.
@@ -448,3 +451,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Any !assign/sweep/heal bridge must same-turn FR ircJeeves for deterministic chair behaviour; closed-COMPLETED but still bridged => regression FR
 - After FR #7593 grok recycle, probe CreatePseudoConsole before relaunch and GIVEUP shell-hung when terminal/call-*.log stays empty after run_terminal_command (FR #9612).
 - Each MONITORING bridge class gets its own ircJeeves FR same turn (#9627); de-dup offer_to_idle to #9628 and self-MRB to #9622
+- Workers MaxWorkers=2 is Workers-submenu only; Agents Plan must StartPlanExe vendor\plan\PlanAgent.exe; Agents Jeeves must not CapRefusal via StartWorker agent
+- CAST IRON FR #9652: filing >=2 related FRs in one turn MUST create/reuse Digest parent (feature-request + fr-digest) with Depends-on on each child; digests stay useful when unheld; rule FR itself is not fr-digest
