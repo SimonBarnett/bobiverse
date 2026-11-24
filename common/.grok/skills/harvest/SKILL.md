@@ -430,3 +430,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - !assign syntax is worker repo KIND num; flamingo-authored MRB needs redqueen/marchhare; marchhare !startworker agent marchhare NACKs engine.alive stale until interactive tray restart
 - When reviewing PowerShell added by FR seats, assert dollar-signed param/vars in the new function body (count of $ >= N); string-contains of the function name alone misses stripped-$ parse breaks that cascade into tray queue tests.
 - When many build-jeeves runs stay in_progress and PR checks stay queued 20m+, cancel older superseded in_progress runs to free runners so tip PR auto-merge can finish.
+- Merge closing FR != host healed: after tray engine_stale fix merges, keep polling !startworker until workers>0 and file residual if NACK persists post-merge
