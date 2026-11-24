@@ -448,3 +448,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Any !assign/sweep/heal bridge must same-turn FR ircJeeves for deterministic chair behaviour; closed-COMPLETED but still bridged => regression FR
 - After FR #7593 grok recycle, probe CreatePseudoConsole before relaunch and GIVEUP shell-hung when terminal/call-*.log stays empty after run_terminal_command (FR #9612).
 - Each MONITORING bridge class gets its own ircJeeves FR same turn (#9627); de-dup offer_to_idle to #9628 and self-MRB to #9622
+- product FR #9628 offer_to_idle; FR #8827 bridge-only
