@@ -44,6 +44,8 @@ MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 # FR #7251 / #7255: same 60s cadence as EAR_POOL_FETCH_S / FLEET_POOL_FETCH_S.
 CACHE_S = float(bobreport.EAR_POOL_FETCH_S)
+# FR #9745: max concurrent Copilot tasks; tick fills until this count is reached.
+MAX_CONCURRENT_COPILOT = 2
 COPILOT_COOLDOWN_S = 7 * 86400.0
 MRB_FAST_GIVEUP_S = 120.0
 MRB_FAST_GIVEUP_LIMIT = 3
@@ -2356,6 +2358,9 @@ def tick(
             catalog = list(_sjs5847.load_open_catalog(home) or [])
         qdoc = gitclaim.load_queue(home)
         for row in gitclaim.ordered_unaccepted(home):
+            # FR #9745: dispatch only if slots are available.
+            if len(active) >= MAX_CONCURRENT_COPILOT:
+                break
             if (row.get("repo"), row.get("task"), row.get("id")) in active:
                 continue
             if gitclaim.ledger_blocks(ledger, row, COPILOT_NICK):
