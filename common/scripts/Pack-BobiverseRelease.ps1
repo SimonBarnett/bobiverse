@@ -311,7 +311,7 @@ function Stage-BobAgentFolders([string]$Stage) {
         Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
         # FR #9641: after worker lands, refuse identical bytes under PlanAgent (Workers seat via Agents > Plan).
-        # FR #9843 / FIX #9866: Assert returns a Hashtable - capture or heat Stage becomes
+        # FR #9843: Assert returns a Hashtable - capture or heat Stage becomes
         # "System.Collections.Hashtable <path>" (FR #6969 resurfaced).
         $null = Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
     }
@@ -728,7 +728,7 @@ function Stage-Product([string]$Name) {
         if ((-not $EmbedErgoPassword) -and (Test-Path -LiteralPath $stageErgoGuard)) {
             Remove-Item -LiteralPath $stageErgoGuard -Force
         }
-        # FR #9843 / FIX #9866: never let Stage-BobAgentFolders success-stream objects join into $stage.
+        # FR #9843: never let Stage-BobAgentFolders success-stream objects join into $stage.
         $null = Stage-BobAgentFolders -Stage $stage
         Write-Host ("INFO bob staged TipForm tray from {0} pin={1}" -f $traySrc, ((Get-Content (Join-Path $traySrc 'PIN.txt') -TotalCount 1).Trim()))
     }

@@ -4550,7 +4550,7 @@ function Copy-BobTrayVendorExes {
         return @{ ok = $false; missing = @($missing) }
     }
     # FR #9641: PlanAgent must not be a renamed bob-worker (Agents > Plan must not open a Workers seat).
-    # FR #9843 / FIX #9866: capture Hashtable return (do not pollute Copy-BobTrayVendorExes callers).
+    # FR #9843: capture Hashtable return (do not pollute Copy-BobTrayVendorExes callers).
     $null = Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require
     return @{ ok = $true; missing = @() }
 }
