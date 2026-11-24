@@ -298,15 +298,28 @@ def ungated_unaccepted_count(
     rows: list | None,
     *,
     now: float | None = None,
+    doc: dict | None = None,
 ) -> int:
-    """Rows that are not held for a human, a machine pin, or an active cooldown.
+    """Rows that are not held for a human, a machine pin, cooldown, or Depends-on.
 
     MRB #8445: use ``gitclaim.row_needs_human`` / ``row_on_cooldown`` so an
     expired ``cooldown_until`` string does not suppress empty-shop findings.
+    FR #9553: share ``depends_gate_reason`` with !assign / !stuck / !list so
+    digest ``offerable_count`` does not count depends-open / unresolved rows.
     """
     import gitclaim
 
     now_f = float(time.time() if now is None else now)
+    qdoc = doc if isinstance(doc, dict) else {
+        "v": 1,
+        "unaccepted": [r for r in (rows or []) if isinstance(r, dict)],
+        "accepted": [],
+        "done": [],
+    }
+    try:
+        open_keys = gitclaim.open_fr_issue_keys(qdoc)
+    except Exception:
+        open_keys = set()
     n = 0
     for row in rows or []:
         if not isinstance(row, dict):
@@ -316,6 +329,9 @@ def ungated_unaccepted_count(
         if str(row.get("require_machine") or "").strip():
             continue
         if gitclaim.row_on_cooldown(row, now_f, nick="", live=None):
+            continue
+        # FR #9553 / #9455: same Depends-on gate as offer/assign/stuck (token-free).
+        if gitclaim.depends_gate_reason(row, qdoc, open_keys=open_keys):
             continue
         n += 1
     return n
