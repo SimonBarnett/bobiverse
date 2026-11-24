@@ -4883,6 +4883,24 @@ $miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.
 $miAgents = New-Object System.Windows.Forms.ToolStripMenuItem('Agents')
 [void]$menu.Items.Add($miAgents)
 $miPlan = New-Object System.Windows.Forms.ToolStripMenuItem('Plan')
+# FR #8689 / #9267 / #9587: Plan GANTT at menu build (16x16); loud MISSING.
+$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
+if (-not (Test-Path -LiteralPath $planGantt)) {
+    $planGantt = Join-Path $RepoRoot 'bob\tray\assets\plan-gantt.ico'
+}
+Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
+if (Test-Path -LiteralPath $planGantt) {
+    try {
+        $planIcon = New-Object System.Drawing.Icon $planGantt, 16, 16
+        $miPlan.Image = $planIcon.ToBitmap()
+        $planIcon.Dispose()
+    } catch {
+        Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message)
+        Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
+    }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
+}
 $miPriority = New-Object System.Windows.Forms.ToolStripMenuItem('Priority')
 # FR #9269 / BOB-TRAY-UI-08 + BOB-54 + FR #9267: vendor\priority then assets\priority.ico.
 $priorityIco = Join-Path $RepoRoot 'vendor\priority\priority.ico'
@@ -4906,21 +4924,32 @@ if (Test-Path -LiteralPath $priorityIco) {
     Write-TrayLog ('menu-icon MISSING file=priority.ico path=' + $priorityIco)
 }
 $miJeeves = New-Object System.Windows.Forms.ToolStripMenuItem('Jeeves')
-# FR #9270 / BOB-TRAY-UI-09: bob.ntsa.uk cache under install assets; offline fallback jeeves/assets.
-$butlerHelper = Join-Path $PSScriptRoot 'BobTrayJeevesButler.ps1'
-if (Test-Path -LiteralPath $butlerHelper) { . $butlerHelper }
+# FR #9270 / #9587: butler helper may live beside Watch, under tools\, or bob\tray\tools\.
+$butlerHelperCandidates = @(
+    (Join-Path $PSScriptRoot 'BobTrayJeevesButler.ps1'),
+    (Join-Path $RepoRoot 'tools\BobTrayJeevesButler.ps1'),
+    (Join-Path $RepoRoot 'bob\tray\tools\BobTrayJeevesButler.ps1')
+)
+foreach ($butlerHelper in $butlerHelperCandidates) {
+    if (Test-Path -LiteralPath $butlerHelper) { . $butlerHelper; break }
+}
 $butler = $null
 if (Get-Command Resolve-BobTrayJeevesButlerIcon -ErrorAction SilentlyContinue) {
     $butler = Resolve-BobTrayJeevesButlerIcon -RepoRoot $RepoRoot
 }
 if ($butler -and (Test-Path -LiteralPath $butler)) {
     try {
-        $ico = New-Object System.Drawing.Icon $butler
+        $ico = New-Object System.Drawing.Icon $butler, 16, 16
         $miJeeves.Image = $ico.ToBitmap()
+        $ico.Dispose()
         Write-TrayLog ('jeeves-icon path={0} source=https://bob.ntsa.uk/jeeves/assets/jeeves-butler.ico' -f $butler)
+        Write-TrayLog ('menu-icon file=jeeves-butler.ico path=' + $butler + ' ok=1')
     } catch {
         Write-TrayLog ('jeeves-icon failed: ' + $_.Exception.Message)
+        Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + $butler)
     }
+} else {
+    Write-TrayLog ('menu-icon MISSING file=jeeves-butler.ico path=' + [string]$butler)
 }
 [void]$miAgents.DropDownItems.Add($miPlan)
 [void]$miAgents.DropDownItems.Add($miPriority)
@@ -5033,17 +5062,7 @@ $notify.Add_MouseUp({
     })
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
-$planGantt = Join-Path $RepoRoot 'assets\plan-gantt.ico'
-if (-not (Test-Path -LiteralPath $planGantt)) {
-    $planGantt = Join-Path $RepoRoot 'bob\tray\assets\plan-gantt.ico'
-}
-Write-TrayLog ('Plan: GANTT icon ' + $planGantt)
-if (Test-Path -LiteralPath $planGantt) {
-    try { $miPlan.Image = (New-Object System.Drawing.Icon($planGantt)).ToBitmap() }
-    catch { Write-TrayLog ('Plan GANTT icon failed: ' + $_.Exception.Message) }
-} else {
-    Write-TrayLog ('menu-icon MISSING file=plan-gantt.ico path=' + $planGantt)
-}
+# FR #9587: Plan GANTT icon applied at Agents menu build (above); click only here.
 $miPlan.Add_Click({
         $fuel = [Environment]::GetEnvironmentVariable('BOB_PLAN_FUEL_FILE')
         if ([string]::IsNullOrWhiteSpace($fuel)) {

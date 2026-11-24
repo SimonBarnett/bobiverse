@@ -1102,21 +1102,27 @@ namespace BobDialogs
             };
             miAgents.DropDownItems.Add(miPriority);
             ToolStripMenuItem miJeeves = new ToolStripMenuItem("Jeeves");
-            // FR #9270 / BOB-TRAY-UI-09: bob.ntsa.uk cache under install assets; offline fallback jeeves/assets.
+            // FR #9270 / BOB-TRAY-UI-09 + FR #9587: bob.ntsa.uk cache / jeeves/assets / bob/tray/assets;
+            // always 16x16 + loud menu-icon MISSING (parity with Plan / Priority).
             string butler = ResolveJeevesButlerIcon(root);
-            if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
+            bool jeevesIconOk = false;
+            try
             {
-                try
+                if (!string.IsNullOrEmpty(butler) && File.Exists(butler))
                 {
-                    using (Icon ico = new Icon(butler))
+                    using (Icon ico = new Icon(butler, 16, 16))
                         miJeeves.Image = ico.ToBitmap();
-                    TrayLifecycle.Write("jeeves", "icon", "jeeves-butler.ico", "path", butler, "source", JeevesButlerUrl);
-                }
-                catch (Exception ex)
-                {
-                    TrayLifecycle.Write("jeeves", "icon", "failed", "error", ex.Message);
+                    jeevesIconOk = miJeeves.Image != null;
                 }
             }
+            catch (Exception ex)
+            {
+                TrayLifecycle.Write("jeeves", "action", "menu-icon failed", "path", butler ?? "", "error", ex.Message, "ok", "0");
+            }
+            if (jeevesIconOk)
+                TrayLifecycle.Write("jeeves", "action", "menu-icon", "path", butler, "file", "jeeves-butler.ico", "source", JeevesButlerUrl, "ok", "1");
+            else
+                TrayLifecycle.Write("jeeves", "action", "menu-icon MISSING", "path", butler ?? "", "file", "jeeves-butler.ico", "ok", "0");
             miJeeves.Click += delegate {
                 // FR #8686 / BOB-36: require J: before Jeeves starts. Missing map shows a dialog and quits the start.
                 if (!JeevesJDrivePresent(@"J:\"))
@@ -1890,18 +1896,27 @@ namespace BobDialogs
 
         internal static string JeevesButlerFallbackPath(string installRoot)
         {
-            string fallback = Path.Combine(installRoot ?? "", "jeeves", "assets", "jeeves-butler.ico");
+            string rootPath = installRoot ?? "";
+            // FR #9587: prefer vendored tray asset beside Plan GANTT, then jeeves/assets.
+            string trayAsset = Path.Combine(rootPath, "bob", "tray", "assets", "jeeves-butler.ico");
+            if (File.Exists(trayAsset)) return trayAsset;
+            string trayFlat = Path.Combine(rootPath, "assets", "jeeves-butler.ico");
+            // cache path is the same flat assets file; fallback still lists it for callers.
+            string fallback = Path.Combine(rootPath, "jeeves", "assets", "jeeves-butler.ico");
             if (File.Exists(fallback)) return fallback;
             try
             {
-                DirectoryInfo parent = Directory.GetParent(installRoot ?? "");
+                DirectoryInfo parent = Directory.GetParent(rootPath);
                 if (parent != null)
                 {
+                    string altTray = Path.Combine(parent.FullName, "bob", "tray", "assets", "jeeves-butler.ico");
+                    if (File.Exists(altTray)) return altTray;
                     string alt = Path.Combine(parent.FullName, "jeeves", "assets", "jeeves-butler.ico");
                     if (File.Exists(alt)) return alt;
                 }
             }
             catch { }
+            if (File.Exists(trayFlat)) return trayFlat;
             return fallback;
         }
 
