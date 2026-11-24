@@ -11853,7 +11853,24 @@ class Relay:
             self._last_line = line
             if self._inject is None:
                 pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
-                ack_first = bool(assign_job_ref(line)) and pending_assigns == 0
+                is_assign = bool(assign_job_ref(line))
+                ack_first = is_assign and pending_assigns == 0
+                # FR #9403: second+ assign while agent has no inject target must not
+                # sit silent (chair offered_to / seat-holds, seat idle-no-ack).
+                if is_assign and pending_assigns > 0:
+                    key = assign_job_key(line) or assign_job_ref(line) or "job"
+                    nack = f"NACK {key} agent-not-ready"
+                    self.log(
+                        "relay: dispatch-dropped agent-not-ready "
+                        f"job={key} pending={pending_assigns}"
+                    )
+                    self._persist_last_from(line)
+                    if self.write_outbox:
+                        try:
+                            self.write_outbox(nack)
+                        except Exception:
+                            pass
+                    return "agent_not_ready"
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
@@ -11862,6 +11879,12 @@ class Relay:
                     self.log("relay: held nothing-queued (agent not ready)")
                     self._persist_last_from(line)
                     ack_first = False
+                elif is_assign:
+                    key = assign_job_key(line) or assign_job_ref(line) or "job"
+                    self.log(
+                        "relay: dispatch-held agent-not-ready "
+                        f"job={key} (ACK then wait for inject target)"
+                    )
             else:
                 now = self.clock()
                 self._sent = [t for t in self._sent if now - t < self.window_s]
@@ -12058,8 +12081,28 @@ class Relay:
         if nq:
             self.log("relay: inject failed for nothing-queued (persisted last-from); holding " + line[:80])
             self._persist_last_from(line)
-        else:
-            self.log("relay: inject failed, holding " + line[:80])
+            with self._lock:
+                self._pending.append(line)
+                if len(self._pending) > self.max_pending:
+                    del self._pending[0]
+            return "inject_failed"
+        # FR #9403: assign inject miss must NACK so chair clears offered_to / seat-holds
+        # (silent hold left seats idle while busy (offered|held)).
+        key = assign_job_key(line) or assign_job_ref(line)
+        if key:
+            nack = f"NACK {key} inject failed"
+            self.log(
+                "relay: dispatch-dropped inject-failed "
+                f"job={key} line={line[:80]}"
+            )
+            self._persist_last_from(line)
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return "inject_failed"
+        self.log("relay: inject failed, holding " + line[:80])
         with self._lock:
             self._pending.append(line)
             if len(self._pending) > self.max_pending:
