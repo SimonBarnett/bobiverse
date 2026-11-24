@@ -767,3 +767,8 @@ Books: bobiverse-bob-job-mrb, bob/agents/worker/AGENTS.md. Refs: SimonBarnett/bo
 Jeeves complete_job_by_ref matches DONE on repo+id+task only (never repo+id fallback). Intake parked this under harvest/SKILL.md; home is jeeves bobiverse-jeeves harvested lessons.
 
 Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobiverse#5095
+
+## 2026-11-24 FR #9637 bobiverse body require_machine no longer pins
+
+For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `require_machine:` / `=` lines (and other title/body text cues). Pins require `needs-<machine>` / `require_machine:<machine>` labels, hard issue pins, or operator `!pin`. Body lines remain as ops notes. Supersedes earlier FR #4512 wording that dedicated body lines still pinned bobiverse (see also lines that document soft-cue vs dedicated-line for bobiverse).
+

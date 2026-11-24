@@ -74,12 +74,23 @@ def test_fr6229_needs_marchhare_label_pins():
     )
 
 
-def test_fr6229_dedicated_body_line_still_pins_bobiverse():
+def test_fr6229_dedicated_body_line_no_longer_pins_bobiverse():
+    # FR #9637: body require_machine: alone does not pin; needs-marchhare label does.
     assert (
         gitclaim.infer_require_machine(
             title="ops",
             body="require_machine: marchhare\n\nLive tray proof.",
             labels=("feature-request",),
+            repo="SimonBarnett/bobiverse",
+            ident="#99998",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="ops",
+            body="require_machine: marchhare\n\nLive tray proof.",
+            labels=("feature-request", "needs-marchhare"),
             repo="SimonBarnett/bobiverse",
             ident="#99998",
         )
