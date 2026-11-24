@@ -320,6 +320,9 @@ def ungated_unaccepted_count(
         open_keys = gitclaim.open_fr_issue_keys(qdoc)
     except Exception:
         open_keys = set()
+    # FR #9821 / #9553: pass issue_fetch so held fr-digest parents missing from
+    # the local queue still suppress offerable_count (parity with offer/assign).
+    _offer_fetch = gitclaim.depends_issue_fetch_checker()
     n = 0
     for row in rows or []:
         if not isinstance(row, dict):
@@ -330,8 +333,13 @@ def ungated_unaccepted_count(
             continue
         if gitclaim.row_on_cooldown(row, now_f, nick="", live=None):
             continue
-        # FR #9553 / #9455: same Depends-on gate as offer/assign/stuck (token-free).
-        if gitclaim.depends_gate_reason(row, qdoc, open_keys=open_keys):
+        # FR #9821 / BOB-G3: digest gate records are not offerable work.
+        if gitclaim.digest_issue_reason(row):
+            continue
+        # FR #9553 / #9455 / #9821: same Depends-on gate as offer/assign/stuck.
+        if gitclaim.depends_gate_reason(
+            row, qdoc, open_keys=open_keys, issue_fetch=_offer_fetch
+        ):
             continue
         n += 1
     return n

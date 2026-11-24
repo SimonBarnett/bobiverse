@@ -1198,6 +1198,19 @@ def handle_shop_worker_line(
                             home, nick=nick, repo=parsed.repo
                         ):
                             out["no_clone_repo"] = True
+                # FR #9698: pre-ACK disk NACK still files the machine-pinned tip.
+                with contextlib.suppress(Exception):
+                    import disk_starvation_chair_file as _dscf
+
+                    filed = _dscf.maybe_file_from_giveup(
+                        nick=nick,
+                        reason=reason,
+                        repo=parsed.repo,
+                        task=parsed.task,
+                        ident=parsed.id,
+                    )
+                    if filed is not None:
+                        out["disk_starvation_issue"] = filed
             return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
@@ -1219,6 +1232,19 @@ def handle_shop_worker_line(
                 )
                 if stamped is not None:
                     out["deterministic_nack"] = True
+        # FR #9698: disk GIVEUP/NACK -> one machine-pinned Jeeves-agent issue.
+        with contextlib.suppress(Exception):
+            import disk_starvation_chair_file as _dscf
+
+            filed = _dscf.maybe_file_from_giveup(
+                nick=nick,
+                reason=reason,
+                repo=parsed.repo,
+                task=parsed.task,
+                ident=parsed.id,
+            )
+            if filed is not None:
+                out["disk_starvation_issue"] = filed
         # FR #6439: wake Bob on shop GIVEUP (same HTTPS wake URL as close notices).
         if parsed.verb == "GIVEUP":
             with contextlib.suppress(Exception):
