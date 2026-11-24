@@ -103,13 +103,13 @@ def test_fr9821_held_digest_child_not_offered(home: Path):
         title="FR-D: fuel cache",
         body="Depends-on: #9795\nImplement fuel cache.\n",
     )
-    later = _row(9, 3, body="Depends-on: (none)\n")
+    later = _row(9999, 3, body="Depends-on: (none)\n")
     _write(home, [digest, child, later])
     fi.handle_focus_cmd(home, REPO)
 
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok" and job is not None
-    assert job["id"] == "#9"
+    assert job["id"] == "#9999"
     why = gitclaim.depends_gate_reason(child, gitclaim.load_queue(home))
     assert why == gitclaim.DEPENDS_HELD_REASON
 
@@ -147,14 +147,14 @@ def test_fr9821_offerable_count_skips_held_digest_child(home: Path):
         body="Kind: fr-digest\n",
     )
     child = _row(9803, 2, body="Depends-on: #9795\n")
-    later = _row(9, 3, body="Depends-on: (none)\n")
+    later = _row(9999, 3, body="Depends-on: (none)\n")
     rows = [digest, child, later]
     qdoc = {"v": 1, "unaccepted": rows, "accepted": [], "done": []}
     n = stuck_job_sweep.ungated_unaccepted_count(rows, doc=qdoc)
     # Digest itself is still a row but offer walks skip it; ungated count should
     # exclude the held-digest child and typically the digest gate row only when
     # other gates apply — child must not inflate offerable.
-    assert n == 1  # only #9
+    assert n == 1  # only #9999
 
 
 def test_fr9821_list_omits_held_digest_child(home: Path):
@@ -166,12 +166,12 @@ def test_fr9821_list_omits_held_digest_child(home: Path):
         title="Digest: fuel",
     )
     child = _row(9803, 2, body="Depends-on: #9795\n", title="child of held")
-    later = _row(9, 3, body="Depends-on: (none)\n", title="free FR")
+    later = _row(9999, 3, body="Depends-on: (none)\n", title="free FR")
     _write(home, [digest, child, later])
     lines = gitclaim.format_unaccepted_list(home)
     blob = "\n".join(lines)
     assert "9803" not in blob
-    assert "#9" in blob or "free FR" in blob
+    assert "#9999" in blob or "free FR" in blob
 
 
 def test_fr9821_enqueue_held_digest_as_gate_record():
@@ -251,3 +251,60 @@ def test_fr9821_fr_digest_gate_module_marker():
     assert not fr_digest_gate.is_held_fr_digest(
         labels=["fr-digest"], body="Kind: fr-digest\n"
     )
+
+
+def test_fr9821_mrb9834_closed_fetched_held_digest_does_not_gate(home: Path):
+    """Closed parent via issue_fetch must not return depends-held (leftover hold)."""
+    child = _row(9803, 2, body="Depends-on: #9795\n")
+
+    def fetch(repo: str, num: str):
+        return {
+            "number": int(num),
+            "state": "closed",
+            "title": "Digest: fuel",
+            "body": "Kind: fr-digest\n",
+            "labels": [{"name": "fr-digest"}, {"name": "hold"}, {"name": "digest"}],
+        }
+
+    assert gitclaim.depends_gate_reason(child, gitclaim.load_queue(home), issue_fetch=fetch) is None
+
+
+def test_fr9821_mrb9834_kind_bold_colon_intake_hold():
+    labs = intake._labels_for(
+        {
+            "kind": "fr",
+            "title": "Batch gate",
+            "body": "**Kind**: fr-digest\n\nChildren wait.\n",
+        },
+        quarantine=False,
+    )
+    lower = {x.lower() for x in labs}
+    assert "hold" in lower and "fr-digest" in lower
+
+
+def test_fr9821_mrb9834_opened_webhook_enqueues_digest_gate():
+    """opened + label:fr-digest must enqueue gate row (not claim_from_payload None)."""
+    payload = {
+        "action": "opened",
+        "repository": {"full_name": REPO},
+        "issue": {
+            "number": 9795,
+            "title": "Digest: fuel",
+            "body": "Kind: fr-digest\n",
+            "state": "open",
+            "labels": [
+                {"name": "feature-request"},
+                {"name": "fr-digest"},
+                {"name": "hold"},
+                {"name": "digest"},
+            ],
+        },
+    }
+    claim = gitclaim.claim_from_payload("issues", payload, line=f"FR {REPO}#9795")
+    assert claim is not None
+    assert claim.task == "FR"
+    doc = {"v": 1, "unaccepted": [], "accepted": [], "done": [], "workers": {}}
+    ch = gitclaim._apply_claim_to_doc(doc, claim, home=None)
+    assert ch == "added"
+    assert len(doc["unaccepted"]) == 1
+    assert gitclaim.digest_issue_reason(doc["unaccepted"][0])
