@@ -435,3 +435,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When !startworker NACKs tray-not-logged-in / no_interactive_session, stuck must report tray_session_missing for that machine (not vague online_zero_workers / needs_human).
 - ACC-moved orphan offer holds: clear on note_seat_hold exclusivity, accept_offered, and purge_orphan_seat_holds from seat_open_job/stuck sweep; keep ack-missing
 - test_mrb2824 contiguous assert: do not add ## Harvested lessons (intake) H2 after ## Harvested monitor playbook; fold bullets into the playbook Harvested lessons section
+- When folding #9588 onto #9586, keep AddOpencodeTopLevelChoices and retarget fr9263/fr9588 pins to WeightsLaunchField (drop OpencodeWebhookModel catalog asserts).
