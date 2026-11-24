@@ -4928,7 +4928,20 @@ class Client:
         repo, ident = parsed
         out = gitclaim.set_require_machine_job(self.home, repo, ident, "any")
         if not out.get("ok"):
-            err = out.get("error") or "lock"
+            err = str(out.get("error") or "lock")
+            # FR #9708 CAST IRON: never leave needs-* + require_machine=any.
+            if err.startswith("needs_labels:"):
+                labs = err.split(":", 1)[1]
+                self._cmd_reply(
+                    src,
+                    "unpin",
+                    [
+                        f"unpin: refused - needs-* still present ({labs}); "
+                        f"remove labels then !unpin (FR #9708 CAST IRON)"
+                    ],
+                )
+                info(f"INFO unpin refused needs_labels={labs} {repo}{ident} by={src}")
+                return True
             self._cmd_reply(src, "unpin", [f"unpin: refused - {err}"])
             return True
         self._cmd_reply(

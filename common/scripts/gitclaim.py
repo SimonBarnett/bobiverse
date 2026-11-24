@@ -14614,6 +14614,23 @@ def parse_pin_cmd(body: str) -> tuple[str, str, str] | None:
     return m.group(1).strip().strip("{}"), f"#{int(m.group(2))}", mid
 
 
+def row_needs_machine_labels(row: dict) -> list[str]:
+    """GitHub ``needs-<machine>`` / ``require_machine:<machine>`` labels on a queue row (FR #9708)."""
+    labs = row.get("labels") or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    out: list[str] = []
+    for lab in labs:
+        s = str(lab or "").strip()
+        m = _REQUIRE_MACHINE_LABEL_RE.match(s)
+        if not m:
+            continue
+        mid = bobreport.normalize_machine_id(m.group(1)) or m.group(1).strip().lower()
+        if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE and not _is_retired_require_machine(mid):
+            out.append(s)
+    return out
+
+
 def set_require_machine_job(
     home: Path, repo: str, ident: str, machine: str
 ) -> dict:
@@ -14625,6 +14642,8 @@ def set_require_machine_job(
     rows honor the pin under FR #4512 re-infer (bare stamps without the flag still clear).
     Remaining hard ``_REQUIRE_MACHINE_ISSUE_PINS`` still win over operator any
     (documented in jeeves-commands); retired ce-priority-dev1 hard pins are gone.
+    FR #9708: ``!unpin`` refuses while the queue row still has ``needs-*`` /
+    ``require_machine:*`` labels (CAST IRON: never leave needs-* + rm=any).
     """
     repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
     ident_n = _norm_row_id(ident)
@@ -14665,6 +14684,7 @@ def set_require_machine_job(
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
+            matches: list[dict] = []
             for bucket in ("unaccepted", "accepted"):
                 for row in list(doc.get(bucket) or []):
                     if not isinstance(row, dict):
@@ -14673,10 +14693,28 @@ def set_require_machine_job(
                         continue
                     if _norm_row_id(row.get("id")) != ident_n:
                         continue
-                    row["require_machine"] = stamp
-                    # FR #6592: mark operator !pin/!unpin so bobiverse FR #4512 re-infer keeps it.
-                    row["require_machine_operator"] = "1"
-                    rows_n += 1
+                    matches.append(row)
+            if stamp == "any":
+                # FR #9708 CAST IRON: remove needs-* before !unpin (never needs-* + any).
+                lingering: list[str] = []
+                for row in matches:
+                    lingering.extend(row_needs_machine_labels(row))
+                if lingering:
+                    uniq = ",".join(sorted(set(lingering)))
+                    return {
+                        "ok": False,
+                        "error": f"needs_labels:{uniq}",
+                        "queue_rows": len(matches),
+                        "repo": repo_c,
+                        "id": ident_n,
+                        "require_machine": "",
+                        "needs_labels": sorted(set(lingering)),
+                    }
+            for row in matches:
+                row["require_machine"] = stamp
+                # FR #6592: mark operator !pin/!unpin so bobiverse FR #4512 re-infer keeps it.
+                row["require_machine_operator"] = "1"
+                rows_n += 1
             if rows_n:
                 _write_queue(queue_path(home), doc)
     except (TimeoutError, OSError):
