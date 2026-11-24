@@ -880,6 +880,50 @@ def session_quota_error(task_info: dict | None) -> str | None:
     return None
 
 
+def session_infra_soft_error(task_info: dict | None) -> str | None:
+    """FR #9782: CCA infra soft-fail codes (retry/free slot; never exhaust).
+
+    ``missing_conclusion`` means the workflow finished without a usable
+    conclusion. Create still succeeded (not HTTP 429); do not stamp allowance
+    exhausted. Surface text for digest.copilot.tasks (#9748).
+    """
+    if not isinstance(task_info, dict):
+        return None
+    artifacts = [task_info] + [
+        s for s in (task_info.get("sessions") or []) if isinstance(s, dict)
+    ]
+    for info in artifacts:
+        for key in ("error", "failure", "last_error"):
+            err = info.get(key)
+            if err is None:
+                continue
+            text = _error_text(err if isinstance(err, dict) else {"message": err})
+            if "missing_conclusion" in text or "conclusion is not available" in text:
+                if isinstance(err, dict):
+                    code = str(err.get("code") or "missing_conclusion").strip()
+                    msg = str(err.get("message") or "").strip()
+                    if msg and code.lower() not in msg.lower():
+                        return f"{code}: {msg}"
+                    return msg or code or "missing_conclusion"
+                return str(err) or "missing_conclusion"
+    return None
+
+
+def _record_infra_soft_error(home: Path, message: str, *, now: float) -> None:
+    """Stamp last_infra_error on allowance for digest.copilot.tasks (#9748)."""
+    path = _allow_path(home)
+    try:
+        doc = load_allowance(home) or {}
+        doc["last_infra_error"] = str(message or "missing_conclusion")[:500]
+        doc["last_infra_error_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now))
+        )
+        Path(home).mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def extract_mrb_verdict_from_task(task_info: dict | None) -> str | None:
     """Parse MRB PASS/FAIL from completed task / session output text."""
     if not isinstance(task_info, dict):
@@ -2036,6 +2080,22 @@ def handle_timeout_or_fail(
                         bobreport.enqueue_chair_fleet_privmsg(home, line)
                         return {"status": "requeue", "reason": "no_verdict"}
                     # Non-MRB completed: fall through to existing-work / giveup paths.
+                # FR #9782: infra soft-fail before quota — free slot, never exhaust.
+                infra_msg = session_infra_soft_error(info)
+                if infra_msg:
+                    _record_infra_soft_error(home, infra_msg, now=now)
+                    _soft_release_copilot_row(
+                        home, repo=repo, task=task, ident=ident
+                    )
+                    _forget_job(home, repo, task, ident)
+                    log.info(
+                        "copilot infra soft-fail repo=%s %s%s reason=%s",
+                        repo,
+                        task,
+                        ident,
+                        (infra_msg or "")[:120],
+                    )
+                    return {"status": "infra_retry", "reason": infra_msg}
                 quota_msg = session_quota_error(info)
                 if quota_msg:
                     pause_lines: list[str] = []
@@ -2364,6 +2424,7 @@ def tick(
         "timed_out": 0,
         "failed": 0,
         "quota": 0,
+        "infra_retry": 0,
         "completed": 0,
         "dropped": int(settled.get("dropped") or 0),
         "released": int(settled.get("released") or 0),
@@ -2382,6 +2443,9 @@ def tick(
         st = str(r.get("status") or "")
         if st == "quota":
             out["quota"] += 1
+        elif st == "infra_retry":
+            # FR #9782: soft-fail frees slot; do not bump failed/quota.
+            out["infra_retry"] += 1
         elif st == "complete":
             out["completed"] += 1
         elif st == "giveup":
