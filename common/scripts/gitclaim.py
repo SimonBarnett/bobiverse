@@ -3007,6 +3007,19 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "walrus"),
     (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "walrus"),
 )
+# FR #9679: bobiverse-only chair-host title/body cues that still pin after FR #9637.
+# Does NOT restore bare ``require_machine: walrus`` body paste (idle starve). Prefer
+# GitHub ``needs-walrus`` labels; these catch CAST IRON walrus-action children filed
+# with a ``chair-host:`` title / Ergo / BOB_CHAIR_MACHINE stamp and no label yet.
+_REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)^chair-host\s*:"), "walrus"),
+    (re.compile(r"(?i)\bchair-host\s*:\s*install\b"), "walrus"),
+    (re.compile(r"(?i)\bErgo(?:/|\s+)chair\b.{0,60}\b(?:server|host|install|heal|from\s+config)\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:server|host)\s+from\s+config\b.{0,80}\bBOB_CHAIR_MACHINE\b"), "walrus"),
+    (re.compile(r"(?i)\bBOB_CHAIR_MACHINE\b.{0,80}\b(?:chair|Ergo|needs-walrus)\b"), "walrus"),
+    (re.compile(r"(?i)\bneeds-walrus\s+alias\b"), "walrus"),
+)
+
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Kept for _body_for_queue preserve
 # and non-bobiverse helpers. FR #9637: bobiverse infer_require_machine ignores these
 # (labels / hard pins / !pin only) so monitor body paste cannot starve idle seats.
@@ -3313,11 +3326,11 @@ def infer_require_machine(
     FR #6229 hard-pin bobiverse#6144 -> marchhare (live MarchHare E2E);
     FR #587 / #852 / #2451 / #3129 / #4427 / #5030 / #6229).
 
-    FR #4512 / #9637: for ``SimonBarnett/bobiverse``, title/body text cues never pin
-    (including dedicated ``require_machine:`` body lines). Only ``needs-<machine>`` /
-    ``require_machine:<machine>`` labels, hard issue pins/unpins, and operator ``!pin``
-    stamps. Monitor filings that paste ``require_machine: walrus`` into implement-anywhere
-    chair FRs starved the idle fleet until ``!unpin`` (FR #9637).
+    FR #4512 / #9637: for ``SimonBarnett/bobiverse``, soft title/body text cues and
+    dedicated ``require_machine:`` body lines do not pin (monitor paste starved idle
+    seats). Only ``needs-<machine>`` / ``require_machine:<machine>`` labels, hard
+    issue pins/unpins, operator ``!pin``, and FR #9679 narrow chair-host cues
+    (``chair-host:`` / Ergo+BOB_CHAIR_MACHINE / needs-walrus alias).
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -3344,10 +3357,6 @@ def infer_require_machine(
                 return fold_chair_host(mid)
         # bare needs-ionos style already covered by cue regex below via label join
     body_blob = str(body or "")
-    # FR #4512 / #9637: bobiverse — labels + hard pins only (no body require_machine:).
-    if repo_l == _BOBIVERSE_REPO_L:
-        return ""
-    # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
     title_blob = "\n".join(
         [
             str(title or ""),
@@ -3355,6 +3364,16 @@ def infer_require_machine(
             " ".join(str(x) for x in labs),
         ]
     )
+    # FR #4512 / #9637: bobiverse — no soft/dedicated paste pins; FR #9679 chair-host ok.
+    if repo_l == _BOBIVERSE_REPO_L:
+        for rx, mid in _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES:
+            blob = title_blob + "\n" + body_blob
+            if rx.search(blob):
+                if _is_retired_require_machine(mid):
+                    return ""
+                return fold_chair_host(mid)
+        return ""
+    # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
     for rx, mid in _REQUIRE_MACHINE_TITLE_CUES:
         if rx.search(title_blob):
             if _is_retired_require_machine(mid):
@@ -20534,13 +20553,84 @@ _HOLDER_OPEN_RX = re.compile(
 )
 
 
+def release_sticky_offer_on_bored(
+    home: Path, nick: str, now: float | None = None
+) -> str:
+    """FR #9633: !bored clears a *stale* sticky offered_to pin (no accepted row).
+
+    Within ``offer_timeout_s`` the seat stays busy (FR #3192 / #8738 — fresh
+    post-DONE / post-GIVEUP pushes must not be wiped by the next !bored). Past
+    the timeout, clear ``offered_to`` + matching seat-hold so digest-idle seats
+    are not NAK ``busy (offered …)`` forever (issue #9633).
+
+    Bare ack-missing / closed-PR ``held …`` seat-holds (FR #4115 / #4415) are
+    never cleared here. Does not call ``seat_open_job`` (that would purge first).
+
+    Returns the open-job text that was cleared, else ''.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return ""
+    if _seat_has_accepted(home, nick):
+        return ""
+    # Live pending ACK window: leave the pin alone (FR #8738).
+    if seat_pending_offer(home, nick, now_f) is not None:
+        return ""
+    changed = False
+    cleared_job = ""
+    repo = task = ident = ""
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them != me:
+                    continue
+                if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
+                    continue
+                task_u = str(cand.get("task") or "").upper()
+                repo_s = str(cand.get("repo") or "")
+                ident_s = str(cand.get("id") or "")
+                cleared_job = f"offered {task_u} {repo_s}{ident_s}".strip()
+                repo, task, ident = repo_s, task_u, ident_s
+                clear_sticky_offer_fields(cand)
+                changed = True
+            if changed:
+                with contextlib.suppress(OSError):
+                    _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        return ""
+    if not changed:
+        return ""
+    with contextlib.suppress(Exception):
+        if repo and task and ident:
+            clear_seat_hold(
+                home, nick, repo=repo, task=task, ident=ident, clear_pins=True
+            )
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick)
+    return cleared_job
+
+
+
 def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
     """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
 
     Returns the open-job text when this call released it, else ''. A different
     seat's !bored never touches this nick's row. Offered-but-not-accepted pins
-    stay on the existing busy path. ACK/DONE/progress must call
-    ``reset_holder_bored`` or the streak keeps counting.
+    are cleared by ``release_sticky_offer_on_bored`` (FR #9633) before the busy
+    gate. ACK/DONE/progress must call ``reset_holder_bored`` or the streak keeps
+    counting.
     """
     import time as _time
 
@@ -20631,8 +20721,14 @@ def bored_gate(
         return "busy"
     if seat_fuel_pause_reason(home, nick, now):
         return "busy"
+    # FR #9633: sticky offered-but-not-ACKed must not NAK !bored forever when the
+    # seat is claiming idle — clear the pin so offer_focus_top can re-send.
+    with contextlib.suppress(Exception):
+        release_sticky_offer_on_bored(home, nick, now)
     # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
     # never re-offer the same row and never treat it as stale digest doing.
+    # (After FR #9633 clear above, a fresh pending offer means another path stamped
+    # one mid-gate; still busy.)
     if seat_pending_offer(home, nick, now):
         return "busy"
     # FR #4642: ack-missing hold for a job this seat already DONE'd (no later

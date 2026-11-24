@@ -24,9 +24,14 @@ depends_on: []
    issues go to `SimonBarnett/bobiverse`. Intake: `Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>`.
 3. **One issue per issue.** One root cause, one acceptance row. Split anything with "and also".
 4. **Body:** what / where / evidence / fix. Evidence block = exact log lines, run ids, SHAs, timestamps with
-   zone, and how to reproduce. Separate observed facts from guesses. Add `require_machine: <machine>` only
-   when it truly must run there.
+   zone, and how to reproduce. Separate observed facts from guesses. Prefer GitHub `needs-<machine>` labels
+   over a body `require_machine:` line on bobiverse (FR #9637: body alone does not pin). Add `needs-<machine>`
+   **only** for true host-action work. Implement-anywhere chair/worker **code** must not get `needs-*`.
+   **CAST IRON #9708:** if you later `!unpin` to `any`, remove every `needs-*` label in the same turn — never
+   leave `needs-*` + `rm=any`.
 5. **Label** `feature-request` for FRs. Add `hold` only for parked/phase-gated work.
+   **Walrus-action / chair-host children (CAST IRON #9669 / FR #9679):** also label `needs-walrus` (or
+   title `chair-host: …`) so the chair does not offer them to flamingo/redqueen.
 6. **Report** the URL. Do not assign or pin it yourself.
 
 ## Twins
@@ -67,3 +72,12 @@ Rules:
 3. If a seat NACK/GIVEUP is `needs-walrus` / `require_machine=walrus`, the **Jeeves agent** does the walrus action (receipt + Slab/Si-yes) — do not leave ACK→GIVEUP thrash on other machines.
 4. MONITORING on needs-walrus NACK: stop wrong-machine re-offer; ensure this split exists; drive walrus child via Jeeves-agent/Slab — do not only comment.
 5. **CAST IRON FR #9708:** implement-anywhere work — remove `needs-*` **and** `!unpin` together (never leave `needs-*` + `rm=any`). True host-action keeps `needs-*` + `!pin`. Chair `!unpin` refuses while `needs-*` remains on the queue row.
+
+## remove needs-* + !unpin — CAST IRON (FR #9708)
+
+| Work kind | Labels | Pin |
+|---|---|---|
+| Implement-anywhere (chair/worker **code**) | Remove every `needs-<machine>` | `!unpin` → `require_machine=any` |
+| True host action (install/heal on chair host / shop) | Keep `needs-<machine>` | Keep `!pin` / `require_machine=<machine>` |
+
+**Same turn:** never leave `needs-*` on an issue unpinned to `any` — that pair causes ACK→GIVEUP `reason=require_machine=<machine>` and wrong-shop re-offer loops (#9628/#9634 class; tip gate #9664). Never `!unpin` while a `needs-*` label remains on host-action work.
