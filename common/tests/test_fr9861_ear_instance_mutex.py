@@ -146,3 +146,16 @@ def test_fr9861_start_bob_ear_ps1_parses_winps():
     )
     assert r.returncode == 0, (r.stdout, r.stderr)
     assert "PARSE_OK" in (r.stdout or "")
+
+
+def test_fr9866_common_captures_planagent_assert():
+    """FIX #9866 / FR #9843: Copy-BobTrayVendorExes must capture Assert Hashtable."""
+    common = Path(__file__).resolve().parents[1] / "scripts" / "Bobiverse-Common.ps1"
+    text = common.read_text(encoding="utf-8")
+    copy_fn = text.split("function Copy-BobTrayVendorExes {", 1)[1].split(
+        "function Assert-BobiversePlanAgentNotBobWorker {", 1
+    )[0]
+    assert "$null = Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require" in copy_fn
+    normalized = copy_fn.replace("\r\n", "\n")
+    bare = "\n    Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require\n"
+    assert bare not in normalized
