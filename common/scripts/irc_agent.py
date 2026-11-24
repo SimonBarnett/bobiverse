@@ -2542,6 +2542,18 @@ class Client:
         if dec.dry_run:
             return
         mid = dec.machine
+        # FR #9784: drop digest ghosts + free offered/held/accepted for recycled seats
+        # before the wire/local restart so the chair cannot PRIVMSG pre-recycle PIDs.
+        if mid.lower() not in {"jeeves", "ircjeeves"}:
+            with contextlib.suppress(Exception):
+                cleared = gitclaim.clear_after_machine_recycle(
+                    self._digest_home(),
+                    "fleet" if dec.scope == "fleet" else mid,
+                )
+                info(
+                    "INFO recycle clear-ghosts machine=%s machines=%s"
+                    % (mid, ",".join(cleared.get("machines") or []) or mid)
+                )
         # !recycle jeeves → restart chair (MSI self-update on start).
         if mid.lower() in {"jeeves", "ircjeeves"}:
             try:
@@ -5053,7 +5065,20 @@ class Client:
         repo, ident = parsed
         out = gitclaim.set_require_machine_job(self.home, repo, ident, "any")
         if not out.get("ok"):
-            err = out.get("error") or "lock"
+            err = str(out.get("error") or "lock")
+            # FR #9708 CAST IRON: never leave needs-* + require_machine=any.
+            if err.startswith("needs_labels:"):
+                labs = err.split(":", 1)[1]
+                self._cmd_reply(
+                    src,
+                    "unpin",
+                    [
+                        f"unpin: refused - needs-* still present ({labs}); "
+                        f"remove labels then !unpin (FR #9708 CAST IRON)"
+                    ],
+                )
+                info(f"INFO unpin refused needs_labels={labs} {repo}{ident} by={src}")
+                return True
             self._cmd_reply(src, "unpin", [f"unpin: refused - {err}"])
             return True
         self._cmd_reply(
@@ -5228,6 +5253,17 @@ class Client:
                 f"INFO seat-hold cleared nick={src} reason=duplicate-after-done "
                 f"job={_freed}"
             )
+            with contextlib.suppress(Exception):
+                self._workers().on_done(src, target)
+        # FR #9633: sticky offered-but-not-ACKed — clear before busy gate so !bored
+        # can re-offer instead of NAK busy (offered …) while digest paints idle.
+        try:
+            _sticky = gitclaim.release_sticky_offer_on_bored(self.home, src, now) or ""
+        except Exception as exc:  # noqa: BLE001
+            _sticky = ""
+            info(f"WARN git-claim sticky-offer bored {type(exc).__name__}")
+        if _sticky:
+            info(f"INFO git-claim sticky-offer cleared via=!bored nick={src} job={_sticky}")
             with contextlib.suppress(Exception):
                 self._workers().on_done(src, target)
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).

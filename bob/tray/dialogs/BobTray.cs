@@ -2616,9 +2616,12 @@ namespace BobDialogs
 
         // FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605 / #9641: Agents > Plan starts
         // vendor\plan\PlanAgent.exe (Pack/Sync mirror). Not bob-worker --mode plan / bob-plan.exe.
+        // FR #9661: pass --root <install>\plan (+ PLAN_AGENT_ROOT); vendor exe FATAL without the plan seat tree.
         void StartPlanExe()
         {
             string exe = Path.Combine(root, "vendor", "plan", "PlanAgent.exe");
+            string planRoot = Path.Combine(root, "plan");
+            string agentsMd = Path.Combine(planRoot, "AGENTS.md");
             string hook = Environment.GetEnvironmentVariable("BOB_MODELS_WEBHOOK_FILE");
             if (string.IsNullOrEmpty(hook))
                 hook = Path.Combine(root, "run", "models-webhook.json");
@@ -2634,11 +2637,17 @@ namespace BobDialogs
             catch { }
             string mcpPath = PlanMcpConfig.WriteConfig(root);
             TrayLifecycle.Write("plan-mcp", "url", PlanMcpConfig.Url, "config", mcpPath);
-            TrayLifecycle.Write("plan", "via", "bob-tray-Plan", "action", "start exe", "path", exe);
+            TrayLifecycle.Write("plan", "via", "bob-tray-Plan", "action", "start exe", "path", exe, "root", planRoot);
             if (!File.Exists(exe))
             {
                 TrayLifecycle.Write("plan", "action", "start exe missing", "path", exe);
                 try { MessageBox.Show("PlanAgent.exe not found at:\r\n" + exe + "\r\n\r\nInstall or repair the bob MSI (BOB-49 / skills-visionary PlanAgent).", "Plan - missing exe", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+                return;
+            }
+            if (!File.Exists(agentsMd))
+            {
+                TrayLifecycle.Write("plan", "action", "start plan root missing", "path", agentsMd);
+                try { MessageBox.Show("Plan seat tree not found at:\r\n" + agentsMd + "\r\n\r\nInstall or repair the bob MSI (plan\\AGENTS.md + .grok\\skills).", "Plan - missing AGENTS.md", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
                 return;
             }
             try
@@ -2647,6 +2656,8 @@ namespace BobDialogs
                 psi.FileName = exe;
                 psi.WorkingDirectory = Path.GetDirectoryName(exe);
                 psi.UseShellExecute = false;
+                psi.Arguments = "--root \"" + planRoot.Replace("\"", "\\\"") + "\"";  // TrayContext: no WorkerLauncher.Quote (CS0103 / FR #9661 fix)
+                try { psi.EnvironmentVariables["PLAN_AGENT_ROOT"] = planRoot; } catch { }
                 Process.Start(psi);
             }
             catch (Exception ex)

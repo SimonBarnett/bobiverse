@@ -320,6 +320,9 @@ def ungated_unaccepted_count(
         open_keys = gitclaim.open_fr_issue_keys(qdoc)
     except Exception:
         open_keys = set()
+    # FR #9821 / #9553: pass issue_fetch so held fr-digest parents missing from
+    # the local queue still suppress offerable_count (parity with offer/assign).
+    _offer_fetch = gitclaim.depends_issue_fetch_checker()
     n = 0
     for row in rows or []:
         if not isinstance(row, dict):
@@ -330,8 +333,13 @@ def ungated_unaccepted_count(
             continue
         if gitclaim.row_on_cooldown(row, now_f, nick="", live=None):
             continue
-        # FR #9553 / #9455: same Depends-on gate as offer/assign/stuck (token-free).
-        if gitclaim.depends_gate_reason(row, qdoc, open_keys=open_keys):
+        # FR #9821 / BOB-G3: digest gate records are not offerable work.
+        if gitclaim.digest_issue_reason(row):
+            continue
+        # FR #9553 / #9455 / #9821: same Depends-on gate as offer/assign/stuck.
+        if gitclaim.depends_gate_reason(
+            row, qdoc, open_keys=open_keys, issue_fetch=_offer_fetch
+        ):
             continue
         n += 1
     return n
@@ -1669,6 +1677,7 @@ def run_stuck_sweep(
         "nudged": 0,
         "idle_offers": 0,
         "orphan_holds": 0,
+        "sticky_holds": 0,
     }
     cleared_doing: list[dict] = []
     if act:
@@ -1680,6 +1689,17 @@ def run_stuck_sweep(
             actions["orphan_holds"] = n_orphan
             if n_orphan and log:
                 log(f"stuck-sweep orphan-seat-holds cleared={n_orphan} (FR #9558)")
+        # FR #9783: clear stale via=offer holds past offer timeout (pin may
+        # already be gone; SEAT_HOLD_MAX_S otherwise leaves busy held for 1h).
+        with contextlib_suppress():
+            n_sticky = int(
+                gitclaim.release_stale_via_offer_holds(home, now=now_f) or 0
+            )
+            actions["sticky_holds"] = n_sticky
+            if n_sticky and log:
+                log(
+                    f"stuck-sweep sticky-via-offer-holds cleared={n_sticky} (FR #9783)"
+                )
         # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
         # accepted_holder_gone release can re-dispatch them.
         copilot_stats = settle_copilot_fr_with_open_prs(
@@ -1695,7 +1715,9 @@ def run_stuck_sweep(
             log=log,
             open_items=catalog,
         )
-        actions["released"] = len(released)
+        # Count sticky via=offer hold releases in released so announce
+        # released=N is not stuck at 0 for this class (FR #9783).
+        actions["released"] = len(released) + int(actions.get("sticky_holds") or 0)
         # FR #9402: clear ghost offered_to on held rows / idle no-ACK seats.
         ghost = release_ghost_offers(
             home,
@@ -1824,7 +1846,8 @@ def run_stuck_sweep(
             f"held={len(held)} released={actions['released']} "
             f"enqueued={actions['enqueued']} "
             f"cleared_doing={actions.get('cleared_doing', 0)} "
-            f"nudged={actions.get('nudged', 0)}"
+            f"nudged={actions.get('nudged', 0)} "
+            f"sticky_holds={actions.get('sticky_holds', 0)}"
         )
     return report
 

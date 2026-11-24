@@ -1,0 +1,177 @@
+# -*- coding: utf-8 -*-
+"""disk_starvation monitor: detect disk-low machines from report + dry remediator wiring."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+MON = Path(__file__).resolve().parents[1] / "tools" / "monitor"
+sys.path.insert(0, str(MON))
+
+import disk_starvation as ds  # noqa: E402
+
+
+def test_machine_from_nick():
+    assert ds.machine_from_nick("flamingo-17160") == "flamingo"
+    assert ds.machine_from_nick("redqueen-11500") == "redqueen"
+    assert ds.machine_from_nick("") == ""
+    # FR #9710: bare giveup_seats tokens must not become machine ids
+    assert ds.machine_from_nick("f") == ""
+    assert ds.machine_from_nick(",") == ""
+    assert ds.machine_from_nick("0") == ""
+    assert ds.is_fleet_machine_id("flamingo")
+    assert not ds.is_fleet_machine_id(",")
+    assert not ds.is_fleet_machine_id("f")
+    assert not ds.is_fleet_machine_id("0")
+
+
+def test_fr9710_ignores_worktree_collision_and_garbage_seats():
+    doc = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9700",
+                    "giveup_reason": (
+                        "worktree-create-failed:disk fatal: "
+                        "'fr/disk-starvation-monitor-auto' is already used by worktree "
+                        "at 'C:/Users/simon/.grok/bob-bridge/worktrees/...'"
+                    ),
+                    "giveup_seats": [",", "f", "0", "flamingo-17160"],
+                    "offer_outcomes": [],
+                }
+            ]
+        }
+    }
+    assert ds.detect_disk_machines(doc) == {}
+
+
+def test_fr9728_string_giveup_seats_not_character_split():
+    """giveup_seats as a JSON string must not spawn per-character machines."""
+    assert ds.iter_giveup_seats("flamingo") == ["flamingo"]
+    assert ds.iter_giveup_seats(["flamingo-17160"]) == ["flamingo-17160"]
+    doc = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9688",
+                    "giveup_reason": "worktree-create-failed:disk-low (FR #6240)",
+                    "giveup_seats": "flamingo",  # string, not list
+                    "offer_outcomes": [],
+                }
+            ]
+        }
+    }
+    hits = ds.detect_disk_machines(doc)
+    # bare "flamingo" is not seat-pid → no machine; must not invent f,l,a,m,i,n,g,o
+    assert hits == {}
+    doc2 = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9688",
+                    "giveup_reason": "worktree-create-failed:disk-low (FR #6240)",
+                    "giveup_seats": "flamingo-17160",
+                    "offer_outcomes": [],
+                }
+            ]
+        }
+    }
+    hits2 = ds.detect_disk_machines(doc2)
+    assert set(hits2.keys()) == {"flamingo"}
+    assert "f" not in hits2 and "o" not in hits2
+
+
+def test_detect_disk_machines_from_offer_outcomes():
+    doc = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9688",
+                    "giveup_reason": "worktree-create-failed:disk-low (FR #6240)",
+                    "giveup_seats": [],
+                    "offer_outcomes": [
+                        {
+                            "seat": "flamingo-17160",
+                            "outcome": "nack",
+                            "reason": "worktree-create-failed:disk-low (FR #6240)",
+                            "ts": "2026-11-24T15:55:36Z",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    hits = ds.detect_disk_machines(doc)
+    assert "flamingo" in hits
+    assert "SimonBarnett/bobiverse#9688" in hits["flamingo"]["jobs"]
+    assert "flamingo-17160" in hits["flamingo"]["seats"]
+
+
+def test_detect_empty_when_no_disk():
+    doc = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#1",
+                    "giveup_reason": "holder_bored",
+                    "offer_outcomes": [
+                        {"seat": "flamingo-1", "outcome": "nack", "reason": "holder_bored"}
+                    ],
+                }
+            ]
+        }
+    }
+    assert ds.detect_disk_machines(doc) == {}
+
+
+def test_check_fixture_finding_detect_only(monkeypatch, tmp_path):
+    fix = tmp_path / "fix.json"
+    fix.write_text(
+        json.dumps(
+            {
+                "disk_machines": {
+                    "flamingo": {
+                        "jobs": ["SimonBarnett/bobiverse#9688"],
+                        "seats": ["flamingo-17160"],
+                        "reasons": ["disk-low"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JEEVES_DISK_STARVATION_FIXTURE", str(fix))
+    monkeypatch.setenv("BOB_DISK_STARVATION_AUTO", "0")
+    monkeypatch.setenv("BOB_DISK_STARVATION_FILE", "0")
+    payload, code = ds.check(SimpleNamespace(dry_run=False))
+    assert code == ds.EXIT_FINDING
+    assert payload["ok"] is False
+    assert "flamingo" in payload["machines"]
+    assert payload["auto"] is False
+
+
+def test_check_dry_run_ok():
+    # run_check --dry-run path
+    rc = ds.main(["--dry-run"])
+    assert rc == 0
+
+
+def test_mrb9700_remediator_skips_bridge_leaves_with_local_work():
+    """Hostile MRB #9700: orphan bob-bridge rmdir must gate on git local work."""
+    rem = (
+        Path(__file__).resolve().parents[2]
+        / "common"
+        / "scripts"
+        / "Invoke-BobiverseDiskStarvationRemediate.ps1"
+    )
+    text = rem.read_text(encoding="utf-8-sig")
+    assert "Test-BridgeLeafHasLocalWork" in text
+    assert "orphan_bob_bridge_skip_local_work" in text
+    assert "status --porcelain" in text

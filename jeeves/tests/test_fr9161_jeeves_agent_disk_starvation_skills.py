@@ -24,8 +24,10 @@ def test_fr9161_disk_starvation_skill_shape():
     assert "name: bobiverse-jeeves-agent-disk-starvation" in t
     assert "bobiverse-jeeves-agent-monitor" in t
     assert "worktree-create-failed:disk" in t
-    assert "Si's own go" in t or "Si's own words" in t
+    assert "require_machine:" in t
+    assert "disk_starvation" in t
     assert "Clear-BobiverseJobWorktrees" in t or "stale job worktrees" in t.lower()
+    assert "bob-bridge" in t or "Invoke-BobiverseDiskStarvationRemediate" in t
     assert "cdk.out" in t
     assert "Never" in t or "Forbidden" in t
     assert "CAST IRON RULE" in t
