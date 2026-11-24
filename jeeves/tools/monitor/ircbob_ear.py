@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from ear_down_gate import ear_down_gate
 
 DEFAULT_MAX_AGE_SEC = 900  # align with stale_digest
 SERVICE_NAME = "ircBob"
@@ -32,6 +33,24 @@ ENOSPC_RE = re.compile(
     r"(?i)(?:no space left on device|\bENOSPC\b|\[Errno\s*28\]|WinError\s*(?:112|39)\b|"
     r"not enough space on the disk)"
 )
+
+
+def _local_machine_id() -> str:
+    """Folded digest machine id for this host (FR #9503 gate)."""
+    raw = (
+        os.environ.get("DIGEST_ID")
+        or os.environ.get("BOB_MACHINE_ID")
+        or os.environ.get("COMPUTERNAME")
+        or ""
+    ).strip()
+    if not raw:
+        return ""
+    try:
+        import bobreport
+
+        return bobreport.fold_machine_id(raw) or raw.lower()
+    except Exception:
+        return raw.lower()
 _EAR_CHILD_PS = (
     "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
     "Where-Object { $_.CommandLine -and ("
@@ -330,6 +349,53 @@ def check(args):
     else:
         findings.append(f"digest.json missing: {path}")
 
+    # FR #9503: local heal alone is not EXIT_OK — digest must show this host
+    # online with fresh lastSeen while bob-ear child is alive. Prevents closing
+    # ear-down FRs (Closes) when nssm was restarted but the ear never rejoined.
+    # Only apply on hosts that run ircBob (Running / healed / child probed).
+    gate: dict | None = None
+    local_mid = _local_machine_id()
+    apply_gate = bool(local_mid) and path.is_file() and (
+        (isinstance(svc, str) and svc.lower() == "running")
+        or heal_result in ("started", "restarted", "failed")
+        or ear_child is not None
+    )
+    if apply_gate:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            data = None
+        machines = data.get("machines") if isinstance(data, dict) else None
+        ent = None
+        if isinstance(machines, dict):
+            for mid, candidate in machines.items():
+                if str(mid or "").strip().lower() == local_mid.lower():
+                    ent = candidate if isinstance(candidate, dict) else None
+                    break
+                try:
+                    import bobreport
+
+                    if bobreport.fold_machine_id(mid) == local_mid:
+                        ent = candidate if isinstance(candidate, dict) else None
+                        break
+                except Exception:
+                    pass
+        # Skip gate when this host is not in the digest map (fixture / remote-only
+        # chair view). Gate applies when we are verifying *this* machine's ear.
+        if ent is not None:
+            gate = ear_down_gate(
+                ear_child_alive=ear_child,
+                machine_ent=ent,
+                now=now,
+                max_age_sec=max_age,
+                startworker_acked=None,
+            )
+            if not gate.get("ok"):
+                for reason in gate.get("reasons") or []:
+                    msg = f"FR #9503 ear-down gate: {reason} (machine={local_mid})"
+                    if msg not in findings:
+                        findings.append(msg)
+
     ok = not findings
     payload = {
         "ok": ok,
@@ -341,6 +407,8 @@ def check(args):
         "enospc": bool(enospc_hits),
         "machines_checked": machines_checked,
         "max_age_sec": max_age,
+        "ear_down_gate": gate,
+        "local_machine_id": local_mid or None,
         "findings": findings,
         "notes": notes,
         "chair_home": str(chair),

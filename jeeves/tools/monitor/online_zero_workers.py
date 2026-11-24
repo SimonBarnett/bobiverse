@@ -5,6 +5,11 @@ Digest stuck[] already classifies ``online_zero_workers`` (FR #8429). This check
 EXIT 1 on non-chair hosts reading live /report (and on chair local digest) so
 monitor can escalate with fingerprint ``stall:online-zero-workers:<machine>``.
 Never Start-BobWorker / auto-start seats (FR #3180) — TipForm Agents only.
+
+FR #9503 follow-up: an **offline** ear (bob-ear dead / ircBob Running-without-child)
+is ``ircbob_ear`` + ``ear_down_gate``, not this check. Do not Closes ear-down FRs
+when this check alone goes quiet — require digest online + bob-ear child (+
+``!startworker`` ACK) per ``ear_down_gate.py``.
 """
 from __future__ import annotations
 
