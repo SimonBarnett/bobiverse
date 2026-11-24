@@ -161,6 +161,11 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json` / `focus.json` live under `BOB_DIGEST_HOME` (`~/.bobiverse`). Monitor checks resolve ops files via `ops_home`: prefer chair when those files exist there, else fall back to digest home. Pass `-ChairHome` / `--digest-home` explicitly when verifying. `BobCallback` may be a Scheduled Task (or `:7700` listen), not `Get-Service`.
 
+## Harvested lessons (intake)
+
+- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
+- Session reliability backlog for token-less chair: shared offerable predicate (list=assign=stuck), G1 assign when fr-digest not queued (#9548), auto-close fr-digest on last child, auto-pin tipform host-local after repeated GIVEUPs, stuck refresh, tray_session_missing rule, monitor ops_home on non-walrus, seat-hold clear on ACC nick move.
+
 ## Harvested monitor playbook (skill records #1215-#1456)
 
 - **FR #7182:** digest-idle ready seats get offers in one `offer_to_idle_seats` tick without a prior nothing-queued note; `summarize_empty_offer` logs per-job skips (PR #7210).
@@ -196,7 +201,3 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - **FR #9406 / #9402:** hold-labeled ops FR sticky `offered_to` must not leave a seat `busy (offered FR ...)` — clear sticky offer + drop the held FR from unaccepted (digest gate rows keep queue, lose offer pin) so gate MRB `!assign` can proceed.
 - **FR #9400:** never `Closes` ops/gate tracker issues while Depends-on / GateIssues still OPEN — tool-only PRs use `Refs` / `Toward`; reopen if GitHub auto-closed early.
 - FR #9376 / PR #9387: document and prefer `Install-JeevesWalrusWinRm.ps1` + check `walrus_jeeves_install_ready` (full playbook in `bobiverse-jeeves-agent-install`). DryRun default; live needs `-SiYes` + closed GateIssues; CredMan `Bobiverse/UpdateFleet`; backup+ROLLBACK; ircJeeves only.
-
-## Harvested lessons (intake)
-
-- When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
