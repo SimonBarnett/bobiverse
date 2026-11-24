@@ -458,9 +458,11 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After FR #7593 grok recycle, probe CreatePseudoConsole before relaunch and GIVEUP shell-hung when terminal/call-*.log stays empty after run_terminal_command (FR #9612).
 - Each MONITORING bridge class gets its own ircJeeves FR same turn (#9627); de-dup offer_to_idle to #9628 and self-MRB to #9622
 - Workers MaxWorkers=2 is Workers-submenu only; Agents Plan must StartPlanExe vendor\plan\PlanAgent.exe; Agents Jeeves must not CapRefusal via StartWorker agent
+- New tools/monitor helper modules that are not -Check names must join FR #9049 SKIP (like ear_down_gate); pytest-ascii-bom fails on U+2014 in changed .ps1
 - CAST IRON FR #9652: filing >=2 related FRs in one turn MUST create/reuse Digest parent (feature-request + fr-digest) with Depends-on on each child; digests stay useful when unheld; rule FR itself is not fr-digest
 - After bobiverse body require_machine stop pinning, update every pin expect to needs-<machine> or assert empty; keep _body_for_queue preserve asserts separate from infer stamps
 - TipForm Plan must start vendor\plan\PlanAgent.exe --root <install>\plan (or PLAN_AGENT_ROOT); bare vendor PlanAgent FATAL plan-agent tree not found; ops workaround --root C:\ai\bob\plan
+- gitclaim must not hard-code LIVE_CHAIR_HOST=walrus --- resolve via BOB_CHAIR_MACHINE/JEEVES_CHAIR_HOST; needs-walrus/ionos fold onto configured host (FR #9680)
 - Present empty local ops home is not authoritative: detect vs fresh /report (empty_local_queue/seat_state_mismatch), prefer live seats or EXIT 0 skipped=stale_local_home; JEEVES_MONITOR_DIGEST_HOME overrides BOB_DIGEST_HOME
 - bob_git_hook announce_seen must match Ergo nick case-insensitively (:jeeves! and :Jeeves!); seed ~/.grok/ergo/connect.password from bob config\ergo.password before Start-BobiverseGitAnnounceListen
 - When flamingo authors dominate the MRB queue, prefer no-flamingo-author MERGEABLE rows for flamingo seats (exact-nick self-MRB is tip #9574/#9579; host lag may still false-refuse — #9672). Sticky assign-sent + digest-idle is #9633.
@@ -471,3 +473,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - pool_for_digest sticky allowance exhausted wins over fresher observation ok/unlimited --- clear exhaust on observe ok or prefer fresher obs
 - CCA task POST accepts model=claude-haiku-4.5; chair build_task_body must grow BOB_COPILOT_MODEL to avoid Auto/Luna-only
 - When updating Digest #9744 pack: comment+edit child bodies with live CCA evidence (model string claude-haiku-4.5, single-slot tick, sticky exhausted vs unlimited); keep TargetHaiku=2 via refill while chair FR-A/E land
+- open_pr_mrb_missing default-heals missing expected MRB rows (incl lesson tips) via heal_open_prs_missing_mrb; --no-heal for report-only (FR #9635).
+- !assign <nick> clears that nick+row giveup (queue giveup_seats + seat-ledger) instead of refusing already gave this row up; no separate !cleargiveup required (FR #9634).
+- If outbox pos==len but no Bob-* jeeves replies for >60s, check duplicate bob-ear TCP: keep only PID with Established IRC; dead peer can steal pos.
+- disk_starvation: never for-seat in giveup_seats when it may be a JSON string --- wrap via iter_giveup_seats or chars become WinRM hosts (FR #9728).
