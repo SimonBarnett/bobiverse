@@ -146,7 +146,7 @@ def test_fr5030_hard_pin_a_search_5221():
 
 
 def test_fr5030_bobiverse_soft_text_does_not_pin():
-    """FR #4512: soft ops cues must not pin bobiverse; dedicated line still may."""
+    """FR #4512 / #9637: soft cues and body require_machine: do not pin bobiverse."""
     assert (
         gitclaim.infer_require_machine(
             title="document a-hasresults-monitor offer gap",
@@ -163,7 +163,17 @@ def test_fr5030_bobiverse_soft_text_does_not_pin():
             body="require_machine: redqueen\n\nAdd gitclaim cues.",
             labels=("feature-request",),
             repo="SimonBarnett/bobiverse",
-            ident="#5030",
+            ident="#9995030",
+        )
+        == ""
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="chair stamp",
+            body="require_machine: redqueen\n\nAdd gitclaim cues.",
+            labels=("feature-request", "needs-redqueen"),
+            repo="SimonBarnett/bobiverse",
+            ident="#9995030",
         )
         == "redqueen"
     )

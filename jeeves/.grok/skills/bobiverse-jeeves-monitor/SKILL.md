@@ -33,6 +33,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 > 7. **CAST IRON — idle + open work is FAIL (FR #9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` must
 >    chair-heal (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + #9461 ear-relay); report-only is opt-in.
 >    Reaffirm #9628 / #9460. Same-turn bridge still owes #9627.
+> 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
