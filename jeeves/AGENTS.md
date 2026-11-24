@@ -29,6 +29,10 @@
 >    `idle_with_open_work` and **must chair-heal** (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + ear-relay
 >    `!assign` bridge per #9461) — report-only is opt-in. Gated-only queues are not this fail. Durable chair acceptance
 >    also reaffirms #9628 / #9460 (`offer_to_idle` / `offer_after_done`). Same-turn intervene still owes #9627.
+> 8. **CAST IRON — multi-FR batch needs Digest parent (FR #9652).** Filing ≥2 related FRs in one turn/batch requires a
+>    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>`. Never leave a
+>    multi-FR batch free-floating. Same-turn repair if already filed without a digest. Last open child close closes the
+>    digest (#9552). One issue per issue inside the digest.
 
 ## First turn (FR #954) â€” do this NOW
 
