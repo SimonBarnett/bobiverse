@@ -2943,6 +2943,68 @@ def _digest_locked(fn):
 
 
 @_digest_locked
+
+def set_machine_tray_session_missing(
+    home: Path,
+    mid: str,
+    *,
+    reason: str = "no_interactive_session",
+    text: str = "",
+    now: float | None = None,
+) -> dict:
+    """FR #9556: mark digest machine TipForm/tray session missing (no needs_human)."""
+    import time as _time
+
+    mid_s = str(mid or "").strip()
+    if not mid_s:
+        return {}
+    doc = load_digest(home)
+    machines = doc.setdefault("machines", {})
+    if not isinstance(machines, dict):
+        machines = {}
+        doc["machines"] = machines
+    ent = machines.get(mid_s)
+    if not isinstance(ent, dict):
+        ent = _empty_machine(mid_s)
+        machines[mid_s] = ent
+    ts = float(_time.time() if now is None else now)
+    ent["tray_session_missing"] = True
+    ent["startworker_nack_reason"] = str(reason or "no_interactive_session")
+    if text:
+        ent["startworker_nack_text"] = str(text)
+    ent["tray_session_missing_ts"] = ts
+    # never a needs_human cue
+    ent.pop("needs_human", None)
+    save_digest(home, doc)
+    return ent
+
+
+def clear_machine_tray_session_missing(home: Path, mid: str) -> None:
+    """FR #9556: clear tray_session_missing cue when TipForm is back."""
+    mid_s = str(mid or "").strip()
+    if not mid_s:
+        return
+    doc = load_digest(home)
+    machines = doc.get("machines")
+    if not isinstance(machines, dict):
+        return
+    ent = machines.get(mid_s)
+    if not isinstance(ent, dict):
+        return
+    changed = False
+    for k in (
+        "tray_session_missing",
+        "startworker_nack_reason",
+        "startworker_nack_text",
+        "tray_session_missing_ts",
+    ):
+        if k in ent:
+            ent.pop(k, None)
+            changed = True
+    if changed:
+        save_digest(home, doc)
+
+
 def set_machine_console_nicks(home: Path, mid: str, nicks: object) -> list[str]:
     """Persist shop ``*_console`` presence for GET /bob/v1/report."""
     cid = fold_machine_id(normalize_machine_id(mid) or mid)

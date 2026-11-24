@@ -359,6 +359,116 @@ def classify_empty_online_machines(
     return out
 
 
+
+def is_tray_session_missing_machine(ent: dict | None) -> bool:
+    """FR #9556: machine digest / report cue for TipForm session missing."""
+    if not isinstance(ent, dict):
+        return False
+    if ent.get("tray_session_missing") in (True, 1, "1", "true", "yes"):
+        return True
+    reason = str(ent.get("startworker_nack_reason") or ent.get("tray_nack_reason") or "").strip()
+    text = str(ent.get("startworker_nack_text") or ent.get("tray_nack_text") or "").strip()
+    try:
+        import startworker as sw
+
+        return bool(sw.is_tray_session_missing_nack(reason, text))
+    except Exception:
+        blob = f"{reason}\n{text}".lower()
+        return reason.lower() in {
+            "no_interactive_session",
+            "tray_session_missing",
+            "tray-not-logged-in",
+        } or "nobody is logged in with the bob tray" in blob
+
+
+def classify_tray_session_missing(
+    machines: dict | None,
+    *,
+    nacks: list | None = None,
+) -> list[dict]:
+    """FR #9556: online shop TipForm/tray session missing (startworker NACK).
+
+    More specific than ``online_zero_workers``. Holder is the machine id.
+    Never stamps needs_human.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(mid: str, *, evidence: str = "") -> None:
+        mid_s = str(mid or "").strip()
+        if not mid_s:
+            return
+        key = mid_s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({
+            "machine": mid_s,
+            "repo": mid_s,
+            "number": "",
+            "task": "MACHINE",
+            "state": "machine",
+            "holder": mid_s,
+            "stuck": True,
+            "stuck_reason": "tray_session_missing",
+            "rule": "tray_session_missing",
+            "evidence": evidence or "startworker NACK tray-not-logged-in",
+            "needs_human": False,
+        })
+
+    if isinstance(nacks, list):
+        for row in nacks:
+            if not isinstance(row, dict):
+                continue
+            reason = str(row.get("reason") or "")
+            text = str(row.get("text") or row.get("line") or "")
+            try:
+                import startworker as sw
+
+                hit = sw.is_tray_session_missing_nack(reason, text)
+            except Exception:
+                hit = "nobody is logged in with the bob tray" in f"{reason}\n{text}".lower()
+            if not hit:
+                continue
+            mid = str(row.get("machine") or row.get("holder") or "").strip()
+            _add(mid, evidence=text or reason or "nack")
+
+    if isinstance(machines, dict):
+        for mid, ent in sorted(machines.items(), key=lambda kv: str(kv[0])):
+            if not isinstance(ent, dict):
+                continue
+            if not is_tray_session_missing_machine(ent):
+                continue
+            if ent.get("online") is False:
+                continue
+            _add(str(mid), evidence=str(ent.get("startworker_nack_text") or "digest cue"))
+    return out
+
+
+def suppress_online_zero_when_tray_missing(
+    online_zero: list[dict],
+    tray_missing: list[dict],
+) -> list[dict]:
+    """FR #9556: tray_session_missing supersedes vague online_zero_workers for same mid."""
+    miss = {
+        str(r.get("machine") or r.get("holder") or "").strip().lower()
+        for r in (tray_missing or [])
+        if isinstance(r, dict)
+    }
+    miss.discard("")
+    if not miss:
+        return list(online_zero or [])
+    out = []
+    for r in online_zero or []:
+        if not isinstance(r, dict):
+            continue
+        mid = str(r.get("machine") or r.get("holder") or "").strip().lower()
+        if mid in miss:
+            continue
+        out.append(r)
+    return out
+
+
 def classify_quiet_idle_offerable(
     home: Path,
     *,
@@ -1524,11 +1634,14 @@ def run_stuck_sweep(
     ungated_rows = [
         r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)
     ]
+    online_zero = classify_empty_online_machines(
+        machines,
+        ungated_unaccepted_count(ungated_rows, now=now_f),
+    )
+    tray_missing = classify_tray_session_missing(machines)
+    classified.extend(tray_missing)
     classified.extend(
-        classify_empty_online_machines(
-            machines,
-            ungated_unaccepted_count(ungated_rows, now=now_f),
-        )
+        suppress_online_zero_when_tray_missing(online_zero, tray_missing)
     )
 
     actions = {
@@ -1730,7 +1843,7 @@ def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
     lines = [head]
     for row in (stuck + held)[:limit]:
         rule = row.get("stuck_reason") or row.get("rule") or ""
-        if rule == "online_zero_workers" or row.get("state") == "machine":
+        if rule in ("online_zero_workers", "tray_session_missing") or row.get("state") == "machine":
             mid = row.get("machine") or row.get("holder") or row.get("repo") or "?"
             ungated = row.get("ungated_unaccepted")
             lines.append(
