@@ -478,3 +478,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - !assign <nick> clears that nick+row giveup (queue giveup_seats + seat-ledger) instead of refusing already gave this row up; no separate !cleargiveup required (FR #9634).
 - If outbox pos==len but no Bob-* jeeves replies for >60s, check duplicate bob-ear TCP: keep only PID with Established IRC; dead peer can steal pos.
 - disk_starvation: never for-seat in giveup_seats when it may be a JSON string --- wrap via iter_giveup_seats or chars become WinRM hosts (FR #9728).
+- When report returns prefer tip FIX/MRB (#9866); prune NO_IRC+Resume; Restart only if EST=0
