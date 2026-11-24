@@ -272,8 +272,9 @@ def test_pin_unpin_family(chair, op):
     out = pm(chair, op, "!pin o/a#1 ionos")
     assert out[0].startswith("pin:")
     assert "queue_rows=1" in out[0]
-    assert "require_machine=walrus" in out[0]
-    assert gitclaim.load_unaccepted(chair.home)[0].get("require_machine") == "walrus"
+    chair_host = gitclaim.live_chair_host()
+    assert f"require_machine={chair_host}" in out[0]
+    assert gitclaim.load_unaccepted(chair.home)[0].get("require_machine") == chair_host
     assert pm(chair, op, "!unpin")[0].startswith("unpin: usage")
     assert pm(chair, op, "!pin o/a#1")[0].startswith("pin: usage")
     # Unknown id: ok with zero rows (not a refusal).
@@ -325,6 +326,26 @@ def test_recycle_unknown_machine_is_refused(chair, op):
     out = pm(chair, op, "!recycle nosuchbox")
     assert out == ["recycle: unknown machine nosuchbox (want: " + ", ".join(
         bobreport.roster_machine_ids(chair.home)) + ", all)"]
+    assert chair.sent == []
+
+
+def test_fr9780_recycle_seat_nick_routes_machine_wire(chair, op):
+    """FR #9780: !recycle flamingo-17160 maps to flamingo (not unknown machine)."""
+    out = pm(chair, op, "!recycle flamingo-17160")
+    assert out[0] == "Recycling flamingo (seat flamingo-17160)."
+    assert "seat=flamingo-17160" in out[1]
+    assert chair.sent == ["PRIVMSG #bobiverse :RECYCLE v1 flamingo"]
+    chair._cc().recycle_gate._last.clear()
+    out2 = pm(chair, op, "!recycle flamingo")
+    assert out2[0] == "Recycling flamingo."
+    assert "seat=" not in out2[1]
+    assert chair.sent == ["PRIVMSG #bobiverse :RECYCLE v1 flamingo"]
+
+
+def test_fr9780_recycle_seat_dry_run(chair, op):
+    out = pm(chair, op, "!recycle dry-run flamingo-17160")
+    assert out[0].startswith("recycle dry-run: would recycle flamingo seat=flamingo-17160")
+    assert "seat=flamingo-17160" in out[1]
     assert chair.sent == []
 
 

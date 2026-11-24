@@ -4,6 +4,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -305,31 +306,33 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
     out = tmp_path / "menu.txt"
     _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
     items = out.read_text(encoding="utf-8").splitlines()
+    # FR #9263: Free|Paid labels may append " [running]" when a live slot exists on the box.
+    items = [re.sub(r" \[running\]$", "", x) for x in items]
     # FR #8713 / BOB-06: Agents{Plan,Priority,Jeeves}; Workers hold CLI starts; Weights; About; Exit.
     assert items == [
         "Status",
         "Agents",
         "Plan",
         "Priority",
-        "Start PriorityAgent",
-        "Configure MCP (mcp.ntsa.uk)",
         "Jeeves",
         "Workers",
         "Grok",
         "Cursor",
-        "Start free model (opencode/deepseek-v4.1-flash-free) [default]",
-        "Start paid model (opencode-go/deepseek-v4-pro)",
-        "Open Code",
+        "OpenCode Free",
+        "OpenCode Paid",
         "Weights",
         "About",
-        "OpenCode keys",
-        "Set key...",
-        "Remove key...",
         "-",
         "Restart",
         "Reload engine",
         "Exit",
     ]
+    # FR #9261: no top-level Seats: / Open log. FR #9264: OpenCode keys on About only.
+    assert "Seats: on" not in items
+    assert "Open log" not in items
+    assert "OpenCode keys" not in items
+    assert "Set key..." not in items
+    assert "Remove key..." not in items
     assert "Agent" not in items
     src = (DIALOGS / "BobTray.cs").read_text(encoding="utf-8-sig")
     assert 'miStatus.Font = new Font(miStatus.Font, FontStyle.Bold)' in src and "DoubleClick" in src or "MouseClick" in src
@@ -363,7 +366,7 @@ def test_tray_engine_contract_between_exe_and_powershell():
         assert k in cs
     assert "tray-cmd.txt" in helper and "BOB_TRAY_EXE_PID" in helper and "tray-env.json" in helper
     assert "Test-BobTrayEngineMode" in ps and "Invoke-BobTrayExeCommands" in ps
-    assert "[Environment]::Exit(0)" in ps.split("-ParentGone", 1)[1][:260]                                       # a dead exe must NOT run the exit path (IRC logout / Stop-BobiverseMoot)
+    assert "[Environment]::Exit(0)" in ps.split("-ParentGone", 1)[1][:1200]                                      # a dead exe must NOT run the exit path (IRC logout / Stop-BobiverseMoot); window covers Restore-BobTrayExeFromClickFixPark preface
     assert "else { $notify.Visible = $true }" in ps                                                          # engine mode: icon is the exe's
     assert "Get-BobSystrayTrayExe" in fleet and "bob-tray.exe" in fleet
     assert "ircBob" in fleet                                                                                 # restart-on-start unchanged

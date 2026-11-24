@@ -1,7 +1,9 @@
-"""FR #9401: MRB self-exclusion is machine-id when another machine is live.
+"""FR #9401 / #9478 / #9574: MRB self-exclusion is exact nick only.
 
-Incident: flamingo-4120 accepted MRB for implementer flamingo-14096 while
-redqueen was live (busy). Exact-seat-only (FR #2604) allowed the leak.
+FR #9401 briefly used machine-id sibling block when another machine was free.
+FR #9478 softened busy-only other-machine. FR #9574 supersedes both for MRB:
+exact author/FIX nick only — cross-PID shop seats on the same machine may review
+even when redqueen (or any other machine) has free seats. UAT keeps sibling rules.
 """
 from __future__ import annotations
 
@@ -43,28 +45,49 @@ def _mrb(implementer: str) -> dict:
     }
 
 
-def test_fr9401_same_machine_sibling_blocked_when_other_machine_live_busy(
+def test_fr9401_same_machine_sibling_allowed_when_other_machine_free(
     tmp_path, monkeypatch
 ):
-    """Class of flamingo-4120 / flamingo-14096 with redqueen busy."""
+    """FR #9574: free other-machine no longer blocks same-machine MRB sibling."""
     _home(
         tmp_path,
         monkeypatch,
         {
             "flamingo": [(14096, "idle"), (4120, "idle")],
-            "redqueen": [(1, "busy"), (2, "busy")],
+            "redqueen": [(1, "idle"), (2, "idle")],
         },
     )
     row = _mrb("flamingo-14096")
     live = gitclaim.live_seat_nicks(tmp_path)
+    free = gitclaim.free_seat_nicks(tmp_path, live)
     assert "flamingo-14096" in live and "flamingo-4120" in live
+    assert "redqueen-1" in free
+    assert gitclaim.review_blocked_for_author(row, "flamingo-14096", live, free=free) is True
+    assert gitclaim.review_blocked_for_author(row, "flamingo-4120", live, free=free) is False
+    assert gitclaim.review_blocked_for_author(row, "redqueen-1", live, free=free) is False
+
+
+def test_fr9478_busy_other_machine_allows_sibling_with_free(tmp_path, monkeypatch):
+    """FR #9478 / #9574: sibling allowed regardless of other-machine free/busy."""
+    _home(
+        tmp_path,
+        monkeypatch,
+        {
+            "flamingo": [14096, 4120],
+            "redqueen": [1, 2],
+        },
+    )
+    row = _mrb("flamingo-14096")
+    live = gitclaim.live_seat_nicks(tmp_path)
+    # Explicit free= (digest coerce drops worker_list busy); redqueen omitted = busy.
+    free = {"flamingo-14096", "flamingo-4120"}
     assert "redqueen-1" in live
-    assert gitclaim.review_blocked_for_author(row, "flamingo-14096", live) is True
-    assert gitclaim.review_blocked_for_author(row, "flamingo-4120", live) is True
-    assert gitclaim.review_blocked_for_author(row, "redqueen-1", live) is False
+    assert gitclaim.review_blocked_for_author(row, "flamingo-14096", live, free=free) is True
+    assert gitclaim.review_blocked_for_author(row, "flamingo-4120", live, free=free) is False
 
 
-def test_fr9401_offer_skips_same_machine_sibling(tmp_path, monkeypatch):
+def test_fr9401_offer_reaches_same_machine_sibling(tmp_path, monkeypatch):
+    """FR #9574: offer reaches flamingo sibling even when redqueen is free."""
     _home(
         tmp_path,
         monkeypatch,
@@ -79,14 +102,19 @@ def test_fr9401_offer_skips_same_machine_sibling(tmp_path, monkeypatch):
         gitclaim.queue_path(tmp_path),
         {"v": 1, "unaccepted": [row], "accepted": [], "done": []},
     )
-    st_fl, _ = gitclaim.offer_focus_top(tmp_path, "flamingo-4120", "#flamingo")
-    assert st_fl == "empty"
-    st_rq, job = gitclaim.offer_focus_top(tmp_path, "redqueen-9", "#redqueen")
-    assert st_rq == "ok" and job["id"] == "#9396"
+    st_fl, job = gitclaim.offer_focus_top(tmp_path, "flamingo-4120", "#flamingo")
+    assert st_fl == "ok" and job["id"] == "#9396"
+    # Reset for cross-machine offer still ok.
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {"v": 1, "unaccepted": [row], "accepted": [], "done": []},
+    )
+    st_rq, job_rq = gitclaim.offer_focus_top(tmp_path, "redqueen-9", "#redqueen")
+    assert st_rq == "ok" and job_rq["id"] == "#9396"
 
 
 def test_fr9401_sole_machine_sibling_still_allowed(tmp_path, monkeypatch):
-    """FR #5900 / #2604 throughput: sole-box fleets keep same-machine siblings."""
+    """FR #5900 / #2604 / #9574: sole-box fleets keep same-machine siblings."""
     _home(tmp_path, monkeypatch, {"flamingo": [14096, 4120]})
     row = _mrb("flamingo-14096")
     live = gitclaim.live_seat_nicks(tmp_path)

@@ -696,13 +696,25 @@ function Test-BobTrayDigestEarOffline {
 function Get-BobTrayIrcBobServiceStatus {
     <#
     .SYNOPSIS
-      FR #9144: local ircBob service Status (Running/Stopped/missing/skipped). Token-free.
+      FR #9144 / #9496: local ircBob Status (Running/Running-no-child/Stopped/missing/skipped).
+      Token-free. Running-no-child when nssm says Running but bob-ear.exe / irc_agent is absent.
     #>
     if ($env:OS -notmatch 'Windows') { return 'skipped' }
     try {
         $svc = Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue
         if (-not $svc) { return 'missing' }
-        return [string]$svc.Status
+        $st = [string]$svc.Status
+        if ($st -ieq 'Running') {
+            $child = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                    $_.CommandLine -and (
+                        ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
+                        ($_.CommandLine -match 'bob-ear\.exe') -or
+                        ($_.Name -match '(?i)^bob-ear')
+                    )
+                }).Count
+            if ($child -lt 1) { return 'Running-no-child' }
+        }
+        return $st
     } catch {
         return 'error'
     }
@@ -711,7 +723,8 @@ function Get-BobTrayIrcBobServiceStatus {
 function Resolve-BobTrayDigestFailNote {
     <#
     .SYNOPSIS
-      FR #9144: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      FR #9144 / #9496: Prefer ear-offline wording over GetResponse unreachable when ear is down.
+      Running-no-child (nssm Running, no bob-ear process) paints ear-offline.
     #>
     param(
         [string]$DigestErr,
@@ -722,6 +735,7 @@ function Resolve-BobTrayDigestFailNote {
     $err = [string]$DigestErr
     if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
     $svc = ([string]$IrcBobStatus).Trim()
+    # Exact Running/skipped/missing/error stay non-offline; Running-no-child and Stopped paint ear-offline.
     if ($svc -and $svc -notmatch '(?i)^(Running|skipped|missing|error)?$') {
         return ('digest ear-offline: ircBob Status={0}; HTTP fail: {1}' -f $svc, $err)
     }
@@ -1707,18 +1721,11 @@ function Get-BobCopilotFreshness {
     $st = ''
     try { $st = ([string]$Pool.state).Trim().ToLowerInvariant() } catch { }
     if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
-    # FR #6317: unlimited is not a 0% hold. Do not let remaining 0 plus a future
-    # reset paint an old fetched_at as fresh. Used-up quota (overage off) stays a hold.
+    # FR #6317 / FR #9781: unlimited is not a 0% hold. Trust unlimited=true even
+    # when remaining=0 and overage_permitted=false (digest publishes state=ok).
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    $overageOk = $true
-    try {
-        if ($null -ne $Pool.overage_permitted -and [string]$Pool.overage_permitted -ne '') {
-            $overageOk = [bool]$Pool.overage_permitted
-        }
-    } catch { }
-    $usedUp = ($unlimited -and $null -ne $rem -and $rem -le 0 -and -not $overageOk)
-    if ($unlimited -and -not $usedUp) { $rem = $null }
+    if ($unlimited) { $rem = $null }
     $reset = $null
     try { if ($Pool.reset_at) { $reset = [string]$Pool.reset_at } } catch { }
     try { if (-not $reset -and $Pool.period_end) { $reset = [string]$Pool.period_end } } catch { }
@@ -2903,8 +2910,8 @@ function Format-BobCopilotPoolLine {
     $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    # FR #7371: do not paint unlimited when remaining is 0 and overage is not permitted
-    # (GitHub used-up business quota). Genuine unlimited keeps overage_permitted=true.
+    # FR #9781: trust digest/API unlimited=true even when remaining=0 and
+    # overage_permitted=false (CCA create still works). Do not remap to exhausted.
     $remProbe = $null
     try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $remProbe = [int]$Pool.remaining } } catch { }
     $overageOk = $true
@@ -2913,10 +2920,6 @@ function Format-BobCopilotPoolLine {
             $overageOk = [bool]$Pool.overage_permitted
         }
     } catch { }
-    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
-        $unlimited = $false
-        if ($stLow -in @('ok', '')) { $state = 'exhausted'; $stLow = 'exhausted' }
-    }
     # FR #7299: unlimited never paints as 0%; prefer the word unlimited (or 100%).
     if ($unlimited) {
         if ($isStale) { return ('Copilot - unlimited {0}' -f $staleMark) }
@@ -2975,10 +2978,7 @@ function Get-BobCopilotMeterBarPct {
             $overageOk = [bool]$Pool.overage_permitted
         }
     } catch { }
-    # FR #7371: used-up quota must not draw a full green unlimited bar.
-    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
-        $unlimited = $false
-    }
+    # FR #9781: trust unlimited=true (do not clear for rem=0 + !overage).
     if ($unlimited) {
         # FR #7299: unlimited bar is 100% left (never 0% from historical-max math).
         return 100

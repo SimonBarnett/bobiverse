@@ -80,7 +80,12 @@ def is_needs_human_row(row: dict, nick: str = "") -> bool:
 
 
 def is_self_mrb(row: dict, nick: str) -> bool:
-    """Skip when this nick authored the PR under review (self-MRB)."""
+    """Skip when this nick authored the PR under review (self-MRB).
+
+    FR #9478: exact-seat only here. Same-machine sibling policy lives in
+    ``review_blocked_for_author`` (soft free-other-machine). Hard machine-id
+    on GitHub author fields stranded flamingo idle seats when redqueen was busy.
+    """
     task = row_task(row)
     if task not in {"MRB", "UAT"}:
         return False
@@ -93,16 +98,28 @@ def is_self_mrb(row: dict, nick: str) -> bool:
             continue
         if val == me or me.startswith(val + "-"):
             return True
-        me_mach = me.rsplit("-", 1)[0]
-        val_mach = val.rsplit("-", 1)[0] if "-" in val else val
-        if me_mach and me_mach == val_mach and task == "MRB" and _SHOP_NICK_RX.match(val):
+    for key in (
+        "author_seat",
+        "implementer_seat",
+        "mrb_author_seat",
+        "mrb_fix_author_seat",
+        "author_nick",
+    ):
+        val = str(row.get(key) or "").strip().lower()
+        if val and val == me:
             return True
+    multi = row.get("author_seats")
+    if isinstance(multi, str):
+        for part in multi.replace(";", ",").split(","):
+            if part.strip().lower() == me:
+                return True
     try:
         import idle_seats as _is
 
         gc = _is._ensure_gitclaim()
         doc = {"v": 1, "unaccepted": [row], "accepted": [], "done": []}
         cand = gc.enrich_review_author_fields(doc, row)
+        # Sole-live={me}: soft machine-id allows siblings; exact author still blocks.
         live = {me}
         if gc.review_blocked_for_author(cand, nick, live):
             return True
@@ -164,7 +181,40 @@ def plan_assigns(
         row_key = f"{repo}#{num}:{task}"
         if row_key in used_rows:
             continue
-        for seat in idle:
+        # FR #9478: for MRB, try cross-machine idle seats before same-machine siblings.
+        seats_ordered = list(idle)
+        if task == "MRB":
+            author_mids: set[str] = set()
+            for key_a in (
+                "author_seat",
+                "implementer_seat",
+                "mrb_author_seat",
+                "mrb_fix_author_seat",
+                "author_nick",
+                "author",
+            ):
+                raw_a = str(row.get(key_a) or "").strip()
+                if raw_a and "-" in raw_a:
+                    author_mids.add(raw_a.rsplit("-", 1)[0].lower())
+            multi = row.get("author_seats")
+            if isinstance(multi, str):
+                for part in multi.replace(";", ",").split(","):
+                    p = part.strip()
+                    if p and "-" in p:
+                        author_mids.add(p.rsplit("-", 1)[0].lower())
+            if author_mids:
+                cross = []
+                same = []
+                for seat in seats_ordered:
+                    nick_s = str(seat.get("nick") or "").strip()
+                    mid = nick_s.rsplit("-", 1)[0].lower() if "-" in nick_s else ""
+                    if mid and mid in author_mids:
+                        same.append(seat)
+                    else:
+                        cross.append(seat)
+                if cross:
+                    seats_ordered = cross + same
+        for seat in seats_ordered:
             nick = str(seat.get("nick") or "").strip()
             key = nick.lower()
             if not nick or key in used_nicks:
@@ -221,13 +271,21 @@ def append_outbox_lines(
 
 
 def truncate_drained_outbox(outbox: Path, pos_path: Path | None = None) -> dict[str, Any]:
-    """Optional hygiene: when *.pos says EOF, truncate outbox to empty (FR #9461)."""
+    """Optional hygiene: when *.pos says EOF, truncate outbox to empty (FR #9461 / #9862)."""
     if not outbox.is_file():
         return {"truncated": False, "reason": "missing"}
-    pos = pos_path or outbox.with_suffix(outbox.suffix + ".pos")
-    if not pos.is_file():
-        alt = outbox.parent / (outbox.name + ".pos")
-        pos = alt if alt.is_file() else pos
+    try:
+        import irc_agent as _ia
+
+        # FR #9862: migrate legacy outbox.pos → outbox.txt.pos before reading.
+        _ia.ensure_canonical_outbox_pos(outbox)
+        pos = Path(pos_path) if pos_path else _ia.outbox_pos_path(outbox)
+    except Exception:
+        pos = pos_path or Path(str(outbox) + ".pos")
+        if not Path(pos).is_file():
+            alt = outbox.parent / (outbox.stem + ".pos")
+            pos = alt if alt.is_file() else pos
+    pos = Path(pos)
     if not pos.is_file():
         return {"truncated": False, "reason": "no_pos"}
     try:
@@ -240,9 +298,15 @@ def truncate_drained_outbox(outbox: Path, pos_path: Path | None = None) -> dict[
         return {"truncated": False, "reason": "not_drained", "pos": offset, "size": size}
     outbox.write_bytes(b"")
     try:
-        pos.write_text("0\n", encoding="utf-8")
+        # Canonical cursor only; drop legacy outbox.pos (FR #9862).
+        import irc_agent as _ia
+
+        _ia.save_outbox_pos(outbox, 0)
     except Exception:
-        pass
+        try:
+            pos.write_text("0\n", encoding="utf-8")
+        except Exception:
+            pass
     return {"truncated": True, "pos": offset, "size": size}
 
 

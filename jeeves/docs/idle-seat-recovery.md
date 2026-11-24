@@ -29,6 +29,25 @@ Fresh worker evidence: `last_activity` / activity file / `worker_list[].updated`
 within `WORKER_STATE_FRESH_S` (default 600s). Digest machine heartbeat is not
 enough.
 
+## Interim MRB author heal (FR #9489)
+
+When exact-seat / machine-id self-MRB blocks every idle reviewer, operators may
+temporarily restamp `author_seat` / `implementer_seat` on the queue row.
+
+1. **Preferred interim stamp:** `<roster-machine>-<dead-pid>` (example:
+   `marchhare-99999`). `parse_seat_nick` accepts roster machines, so
+   `enrich_mrb_author_fields` keeps the stamp and does **not** recover the
+   real DONE-FR implementer.
+2. **Never rely on a non-roster invent-a-machine** on older Jeeves builds that
+   still require `parse_seat_nick` before canon --- those stamps drop and the
+   real implementer returns (class of `ghost-1` monitoring 2026-11-23).
+3. **Reserved heal nick on tip:** `ghost-<n>` with `n >= 1` is sticky via
+   `_reserved_heal_seat_nick` / `_canon_seat_nick` (FR #9489). Prefer (1)
+   when the running chair may still be an older install.
+4. **Durable path:** merge and install PR #9482 (FR #9478 / #9480 soft
+   `free=` + multi-author exact-seat) so flamingo idle seats are not stranded
+   while redqueen is busy-only. Heal stamps are a bridge, not the product fix.
+
 ## What it does not do
 
 - Does not recycle merely because a seat is idle with no actionable work.

@@ -114,6 +114,28 @@ never surprise `depends-open` after unhold.
 | Depends-on ordinary OPEN issue | `depends-open` |
 | Bad token / lookup Unknown | `depends-unresolved` |
 
+## GIVEUP blocked:depends-on must stamp the body (FR #9469)
+
+ACK then GIVEUP with `reason=blocked:depends-on #N` / `blocked-on #N` /
+`depends_unresolved …#N` is **not** enough. Comment-only evidence leaves the
+issue body without that ref, so after cooldown/`!cleargiveup` the chair can
+re-offer while the prerequisite is still OPEN (class of #8833 / harvest #8755).
+
+Product auto-stamp (prefer this over monitor `gh`):
+
+1. Shop GIVEUP/NACK with a blocked-depends cue + parseable `#N` or `owner/repo#N`.
+2. Chair unions that ref into a **plain** `Depends-on:` line on the queue row
+   body and PATCHes the GitHub issue body (keeps existing deps; no `**Depends-on:**`).
+3. BOB-D3 / `depends_gate_reason` then skips offer/`!assign` until every
+   Depends-on ref is CLOSED.
+
+Monitor intervene may still `gh issue edit` a missing body line when it sees a
+dependency GIVEUP without the stamp; durable path is the chair stamp above.
+
+Worker playbook: when blocked on an open prerequisite, GIVEUP with
+`blocked:depends-on #N` (or qualified `owner/repo#N`). Do not rely on a comment
+alone; the chair stamps the body so the gate sticks.
+
 ## Refs
 
 - Index: #8805 body / `fr-index-depends-on-jeeves-2026-11-21.md`
@@ -121,5 +143,6 @@ never surprise `depends-open` after unhold.
 - D8 docs vs hold: #8812
 - Monitor check: #8848
 - Shared G1 gate: #9455 (`depends_gate_reason`)
+- GIVEUP body stamp: #9469
 - Sibling digest gate: `bobiverse-jeeves-agent-fr-digest`
 - Live MONITORING loop: `bobiverse-jeeves-monitor`, `monitor-start`

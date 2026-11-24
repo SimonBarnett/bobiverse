@@ -87,10 +87,9 @@ def test_fr1518_gated_skill_and_pins_exit0_with_counts(tmp_path):
                 "task": "FR",
                 "id": "#1102",
                 "title": "Red Queen pin",
-                # FR #4610 / #4512: bobiverse ignores raw require_machine stamps;
-                # dedicated body pin line is the durable gate. FR #6407 retired DEV1.
+                # FR #9637: bobiverse pins via needs-<machine> labels (body alone does not).
                 "body": "require_machine: redqueen\n",
-                "labels": ["feature-request"],
+                "labels": ["feature-request", "needs-redqueen"],
             },
         ],
     )

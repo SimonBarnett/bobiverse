@@ -128,6 +128,10 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * **a-search CDK trees (FR #3717):** before your own `git worktree remove`, `cmd /c rmdir /s /q <wt>\cdk.out*` (and prefer Clear). Deep `cdk.out` / Lambda asset hashes hit Windows **Filename too long**; git deregisters then leaves the directory; `Remove-Item -Recurse` fails the same way — `cmd rmdir /s /q` clears leftovers. Clear does this pre-rmdir automatically.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 
+## Ear-down / bob-ear-dead FRs — Refs until gate (FR #9503)
+
+Issues whose title/body are ear-down class (`bob-ear dead`, `ircBob Running without` child, `ear-offline`, ENOSPC ear) must **not** use `Closes` from a product tip that only ships monitor/heal code. Use **`Refs #N`**. Close the living issue only after `jeeves/tools/monitor/ear_down_gate.py` passes: live bob-ear child, digest `online=true` + fresh `lastSeen`, and `!startworker` ACK on that shop (operator evidence). Monitor `ircbob_ear` EXIT 0 requires the digest+child half of that gate on ircBob hosts.
+
 ## Issue still open before `gh pr create` (FR #4851)
 
 Before `gh pr create`, confirm the assigned issue is still **open**:
@@ -233,6 +237,7 @@ Chair lives on ionos (folds to win-mpre*). Non-matching seats must **GIVEUP** (o
 
 * Marchhare / flamingo / other non-ionos seats cannot bounce ionos `ircJeeves`, edit ionos `queue.json`, or diagnose StartPending/idle+ungated on the chair host — those FRs are ionos-only.
 * **Honor `require_machine=<mid>` literally** (harvest #1688): if the assign body, title, labels, or queue stamp pins a machine you are not on, **ACK then GIVEUP** with `require_machine=<mid>` (or `needs-ionos`) in the reason line. Do not attempt the work.
+* **CAST IRON (FR #9669):** `needs-walrus` / `require_machine=walrus` GIVEUP is a hand-off to the **Jeeves agent** on walrus (Slab/Si-yes), not a re-offer thrash on other shops. Mixed code+walrus work must be two Digest children (code without pin; walrus with `needs-walrus` + Depends-on code). Pure code/docs/PR FRs never carry `needs-walrus` (#9637).
 * If the chair **offered a pinned FR to a non-matching seat** (stamp present, wrong shop): GIVEUP as above **and file intake** for the offer gap (class of #1687). File intake also when the stamp was missing but cues clearly demand ionos.
 * Skill-promote jobs (FR #1682 / #1684) are **not** a reason to ignore a real `require_machine` pin — if the skill/harvest issue itself is pinned ionos and you are not on ionos, still GIVEUP.
 * **CAST IRON (live multi-machine privilege / ops matrices):** when acceptance needs live IRC privilege proof across several machines (ops/+h/not-op command matrix, class of #4016), do **not** invent remote results. Stamp/confirm `needs-human`, comment a per-machine checklist on the issue, then **ACK then GIVEUP** with `reason=needs_human` (or `needs-human live privilege matrix`). Never DONE PASS with fabricated evidence. Durable home is this skill + job-irc — not `harvest/SKILL.md`.

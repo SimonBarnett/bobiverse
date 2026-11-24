@@ -1,6 +1,6 @@
 # FR #8692 / BOB-46 evidence
 
-Agents > Plan shows a dialog and quits when this box has no tokens. It does not start `vendor\plan\bob-plan.exe`.
+Agents > Plan shows a dialog and quits when this box has no tokens. It does not start `plan\PlanAgent.exe`.
 
 - Fuel file: `%LOCALAPPDATA%\Bobiverse\plan-fuel.json`, or `BOB_PLAN_FUEL_FILE`.
 - Empty means `remaining_pct` <= 0 or status `empty` / `exhausted` / `out-of-fuel`. A missing file does not block.

@@ -31,6 +31,8 @@
     listed by that product's `git worktree list`. Pass `-RepoRoot` of the product.
   - FR #3717: before `git worktree remove`, delete `cdk.out*` under the job tree
     with `cmd rmdir /s /q`.
+  - FR #9500: Access denied on cmd rmdir (e.g. locked PYTEST~1 / .pytest_cache)
+    warns and continues; does not abort the Clear run (attrib -R retry once).
   - FR #4197: when a registered tree is missing or its `.git` is gone, warn, keep
     unverifiable dirs, prune metadata, and continue.
   - FR #4988: job trees also live under Get-BobiverseJobWorktreeBase.
@@ -363,14 +365,49 @@ function Remove-BobiverseDeepWorktreeDirs {
         ForEach-Object {
             $target = $_.FullName
             Write-Host ("FR #3717 pre-rmdir deep tree {0}" -f $target)
-            cmd.exe /c ('rmdir /s /q "' + $target + '"') | Out-Null
+            # FR #9500: Access denied must not abort Clear (same spirit as FR #4197).
+            try {
+                cmd.exe /c ('rmdir /s /q "' + $target + '"') 2>&1 | ForEach-Object {
+                    if ($_ -is [System.Management.Automation.ErrorRecord]) { [void]$_.ToString() } else { "$_" }
+                } | Out-Null
+            } catch {
+                Write-Warning ("FR #9500: cdk.out rmdir failed for {0}: {1}" -f $target, $_)
+            }
         }
 }
 
 function Remove-BobiversePathForce {
     param([Parameter(Mandatory)][string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
-    cmd.exe /c ('rmdir /s /q "' + $Path + '"') | Out-Null
+    # FR #9500: Access denied on PYTEST~1 / .pytest_cache must not abort Clear
+    # (StrictMode Stop + NativeCommandError from cmd stderr). Warn and continue
+    # like FR #4197 missing-.git; optional attrib -R retry once.
+    try {
+        cmd.exe /c ('rmdir /s /q "' + $Path + '"') 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { [void]$_.ToString() } else { "$_" }
+        } | Out-Null
+    } catch {
+        Write-Warning ("FR #9500: rmdir failed for {0}: {1}" -f $Path, $_)
+    }
+    if (Test-Path -LiteralPath $Path) {
+        try {
+            Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Name -match '(?i)^(PYTEST~1|\.pytest_cache)$' -or
+                    $_.FullName -match '(?i)[\\/](\.pytest_cache|PYTEST~1)([\\/]|$)'
+                } |
+                ForEach-Object {
+                    attrib.exe -R $_.FullName /S /D 2>$null | Out-Null
+                }
+        } catch { }
+        try {
+            cmd.exe /c ('rmdir /s /q "' + $Path + '"') 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { [void]$_.ToString() } else { "$_" }
+            } | Out-Null
+        } catch {
+            Write-Warning ("FR #9500: rmdir retry failed for {0}; leaving in place and continuing: {1}" -f $Path, $_)
+        }
+    }
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -662,7 +699,27 @@ function Invoke-ClearOneRepoRoot {
                 ForEach-Object { "$_" } |
                 Where-Object { $_ -ne '' }
         )
-        if ($LASTEXITCODE -ne 0) {
+        $listExit = [int]$LASTEXITCODE
+        if ($listExit -ne 0) {
+            $listText = ($list -join "`n")
+            # FR #9692: SYSTEM-owned install roots fail "dubious ownership" until safe.directory is set.
+            if ($listText -match '(?i)dubious ownership') {
+                $safePath = ($RootFull -replace '\\', '/')
+                Write-Warning ("FR #9692: git dubious ownership for {0}; adding safe.directory and retrying worktree list" -f $RootFull)
+                try {
+                    & git config --global --add safe.directory $safePath 2>$null | Out-Null
+                } catch {
+                    Write-Warning ("FR #9692: safe.directory add failed: {0}" -f $_)
+                }
+                $list = @(
+                    & git -C $RootFull worktree list --porcelain 2>&1 |
+                        ForEach-Object { "$_" } |
+                        Where-Object { $_ -ne '' }
+                )
+                $listExit = [int]$LASTEXITCODE
+            }
+        }
+        if ($listExit -ne 0) {
             throw "git worktree list failed: $($list -join "`n")"
         }
 
@@ -961,11 +1018,28 @@ function Invoke-ClearOneRepoRoot {
             }
         }
 
+        # FR #4988 / #9692: orphan dirs under job-worktree base and (when different)
+        # BOB_BRIDGE_HOME\worktrees - including trees with a leftover .git that are
+        # no longer in `git worktree list` (flamingo C: filled with 457 such orphans).
         if ($lowDisk -and -not $PruneClosedJobs -and (Get-Command Get-BobiverseJobWorktreeBase -ErrorAction SilentlyContinue)) {
+            $orphanBases = New-Object System.Collections.Generic.List[string]
             try {
                 $wtBase = [IO.Path]::GetFullPath((Get-BobiverseJobWorktreeBase)).TrimEnd('\')
-            } catch { $wtBase = '' }
-            if ($wtBase -and (Test-Path -LiteralPath $wtBase)) {
+                if ($wtBase) { [void]$orphanBases.Add($wtBase) }
+            } catch { }
+            $bridgeHome = [string]$env:BOB_BRIDGE_HOME
+            if ($bridgeHome -and $bridgeHome.Trim()) {
+                try {
+                    $bridgeWt = [IO.Path]::GetFullPath([IO.Path]::Combine($bridgeHome.TrimEnd('\'), 'worktrees')).TrimEnd('\')
+                    $dup = $false
+                    foreach ($b in $orphanBases) {
+                        if ($b -ieq $bridgeWt) { $dup = $true; break }
+                    }
+                    if (-not $dup) { [void]$orphanBases.Add($bridgeWt) }
+                } catch { }
+            }
+            foreach ($wtBase in $orphanBases) {
+                if (-not $wtBase -or -not (Test-Path -LiteralPath $wtBase)) { continue }
                 Get-ChildItem -LiteralPath $wtBase -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                     $repoDir = $_.FullName
                     Get-ChildItem -LiteralPath $repoDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
@@ -982,22 +1056,25 @@ function Invoke-ClearOneRepoRoot {
                         if ($stillListed) { return }
                         $gitFile = Join-Path $full '.git'
                         if (Test-Path -LiteralPath $gitFile) {
-                            Write-Host ("FR #8023 keep base orphan with .git {0}" -f $full)
-                            $counts['kept-unverifiable']++
-                            return
-                        }
-                        if (-not (Test-OrphanDirRemovable $full)) {
+                            # FR #9692: not listed by git worktree list - reclaim when clean.
+                            if (Test-WorktreeHasLocalWork -Path $full) {
+                                Write-Host ("FR #9692 keep unlist orphan with local work {0}" -f $full)
+                                $counts['kept-unverifiable']++
+                                return
+                            }
+                            Write-Host ("FR #9692 reclaim unlist orphan (not in git worktree list) {0}" -f $full)
+                        } elseif (-not (Test-OrphanDirRemovable $full)) {
                             Write-Host ("FR #8023 keep unverifiable base orphan {0}" -f $full)
                             $counts['kept-unverifiable']++
                             return
                         }
                         if ($WhatIfPreference) {
-                            Write-Host "WhatIf: Remove-Item FR #4988 base orphan $full"
+                            Write-Host "WhatIf: Remove-Item FR #4988/#9692 base orphan $full"
                             $counts.removed++
                             return
                         }
-                        if ($PSCmdlet.ShouldProcess($full, 'Remove FR #4988 job-worktree-base orphan')) {
-                            Write-Host "Removing FR #4988 base orphan $full"
+                        if ($PSCmdlet.ShouldProcess($full, 'Remove FR #4988/#9692 job-worktree-base orphan')) {
+                            Write-Host "Removing FR #4988/#9692 base orphan $full"
                             Remove-BobiversePathForce -Path $full
                             if (-not (Test-Path -LiteralPath $full)) { $counts.removed++ }
                         }
