@@ -17,6 +17,8 @@ description: >
 >    chair behaviour without an LLM (`tools\monitor\`, `jeeves/checks/`, `common/scripts`). Skills are interim.
 > 6. **CAST IRON — interventions → ircJeeves FR (#9627).** Any keep-queue-moving / heal action owes a product FR the
 >    same turn so ircJeeves does it without an LLM. FR #8827 is bridge-only.
+> 7. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
+>    chair path same turn (#9628). Never leave idle+ungated work as report-only.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
