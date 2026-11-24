@@ -1000,7 +1000,19 @@ def build_task_body(row: dict) -> dict:
             "Implement the issue. Open one PR whose body contains "
             f"Closes {repo}{ident if ident.startswith('#') else '#' + ident}."
         )
-    return {"prompt": "\n".join(prompt_lines)}
+    body = {"prompt": "\n".join(prompt_lines)}
+    
+    # FR #9738: Add optional model parameter from BOB_COPILOT_MODEL environment variable
+    model = str(os.environ.get("BOB_COPILOT_MODEL") or "").strip()
+    if model:
+        body["model"] = model
+    
+    # Optional base_ref parameter (default: main if not provided)
+    base_ref = str(os.environ.get("BOB_COPILOT_BASE_REF") or "").strip()
+    if base_ref:
+        body["base_ref"] = base_ref
+    
+    return body
 
 
 def should_dispatch(
