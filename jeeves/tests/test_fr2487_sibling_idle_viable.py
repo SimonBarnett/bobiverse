@@ -1,8 +1,9 @@
-"""FR #2487 free-seat helper + FR #9401 MRB machine-id self-exclusion.
+"""FR #2487 free-seat helper + FR #9401/#9478 MRB machine-id self-exclusion.
 
-FR #2487 introduced free= for UAT sibling viability. FR #9401 blocks MRB
-same-machine siblings whenever another machine is live (busy counts). UAT
-keeps the sibling-when-other-free block.
+FR #2487 introduced free= for UAT sibling viability. FR #9401 blocked MRB
+same-machine siblings whenever another machine was live (busy counted).
+FR #9478 softens MRB to match UAT: busy-only other-machine no longer blocks;
+a free other-machine seat still does.
 """
 from __future__ import annotations
 
@@ -50,8 +51,8 @@ def _uat(author: str) -> dict:
     }
 
 
-def test_fr9401_mrb_sibling_blocked_when_other_machine_seats_busy():
-    """FR #9401: busy other-machine seats still block same-machine MRB siblings."""
+def test_fr9478_mrb_sibling_allowed_when_other_machine_seats_busy_only():
+    """FR #9478: busy other-machine seats do not block same-machine MRB siblings."""
     row = _mrb("marchhare-35016")
     live = {
         "marchhare-35016",
@@ -59,10 +60,10 @@ def test_fr9401_mrb_sibling_blocked_when_other_machine_seats_busy():
         "win-mpre8vi4u6u-14452",
         "win-mpre8vi4u6u-7764",
     }
-    # other machine busy => not in free; MRB still blocks (unlike UAT).
+    # other machine busy => not in free; soft MRB allows sibling (like UAT).
     free = {"marchhare-35016", "marchhare-40208"}
     assert gitclaim.review_blocked_for_author(row, "marchhare-35016", live, free=free) is True
-    assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=free) is True
+    assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=free) is False
 
 
 def test_fr9401_mrb_sibling_blocked_when_other_machine_has_free_seat():

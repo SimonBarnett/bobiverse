@@ -100,7 +100,7 @@ def test_enrich_mrb_merges_fix_seat_into_author_seats(tmp_path, monkeypatch):
 
 
 def test_offer_skips_fix_done_seat_unstamped_mrb(tmp_path, monkeypatch):
-    """Done FIX by flamingo-70260; synchronize MRB → flamingo machine blocked; marchhare offered."""
+    """Done FIX by flamingo-70260; synchronize MRB â†’ flamingo machine blocked; marchhare offered."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     registered_machines.save_registered(home, {"flamingo", "marchhare"})
@@ -139,7 +139,7 @@ def test_offer_skips_fix_done_seat_unstamped_mrb(tmp_path, monkeypatch):
 
 
 def test_offer_skips_fix_still_accepted(tmp_path, monkeypatch):
-    """Synchronize arrives before FIX DONE — FIX machine blocked; other machine offered."""
+    """Synchronize arrives before FIX DONE â€” FIX machine blocked; other machine offered."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     registered_machines.save_registered(home, {"flamingo", "marchhare"})
@@ -174,7 +174,7 @@ def test_offer_skips_fix_still_accepted(tmp_path, monkeypatch):
 
 
 def test_offer_blocks_implementer_and_fix_seat(tmp_path, monkeypatch):
-    """IMPL + FIX machines both blocked; need a third machine (FR #9401)."""
+    """Exact IMPL + FIX done_by blocked; FR #9480 allows flamingo sibling."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     third = "redqueen-42"
@@ -217,12 +217,27 @@ def test_offer_blocks_implementer_and_fix_seat(tmp_path, monkeypatch):
     st_b, _ = gitclaim.offer_focus_top(home, OTHER_SEAT, "#flamingo")
     assert st_b == "empty" or _ is None or str((_ or {}).get("id") or "") != PR
 
-    st_c, _ = gitclaim.offer_focus_top(home, FIX_SEAT, "#flamingo")
-    assert st_c == "empty" or _ is None or str((_ or {}).get("id") or "") != PR
+    # FR #9480: author_seats span marchhare + flamingo (IMPL + FIX done_by) â†’
+    # exact-seat only; flamingo sibling FIX_SEAT is eligible (not machine-blocked).
+    st_c, job_c = gitclaim.offer_focus_top(home, FIX_SEAT, "#flamingo")
+    assert st_c == "ok"
+    assert job_c.get("id") == PR
 
-    st_d, job_d = gitclaim.offer_focus_top(home, third, "#redqueen")
-    assert st_d == "ok"
-    assert job_d.get("id") == PR
+    # Third machine remains eligible under review_blocked (offer already stamped).
+    live = gitclaim.live_seat_nicks(home)
+    doc2 = gitclaim.load_queue(home)
+    # After FIX_SEAT accepted the offer, row may be in accepted; check eligibility directly.
+    row = None
+    for bucket in ("unaccepted", "accepted"):
+        for r in doc2.get(bucket) or []:
+            if str(r.get("id") or "") == PR:
+                row = r
+                break
+        if row is not None:
+            break
+    assert row is not None
+    enriched = gitclaim.enrich_mrb_author_fields(doc2, row)
+    assert gitclaim.review_blocked_for_author(enriched, third, live) is False
 
 
 def test_nick_inherits_dead_fix_seat_on_recycle(tmp_path, monkeypatch):

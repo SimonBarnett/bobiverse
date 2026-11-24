@@ -149,7 +149,15 @@ def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str
     # FR #5900: MRB must use enrich_review_author_fields (exact-seat). UAT enrich
     # on an MRB row can mis-apply sibling stamps and hide eligible same-machine seats.
     cand_eff = gc.enrich_review_author_fields(doc, row)
-    if gc.review_blocked_for_author(cand_eff, me, live):
+    # FR #9478: pass free= so soft MRB machine-id matches !bored (busy other-machine
+    # does not strand same-machine idle seats).
+    free = None
+    if home is not None:
+        try:
+            free = gc.free_seat_nicks(home, live)
+        except Exception:
+            free = None
+    if gc.review_blocked_for_author(cand_eff, me, live, free=free):
         return False
     gc._stamp_require_machine(cand_eff)
     if gc.row_blocked_for_machine(cand_eff, me):

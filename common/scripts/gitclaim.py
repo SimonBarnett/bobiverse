@@ -9060,6 +9060,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
     open_dep_keys_summary = open_fr_issue_keys(raw if isinstance(raw, dict) else {})
     me = (canonical_worker_nick(nick) or nick or "").strip()
     live = live_seat_nicks(home) if me else set()
+    free = free_seat_nicks(home, live) if me else set()
     ledger = ledger_load(home) if me else {}
     import time as _time
 
@@ -9146,7 +9147,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                         maybe_escalate_repo_uat_all_self_uat(
                             home, cand, live=live, ledger=ledger
                         )
-                if review_blocked_for_author(cand, me, live, ledger=ledger):
+                if review_blocked_for_author(cand, me, live, ledger=ledger, free=free):
                     # Repo UAT exact-author / sibling stamp counts as self_uat (FR #2939);
                     # MRB exact-author stays self_mrb.
                     if is_repo_uat(cand) or _canon_task(cand) == "UAT":
@@ -9502,6 +9503,52 @@ def sort_idle_seats_cheapest_first(
     return rows
 
 
+def prefer_cross_machine_mrb_reviewers(
+    idle_rows: list,
+    *,
+    home: Path | None = None,
+    unaccepted: list | None = None,
+) -> list:
+    """FR #9478: among same cost order, prefer idle seats cross-machine to MRB authors.
+
+    When the unaccepted MRB backlog is mostly authored on machine A and idle
+    includes machine B, offer B first so flamingo-authored MRBs reach redqueen
+    before same-machine siblings (until soft free= policy allows siblings).
+    """
+    rows = list(idle_rows or [])
+    if len(rows) < 2:
+        return rows
+    author_mids: set[str] = set()
+    try:
+        rows_q = unaccepted
+        if rows_q is None and home is not None:
+            rows_q = load_unaccepted(home)
+        for row in rows_q or []:
+            if not isinstance(row, dict):
+                continue
+            if _canon_task(row) != "MRB":
+                continue
+            for a in row_author_seats(row):
+                p = bobreport.parse_seat_nick(a)
+                if p:
+                    author_mids.add(bobreport.fold_machine_id(p[0]))
+    except Exception:
+        author_mids = set()
+    if not author_mids:
+        return rows
+    # Stable partition: keep cheapest-first order inside each group.
+    cross: list = []
+    same: list = []
+    for ent in rows:
+        nick = str((ent or {}).get("nick") or "").strip()
+        p = bobreport.parse_seat_nick(nick) if nick else None
+        mid = bobreport.fold_machine_id(p[0]) if p else ""
+        if mid and mid in author_mids:
+            same.append(ent)
+        else:
+            cross.append(ent)
+    return cross + same if cross else rows
+
 def digest_idle_ready_seats(
     home: Path, *, now: float | None = None, live: set[str] | None = None
 ) -> list[dict]:
@@ -9585,6 +9632,11 @@ def offer_to_idle_seats(
         return 0
     try:
         idle_rows = sort_idle_seats_cheapest_first(idle_rows, home=home)
+    except Exception:
+        pass
+    # FR #9478: among cheapest peers, prefer cross-machine reviewers for MRB backlog.
+    try:
+        idle_rows = prefer_cross_machine_mrb_reviewers(idle_rows, home=home)
     except Exception:
         pass
     # FR #8428: after an offer-timeout, try a different live idle seat before
@@ -10567,10 +10619,11 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
 
 
 def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None, *, free: set[str] | None = None) -> bool:
-    """Alias for `review_blocked_for_author` (MRB exact-seat; UAT sibling rules).
+    """Alias for `review_blocked_for_author` (MRB soft machine-id; UAT sibling rules).
 
-    FR #2604 / #4606: MRB blocks only the exact author/FIX nick. UAT still uses
-    sibling / recycle rules (FR #1407 / #4336).
+    FR #2604 / #4606 / #9401 / #9478: MRB blocks exact author/FIX nick and
+    same-machine siblings when another machine has a free/idle seat. UAT still
+    uses sibling / recycle rules (FR #1407 / #4336).
     """
     return review_blocked_for_author(row, nick, live, ledger=ledger, free=free)
 
@@ -10583,16 +10636,18 @@ def review_blocked_for_author(
     *,
     free: set[str] | None = None,
 ) -> bool:
-    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604 / #9401).
+    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604 / #9401 / #9478).
 
     Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat).
 
-    For **MRB** (FR #9401): also blocks a sibling on the same *machine id* while
-    any other machine has a live seat — even when that other seat is busy. Exact
-    nick alone was not enough (flamingo-4120 accepted implementer flamingo-14096).
-    Sole-machine fleets still allow same-machine siblings (FR #2604 / #4606 /
-    #5900 throughput). MRB never inherits a dead author nick via
-    ``nick_inherits_dead_seat`` (FR #4606); machine-id covers live siblings.
+    For **MRB** (FR #9401 / #9478): also blocks a sibling on the same *machine id*
+    while another machine has a *viable free/idle* seat. Busy-only other-machine
+    seats no longer strand author-machine idle reviewers (class of flamingo
+    starve with redqueen busy + marchhare empty). Exact nick alone was not
+    enough for multi-machine fleets (flamingo-4120 / flamingo-14096). Sole-machine
+    fleets still allow same-machine siblings (FR #2604 / #4606 / #5900). MRB never
+    inherits a dead author nick via ``nick_inherits_dead_seat`` (FR #4606).
+
     **FR #9480:** when ``row_author_seats`` span **two or more** distinct machine
     ids (e.g. implementer on redqueen + FIX on flamingo), machine-id sibling
     block is skipped for that row (exact-seat only) so the chair does not stamp
@@ -10607,10 +10662,10 @@ def review_blocked_for_author(
     FR-implementer blocked (``_ledger_blocks``). Giveup / fellow-implementer seats
     must not strand siblings of the stamped author after self-UAT GIVEUP loops.
 
-    FR #2487: when ``free`` is provided, UAT sibling viability requires the
-    other-machine seat to be idle/free right now (in ``free``). When ``free`` is
-    None, all ``live`` seats are treated as free (unit-test / legacy default).
-    MRB machine-id block ignores ``free`` (busy other-machine still blocks).
+    FR #2487 / #9478: when ``free`` is provided, MRB and UAT sibling viability
+    require the other-machine seat to be idle/free right now (in ``free``). When
+    ``free`` is None, all ``live`` seats are treated as free (unit-test / legacy
+    default — busy other-machine still blocks).
     """
     task = _canon_task(row)
     if task not in ("MRB", "UAT"):
@@ -10623,15 +10678,24 @@ def review_blocked_for_author(
     me_p = bobreport.parse_seat_nick(me)
     me_mid = bobreport.fold_machine_id(me_p[0]) if me_p else ""
     repo_uat = is_repo_uat(row)
-    # FR #9480: distinct author machine ids on the row (MRB multi-machine carve-out).
-    author_mids: set[str] = set()
-    for _a in authors:
-        _ap = bobreport.parse_seat_nick(_a)
-        if _ap:
-            _amid = bobreport.fold_machine_id(_ap[0])
-            if _amid:
-                author_mids.add(_amid)
-    mrb_multi_machine_authors = task == "MRB" and len(author_mids) >= 2
+    free_set = live if free is None else free
+    free_l = {
+        (canonical_worker_nick(x) or x or "").strip().lower()
+        for x in free_set
+        if str(x or "").strip()
+    }
+    # FR #9480: when author seats already span 2+ machines, machine-id sibling
+    # block would strand every seat on those machines (no_eligible forever).
+    # Fall back to exact-seat only for that row; sole-machine authorship keeps
+    # soft free-other-machine (FR #9478 / #9401).
+    author_mids_all: set[str] = set()
+    for a in authors:
+        ap = bobreport.parse_seat_nick(a)
+        if ap:
+            amid = bobreport.fold_machine_id(ap[0])
+            if amid:
+                author_mids_all.add(amid)
+    mrb_exact_seat_only = task == "MRB" and len(author_mids_all) >= 2
 
     def _seat_gave_up_uat(n_c: str) -> bool:
         if row_gave_up_by(row, n_c, live=live):
@@ -10642,12 +10706,13 @@ def review_blocked_for_author(
                 return True
         return False
 
-    def _other_machine_live(author_mid: str) -> bool:
-        """True when any live seat is on a different machine than author_mid.
+    def _other_machine_free(author_mid: str) -> bool:
+        """True when a free/idle seat exists on a different machine than author_mid.
 
-        FR #2339 / #9401: seats pinned out of this row (require_machine) are not
-        viable other-machine evidence — they must not strand author-machine
-        siblings on a machine-pinned MRB.
+        FR #2339 / #9401 / #9478: seats pinned out of this row (require_machine)
+        are not viable other-machine evidence — they must not strand
+        author-machine siblings on a machine-pinned MRB. Busy-only other-machine
+        seats are not viable (FR #9478 soft #9401).
         """
         if not author_mid:
             return False
@@ -10659,6 +10724,8 @@ def review_blocked_for_author(
             if not p or bobreport.fold_machine_id(p[0]) == author_mid:
                 continue
             if row_blocked_for_machine(row, n_c):
+                continue
+            if n_c.lower() not in free_l:
                 continue
             return True
         return False
@@ -10675,16 +10742,17 @@ def review_blocked_for_author(
         author_mid = (
             bobreport.fold_machine_id(author_p[0]) if author_p else ""
         )
-        # FR #2604 / #4606 / #9401: MRB skips dead-seat inherit; machine-id
-        # blocks same-machine siblings when another machine is live. Sole-box
-        # fleets still allow siblings. Giveup inheritance stays in
+        # FR #2604 / #4606 / #9401 / #9478 / #9480: MRB skips dead-seat inherit;
+        # machine-id blocks same-machine siblings when another machine has a
+        # free seat (unless authors already span 2+ machines — exact-seat only).
+        # Sole-box fleets still allow siblings. Giveup inheritance stays in
         # nick_in_giveup_seats; FIX seats use exact nick stamp (FR #4604).
         # FR #9480: multi-machine author_seats → exact-seat only (skip sibling).
         if task == "MRB":
-            if mrb_multi_machine_authors:
+            if mrb_exact_seat_only:
                 continue
             if author_mid and me_mid and author_mid == me_mid:
-                if _other_machine_live(author_mid):
+                if _other_machine_free(author_mid):
                     return True
             continue
         # UAT (FR #4336): recycled sole successor inherits dead author exclusion.
@@ -10693,12 +10761,6 @@ def review_blocked_for_author(
         # UAT sibling seat on the same machine: block when another machine has a viable live seat.
         if author_p and me_p:
             if author_mid == me_mid:
-                free_set = live if free is None else free
-                free_l = {
-                    (canonical_worker_nick(x) or x or "").strip().lower()
-                    for x in free_set
-                    if str(x or "").strip()
-                }
                 for n in live:
                     n_c = (canonical_worker_nick(n) or n or "").strip()
                     if not n_c or _seat_gave_up_uat(n_c):
@@ -11932,7 +11994,10 @@ def mrb_yields_to_older_fr(
         if row_blocked_for_machine(row, nick):
             continue
         try:
-            if review_blocked_for_author(row, nick, live, ledger=ledger):
+            # FR #9478: pass free= so MRB soft machine-id matches offer_focus_top.
+            if review_blocked_for_author(
+                row, nick, live, ledger=ledger, free=free_idle
+            ):
                 continue
         except Exception:
             pass
@@ -13518,6 +13583,7 @@ def offer_top(
             pick_i = None
             i = 0
             live = live_seat_nicks(home)
+            free = free_seat_nicks(home, live)  # FR #9478 soft machine-id
             while i < len(doc.get("unaccepted") or []):
                 row = doc["unaccepted"][i]
                 if (
@@ -13661,7 +13727,7 @@ def offer_top(
                 row_eff = enrich_review_author_fields(doc, row)
                 led = ledger_load(home)
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
-                    row_eff, (nick or "").strip(), live, ledger=led
+                    row_eff, (nick or "").strip(), live, ledger=led, free=free
                 ):
                     i += 1
                     continue
@@ -14405,15 +14471,17 @@ def _mrb_idle_block_reason(
     nick: str,
     live: set[str],
     ledger: dict | None = None,
+    *,
+    free: set[str] | None = None,
 ) -> str:
-    """Why an idle seat cannot take this MRB ('' = eligible). FR #5163."""
+    """Why an idle seat cannot take this MRB ('' = eligible). FR #5163 / #9478."""
     if _canon_task(row) != "MRB":
         return "not-mrb"
     if row_needs_human(row, nick):
         return "needs_human"
     if row_blocked_for_machine(row, nick):
         return "machine"
-    if review_blocked_for_author(row, nick, live, ledger=ledger):
+    if review_blocked_for_author(row, nick, live, ledger=ledger, free=free):
         return "author"
     if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
         return "nack-cooldown"
@@ -14906,14 +14974,45 @@ def author_touch_count(row: dict, nick: str) -> int:
     return 1
 
 
-def mrb_offer_nick(row: dict, candidates, live: set[str]) -> str:
-    """First candidate that is not an exact author seat (fresh recycled ids qualify)."""
+def mrb_offer_nick(
+    row: dict,
+    candidates,
+    live: set[str],
+    *,
+    free: set[str] | None = None,
+) -> str:
+    """First candidate that is not an exact author seat (fresh recycled ids qualify).
+
+    FR #9478: optional ``free`` softens same-machine MRB block (busy other-machine
+    does not strand siblings). Prefer cross-machine candidates first.
+    """
     live_set = set(live or set())
-    for raw in candidates or []:
+    ordered = list(candidates or [])
+    # FR #9478: prefer cross-machine reviewers ahead of same-machine siblings.
+    author_mids: set[str] = set()
+    for a in row_author_seats(row):
+        p = bobreport.parse_seat_nick(a)
+        if p:
+            author_mids.add(bobreport.fold_machine_id(p[0]))
+
+    def _cross_key(raw: object) -> tuple:
+        nick = (canonical_worker_nick(str(raw)) or str(raw) or "").strip()
+        p = bobreport.parse_seat_nick(nick) if nick else None
+        mid = bobreport.fold_machine_id(p[0]) if p else ""
+        same = 1 if mid and mid in author_mids else 0
+        return (same, nick.lower())
+
+    try:
+        ordered = sorted(ordered, key=_cross_key)
+    except Exception:
+        pass
+    for raw in ordered:
         nick = (canonical_worker_nick(str(raw)) or str(raw) or "").strip()
         if not nick:
             continue
-        if review_blocked_for_author(row, nick, live_set | {nick}):
+        if review_blocked_for_author(
+            row, nick, live_set | {nick}, free=free
+        ):
             continue
         return nick
     return ""
