@@ -44,6 +44,9 @@ try { Invoke-Command -Session $s -ScriptBlock { <# read-only checks #> } }
 finally { Remove-PSSession $s }
 ```
 
+If the session cannot be opened (Test-WSMan / PSSession error), see `bobiverse-jeeves-agent-winrm`; report
+the machine as unreachable rather than guessing its state.
+
 ## Rules
 
 - **Read-only by default.** Observe, then report. No `!assign`, `!focus`, `!ignore`, queue/outbox edits,
