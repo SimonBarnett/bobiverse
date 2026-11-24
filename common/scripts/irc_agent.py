@@ -815,6 +815,67 @@ def save_outbox_pos(outbox: Path, pos: int) -> None:
     outbox_pos_path(outbox).write_text(str(int(pos)) + "\n", encoding="utf-8")
 
 
+def ear_lock_path(home: Path, nick: str) -> Path:
+    """Advisory lock file for single-instance bob-ear per home/nick (FR #9743)."""
+    return home / f"ear.{nick}.lock"
+
+
+def _process_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still alive (cross-platform)."""
+    try:
+        # os.kill(pid, 0) sends signal 0 which does nothing but checks if process exists.
+        # Raises OSError if process does not exist or we lack permission.
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def acquire_ear_lock(home: Path, nick: str) -> bool:
+    """Create advisory lock file with PID. Return True if acquired; False if duplicate exists.
+
+    Exits with code 3 if a duplicate is detected (another instance already holds the lock).
+    """
+    lock_file = ear_lock_path(home, nick)
+    self_pid = os.getpid()
+
+    # Try to read existing lock
+    if lock_file.exists():
+        try:
+            existing_pid_str = lock_file.read_text(encoding="utf-8").strip()
+            existing_pid = int(existing_pid_str)
+            # Check if the existing process is still alive
+            if _process_alive(existing_pid):
+                # Process exists and is a duplicate ear
+                info(
+                    f"ERROR duplicate bob-ear lock found: ear.{nick}.lock "
+                    f"held by PID {existing_pid} (this PID={self_pid})"
+                )
+                sys.exit(3)  # Exit with code 3 for duplicate instance
+            # else: Process is dead; we can take the lock
+        except (ValueError, OSError):
+            # Lock file exists but is unreadable; try to overwrite
+            pass
+
+    # Write our PID to the lock file
+    try:
+        lock_file.write_text(str(self_pid) + "\n", encoding="utf-8")
+        return True
+    except OSError as exc:
+        info(f"WARN ear lock write failed {type(exc).__name__}: {lock_file}")
+        return False
+
+
+def release_ear_lock(home: Path, nick: str) -> None:
+    """Remove advisory lock file when shutting down (FR #9743)."""
+    lock_file = ear_lock_path(home, nick)
+    try:
+        if lock_file.exists():
+            lock_file.unlink()
+    except OSError:
+        pass
+
+
 def is_enospc(exc: BaseException) -> bool:
     """True for disk-full OSError (errno 28 / WinError 112|39) — FR #8205 / #7896."""
     if not isinstance(exc, OSError):
@@ -6083,8 +6144,25 @@ class Client:
         why = (trailing or "").strip().replace("\n", " ")[:80] or "Cannot send to channel"
         info(f"WARN outbox/send ERR_CANNOTSENDTOCHAN {cmd} {ch}: {why}")
 
+    def irc_live_for_outbox(self) -> bool:
+        """Check if IRC is live enough to drain outbox (FR #9743).
+
+        Requires: socket + joined + not dead/stop.
+        A disconnected/dead ear must not advance outbox.pos.
+        """
+        return (
+            self.sock is not None
+            and self.joined.is_set()
+            and not self.dead.is_set()
+            and not self.stop.is_set()
+        )
+
     def _drain_outbox_path(self, path: Path) -> list[str]:
         if self.sock is None or not path.exists():
+            return []
+        # FR #9743: only proceed with outbox draining if IRC is live (socket + joined + not dead/stop).
+        # A disconnected/dead ear must not advance outbox.pos to EOF.
+        if not self.irc_live_for_outbox():
             return []
         last = load_outbox_pos(path)
         # FR #5826: one-shot / pending sweep of already-consumed CRED-SEAL ciphertext.
@@ -6175,7 +6253,9 @@ class Client:
                     "WARN outbox CRED-SEAL scrub error "
                     f"{type(exc).__name__} path={path.name}"
                 )
-        if new_last != last:
+        # FR #9743: only save pos if IRC is still live (commit-on-success).
+        # OSError or disconnection during send loop prevents pos advance for retry.
+        if new_last != last and self.irc_live_for_outbox():
             save_outbox_pos(path, new_last)
         return sent
 
@@ -6664,6 +6744,10 @@ def main() -> None:
         info(f"WARN live-tree guard skipped {type(e).__name__}")
     clean_crashed_priors(args.nick, home, once=bool(args.once))
     c = Client(args)
+    # FR #9743: single-instance lock per home/nick to prevent duplicate bob-ears.
+    # acquire_ear_lock will exit with code 3 if a duplicate is detected.
+    if not acquire_ear_lock(c.home, args.nick):
+        info(f"WARN ear lock could not be acquired: {c.home}/ear.{args.nick}.lock")
 
     def _stop(*_a: object) -> None:
         c.request_shutdown(":signal")
@@ -6671,13 +6755,17 @@ def main() -> None:
     signal.signal(signal.SIGINT, _stop)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _stop)
-    if args.once:
-        try:
-            c.session()
-        except TimeoutError:
-            sys.exit(1)
-        return
-    c.run_forever()
+    try:
+        if args.once:
+            try:
+                c.session()
+            except TimeoutError:
+                sys.exit(1)
+            return
+        c.run_forever()
+    finally:
+        # FR #9743: release lock on shutdown
+        release_ear_lock(c.home, args.nick)
 
 
 if __name__ == "__main__":
