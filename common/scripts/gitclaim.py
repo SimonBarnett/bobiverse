@@ -962,6 +962,18 @@ _NONE_DEPENDS_VALUE_RE = re.compile(r"^\(none\)$", re.I)
 _DEPENDS_VALUE_ANNOTATION_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 
 
+
+# FR #9548 / MRB #9551: bare annotation tokens beside a valid #N (Digest:…, see, digest,
+# BOB-THEME slugs). True garbage (garbage-token) still fails BOB-D5 even when #N present.
+_DEPENDS_ANNOTATION_SOFT_RE = re.compile(
+    r"(?i)^(Digest:.*|see|digest|BOB-[A-Z0-9][A-Z0-9_-]*)$"
+)
+
+
+def _is_depends_annotation_soft_token(tok: str) -> bool:
+    s = (tok or "").strip()
+    return bool(s) and _DEPENDS_ANNOTATION_SOFT_RE.match(s) is not None
+
 def _depends_on_value_tokens(value: str) -> list[str]:
     """Split a Depends-on value into issue-ref tokens; drop ``(...)`` / ``[...]`` notes."""
     cleaned = _DEPENDS_VALUE_ANNOTATION_RE.sub(" ", value or "")
@@ -1017,11 +1029,16 @@ def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
 
 
 def _row_depends_on_has_bad_ref(row: dict) -> bool:
-    """BOB-D5: True when a Depends-on line has a token that is not ``#N`` / ``owner/repo#N``.
+    """BOB-D5: True when a Depends-on line has only non-``#N`` / ``owner/repo#N`` tokens.
 
     ``(none)`` (whole value) and empty lines are fine. Relative ``#N`` without a
     home ``row["repo"]`` counts as unresolved. Self-references are ignored (not bad).
     Parenthetical / bracket annotations after a ref (FR #9434) are stripped first.
+
+    FR #9548 ``bob_g1_depends_annotation_soft``: when a line already has at least one
+    valid issue ref, trailing bare annotation tokens (e.g. ``Digest: BOB-TRAY-UI``
+    without parentheses, or ``see digest``) are treated as notes — not
+    ``depends-unresolved``. A line that is *only* junk still fails closed.
     """
     if not isinstance(row, dict) or _canon_task(row) != "FR":
         return False
@@ -1036,12 +1053,15 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
         value = (m.group(1) or "").strip()
         if not value or _NONE_DEPENDS_VALUE_RE.match(value):
             continue
+        line_good = False
+        line_bad = False
         for tok in _depends_on_value_tokens(value):
             qm = _QUALIFIED_DEPENDS_ISSUE_RE.match(tok)
             if qm:
                 pair = (_repo_key(qm.group(1)), int(qm.group(2)))
                 if self_num is not None and pair[0] == home_repo and pair[1] == self_num:
                     continue
+                line_good = True
                 continue
             rm = _RELATIVE_DEPENDS_ISSUE_RE.match(tok)
             if rm:
@@ -1049,7 +1069,15 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
                     return True
                 if self_num is not None and int(rm.group(1)) == self_num:
                     continue
+                line_good = True
                 continue
+            if _is_depends_annotation_soft_token(tok):
+                continue
+            line_bad = True
+        # FR #9548 / MRB #9551: annotation soft-tokens are ignored; any other junk
+        # fails closed even when a valid #N is present (BOB-D5 / fr8809).
+        # Junk-only (no valid ref) also fails closed.
+        if line_bad:
             return True
     return False
 
@@ -1119,6 +1147,9 @@ def row_depends_open_reason(
     - FR #9418: when the digest is OPEN on GitHub but absent from the local queue,
       pass ``issue_fetch`` / ``depends_issue_fetch_checker`` so G1 still sees
       fr-digest / hold (else live OPEN wrongly becomes ``depends-open``).
+    - FR #9548: trailing bare annotation tokens beside a valid ``#N`` must not
+      short-circuit as ``depends-unresolved`` before G1 soft-allow (see
+      ``_row_depends_on_has_bad_ref`` / ``bob_g1_depends_annotation_soft``).
     """
     if _canon_task(row) != "FR":
         return None
