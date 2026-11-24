@@ -24,8 +24,10 @@ depends_on: []
    issues go to `SimonBarnett/bobiverse`. Intake: `Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>`.
 3. **One issue per issue.** One root cause, one acceptance row. Split anything with "and also".
 4. **Body:** what / where / evidence / fix. Evidence block = exact log lines, run ids, SHAs, timestamps with
-   zone, and how to reproduce. Separate observed facts from guesses. Add `require_machine: <machine>` only
-   when it truly must run there.
+   zone, and how to reproduce. Separate observed facts from guesses. Add `require_machine: <machine>` / a
+   `needs-<machine>` label **only** for true host-action work. Implement-anywhere chair/worker **code** must
+   not get `needs-*` (FR #9637). **CAST IRON #9708:** if you later `!unpin` to `any`, remove every `needs-*`
+   label in the same turn — never leave `needs-*` + `rm=any`.
 5. **Label** `feature-request` for FRs. Add `hold` only for parked/phase-gated work.
 6. **Report** the URL. Do not assign or pin it yourself.
 
@@ -66,3 +68,12 @@ Rules:
 2. Walrus child waits until code child is CLOSED/merged tip.
 3. If a seat NACK/GIVEUP is `needs-walrus` / `require_machine=walrus`, the **Jeeves agent** does the walrus action (receipt + Slab/Si-yes) — do not leave ACK→GIVEUP thrash on other machines.
 4. MONITORING on needs-walrus NACK: stop wrong-machine re-offer; ensure this split exists; drive walrus child via Jeeves-agent/Slab — do not only comment.
+
+## remove needs-* + !unpin — CAST IRON (FR #9708)
+
+| Work kind | Labels | Pin |
+|---|---|---|
+| Implement-anywhere (chair/worker **code**) | Remove every `needs-<machine>` | `!unpin` → `require_machine=any` |
+| True host action (install/heal on chair host / shop) | Keep `needs-<machine>` | Keep `!pin` / `require_machine=<machine>` |
+
+**Same turn:** never leave `needs-*` on an issue unpinned to `any` — that pair causes ACK→GIVEUP `reason=require_machine=<machine>` and wrong-shop re-offer loops (#9628/#9634 class; tip gate #9664). Never `!unpin` while a `needs-*` label remains on host-action work.
