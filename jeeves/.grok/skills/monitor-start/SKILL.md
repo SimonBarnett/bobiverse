@@ -68,13 +68,20 @@ After the script checks, if BOB-D / BOB-G product is on tip, open and follow `.g
 Title: short delay symptom. Body: what / where / evidence (script JSON / exit) / fix. De-dup first. Never print secrets.
 
 
-## Non-chair hosts (FR #8579)
+## Non-chair hosts (FR #8579 / #8866 / #9557)
 
 Monitor may run on a worker box (e.g. redqueen) that has no local `~/.jeeves/queue.json`
 and no ircJeeves/BobCallback services. Those local probes **soft-pass** when live
 `GET https://bob.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
-`non_chair_overlay` in the JSON. Prefer the ionos chair host for local service truth.
+`non_chair_overlay` in the JSON. Prefer the walrus chair host for local service truth.
 Start-JeevesMonitor warns when the local queue file is absent; it does not refuse.
+
+**FR #9557:** an empty or stale local ops home (present `queue.json` with zero rows,
+or digest that misses live ACC/doing seats) must prefer the live report for
+`idle_seats` seat paint, or soft-skip EXIT 0 with `skipped=stale_local_home` when
+the report is unusable — never EXIT 1 false starve from Admin `~/.jeeves`. Optional
+env `JEEVES_MONITOR_DIGEST_HOME` (UNC/shared chair digest) overrides seat-local
+`BOB_DIGEST_HOME` for token-free checks.
 
 ## Do not
 

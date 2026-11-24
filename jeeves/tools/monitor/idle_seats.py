@@ -9,6 +9,7 @@ recycle free DeepSeek seats as hung.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -298,22 +299,29 @@ def _live_report_unusable(doc, overlay) -> bool:
     return False
 
 
-def _check_live_report(chair, digest, qpath):
-    """FR #8866: local queue absent. One live /report, no chair-home side effects."""
+def _check_live_report(chair, digest, qpath, *, require_missing_queue: bool = True, report=None):
+    """FR #8866 / #9557: prefer one live /report when local queue is missing or stale."""
     import _common as common
 
     findings = []
     notes = []
-    doc = common.fetch_live_report()
+    doc = report if isinstance(report, dict) else common.fetch_live_report()
     overlay = common.non_chair_overlay(
         chair,
         digest,
-        require_missing_queue=True,
+        require_missing_queue=require_missing_queue,
         report=doc,
         fetch=False,
     )
+    # FR #9557: when local queue exists but is stale, overlay may be None under
+    # require_missing_queue — still accept a fresh structured report.
+    usable_overlay = overlay if overlay is not None else (
+        {"non_chair_overlay": True, "stale_local_bypass": True}
+        if (not require_missing_queue and doc is not None and common.live_report_is_fresh(doc))
+        else None
+    )
     url = common.live_report_url()
-    if _live_report_unusable(doc, overlay):
+    if _live_report_unusable(doc, usable_overlay):
         findings.append("local queue missing; live report unavailable/stale/incomplete")
         return (
             {
@@ -335,6 +343,7 @@ def _check_live_report(chair, digest, qpath):
             },
             EXIT_FINDING,
         )
+    overlay = usable_overlay
     queue = doc["queue"]
     rows = [r for r in queue["unaccepted"] if isinstance(r, dict)]
     machines, dropped = _drop_stale_worker_machines(doc["machines"])
@@ -425,11 +434,66 @@ def collect_under_cap(dig: dict, offerable: int, default_cap: int = 2) -> list:
     return found
 
 def check(args):
+    import _common as common
+
     chair, digest = resolve_homes(args)
     qpath = resolve_queue_path(chair, digest)
     # FR #8866: missing local queue is the non-chair case (same resolver as queue_flow).
     if not qpath.is_file():
         return _check_live_report(chair, digest, qpath)
+    # FR #9557: present but empty/stale local home (typical non-chair ~/.jeeves)
+    # must not paint false idle/starve vs the live walrus digest.
+    live_doc = None
+    with contextlib.suppress(Exception):
+        live_doc = common.fetch_live_report()
+    stale_why = ""
+    with contextlib.suppress(Exception):
+        stale_why = common.local_ops_stale_vs_live_report(chair, digest, live_doc) or ""
+    if stale_why:
+        # Prefer live report for seats when usable; else soft-skip EXIT 0 (no false starve).
+        probe_overlay = (
+            {"non_chair_overlay": True}
+            if (live_doc is not None and common.live_report_is_fresh(live_doc))
+            else None
+        )
+        if not _live_report_unusable(live_doc, probe_overlay):
+            payload, code = _check_live_report(
+                chair,
+                digest,
+                qpath,
+                require_missing_queue=False,
+                report=live_doc,
+            )
+            payload["stale_local_home"] = stale_why
+            payload["source"] = "live_report_stale_local"
+            notes = list(payload.get("notes") or [])
+            notes.append(
+                f"stale_local_home={stale_why}; preferred live /bob/v1/report for seats (FR #9557)"
+            )
+            payload["notes"] = notes
+            return payload, code
+        return (
+            {
+                "ok": True,
+                "skipped": "stale_local_home",
+                "stale_local_home": stale_why,
+                "idle_seats": [],
+                "unaccepted_count": 0,
+                "offerable_for_live_seats": 0,
+                "pending_offer_count": 0,
+                "healthy_idle_empty_offerable": False,
+                "queue_needs_human_only": False,
+                "notes": [
+                    f"skipped=stale_local_home ({stale_why}); "
+                    "local ops empty/stale and live report unusable (FR #9557)"
+                ],
+                "digest_path": str(digest / "digest.json"),
+                "queue_path": str(qpath),
+                "findings": [],
+                "source": "skipped_stale_local",
+            },
+            EXIT_OK,
+        )
     findings = []
     notes = []
     dig = _load_json(digest / "digest.json") or {}
