@@ -789,6 +789,62 @@ def _drain_pending_wakes(
     return woke_n, skip_n, last_wake_at
 
 
+def _ensure_common_scripts_path() -> None:
+    """Put repo ``common/scripts`` on sys.path (monitor runs from tools/monitor)."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    cur = _Path(__file__).resolve().parent
+    for _ in range(8):
+        root_scripts = cur / "common" / "scripts"
+        if root_scripts.is_dir():
+            s = str(root_scripts)
+            if s not in _sys.path:
+                _sys.path.insert(0, s)
+            return
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+
+
+def _maybe_auto_close_fr_digest(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """FR #9552: when an issue closes, close unheld fr-digest parents if last child."""
+    if str(row.get("kind") or "").strip().lower() != "issue":
+        return []
+    repo = str(row.get("repo") or "").strip()
+    try:
+        number = int(row.get("number"))
+    except (TypeError, ValueError):
+        return []
+    if not repo or "/" not in repo or number < 1:
+        return []
+    body = row.get("body")
+    if body is None and isinstance(row.get("issue"), dict):
+        body = row["issue"].get("body")
+    try:
+        _ensure_common_scripts_path()
+        import fr_digest_auto_close as fac
+
+        return fac.on_issue_closed(repo, number, body if isinstance(body, str) else None)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"WARN fr-digest auto-close: {type(exc).__name__}")
+        return []
+
+
+def _maybe_reconcile_fr_digests(repos: set[str]) -> list[dict[str, Any]]:
+    """FR #9552: poll/resync reconcile open fr-digest issues with no open children."""
+    out: list[dict[str, Any]] = []
+    try:
+        _ensure_common_scripts_path()
+        import fr_digest_auto_close as fac
+
+        for repo in sorted(r for r in repos if isinstance(r, str) and "/" in r):
+            out.extend(fac.reconcile_repo(repo))
+    except Exception as exc:  # noqa: BLE001
+        _log(f"WARN fr-digest reconcile: {type(exc).__name__}")
+    return out
+
+
 def ingest_github_webhook(
     home: Path | str,
     event: str,
@@ -802,6 +858,12 @@ def ingest_github_webhook(
     row = close_event_from_github_webhook(event, payload, delivery_id=delivery_id)
     if not row:
         return {"ok": True, "accepted": False, "reason": "not_a_close"}
+    # Prefer issue body from webhook payload when present (FR #9552).
+    if str(row.get("kind") or "") == "issue" and isinstance(payload, dict):
+        issue_blob = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
+        if issue_blob is not None:
+            row["body"] = str(issue_blob.get("body") or "")
+            row["issue"] = issue_blob
     digest = Path(digest_home or home)
     chair = Path(chair_home or home)
     focus_path = resolve_focus_path(chair, digest)
@@ -838,6 +900,8 @@ def ingest_github_webhook(
     except WakeBriefError as exc:
         return {"ok": False, "accepted": False, "reason": "brief", "error": type(exc).__name__}
     pending[key] = row
+    # FR #9552: last-child close of an fr-digest (best-effort; never blocks wake).
+    digest_close = _maybe_auto_close_fr_digest(row)
     woke_n, skip_n, last_wake_at = _drain_pending_wakes(
         ops, seen=seen, pending=pending, now=now, last_wake_at=last_wake_at
     )
@@ -851,7 +915,7 @@ def ingest_github_webhook(
         last_wake_at=last_wake_at,
         extra={"last_webhook_at": now, "token_source": str(state.get("token_source") or "")},
     )
-    return {
+    out = {
         "ok": True,
         "accepted": True,
         "key": key,
@@ -859,6 +923,9 @@ def ingest_github_webhook(
         "wake_skips": skip_n,
         "pending_count": len(pending),
     }
+    if digest_close:
+        out["fr_digest_auto_close"] = digest_close
+    return out
 
 
 def check(args):
@@ -963,6 +1030,7 @@ def check(args):
     if waiting:
         events = [ev for ev in events if _event_ticket_id(ev) in waiting]
     closed = []
+    digest_close_results: list[dict[str, Any]] = []
     for ev in events:
         if _already_handled(seen, pending, ev):
             continue
@@ -975,6 +1043,11 @@ def check(args):
         row.setdefault("source", "poll")
         closed.append(row)
         pending[key] = row
+        # FR #9552: child close -> maybe close fr-digest parent.
+        digest_close_results.extend(_maybe_auto_close_fr_digest(row))
+    # FR #9552: reconcile open digests (covers children closed without Depends-on body).
+    if poll_outcome in {"ok", "fixture", "partial"} and focused:
+        digest_close_results.extend(_maybe_reconcile_fr_digests(focused))
     last_wake_at = state.get("last_wake_at")
     woke_n, skip_n, last_wake_at = _drain_pending_wakes(
         ops, seen=seen, pending=pending, now=now, last_wake_at=last_wake_at
@@ -1009,29 +1082,32 @@ def check(args):
     if closed:
         findings.append(f"{len(closed)} newly closed ticket(s) on watched/focused repos")
         remediation.append("report via intake only; do not enqueue or assign")
+    payload = {
+        "ok": ok,
+        "closed": closed,
+        "closed_count": len(closed),
+        "repos": sorted(repos),
+        "waiting_on": sorted(waiting),
+        "woke": woke_n,
+        "wake_skips": skip_n,
+        "pending_count": len(pending),
+        "last_poll_at": last_poll_at,
+        "last_poll_ok_at": last_poll_ok_at,
+        "last_poll_error": last_poll_error,
+        "poll_outcome": poll_outcome,
+        "poll_failed_repos": list(poll_meta.get("failed_repos") or []),
+        "last_wake_at": last_wake_at,
+        "wake_transport": _wake_transport_name(),
+        "token_source": token_source,
+        "ticket_closure_token_source": token_source,
+        "no_token_warned": warned,
+        "findings": findings,
+        "remediation": remediation,
+    }
+    if digest_close_results:
+        payload["fr_digest_auto_close"] = digest_close_results
     return (
-        {
-            "ok": ok,
-            "closed": closed,
-            "closed_count": len(closed),
-            "repos": sorted(repos),
-            "waiting_on": sorted(waiting),
-            "woke": woke_n,
-            "wake_skips": skip_n,
-            "pending_count": len(pending),
-            "last_poll_at": last_poll_at,
-            "last_poll_ok_at": last_poll_ok_at,
-            "last_poll_error": last_poll_error,
-            "poll_outcome": poll_outcome,
-            "poll_failed_repos": list(poll_meta.get("failed_repos") or []),
-            "last_wake_at": last_wake_at,
-            "wake_transport": _wake_transport_name(),
-            "token_source": token_source,
-            "ticket_closure_token_source": token_source,
-            "no_token_warned": warned,
-            "findings": findings,
-            "remediation": remediation,
-        },
+        payload,
         EXIT_OK if ok else EXIT_FINDING,
     )
 

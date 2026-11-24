@@ -5330,6 +5330,15 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                         ] = _utc_now()
 
                     _ledger_update(home, _fd)
+                # FR #9552: last-child close of an unheld fr-digest (ticket-closure peer).
+                with contextlib.suppress(Exception):
+                    import fr_digest_auto_close as _fac
+
+                    _fac.on_issue_closed(
+                        str(claim.repo or ""),
+                        str(claim.id or "").lstrip("#"),
+                        str(getattr(claim, "body", "") or ""),
+                    )
             return changed
     except TimeoutError:
         _spool_pending(home, claim)
@@ -19289,7 +19298,20 @@ def resync_from_github(
 
                 with contextlib.suppress(OSError):
                     _ledger_update(home, _clear_stale_done_stamps)
-            return {
+            # FR #9552: reconcile open fr-digest issues with no remaining open children.
+            fr_digest_closed: list[dict] = []
+            with contextlib.suppress(Exception):
+                import fr_digest_auto_close as _fac
+
+                for _repo in list(fetched or []):
+                    if not isinstance(_repo, str) or "/" not in _repo:
+                        continue
+                    fr_digest_closed.extend(
+                        r
+                        for r in (_fac.reconcile_repo(_repo) or [])
+                        if isinstance(r, dict) and r.get("action") == "closed"
+                    )
+            result = {
                 "ok": True,
                 "unaccepted": len(doc["unaccepted"]),
                 "added": added,
@@ -19305,6 +19327,9 @@ def resync_from_github(
                 "failed": list(failed),
                 "unchanged": list(unchanged),
             }
+            if fr_digest_closed:
+                result["fr_digest_auto_close"] = fr_digest_closed
+            return result
     except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
 
