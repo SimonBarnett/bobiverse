@@ -3348,6 +3348,19 @@ class Client:
         if dec is None:
             return True
         info(f"INFO startworker nick={who} kind={dec.kind or '-'} ok={dec.ok} reason={dec.reason} mode={dec.mode} machine={local} chan={chan or 'pm'}")
+        # FR #9556: surface tray_session_missing on digest / !stuck (no needs_human).
+        try:
+            if (not dec.ok) and startworker.is_tray_session_missing_nack(dec.reason, dec.line):
+                bobreport.set_machine_tray_session_missing(
+                    self.home,
+                    local,
+                    reason=dec.reason,
+                    text=dec.line,
+                )
+            elif dec.ok and local:
+                bobreport.clear_machine_tray_session_missing(self.home, local)
+        except Exception as stamp_exc:
+            info(f"WARN startworker tray_session_missing stamp failed: {type(stamp_exc).__name__}: {stamp_exc}")
         if dec.reason == "unverified":
             try:
                 self._whois_hint(who)

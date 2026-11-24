@@ -911,6 +911,9 @@ def depends_gate_reason(
 ) -> str | None:
     """FR #9455 ``bob_g1_shared_gate``: one Depends-on reason for offer, assign, stuck.
 
+    FR #9553: also the shared gate for ``!list`` / digest ``offerable_count`` /
+    monitor ungated counts (token-free when ``issue_open`` is unset).
+
     Returns ``depends-held`` / ``depends-open`` / ``depends-unresolved`` / None.
     Prefer this over calling ``row_depends_open_reason`` and
     ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
@@ -1567,15 +1570,41 @@ def format_unaccepted_list(
 ) -> list[str]:
     """PM lines for !list: optional one summary + one line per job + optional more.
 
-    Updated FR #208: no header spam; default max 10 jobs; ``N unaccepted (showing M)``.
+    Updated FR #208: no header spam; default max 10 jobs; `N unaccepted (showing M)`.
+    FR #9553: omit Depends-on gated FRs (`depends_gate_reason`) so !list matches
+    digest `offerable_count` / !assign; `!stuck` still surfaces those rows.
     """
-    rows = ordered_unaccepted(home, list(load_unaccepted(home)))
+    try:
+        doc = load_queue(home)
+    except Exception:
+        doc = {
+            "v": 1,
+            "unaccepted": list(load_unaccepted(home)),
+            "accepted": [],
+            "done": [],
+        }
+    if not isinstance(doc, dict):
+        doc = {"v": 1, "unaccepted": [], "accepted": [], "done": []}
+    rows = ordered_unaccepted(home, list(doc.get("unaccepted") or []))
     if task_filter:
         tf = task_filter.upper()
         rows = [r for r in rows if str(r.get("task") or "").upper() == tf]
     if repo_filter:
         rf = repo_filter.lower()
         rows = [r for r in rows if str(r.get("repo") or "").lower() == rf]
+    try:
+        open_keys = open_fr_issue_keys(doc)
+    except Exception:
+        open_keys = set()
+    rows = [
+        r
+        for r in rows
+        if not (
+            isinstance(r, dict)
+            and _canon_task(r) == "FR"
+            and depends_gate_reason(r, doc, open_keys=open_keys)
+        )
+    ]
     if not rows:
         return ["queue empty"]
     total = len(rows)
@@ -1588,13 +1617,15 @@ def format_unaccepted_list(
         out.append(f"{total} unaccepted (showing {len(show)})")
     elif total > 1:
         out.append(f"{total} unaccepted (showing {len(show)})")
-    # single job: no summary spam ΓÇö just the job line
+    # single job: no summary spam - just the job line
     for i, row in enumerate(show, start=1):
         out.append(format_list_line(i, row, line_max=line_max, now=now))
     more = total - len(show)
     if more > 0:
         out.append(f"+{more} more; !list all")
     return out
+
+
 
 
 def parse_accept(body: str) -> tuple[str, str, str] | None:
@@ -3416,6 +3447,206 @@ def apply_require_machine_giveup_stamp(row: dict, reason: str) -> str:
     return mid
 
 
+# FR #9554 bob_host_heal_tipform_auto_pin: tipform / tray-not-logged-in / engine.alive
+# host-heal GIVEUP churn must pin require_machine (not needs_human) after >=2 outcomes.
+_HOST_HEAL_TIPFORM_REASON_RE = re.compile(
+    r"(?i)\b(?:tipform|tray-not-logged-in|tray not logged|nobody logged in with"
+    r"|bob tray running|engine\.alive|host-heal|host heal|start-bobfleetray"
+    r"|start-bobtray|interactive tipform|reload/?restart engine)\b"
+)
+_HOST_HEAL_TIPFORM_ROW_RE = re.compile(
+    r"(?i)\b(?:tipform|tray-not-logged-in|nobody logged in with the bob tray"
+    r"|engine\.alive|host tray|host-heal|start-bobfleetray|start-bobtray"
+    r"|interactive tipform|bob-tray / ear|workers=0)\b"
+)
+_HOST_HEAL_FLEET_MACHINES = frozenset(
+    {"marchhare", "flamingo", "redqueen", "walrus", "ionos"}
+)
+_HOST_HEAL_TITLE_MACHINE_RE = re.compile(
+    r"(?im)^\s*([a-z0-9][a-z0-9_.-]*)\s*:"
+)
+_HOST_HEAL_HOST_LINE_RE = re.compile(
+    r"(?im)^\s*Host\s*:\s*([a-z0-9][a-z0-9_.-]*)\b"
+)
+
+
+def is_host_heal_tipform_reason(reason: str) -> bool:
+    """True when a GIVEUP/NACK reason is tipform / tray / engine.alive host-heal (FR #9554)."""
+    text = str(reason or "").strip()
+    if not text:
+        return False
+    return bool(_HOST_HEAL_TIPFORM_REASON_RE.search(text))
+
+
+def row_is_host_heal_tipform(row: dict) -> bool:
+    """True when the queue row title/body looks like tipform/tray host-heal (FR #9554)."""
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return False
+    blob = f"{row.get('title') or ''}\n{row.get('body') or ''}\n{row.get('line') or ''}"
+    return bool(_HOST_HEAL_TIPFORM_ROW_RE.search(blob))
+
+
+def _normalize_host_heal_machine(raw: str) -> str:
+    mid = fold_chair_host(
+        bobreport.fold_machine_id(bobreport.normalize_machine_id(raw) or raw)
+    )
+    mid = str(mid or "").strip().lower()
+    if not mid or mid in _REQUIRE_MACHINE_NON_MACHINE or _is_retired_require_machine(mid):
+        return ""
+    if mid not in _HOST_HEAL_FLEET_MACHINES and mid not in {
+        bobreport.fold_machine_id(x) for x in _HOST_HEAL_FLEET_MACHINES
+    }:
+        # Still allow any non-retired fleet id from an explicit pin/reason.
+        if not re.match(r"^[a-z0-9][a-z0-9_.-]*$", mid):
+            return ""
+    return mid
+
+
+def infer_host_heal_machine(row: dict, reason: str = "") -> str:
+    """Machine id for tipform host-heal auto-pin, or '' (FR #9554).
+
+    Prefer GIVEUP ``require_machine=`` reason, then dedicated body pin / needs-
+    label, then ``Host:`` / leading ``<machine>:`` title for host-heal rows.
+    """
+    if not isinstance(row, dict):
+        return ""
+    mid = parse_require_machine_giveup_reason(reason)
+    if mid:
+        return _normalize_host_heal_machine(mid)
+    stamped = str(row.get("require_machine") or "").strip().lower()
+    if stamped and stamped not in {"*", "any", "none", "-"}:
+        got = _normalize_host_heal_machine(stamped)
+        if got:
+            return got
+    # Dedicated body line + needs-<mid> labels (works on bobiverse under FR #4512).
+    got = infer_require_machine(
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        labels=row.get("labels") or (),
+        line=str(row.get("line") or ""),
+        repo=str(row.get("repo") or ""),
+        ident=str(row.get("id") or ""),
+    )
+    if got:
+        return _normalize_host_heal_machine(got)
+    body = str(row.get("body") or "")
+    m = _HOST_HEAL_HOST_LINE_RE.search(body)
+    if m:
+        got = _normalize_host_heal_machine(m.group(1))
+        if got:
+            return got
+    title = str(row.get("title") or "")
+    m = _HOST_HEAL_TITLE_MACHINE_RE.match(title)
+    if m:
+        got = _normalize_host_heal_machine(m.group(1))
+        if got:
+            return got
+    # Bare fleet machine token in title for host-heal rows only.
+    if row_is_host_heal_tipform(row) or is_host_heal_tipform_reason(reason):
+        blob = f"{title}\n{body}".lower()
+        for cand in sorted(_HOST_HEAL_FLEET_MACHINES, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(cand)}\b", blob):
+                got = _normalize_host_heal_machine(cand)
+                if got:
+                    return got
+    return ""
+
+
+def _ensure_host_heal_pin_body_and_label(row: dict, mid: str) -> None:
+    """Append ``require_machine:`` body line + ``needs-<mid>`` queue label (FR #9554)."""
+    mid = str(mid or "").strip().lower()
+    if not mid:
+        return
+    body = str(row.get("body") or "")
+    pin_line = f"require_machine: {mid}"
+    if not _REQUIRE_MACHINE_PIN_LINE_RE.search(body):
+        body = (body.rstrip() + "\n\n" + pin_line + "\n") if body.strip() else pin_line + "\n"
+        row["body"] = _body_for_queue(body)
+    elif pin_line.lower() not in body.lower():
+        # Wrong machine line present — append the host-heal pin (operator path wins later).
+        row["body"] = _body_for_queue(body.rstrip() + "\n" + pin_line + "\n")
+    labs = row.get("labels")
+    if isinstance(labs, str):
+        labs = [labs]
+    elif not isinstance(labs, list):
+        labs = list(labs or [])
+    need = f"needs-{mid}"
+    labs_l = {str(x).strip().lower() for x in labs}
+    if need not in labs_l:
+        labs.append(need)
+        row["labels"] = labs
+
+
+def apply_host_heal_require_machine_stamp(
+    row: dict,
+    reason: str = "",
+    *,
+    nick: str = "",
+) -> str:
+    """FR #9554: after >=2 tipform/host-heal outcomes, pin require_machine (no needs_human).
+
+    Counts infra-soft outcomes (holder_bored) when the *row* is host-heal class.
+    Returns the stamped machine id, or '' when not yet at threshold / no machine.
+    """
+    if not isinstance(row, dict) or _canon_task(row) != "FR":
+        return ""
+    class_hit = is_host_heal_tipform_reason(reason) or row_is_host_heal_tipform(row)
+    if not class_hit:
+        return ""
+    mid = infer_host_heal_machine(row, reason=reason)
+    if not mid:
+        return ""
+    try:
+        hh = int(row.get("host_heal_giveup_count") or 0)
+    except (TypeError, ValueError):
+        hh = 0
+    hh += 1
+    row["host_heal_giveup_count"] = hh
+    try:
+        gc = int(row.get("giveup_count") or 0)
+    except (TypeError, ValueError):
+        gc = 0
+    threshold = int(GIVEUP_NEEDS_HUMAN_COUNT)
+    if hh < threshold and gc < threshold:
+        return ""
+    row["require_machine"] = mid
+    row["require_machine_operator"] = True
+    row["require_machine_host_heal"] = True
+    _ensure_host_heal_pin_body_and_label(row, mid)
+    # Divert: host console / infra — never park as needs_human for this class.
+    row.pop("needs_human", None)
+    if nick:
+        row["host_heal_pin_by"] = str(nick).strip()[:80]
+    return mid
+
+
+def clear_host_heal_require_machine_on_ack(row: dict, nick: str) -> bool:
+    """FR #9554: clear auto host-heal pin when the pinned machine's seat ACKs.
+
+    Operator ``!pin`` (no host-heal flag) is left alone; ``!unpin`` remains the
+    human clear path for those.
+    """
+    if not isinstance(row, dict):
+        return False
+    flag = row.get("require_machine_host_heal")
+    if isinstance(flag, bool):
+        if not flag:
+            return False
+    elif str(flag or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return False
+    mid = str(row.get("require_machine") or "").strip().lower()
+    if not mid or mid in {"*", "any", "none", "-"}:
+        row.pop("require_machine_host_heal", None)
+        return False
+    if not seat_matches_require_machine(nick, mid):
+        return False
+    row["require_machine"] = "any"
+    row.pop("require_machine_host_heal", None)
+    # Keep operator flag so FR #4512 does not re-soft-pin from title text; any = unpinned.
+    row["require_machine_operator"] = True
+    return True
+
+
 # FR #9469: GIVEUP blocked:depends-on / blocked-on / depends_unresolved with a
 # parseable issue ref must stamp a plain Depends-on: line on the issue body.
 _BLOCKED_DEPENDS_CUE_RE = re.compile(
@@ -3924,6 +4155,9 @@ def prepare_reopened_fr_row(
     for key in (
         "require_machine",
         "require_machine_operator",  # FR #6592
+        "require_machine_host_heal",  # FR #9554
+        "host_heal_giveup_count",
+        "host_heal_pin_by",
         "offered_to",
         "offered_ts",
         "offered_via",
@@ -6091,6 +6325,20 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #6592: operator !pin/!unpin flag must survive queue reload.
     if _is_operator_require_machine(row):
         out["require_machine_operator"] = "1"
+    # FR #9554: tipform host-heal auto-pin flag + counter must survive reload.
+    hh_flag = row.get("require_machine_host_heal")
+    if isinstance(hh_flag, bool):
+        if hh_flag:
+            out["require_machine_host_heal"] = "1"
+    elif str(hh_flag or "").strip().lower() in {"1", "true", "yes", "on"}:
+        out["require_machine_host_heal"] = "1"
+    try:
+        if row.get("host_heal_giveup_count") is not None:
+            out["host_heal_giveup_count"] = int(row.get("host_heal_giveup_count") or 0)
+    except (TypeError, ValueError):
+        pass
+    if row.get("host_heal_pin_by"):
+        out["host_heal_pin_by"] = str(row.get("host_heal_pin_by"))[:80]
     # FR #2939: one-shot announce when every live seat is self-UAT for repo UAT #0.
     if row.get("self_uat_escalated"):
         out["self_uat_escalated"] = True
@@ -12305,12 +12553,21 @@ def _note_seat_hold_unlocked(
         return
     # Keyword wins when set; else job["via"]; else offer (FR #4415 / FR #4115).
     via_s = str(via if via is not None else (job.get("via") or "offer")).strip().lower() or "offer"
+    repo = str(job.get("repo") or "")
+    task = str(job.get("task") or "")
+    ident = str(job.get("id") or "")
+    # FR #9558: one job key → one hold nick. Drop other seats before writing.
+    if repo and ident:
+        with contextlib.suppress(Exception):
+            _clear_job_seat_holds_unlocked(
+                home, repo, task, ident, except_nick=nick
+            )
     holds = _load_seat_holds_unlocked(home)
     holds[key] = {
         "nick": (canonical_worker_nick(nick) or nick or "").strip(),
-        "repo": str(job.get("repo") or ""),
-        "task": str(job.get("task") or ""),
-        "id": str(job.get("id") or ""),
+        "repo": repo,
+        "task": task,
+        "id": ident,
         "ts": str(job.get("offered_ts") or _utc_now()),
         # FR #4415: ``offer`` holds void when the queue row is gone; ``ack-missing``
         # (FR #4115) stays busy without a row until DONE/NACK/GIVEUP/QUIT.
@@ -12465,6 +12722,101 @@ def clear_job_seat_holds(
             )
     except (TimeoutError, OSError):
         return False
+
+
+def _purge_orphan_seat_holds_unlocked(home: Path, doc: dict) -> int:
+    """FR #9558: drop offer holds when ACC/offered_to nick is someone else.
+
+    ``ack-missing`` holds stay until DONE/NACK/GIVEUP/QUIT (FR #4115).
+    """
+    holds = _load_seat_holds_unlocked(home)
+    if not holds:
+        return 0
+    acc_by_job: dict[tuple[str, str, str], str] = {}
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        repo = str(row.get("repo") or "")
+        task = str(row.get("task") or "").upper()
+        ident = _norm_row_id(row.get("id"))
+        if not repo or not ident:
+            continue
+        raw = str(
+            row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+        ).strip()
+        nick = (canonical_worker_nick(raw) or raw).strip().lower()
+        if nick:
+            acc_by_job[(_repo_key(repo), task, ident)] = nick
+    offered_by_job: dict[tuple[str, str, str], str] = {}
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        to = str(row.get("offered_to") or "").strip()
+        if not to:
+            continue
+        repo = str(row.get("repo") or "")
+        task = str(row.get("task") or "").upper()
+        ident = _norm_row_id(row.get("id"))
+        if not repo or not ident:
+            continue
+        to_c = (canonical_worker_nick(to) or to).strip().lower()
+        if to_c:
+            offered_by_job[(_repo_key(repo), task, ident)] = to_c
+    cleared = 0
+    for nick_key, h in list(holds.items()):
+        if not isinstance(h, dict):
+            continue
+        via = str(h.get("via") or "offer").strip().lower() or "offer"
+        if via == "ack-missing":
+            continue
+        repo = str(h.get("repo") or "")
+        task = str(h.get("task") or "").upper()
+        ident = _norm_row_id(h.get("id"))
+        if not repo or not ident:
+            continue
+        job_key = (_repo_key(repo), task, ident)
+        hold_nick = (
+            canonical_worker_nick(str(h.get("nick") or nick_key))
+            or str(h.get("nick") or nick_key)
+        ).strip().lower()
+        if not hold_nick:
+            continue
+        acc_nick = acc_by_job.get(job_key, "")
+        offered_nick = offered_by_job.get(job_key, "")
+        # ACC moved to another nick, or live offer is on another nick.
+        # Keep remembered offer holds when the row still exists without a pin
+        # (FR #4089 / #4260); those clear via timeout, DONE, or FR #4415 row-gone.
+        if acc_nick and acc_nick != hold_nick:
+            holds.pop(nick_key, None)
+            cleared += 1
+            continue
+        if offered_nick and offered_nick != hold_nick:
+            holds.pop(nick_key, None)
+            cleared += 1
+    if cleared:
+        with contextlib.suppress(OSError):
+            _save_seat_holds_unlocked(home, holds)
+    return cleared
+
+
+def purge_orphan_seat_holds(
+    home: Path, *, now: float | None = None, locked_doc: dict | None = None
+) -> int:
+    """FR #9558: purge offer holds left behind when ACC/offered_to moved.
+
+    Safe to call from ``!stuck`` / ``seat_open_job`` / monitor sweeps.
+    """
+    if locked_doc is not None:
+        return _purge_orphan_seat_holds_unlocked(home, locked_doc)
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return 0
+            return _purge_orphan_seat_holds_unlocked(home, doc)
+    except (TimeoutError, OSError):
+        return 0
 
 
 def _seat_job_ledger_key(repo: str, task: str, ident: str) -> str:
@@ -12856,6 +13208,7 @@ def purge_stale_offered_pins(
     now: float | None = None,
     live: set[str] | None = None,
     locked_doc: dict | None = None,
+    clear_aged_live_holds: bool = True,
 ) -> int:
     """FR #9402: clear aged/dead ``offered_to`` pins (same rules as ``offer_focus_top``).
 
@@ -12908,16 +13261,18 @@ def purge_stale_offered_pins(
                 else:
                     with contextlib.suppress(Exception):
                         note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
-                # FR #9403: always drop seat-holds with the pin (parity with offer_focus_top).
-                # Keeping aged-but-live holds left idle seats busy (held FR …) after
-                # offer-timeout:idle-no-ack while ACC moved to another nick.
-                with contextlib.suppress(Exception):
-                    _clear_job_seat_holds_unlocked(
-                        home,
-                        str(cand.get("repo") or ""),
-                        str(cand.get("task") or ""),
-                        str(cand.get("id") or ""),
-                    )
+                # FR #9403: drop seat-holds with the pin (parity with offer_focus_top).
+                # FR #4089 / MRB #9561: seat_open_job passes clear_aged_live_holds=False
+                # so aged-live holds remain until the offer loop observes timeout.
+                # Dead pins always clear holds.
+                if clear_aged_live_holds or dead_pin:
+                    with contextlib.suppress(Exception):
+                        _clear_job_seat_holds_unlocked(
+                            home,
+                            str(cand.get("repo") or ""),
+                            str(cand.get("task") or ""),
+                            str(cand.get("id") or ""),
+                        )
                 cand.pop("offered_to", None)
                 cand.pop("offered_ts", None)
                 cand.pop("offered_channel", None)
@@ -12968,8 +13323,15 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
                 if isinstance(r, dict)
             ]
             cleared = purge_stale_offered_pins(
-                home, now=now_f, live=live, locked_doc=doc
+                home,
+                now=now_f,
+                live=live,
+                locked_doc=doc,
+                clear_aged_live_holds=False,
             )
+            # FR #9558: drop offer holds left when ACC/offered_to moved to another nick.
+            with contextlib.suppress(Exception):
+                purge_orphan_seat_holds(home, now=now_f, locked_doc=doc)
             out = _seat_open_job_in(home, doc, nick, now_f, live)
             after_offers = [
                 str(r.get("offered_to") or "")
@@ -17441,9 +17803,20 @@ def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | Non
             job["nick"] = canon
             job["channel"] = bobreport.normalize_channel(channel) if channel else ""
             job["accepted_ts"] = _utc_now()
+            # FR #9554: successful ACK from the pinned host clears auto host-heal pin.
+            with contextlib.suppress(Exception):
+                clear_host_heal_require_machine_on_ack(job, canon)
             doc["accepted"].append(job)
             if len(doc["accepted"]) > ACCEPTED_CAP:
                 doc["accepted"] = doc["accepted"][-ACCEPTED_CAP:]
+            # FR #9558: ACC moved — drop every seat-hold for this job (incl. prior offer nick).
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(job.get("repo") or ""),
+                    str(job.get("task") or ""),
+                    str(job.get("id") or ""),
+                )
             try:
                 _write_queue(queue_path(home), doc)
             except OSError:
