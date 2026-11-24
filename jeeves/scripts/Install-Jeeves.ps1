@@ -344,6 +344,8 @@ New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderr', (Join-Path $logsDir 'stderr.log')))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdoutCreationDisposition', '4'))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderrCreationDisposition', '4'))
+# FR #9896: rotate NSSM stdout/stderr (walrus stdout.log grew ~64MB with AppRotate* unset).
+Set-BobiverseNssmAppRotate -Nssm $Nssm -ServiceName $ServiceName
 # Issue #6: never Get-Credential under msiexec /qn (UserInteractive can still be $true).
 $doPrompt = $PromptServicePassword -or (
     -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)

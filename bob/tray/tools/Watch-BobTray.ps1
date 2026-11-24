@@ -2218,7 +2218,10 @@ function Test-BobTrayPlanFuelEmpty {
 function Start-BobTrayPlanExe {
     # FR #8693 / BOB-44 + FR #9271 / BOB-TRAY-UI-10 + FR #9605: vendor\plan\PlanAgent.exe (Pack/Sync mirror).
     # Do not fall back to bob-worker --mode plan or plan\PlanAgent.exe.
+    # FR #9661: pass --root <install>\plan (+ PLAN_AGENT_ROOT); vendor exe FATAL without the plan seat tree.
     $exe = Join-Path $RepoRoot 'vendor\plan\PlanAgent.exe'
+    $planRoot = Join-Path $RepoRoot 'plan'
+    $agentsMd = Join-Path $planRoot 'AGENTS.md'
     $hook = $env:BOB_MODELS_WEBHOOK_FILE
     if (-not $hook) { $hook = Join-Path $RepoRoot 'run\models-webhook.json' }
     if (Test-Path -LiteralPath $hook) {
@@ -2239,7 +2242,7 @@ function Start-BobTrayPlanExe {
     $mcpUrl = 'https://plan.ntsa.uk/mcp'
     Set-Content -LiteralPath $mcpPath -Encoding utf8 -Value ('{"mcpServers":{"plan":{"url":"' + $mcpUrl + '"}}}')
     Write-TrayLog ('plan-mcp url=' + $mcpUrl + ' config=' + $mcpPath)
-    Write-TrayLog ('Plan: start exe ' + $exe)
+    Write-TrayLog ('Plan: start exe ' + $exe + ' --root ' + $planRoot)
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-TrayLog ('Plan exe missing: ' + $exe)
         [void][System.Windows.Forms.MessageBox]::Show(
@@ -2249,7 +2252,24 @@ function Start-BobTrayPlanExe {
             [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
-    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    if (-not (Test-Path -LiteralPath $agentsMd)) {
+        Write-TrayLog ('Plan AGENTS.md missing: ' + $agentsMd)
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ('Plan seat tree not found at:{0}{1}{0}{0}Install or repair the bob MSI (plan\AGENTS.md + .grok\skills).' -f [Environment]::NewLine, $agentsMd),
+            'Plan - missing AGENTS.md',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    # FR #2585 / #2590: do not embed quotes in ArgumentList values (they become part of --root).
+    $prevPlanRoot = $env:PLAN_AGENT_ROOT
+    $env:PLAN_AGENT_ROOT = $planRoot
+    try {
+        Start-Process -FilePath $exe -ArgumentList @('--root', $planRoot) -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    } finally {
+        if ($null -eq $prevPlanRoot) { Remove-Item Env:PLAN_AGENT_ROOT -ErrorAction SilentlyContinue }
+        else { $env:PLAN_AGENT_ROOT = $prevPlanRoot }
+    }
 }
 
 function Start-BobTrayWorkerExe {
@@ -2944,7 +2964,7 @@ function Update-Hover {
             # FR #6317 / MRB #6321: pass hover-formatted Copilot line + bar (Format-BobCopilotPoolLine is module-private).
             $copilotBarPct = $null
             try { if ($h.copilot_bar -and $h.copilot_bar.known) { $copilotBarPct = [int]$h.copilot_bar.pct } } catch { $copilotBarPct = $null }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines) -DigestPoolRows @($h.digest_pools)
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -CopilotTaskLines @($h.copilot_task_lines) -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines) -DigestPoolRows @($h.digest_pools)
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -3880,7 +3900,7 @@ function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Obsolete Cursor spending-group bars (high cost / Low cost foreach) stay removed.
     # FR #7243 / #7326: digest-driven fleet families (OpenCode go + Copilot). xAI weekly is per-shop.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $CopilotTaskLines = @(), $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -3996,6 +4016,23 @@ function Rebuild-BobTrayTiles {
             $copilotHeadingColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         }
         $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null -HeadingColor $copilotHeadingColor
+
+        # FR #9750: job lines once under Copilot pool UsageRow (digest.copilot.tasks).
+        $ctLines = @($CopilotTaskLines | Where-Object { $_ })
+        if ($ctLines.Count -gt 0) {
+            $jobTxt = ($ctLines -join "`n")
+            $jl = New-Object System.Windows.Forms.Label
+            $jl.AutoSize = $true
+            $jl.MaximumSize = New-Object System.Drawing.Size 392, 0
+            $jl.Font = $jobFont
+            $jl.ForeColor = $fg
+            $jl.BackColor = [System.Drawing.Color]::Transparent
+            $jl.Text = $jobTxt
+            $jl.Location = New-Object System.Drawing.Point (18 + 14), $y
+            $script:tileHost.Controls.Add($jl)
+            $nLines = @($jobTxt -split "`n").Count
+            $y += [Math]::Max(18, (16 * $nLines) + 8)
+        }
         # FR #7326: extra digest pools; skip Go/Copilot already painted; never paint Cursor / Grok chat / OpenCode free.
         $skipIds = @{
             'grok-build' = $true; 'grok-chat' = $true; 'opencode-go' = $true; 'copilot' = $true
@@ -4971,8 +5008,16 @@ $miWeights = $menu.Items.Add('Weights')
 $miAbout = $menu.Items.Add('About')
 # FR #9261 / BOB-TRAY-UI-01: no top-level Open log (About Show logs opens the tray log).
 [void]$menu.Items.Add('-')
-$miRestart = $menu.Items.Add('Restart')
-$miExit = $menu.Items.Add('Exit')
+# FR #8706 / BOB-07 (operator 2026-11-24): Exit > Restart / Reload Engine / --- / Exit (TipForm).
+$miExitMenu = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$menu.Items.Add($miExitMenu)
+$miRestart = New-Object System.Windows.Forms.ToolStripMenuItem('Restart')
+$miReloadEngine = New-Object System.Windows.Forms.ToolStripMenuItem('Reload Engine')
+$miExit = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$miExitMenu.DropDownItems.Add($miRestart)
+[void]$miExitMenu.DropDownItems.Add($miReloadEngine)
+[void]$miExitMenu.DropDownItems.Add('-')
+[void]$miExitMenu.DropDownItems.Add($miExit)
 $notify.ContextMenuStrip = $menu
 
 # FR #9170: timestamp arm (items stay enabled; never bulk enabled=false).
@@ -5152,7 +5197,18 @@ $miAbout.Add_Click({
         Show-BobTrayAbout
     })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
+# FR #8706 / BOB-07: Exit submenu handlers (Restart=host, Reload Engine=tray-cmd reload).
+# Fold FR #9170 arm-ts + FR #9163 confirm from main.
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
+$miReloadEngine.Add_Click({
+        # TipForm: request host engine reload via tray-cmd (bob-tray.exe TakeReload).
+        try {
+            $run = Join-Path $RepoRoot 'run'
+            if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Path $run -Force | Out-Null }
+            Set-Content -LiteralPath (Join-Path $run 'tray-cmd.txt') -Value 'reload' -Encoding ascii
+            Write-TrayLog 'Reload Engine: wrote tray-cmd reload'
+        } catch { Write-TrayLog ('Reload Engine: ' + $_.Exception.Message) }
+    })
 $miExit.Add_Click({
         # FR #9170: ignore Exit inside the timestamp arm window (items stay enabled; no grey menu).
         if ([datetime]::UtcNow -lt $script:menuArmUntilUtc) {

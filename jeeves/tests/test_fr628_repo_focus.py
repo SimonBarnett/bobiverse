@@ -212,10 +212,24 @@ def test_assign_row_refusals(_home, monkeypatch):
         _row("o/a", "FR", 4, 4, giveup_seats="ionos-7"),
         _row("o/a", "FR", 5, 5),
     ])
-    # FR #4336: needs_human no longer refuses !assign (FR #3); self-MRB/UAT/exact giveup still refuse.
-    for task, num in (("MRB", "#1"), ("UAT", "#2"), ("FR", "#4")):
+    # FR #4336: needs_human no longer refuses !assign (FR #3); self-MRB/UAT still refuse.
+    # FR #9634: exact giveup_seats no longer refuse !assign (cleared then offered) — FR #4 is ok.
+    for task, num in (("MRB", "#1"), ("UAT", "#2")):
         st, why = gitclaim.assign_row(_home, "ionos-7", "o/a", task, num)
         assert st == "refused", (task, num, why)
+    st4, job4 = gitclaim.assign_row(_home, "ionos-7", "o/a", "FR", "#4")
+    assert st4 == "ok" and job4 and job4["id"] == "#4", (st4, job4)
+    # Release the giveup-cleared offer so later asserts on #3/#5 stay clean.
+    doc = gitclaim._load_queue_unlocked(_home)
+    for r in doc.get("unaccepted") or []:
+        if r.get("id") == "#4":
+            r.pop("offered_to", None)
+            r.pop("offered_ts", None)
+            r.pop("offered_channel", None)
+            r.pop("offered_via", None)
+    gitclaim._write_queue(gitclaim.queue_path(_home), doc)
+    with gitclaim._lock(_home):
+        gitclaim._clear_job_seat_holds_unlocked(_home, "o/a", "FR", "#4")
     st3, job3 = gitclaim.assign_row(_home, "ionos-7", "o/a", "FR", "#3")
     assert st3 == "ok" and job3 and job3["id"] == "#3"
     # Release the needs_human offer + seat-hold so later asserts on #5 stay clean.

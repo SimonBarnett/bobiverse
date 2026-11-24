@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- FR #9800: .NET 8 bob-worker console host (Phase 0 scaffold).
-       Airc Framework 4 / no-SDK floor does NOT apply — requires .NET 8 SDK. -->
+       Airc Framework 4 / no-SDK floor does NOT apply - requires .NET 8 SDK. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>

@@ -158,9 +158,11 @@ function New-BobTrayStatusModel {
     }
     $ttl = $Title; if (-not $ttl -and $h) { $ttl = [string]$h.title }
     $copilotPool = $null; $copilotLine = ''; $copilotStaleLine = ''; $copilotFreshUntil = [int64]0
+    $copilotTaskLines = @()
     if ($h) {
         $copilotPool = $h.copilot_pool
         $copilotLine = [string]$h.copilot_line
+        try { $copilotTaskLines = @($h.copilot_task_lines) } catch { $copilotTaskLines = @() }
         try { $copilotStaleLine = [string]$h.copilot_stale_line } catch { }
         try { if ($null -ne $h.copilot_fresh_until) { $copilotFreshUntil = [int64]$h.copilot_fresh_until } } catch { }
     }
@@ -273,6 +275,7 @@ function New-BobTrayStatusModel {
         opencode_bars = @($opencodeBars)
         copilot_pool = $copilotPool
         copilot_line = $copilotLine
+        copilot_task_lines = @($copilotTaskLines)
         copilot_stale_line = $copilotStaleLine
         copilot_fresh_until = $copilotFreshUntil
         copilot_bar = $copilotBar

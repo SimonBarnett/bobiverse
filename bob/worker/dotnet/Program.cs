@@ -1,5 +1,6 @@
 // FR #9800: Phase 0 .NET 8 bob-worker console scaffold.
 // FR #9804: IrcSeat TLS + JOIN gate self-test (--self-test-irc).
+// FR #9806: Grok spawn always-new one console (--selftest-spawn).
 namespace Bobiverse.WorkerNet;
 
 internal static class Program
@@ -23,10 +24,11 @@ internal static class Program
         if (args.Any(a => string.Equals(a, "--help", StringComparison.OrdinalIgnoreCase)
                        || string.Equals(a, "-h", StringComparison.OrdinalIgnoreCase)))
         {
-            Console.Out.WriteLine("bob-worker-net (.NET 8, FR #9800 / #9804)");
-            Console.Out.WriteLine("  --version        print embedded source commit and exit 0");
-            Console.Out.WriteLine("  --help           this text");
-            Console.Out.WriteLine("  --self-test-irc  hermetic IrcSeat JOIN gate tests (no live Ergo)");
+            Console.Out.WriteLine("bob-worker-net (.NET 8, FR #9800 / #9804 / #9806)");
+            Console.Out.WriteLine("  --version         print embedded source commit and exit 0");
+            Console.Out.WriteLine("  --help            this text");
+            Console.Out.WriteLine("  --self-test-irc   hermetic IrcSeat JOIN gate tests (no live Ergo)");
+            Console.Out.WriteLine("  --selftest-spawn  FR #9806 assert_fresh + one-console spawn smoke");
             return 0;
         }
 
@@ -35,10 +37,245 @@ internal static class Program
             return RunIrcSelfTest();
         }
 
+        if (args.Any(a => string.Equals(a, "--selftest-spawn", StringComparison.OrdinalIgnoreCase)))
+        {
+            return RunSelftestSpawn();
+        }
+
         Console.Error.WriteLine(
-            "bob-worker-net: host scaffold (FR #9800) + IrcSeat (FR #9804). " +
-            "Full CLI / fuel / spawn land in later FRs. Use --self-test-irc for JOIN gate.");
+            "bob-worker-net: Phase 0/3 scaffold (FR #9800 / #9804 / #9806). " +
+            "CLI / fuel land in later FRs. Use --self-test-irc / --selftest-spawn.");
         return 64;
+    }
+
+    /// <summary>FR #9806 CI smoke: assert_fresh + inherit-console child (cmd.exe).</summary>
+    private static int RunSelftestSpawn()
+    {
+        var failures = 0;
+
+        void Check(string name, bool ok, string detail = "")
+        {
+            if (ok)
+            {
+                Console.Out.WriteLine("ok " + name);
+            }
+            else
+            {
+                failures++;
+                Console.Error.WriteLine("FAIL " + name + (detail.Length > 0 ? ": " + detail : ""));
+            }
+        }
+
+        // --- assert_fresh ---
+        try
+        {
+            AssertFresh.Assert(new[] { "agent.exe", "-s", Guid.NewGuid().ToString("D") });
+            Check("assert_fresh_ok_argv", true);
+        }
+        catch (Exception ex)
+        {
+            Check("assert_fresh_ok_argv", false, ex.Message);
+        }
+
+        foreach (var bad in new[]
+                 {
+                     new[] { "agent.exe", "--resume", "x" },
+                     new[] { "agent.exe", "-r", "sid" },
+                     new[] { "agent.exe", "--continue" },
+                     new[] { "agent.exe", "-c" },
+                     new[] { "agent.exe", "--session", "x" },
+                     new[] { "agent.exe", "--chat" },
+                 })
+        {
+            var name = "assert_fresh_refuse_" + bad[1].TrimStart('-');
+            try
+            {
+                AssertFresh.Assert(bad);
+                Check(name, false, "expected refuse");
+            }
+            catch (InvalidOperationException)
+            {
+                Check(name, true);
+            }
+            catch (Exception ex)
+            {
+                Check(name, false, ex.Message);
+            }
+        }
+
+        try
+        {
+            AssertFresh.Assert(
+                new[] { "powershell.exe", "-File", "launch.ps1" },
+                new Dictionary<string, string> { ["launch.ps1"] = "& agent --resume abc" });
+            Check("assert_fresh_refuse_script", false, "expected refuse");
+        }
+        catch (InvalidOperationException)
+        {
+            Check("assert_fresh_refuse_script", true);
+        }
+
+        // --- BuildArgv never emits forbidden flags ---
+        var sid = Guid.NewGuid().ToString("D");
+        var cwd = Environment.CurrentDirectory;
+        var spec = new GrokLaunchSpec
+        {
+            Exe = "agent.exe",
+            Cwd = cwd,
+            SessionId = sid,
+            Prompt = "ping",
+        };
+        List<string> argv;
+        try
+        {
+            argv = GrokSpawn.BuildArgv(spec);
+            Check("build_argv_fresh", !argv.Any(a => AssertFresh.ForbiddenFlags.Contains(a, StringComparer.OrdinalIgnoreCase)));
+            Check("build_argv_session", argv.Contains("-s") && argv.Contains(sid));
+        }
+        catch (Exception ex)
+        {
+            Check("build_argv_fresh", false, ex.Message);
+            argv = new List<string>();
+        }
+
+        // --- spinner Stop before spawn ---
+        var sw = new StringWriter();
+        using (var progress = new StartupProgress(sw))
+        {
+            progress.Start("spawn-ready");
+            Check("spinner_active", progress.IsActive);
+            progress.Stop();
+            Check("spinner_stopped", !progress.IsActive);
+            Check("spinner_cleared", sw.ToString().Contains('\r'));
+        }
+
+        // --- one-console child: cmd.exe inherits (creation flags 0) ---
+        if (!OperatingSystem.IsWindows())
+        {
+            Check("spawn_windows_only", true, "skipped non-windows");
+            return failures == 0 ? 0 : 1;
+        }
+
+        var comspec = Environment.GetEnvironmentVariable("ComSpec") ?? @"C:\Windows\System32\cmd.exe";
+        if (!File.Exists(comspec))
+        {
+            Check("spawn_comspec", false, "missing " + comspec);
+            return 1;
+        }
+
+        // GrokSpawn.Start must Stop() spinner even when the exe path is missing.
+        using (var progressFail = new StartupProgress(TextWriter.Null))
+        {
+            progressFail.Start("pre-spawn");
+            try
+            {
+                GrokSpawn.Start(
+                    new GrokLaunchSpec
+                    {
+                        Exe = Path.Combine(cwd, "no-such-agent-9806.exe"),
+                        Cwd = cwd,
+                        SessionId = sid,
+                    },
+                    progressFail);
+                Check("spawn_missing_exe", false, "expected start failure");
+            }
+            catch
+            {
+                Check("spawn_missing_exe_stopped_spinner", !progressFail.IsActive);
+            }
+        }
+
+        // Inherit-console child (cmd /c exit 0). Creation flags stay 0.
+        var smoke = InheritConsoleSmoke(comspec, cwd);
+        Check("spawn_creation_flags_zero", smoke.CreationFlags == 0);
+        Check("spawn_no_new_console", (smoke.CreationFlags & WinCreateFlags.CREATE_NEW_CONSOLE) == 0);
+        Check("spawn_child_exited_0", smoke.ExitCode == 0, "exit=" + smoke.ExitCode);
+        if (smoke.ConsoleShareKnown)
+        {
+            Check("spawn_console_share", smoke.SharedConsole, smoke.Detail);
+        }
+        else
+        {
+            Console.Out.WriteLine("ok spawn_console_share_skipped " + smoke.Detail);
+        }
+
+        return failures == 0 ? 0 : 1;
+    }
+
+    private sealed class SmokeResult
+    {
+        internal uint CreationFlags;
+        internal int ExitCode = -1;
+        internal bool ConsoleShareKnown;
+        internal bool SharedConsole;
+        internal string Detail = "";
+    }
+
+    /// <summary>Spawn cmd /c exit 0 with creation flags 0; optional GetConsoleProcessList share check.</summary>
+    private static SmokeResult InheritConsoleSmoke(string comspec, string cwd)
+    {
+        var result = new SmokeResult { CreationFlags = 0 };
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = comspec,
+            ArgumentList = { "/d", "/c", "exit", "0" },
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardInput = false,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            CreateNoWindow = false,
+        };
+
+        using var proc = System.Diagnostics.Process.Start(psi)
+                         ?? throw new InvalidOperationException("smoke Process.Start null");
+        result.CreationFlags = 0;
+        if (!proc.WaitForExit(15000))
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            result.Detail = "timeout";
+            return result;
+        }
+
+        result.ExitCode = proc.ExitCode;
+
+        // Best-effort: if we have a console, parent should still be listed after child exit.
+        try
+        {
+            var k32 = NativeConsole.GetConsoleProcessList;
+            if (k32 is not null)
+            {
+                var buf = new uint[16];
+                var n = k32(buf, (uint)buf.Length);
+                result.ConsoleShareKnown = true;
+                result.SharedConsole = n >= 1 && buf.Take((int)n).Contains((uint)Environment.ProcessId);
+                result.Detail = "n=" + n + " me=" + Environment.ProcessId;
+            }
+            else
+            {
+                result.Detail = "no GetConsoleProcessList";
+            }
+        }
+        catch (Exception ex)
+        {
+            result.Detail = ex.GetType().Name;
+        }
+
+        return result;
+    }
+
+    private static class NativeConsole
+    {
+        [System.Runtime.InteropServices.DllImport(
+            "kernel32.dll",
+            SetLastError = true,
+            EntryPoint = "GetConsoleProcessList")]
+        private static extern uint GetConsoleProcessListNative(uint[] list, uint count);
+
+        internal static Func<uint[], uint, uint>? GetConsoleProcessList { get; } =
+            OperatingSystem.IsWindows()
+                ? static (list, count) => GetConsoleProcessListNative(list, count)
+                : null;
     }
 
     /// <summary>FR #9804: mock contract — JOIN required before start_agent; retries; Ergo paths.</summary>
