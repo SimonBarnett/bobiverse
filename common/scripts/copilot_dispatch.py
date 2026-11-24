@@ -400,21 +400,18 @@ def parse_user_quota(doc: dict | None) -> dict:
         out = dict(empty)
         out["plan"] = str(doc.get("copilot_plan") or "")
         return out
-    # FR #7371: only premium_interactions. GitHub may set unlimited=true and
-    # percent_remaining=100 with remaining=0 when the premium quota is used up
-    # (overage_permitted=false). That is exhausted, not unlimited. Genuine
-    # unlimited often has remaining=0 with overage_permitted=true (#5172 fixture).
+    # FR #9781 (supersedes FR #7371 used-up remap): trust unlimited=true from
+    # premium_interactions. Live GitHub business quota reports unlimited=true,
+    # remaining=0, percent_remaining=100, overage_permitted=false while CCA
+    # create still succeeds. Never map remaining=0 alone to exhausted when
+    # unlimited is claimed. Finite (unlimited=false) remaining<=0 stays exhausted.
     unlimited_claimed = bool(prem.get("unlimited"))
     remaining = _num(prem.get("remaining"))
     percent = _num(prem.get("percent_remaining"))
     used = _num(prem.get("credits_used"))
     entitlement = _num(prem.get("entitlement"))
     overage_permitted = bool(prem.get("overage_permitted"))
-    used_up = remaining is not None and remaining <= 0 and not overage_permitted
-    unlimited = bool(unlimited_claimed and not used_up)
-    if used_up:
-        # Do not let a contradictory percent_remaining=100 keep state=ok.
-        percent = 0
+    unlimited = bool(unlimited_claimed)
     allowed = unlimited or (remaining is not None and remaining > 0) or (
         percent is not None and percent > 0
     )
