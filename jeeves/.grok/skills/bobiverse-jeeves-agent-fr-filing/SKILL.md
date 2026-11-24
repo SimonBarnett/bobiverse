@@ -38,3 +38,15 @@ When two issues cover the same thing, keep the **first**, close the later one wi
 
 Secrets, keys, tokens, oper creds, private IPs/hostnames, or `inbound-transcript.log` content in an issue.
 Omnibus FRs. Filing the same thing twice because a search was too narrow.
+
+## Digests (Si) — CAST IRON (FR #9652)
+
+**When filing multiple related FRs in one turn/batch there MUST be a Digest parent.** Never leave a multi-FR batch as free-floating issues.
+
+1. File (or reuse) parent first: Title `Digest: <batch>`; labels `feature-request` + `fr-digest` (add `hold` only to park the whole batch).
+2. List every child in the digest body; last-child close closes the digest (#9552).
+3. Each child body starts with plain `Depends-on: #<digest>`.
+4. Digests stay **useful when unheld** (released drain). Unheld means the batch drains; it does not mean skip the digest.
+5. Same-turn repair: if ≥2 related FRs already landed without a digest, file the digest immediately and wire children.
+
+The CAST IRON *rule* FR itself (#9652) is a normal FR (not an `fr-digest` parent). Batch parents use the `Digest: …` title + `fr-digest` label.

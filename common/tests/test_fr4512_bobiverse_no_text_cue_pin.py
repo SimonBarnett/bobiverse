@@ -1,7 +1,8 @@
 """FR #4512: bobiverse rows are never pinned by title/body text cues.
 
-Only ``needs-<machine>`` labels (and intentional dedicated ``require_machine:``
-body lines / hard issue pins) may pin. Stale persisted stamps clear on stamp/resync.
+Only ``needs-<machine>`` labels and hard issue pins / operator ``!pin`` may pin
+(FR #9637: dedicated ``require_machine:`` body lines no longer pin on bobiverse).
+Stale persisted stamps clear on stamp/resync.
 """
 from __future__ import annotations
 
@@ -60,7 +61,8 @@ def test_fr4512_needs_ionos_label_still_pins():
     )
 
 
-def test_fr4512_dedicated_body_pin_line_still_pins():
+def test_fr4512_dedicated_body_pin_line_no_longer_pins():
+    # FR #9637: body require_machine: alone must not starve idle seats.
     assert (
         gitclaim.infer_require_machine(
             title="hotpatch verify on chair",
@@ -69,7 +71,7 @@ def test_fr4512_dedicated_body_pin_line_still_pins():
             repo="SimonBarnett/bobiverse",
             ident="999001",
         )
-        == "walrus"
+        == ""
     )
 
 

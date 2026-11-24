@@ -1,8 +1,11 @@
 <#
 .SYNOPSIS
-  Idle seats vs offerable queue (FR #1116 / #8536 / #9461).
+  Idle seats vs offerable queue (FR #1116 / #8536 / #9461 / #9644).
 .PARAMETER NoIntervene
-  Report-only; do not ear-relay !assign on EXIT 1 (FR #9461 default is intervene on).
+  Skip ear-relay !assign on EXIT 1 (FR #9461 default is intervene on).
+.PARAMETER NoChairHeal
+  Skip push_idle_offers_via_chair_outbox heal (FR #9644 default is chair heal on).
+  Report-only requires both -NoIntervene and -NoChairHeal.
 .PARAMETER InterveneDryRun
   Plan !assign lines without writing the ear outbox.
 #>
@@ -10,6 +13,7 @@
 param(
     [switch]$DryRun,
     [switch]$NoIntervene,
+    [switch]$NoChairHeal,
     [switch]$InterveneDryRun,
     [switch]$ForceNeedsHuman,
     [string]$EarOutbox = '',
@@ -28,6 +32,7 @@ if (-not (Test-Path -LiteralPath $py)) {
 $argv = @()
 if ($DryRun) { $argv += '--dry-run' }
 if ($NoIntervene) { $argv += '--no-intervene' }
+if ($NoChairHeal) { $argv += '--no-chair-heal' }
 if ($InterveneDryRun) { $argv += '--intervene-dry-run' }
 if ($ForceNeedsHuman) { $argv += '--force-needs-human' }
 if ($EarOutbox) { $argv += @('--ear-outbox', $EarOutbox) }
