@@ -70,6 +70,7 @@ Appliance settings (FR #6436 + #6440 HTTP + #6441 auth + #6442 migrate + #6443 r
 
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; may keep-queue-moving commands (FR #8827); never Ergo/merge/UAT
+     CAST IRON FR #9627: every intervention owes a same-turn ircJeeves product FR (deterministic chair)
 ```
 
 Trust: no secrets in filings/logs; GitHub token / DPAPI / NickServ stay in chair home. Hotpatch restarts **ircJeeves** only; never touch Ergo / `BobIrcd`. `!recycle jeeves` restarts ircJeeves only.
@@ -78,7 +79,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6451 wires LAN HTTP login/cookie/Bearer; FR #6442 migrates NSSM env into appliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. FR #6453 locks **static** webhook/API docs on the public IIS front-door bob.ntsa.uk (`jeeves/www/irc-ntsa`, linked from the bobiverse acme home page; not a product website). FR #7274 mounts a controlled public settings front door at https://bob.ntsa.uk/jeeves (cookie Path=/jeeves). FR #7412 makes that the sole operator UI: the settings process is a loopback upstream only (default front-door mode; LAN-root on :7701 returns 404); secrets stay set/unset only. Do not put the settings process itself on Cloudflare or irc.ntsa.uk. No deprecation brochure.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6451 wires LAN HTTP login/cookie/Bearer; FR #6442 migrates NSSM env into appliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. FR #6453 locks **static** webhook/API docs on the public IIS front-door bob.ntsa.uk (`jeeves/www/irc-ntsa`, linked from the bobiverse acme home page; not a product website). FR #7274 mounts a controlled public settings front door at https://bob.ntsa.uk/jeeves (cookie Path=/jeeves). FR #7412 makes that the sole operator UI: the settings process is a loopback upstream only (default front-door mode; LAN-root on :7701 returns 404); secrets stay set/unset only. Do not put the settings process itself on Cloudflare or irc.ntsa.uk. No deprecation brochure. FR #9627 CAST IRON: every MONITORING intervention files (or de-dups) an ircJeeves product FR the same turn.
 
 | id | file | state |
 |----|------|-------|
@@ -93,6 +94,7 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - CAST IRON harvest + intake every session; never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `ircJeeves`
 - MONITORING agent reports via intake and may keep-queue-moving commands (FR #8827); never Ergo/merge/UAT/VERSION
+- CAST IRON FR #9627: every MONITORING / ops intervention owes a same-turn ircJeeves product FR (deterministic chair; FR #8827 is bridge-only; harvest without a linked FR fails closed)
 - FR #6453 bob.ntsa.uk static webhook/API docs: IIS www under `jeeves/www/irc-ntsa` (Install-BobWebhooks sync); read-only HTML; no new write endpoints; not a product website
 - FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; unused = no behaviour change (no server on import)
 - FR #7274 public /jeeves front door: operator URL https://bob.ntsa.uk/jeeves vs LAN/loopback settings upstream; cookie Path=/jeeves; secrets stay set/unset; no Cloudflare for the settings process (IIS prefix only)
