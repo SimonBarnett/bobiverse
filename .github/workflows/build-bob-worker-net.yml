@@ -1,0 +1,108 @@
+# Isolated bob-worker-net.exe build (FR #9800 Phase 0).
+# .NET 8 SDK publish (self-contained win-x64). Airc Framework 4 / no-SDK floor does NOT apply.
+# Not a release, MSI, install, or seat restart. Build-BobWorkerNet.ps1 owns dotnet publish.
+name: build-bob-worker-net
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-worker-net.yml
+      - bob/worker/dotnet/**
+      - bob/scripts/Build-BobWorkerNet.ps1
+      - common/scripts/Bobiverse-Common.ps1
+      - bob/tests/test_fr9800_bob_worker_net_build_ci.py
+      - bob/tests/test_fr9806_grok_spawn_one_console.py
+      - bob/docs/bob-worker-net.md
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-bob-worker-net.yml
+      - bob/worker/dotnet/**
+      - bob/scripts/Build-BobWorkerNet.ps1
+      - common/scripts/Bobiverse-Common.ps1
+      - bob/tests/test_fr9800_bob_worker_net_build_ci.py
+      - bob/tests/test_fr9806_grok_spawn_one_console.py
+      - bob/docs/bob-worker-net.md
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-worker-net:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build bob-worker-net.exe with Build-BobWorkerNet.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "bob-worker-net-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & "$root\bob\scripts\Build-BobWorkerNet.ps1" -RepoRoot $root -OutDir $out -SourceCommit $env:WORKFLOW_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobWorkerNet.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "worker-net-publish\bob-worker-net.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing bob-worker-net.exe" }
+          # PE sanity: MZ header
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "bob-worker-net.exe is not a PE (missing MZ)"
+          }
+          # FR #9800: --version must print the PR/push head commit and exit 0.
+          $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+          $ver = & $exe --version 2>&1
+          $vcode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          $verText = (($ver | Out-String) -replace '\s', '').Trim()
+          $expected = ($env:WORKFLOW_COMMIT -replace '[^0-9a-fA-F]', '').ToLowerInvariant()
+          if ($vcode -ne 0 -or $verText.ToLowerInvariant() -ne $expected) {
+            throw "bob-worker-net.exe --version='$verText' expected '$expected' (exit $vcode)"
+          }
+          # FR #9806: assert_fresh + one-console process-tree smoke.
+          $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+          $stOut = & $exe --selftest-spawn 2>&1
+          $stCode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          Write-Host ($stOut | Out-String)
+          if ($stCode -ne 0) { throw "bob-worker-net.exe --selftest-spawn failed exit $stCode" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $exe).Length
+          $builtAt = [DateTime]::UtcNow.ToString("o")
+          $stage = Join-Path $env:RUNNER_TEMP "bob-worker-net-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-worker-net.exe")
+          Set-Content -Encoding ascii (Join-Path $stage "bob-worker-net.exe.sha256") "$hash  bob-worker-net.exe"
+          @(
+            "source_commit=$($env:WORKFLOW_COMMIT)"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
+            "exe_name=bob-worker-net.exe"
+            "exe_sha256=$hash"
+            "exe_size_bytes=$size"
+            "build_time_utc=$builtAt"
+            "builder=Build-BobWorkerNet.ps1"
+            "runtime=win-x64"
+            "target=net8.0"
+            "fr=9800"
+            "fr_spawn=9806"
+            "selftest_spawn=ok"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-worker-net
+          path: ${{ runner.temp }}/bob-worker-net-artifact
+          if-no-files-found: error

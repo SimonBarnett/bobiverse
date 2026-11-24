@@ -50,6 +50,10 @@ FR #6862: local stdio MCP `bob/scripts/skill_dag_mcp.py` (`--root`, `--max-bytes
 * **Exit codes**: 0 ok / window closed, 2 IRC unreachable at start (no agent started), 3 IRC lost, 4 no agent or key cancelled, 5 restart limit, 6 launch failed, 64 usage.
   **FR #7150:** exit 5 (`hang-restart-limit`) also PRIVMSGs the shop (`hang-restart-limit reason=... restarts=N/Ws exit=5`) and writes `run_dir/hang-restart-limit.txt` so ear/Jeeves can see why a seat vanished (redqueen 16:55 RCA: repeated FR #4123 `startup-no-first-turn`, not Jeeves recycleseat).
 
+## .NET 8 bob-worker-net (FR #9800 Phase 0)
+
+Scaffold under `bob/worker/dotnet` publishes self-contained `bob-worker-net.exe` via `bob/scripts/Build-BobWorkerNet.ps1` and `.github/workflows/build-bob-worker-net.yml` (`setup-dotnet@v4`). **Airc min-spec / no-SDK does not apply** — this path needs the .NET 8 SDK (`dotnet publish`), unlike tray dialogs that use Framework 4 `csc.exe`. Details: `bob/docs/bob-worker-net.md`. CLI/fuel/IRC parity is later FRs under digest #9794.
+
 ## CI artifact (FR #6349)
 
 ## Build identity on the wire (FR #6409)
