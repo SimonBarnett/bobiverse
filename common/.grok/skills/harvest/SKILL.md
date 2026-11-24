@@ -424,3 +424,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Queue refs must stay list[str] of #N: never persist extra["refs"]=",".join; normalize on write/read/load or tuple(str(x) for x in prior) char-splits and poisons ledger keys.
 - After a tip strips BOM from one edited .cs file, check every other edited .cs in the same FR (BobAbout.cs still had BOM while BobTray.cs was clean); extend encoding assert to each edited file
 - MRB author heal: prefer roster dead-pid stamp on older chairs; tip reserved ghost-N (N>=1) must stick through enrich via _reserved_heal_seat_nick; durable path remains soft free=/#9480
+- marchhare online_zero_workers with tray.alive but no bob-ear: check stderr for ENOSPC then ircBob child; do not trust nssm Running alone; prefer redqueen !assign for flamingo-authored MRBs while marchhare down
