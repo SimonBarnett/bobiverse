@@ -3880,6 +3880,81 @@ def clear_seat_doing(
 
 
 @_digest_locked
+def clear_machine_workers_after_recycle(
+    home: Path,
+    machine_id: str,
+    *,
+    briefer_nick: str = "",
+) -> dict:
+    """FR #9784: wipe digest workers for a machine right after a successful recycle route.
+
+    Pre-recycle seat nicks must not stay offerable (live_seat_nicks) or paint TipForm
+    as idle/doing while ``bob-worker.exe`` count is 0. Also drop ``workers_last_good``
+    so FR #8513 restore cannot resurrect the ghosts.
+    """
+    mid = fold_machine_id(machine_id) or normalize_machine_id(machine_id) or str(
+        machine_id or ""
+    ).strip().lower()
+    out = {"cleared": False, "machine": mid, "nicks": []}
+    if not mid or mid in {"jeeves", "ircjeeves", "fleet"}:
+        return out
+    doc = load_digest(home)
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid)
+    if not isinstance(ent, dict):
+        # Try unfolder / alias keys.
+        for key, cand in list(machines.items()):
+            if fold_machine_id(key) == mid and isinstance(cand, dict):
+                ent = cand
+                mid = fold_machine_id(key) or mid
+                break
+    if not isinstance(ent, dict):
+        return out
+    nicks: list[str] = []
+    for row in _coerce_worker_list(ent.get("worker_list")):
+        n = str((row or {}).get("nick") or "").strip()
+        if n:
+            nicks.append(n)
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    for pid, w in workers.items():
+        if not str(pid).isdigit():
+            continue
+        if isinstance(w, dict):
+            n = str(w.get("nick") or "").strip()
+            if n:
+                nicks.append(n)
+            else:
+                nicks.append(f"{mid}-{pid}")
+        else:
+            nicks.append(f"{mid}-{pid}")
+    # Dedupe preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for n in nicks:
+        k = n.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(n)
+    out["nicks"] = uniq
+    ent["worker_list"] = []
+    ent["workers"] = {}
+    ent["working_on"] = ""
+    ent.pop("workers_last_good", None)
+    ent.pop("workers_last_good_at", None)
+    ent.pop("workers_stale", None)
+    ent.pop("workers_stale_age_s", None)
+    _refresh_machine_activity_from_worker_list(ent)
+    if briefer_nick:
+        doc["briefer"] = briefer_nick
+    doc["ts"] = _utc_now_iso()
+    _note_event(doc, "recycle-clear-workers", machine=mid, nicks=",".join(uniq[:12]))
+    save_digest(home, doc)
+    out["cleared"] = True
+    return out
+
+
+@_digest_locked
 def set_seat_waiting(
     home: Path,
     nick: str,
