@@ -1184,17 +1184,21 @@ namespace BobDialogs
             // FR #9261 / BOB-TRAY-UI-01: no top-level Seats: or Open log (About Show logs opens the tray log).
             // FR #9264 / BOB-TRAY-UI-04: OpenCode keys live on About (no top-level menu item).
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
-            // FR #8706 / BOB-07: Reload, Restart engine, Exit live under Exit only (not top-level).
+            // FR #8706 / BOB-07 (operator 2026-11-24): Exit > Restart / Reload Engine / --- / Exit.
+            // Restart = host relaunch (Restart); Reload Engine = engine-only (ReloadEngine); leaf Exit = ExitTray.
+            // Parent Exit has no Click handler (opens submenu only).
             ToolStripMenuItem miExitMenu = new ToolStripMenuItem("Exit");
             MenuItems.Add("Exit");
-            ToolStripMenuItem miReload = new ToolStripMenuItem("Reload");
-            miReload.Click += delegate { ReloadEngine(); };
-            miExitMenu.DropDownItems.Add(miReload);
-            MenuItems.Add("Reload");
-            ToolStripMenuItem miRestartEngine = new ToolStripMenuItem("Restart engine");
-            miRestartEngine.Click += delegate { Restart(); };
-            miExitMenu.DropDownItems.Add(miRestartEngine);
-            MenuItems.Add("Restart engine");
+            ToolStripMenuItem miRestart = new ToolStripMenuItem("Restart");
+            miRestart.Click += delegate { Restart(); };
+            miExitMenu.DropDownItems.Add(miRestart);
+            MenuItems.Add("Restart");
+            ToolStripMenuItem miReloadEngine = new ToolStripMenuItem("Reload Engine");
+            miReloadEngine.Click += delegate { ReloadEngine(); };
+            miExitMenu.DropDownItems.Add(miReloadEngine);
+            MenuItems.Add("Reload Engine");
+            miExitMenu.DropDownItems.Add(new ToolStripSeparator());
+            MenuItems.Add("-");
             ToolStripMenuItem miExitLeaf = new ToolStripMenuItem("Exit");
             miExitLeaf.Click += delegate { ExitTray(); };
             miExitMenu.DropDownItems.Add(miExitLeaf);

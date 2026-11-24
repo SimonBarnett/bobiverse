@@ -308,7 +308,7 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
     items = out.read_text(encoding="utf-8").splitlines()
     # FR #9263: Free|Paid labels may append " [running]" when a live slot exists on the box.
     items = [re.sub(r" \[running\]$", "", x) for x in items]
-    # FR #8713 / BOB-06 menu, then FR #8706 / BOB-07: Exit submenu hosts Reload, Restart engine, Exit.
+    # FR #8713 / BOB-06 menu, then FR #8706 / BOB-07: Exit > Restart / Reload Engine / - / Exit.
     assert items == [
         "Status",
         "Agents",
@@ -324,8 +324,9 @@ def test_tray_menu_is_status_agent_plan_about_opencode_restart_exit(dialogs, tmp
         "About",
         "-",
         "Exit",
-        "Reload",
-        "Restart engine",
+        "Restart",
+        "Reload Engine",
+        "-",
         "Exit",
     ]
     # FR #9261: no top-level Seats: / Open log. FR #9264: OpenCode keys on About only.
