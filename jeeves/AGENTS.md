@@ -24,6 +24,11 @@
 >    against ircJeeves (`SimonBarnett/bobiverse`) so the chair performs that intervention **deterministically**. FR #8827
 >    keep-queue-moving is a bridge only; never leave an LLM-only loop without the matching chair FR. If a prior FR was
 >    closed COMPLETED but live tip still needs the bridge, file a regression FR with evidence.
+> 7. **CAST IRON — idle seats with open FRs/PRs is FAIL (FR #9644).** Digest `state=idle` seats while ungated offerable
+>    work exists (or open FR/PR rows the chair should offer) is a fail: monitor `idle_seats` EXIT 1 with fingerprint
+>    `idle_with_open_work` and **must chair-heal** (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + ear-relay
+>    `!assign` bridge per #9461) — report-only is opt-in. Gated-only queues are not this fail. Durable chair acceptance
+>    also reaffirms #9628 / #9460 (`offer_to_idle` / `offer_after_done`). Same-turn intervene still owes #9627.
 
 ## First turn (FR #954) â€” do this NOW
 

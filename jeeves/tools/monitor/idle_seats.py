@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625 / #8536 / #9461).
+"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625 / #8536 / #9461 / #9644).
 
 FR #9461: EXIT 1 idle+offerable triggers ear-relay !assign by default (--no-intervene to report-only).
+
+FR #9644 CAST IRON: idle seats with ungated open FRs/PRs is FAIL. EXIT 1 emits fingerprint
+``idle_with_open_work`` and attempts chair heal (``push_idle_offers_via_chair_outbox`` /
+``offer_to_idle``) — report-only is opt-in via ``--no-intervene`` + ``--no-chair-heal``.
+Sibling FR #9627: every MONITORING bridge still owes an ircJeeves product FR.
 
 FR #8536: when idle seats exist and offerable==0, emit healthy_idle_empty_offerable
 (+ queue_needs_human_only when every unaccepted row is needs_human) so ops do not
@@ -28,6 +33,9 @@ from _common import (
     resolve_queue_path,
     run_check,
 )
+
+# FR #9644: stable stall/monitor fingerprint (chair heal required, not report-only).
+IDLE_WITH_OPEN_WORK_FP = "idle_with_open_work"
 
 # Full shop nick: {machine}-{pid}. Short w-mh-* / w-io-* digest ghosts are not starve seats (FR #1625).
 _SHOP_NICK_RX = re.compile(r"^[a-z0-9][a-z0-9_.-]*-\d+$", re.I)
@@ -370,7 +378,8 @@ def _check_live_report(chair, digest, qpath, *, require_missing_queue: bool = Tr
     if idle and offerable > 0:
         named = ", ".join(str(x.get("nick") or "") for x in idle if x.get("nick"))
         findings.append(
-            f"idle seat {named} with {offerable} offerable unaccepted row(s) (live report)"
+            f"{IDLE_WITH_OPEN_WORK_FP}: idle seat {named} with {offerable} "
+            f"offerable unaccepted row(s) (live report)"
         )
     healthy_idle = bool(idle) and offerable == 0
     needs_human_only = False
@@ -406,6 +415,9 @@ def _check_live_report(chair, digest, qpath, *, require_missing_queue: bool = Tr
         "unverified_gates": list(_UNVERIFIED_GATES),
         "report_offerable_count": queue.get("offerable_count"),
     }
+    if idle and int(offerable or 0) > 0:
+        payload["fingerprint"] = IDLE_WITH_OPEN_WORK_FP
+        payload["fingerprints"] = [IDLE_WITH_OPEN_WORK_FP]
     if isinstance(overlay, dict):
         payload.update(overlay)
     return (payload, EXIT_OK if ok else EXIT_FINDING)
@@ -533,8 +545,8 @@ def check(args):
         )
     if idle and offerable > 0:
         findings.append(
-            f"{len(idle)} idle seat(s) with {offerable} offerable row(s) "
-            f"(unaccepted={len(unaccepted)})"
+            f"{IDLE_WITH_OPEN_WORK_FP}: {len(idle)} idle seat(s) with "
+            f"{offerable} offerable row(s) (unaccepted={len(unaccepted)})"
         )
     # FR #8536: distinguish healthy idle + empty offerable queue from hung seats.
     healthy_idle = bool(idle) and offerable == 0
@@ -556,28 +568,41 @@ def check(args):
             f"(unaccepted={len(unaccepted)}; {reason}; do not recycle as hung)"
         )
     ok = not findings
-    return (
-        {
-            "ok": ok,
-            "idle_seats": idle,
-            "unaccepted_count": len(unaccepted),
-            "offerable_for_live_seats": offerable,
-            "fleet_offerable_count": fleet_offerable,
-            "under_cap": under_cap,
-            "pending_offer_count": pending_offers,
-            "healthy_idle_empty_offerable": healthy_idle,
-            "queue_needs_human_only": bool(needs_human_only),
-            "notes": notes,
-            "digest_path": str(digest / "digest.json"),
-            "queue_path": str(qpath),
-            "findings": findings,
-        },
-        EXIT_OK if ok else EXIT_FINDING,
-    )
+    payload = {
+        "ok": ok,
+        "idle_seats": idle,
+        "unaccepted_count": len(unaccepted),
+        "offerable_for_live_seats": offerable,
+        "fleet_offerable_count": fleet_offerable,
+        "under_cap": under_cap,
+        "pending_offer_count": pending_offers,
+        "healthy_idle_empty_offerable": healthy_idle,
+        "queue_needs_human_only": bool(needs_human_only),
+        "notes": notes,
+        "digest_path": str(digest / "digest.json"),
+        "queue_path": str(qpath),
+        "findings": findings,
+    }
+    if idle and int(offerable or 0) > 0:
+        payload["fingerprint"] = IDLE_WITH_OPEN_WORK_FP
+        payload["fingerprints"] = [IDLE_WITH_OPEN_WORK_FP]
+    return (payload, EXIT_OK if ok else EXIT_FINDING)
+
+
+def _chair_heal_idle_offers(home: Path) -> dict:
+    """FR #9644: deterministic chair heal via push_idle_offers_via_chair_outbox."""
+    out: dict = {"attempted": True, "pushed": 0, "home": str(home), "error": None}
+    try:
+        gc = _ensure_gitclaim()
+        pushed = int(gc.push_idle_offers_via_chair_outbox(home) or 0)
+        out["pushed"] = pushed
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 def main(argv=None) -> int:
-    """FR #9461: optional ear-relay intervene when EXIT 1 (idle+offerable)."""
+    """FR #9461 / #9644: ear-relay intervene + chair heal when EXIT 1 (idle+offerable)."""
     import argparse
 
     from _common import emit
@@ -587,7 +612,8 @@ def main(argv=None) -> int:
         prog="idle_seats",
         description=(
             "Idle seats vs offerable queue work for live seats (exit 0/1/2); "
-            "optional ear-relay !assign intervene (FR #9461)"
+            "fingerprint idle_with_open_work + ear-relay !assign (FR #9461) + "
+            "chair push_idle heal (FR #9644)"
         ),
     )
     p.add_argument("--help-exit0", action="store_true", help=argparse.SUPPRESS)
@@ -606,7 +632,7 @@ def main(argv=None) -> int:
         "--no-intervene",
         dest="intervene",
         action="store_false",
-        help="report-only (legacy)",
+        help="skip ear-relay !assign bridge",
     )
     p.add_argument(
         "--intervene-dry-run",
@@ -625,6 +651,20 @@ def main(argv=None) -> int:
         action="store_true",
         help="truncate drained ear outbox after intervene",
     )
+    # FR #9644: chair heal default ON (report-only requires both no-intervene + no-chair-heal).
+    p.add_argument(
+        "--chair-heal",
+        dest="chair_heal",
+        action="store_true",
+        default=True,
+        help="on EXIT 1, call push_idle_offers_via_chair_outbox (default on; FR #9644)",
+    )
+    p.add_argument(
+        "--no-chair-heal",
+        dest="chair_heal",
+        action="store_false",
+        help="skip chair push_idle heal (report-only when also --no-intervene)",
+    )
     args = p.parse_args(argv)
     if args.help_exit0:
         p.print_help()
@@ -637,6 +677,7 @@ def main(argv=None) -> int:
                 "dry_run": True,
                 "findings": [],
                 "intervene": False,
+                "chair_heal": None,
             },
             EXIT_OK,
         )
@@ -656,21 +697,46 @@ def main(argv=None) -> int:
     payload.setdefault("check", "idle_seats")
     payload.setdefault("dry_run", False)
     payload["intervene_requested"] = bool(getattr(args, "intervene", True))
+    payload["chair_heal_requested"] = bool(getattr(args, "chair_heal", True))
     try:
         offerable = int(payload.get("offerable_for_live_seats") or 0)
     except (TypeError, ValueError):
         offerable = 0
     idle_n = len(payload.get("idle_seats") or [])
-    should = (
-        bool(getattr(args, "intervene", True))
-        and code == EXIT_FINDING
-        and idle_n > 0
-        and offerable > 0
-    )
-    if should:
+    starve = code == EXIT_FINDING and idle_n > 0 and offerable > 0
+    if starve and not payload.get("fingerprint"):
+        payload["fingerprint"] = IDLE_WITH_OPEN_WORK_FP
+        payload["fingerprints"] = [IDLE_WITH_OPEN_WORK_FP]
+    should_intervene = bool(getattr(args, "intervene", True)) and starve
+    should_heal = bool(getattr(args, "chair_heal", True)) and starve
+    if should_heal:
+        try:
+            chair, digest = resolve_homes(args)
+            qpath = resolve_queue_path(chair, digest)
+            home = ops_home(chair, digest)
+            if qpath.parent != home:
+                home = qpath.parent
+            heal = _chair_heal_idle_offers(home)
+            payload["chair_heal"] = heal
+            notes = list(payload.get("notes") or [])
+            if heal.get("error"):
+                notes.append(f"FR #9644 chair heal error: {heal['error']}")
+            else:
+                notes.append(
+                    f"FR #9644 chair heal push_idle pushed={heal.get('pushed', 0)} "
+                    f"fingerprint={IDLE_WITH_OPEN_WORK_FP}"
+                )
+            payload["notes"] = notes
+        except Exception as e:
+            notes = list(payload.get("notes") or [])
+            notes.append(f"FR #9644 chair heal error: {e}")
+            payload["notes"] = notes
+            payload["chair_heal"] = {"attempted": True, "pushed": 0, "error": str(e)}
+    else:
+        payload["chair_heal"] = None
+    if should_intervene:
         try:
             import intervene_assign as ia
-            from _common import queue_bucket_rows, resolve_queue_path
 
             report = dict(payload)
             if not ia.rows_from_report(report):
