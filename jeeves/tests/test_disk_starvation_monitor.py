@@ -17,6 +17,35 @@ def test_machine_from_nick():
     assert ds.machine_from_nick("flamingo-17160") == "flamingo"
     assert ds.machine_from_nick("redqueen-11500") == "redqueen"
     assert ds.machine_from_nick("") == ""
+    # FR #9710: bare giveup_seats tokens must not become machine ids
+    assert ds.machine_from_nick("f") == ""
+    assert ds.machine_from_nick(",") == ""
+    assert ds.machine_from_nick("0") == ""
+    assert ds.is_fleet_machine_id("flamingo")
+    assert not ds.is_fleet_machine_id(",")
+    assert not ds.is_fleet_machine_id("f")
+    assert not ds.is_fleet_machine_id("0")
+
+
+def test_fr9710_ignores_worktree_collision_and_garbage_seats():
+    doc = {
+        "queue": {
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "id": "#9700",
+                    "giveup_reason": (
+                        "worktree-create-failed:disk fatal: "
+                        "'fr/disk-starvation-monitor-auto' is already used by worktree "
+                        "at 'C:/Users/simon/.grok/bob-bridge/worktrees/...'"
+                    ),
+                    "giveup_seats": [",", "f", "0", "flamingo-17160"],
+                    "offer_outcomes": [],
+                }
+            ]
+        }
+    }
+    assert ds.detect_disk_machines(doc) == {}
 
 
 def test_detect_disk_machines_from_offer_outcomes():

@@ -44,6 +44,11 @@ DISK_RX = re.compile(
     r"worktree-create-failed:\s*disk|disk-low|disk[_\s-]?full|no space left on device",
     re.I,
 )
+# Worktree path collision is not disk-low (FR #9710 storm from #9700 branch reuse).
+_NOT_DISK_RX = re.compile(
+    r"already used by worktree|is already checked out|worktree.*already exists",
+    re.I,
+)
 SEAT_RX = re.compile(r"^([a-z0-9][a-z0-9_.]*?)-(\d+)$", re.I)
 _USER_AGENT = "BobiverseJeevesMonitor-disk_starvation/1.0"
 
@@ -72,15 +77,47 @@ def min_free_gb(env: Optional[dict] = None) -> float:
 
 
 def machine_from_nick(nick: str) -> str:
+    """Map seat nick -> machine id. Bare tokens (``f``, ``0``, ``,``) are not machines.
+
+    FR #9710: giveup_seats garbage must not become machine-pinned intake titles.
+    """
     s = (nick or "").strip().lower()
     if not s:
         return ""
     m = SEAT_RX.match(s)
     if m:
         return m.group(1).replace("_", "")
+    # Hyphenated non-seat forms (rare): keep prefix only when both sides look real.
     if "-" in s:
-        return s.rsplit("-", 1)[0].replace("_", "")
-    return s
+        left, right = s.rsplit("-", 1)
+        if left and right.isdigit() and len(left) >= 2:
+            return left.replace("_", "")
+    return ""
+
+
+def is_fleet_machine_id(machine: str) -> bool:
+    """True when ``machine`` is a plausible fleet shop id (not punctuation / 1-char)."""
+    try:
+        import registered_machines as rm
+
+        mid = rm.normalize_machine_id(machine)
+    except Exception:
+        mid = (machine or "").strip().lower()
+        if not mid or not re.match(r"^[a-z0-9][a-z0-9-]{0,62}$", mid, re.I):
+            mid = None
+    if not mid or len(mid) < 2:
+        return False
+    return True
+
+
+def is_disk_reason(reason: str) -> bool:
+    """Disk-low class reasons only — exclude worktree path collisions (FR #9710)."""
+    text = str(reason or "")
+    if not text or not DISK_RX.search(text):
+        return False
+    if _NOT_DISK_RX.search(text):
+        return False
+    return True
 
 
 def _coerce_rows(doc: dict) -> list[dict]:
@@ -110,11 +147,12 @@ def detect_disk_machines(doc: dict) -> dict[str, dict[str, Any]]:
     hits: dict[str, dict[str, Any]] = {}
 
     def touch(machine: str, *, job: str, seat: str, reason: str, ts: str = "") -> None:
-        if not machine:
+        mid = (machine or "").strip().lower()
+        if not mid or not is_fleet_machine_id(mid):
             return
         slot = hits.setdefault(
-            machine,
-            {"machine": machine, "jobs": [], "seats": [], "reasons": [], "sample_ts": ""},
+            mid,
+            {"machine": mid, "jobs": [], "seats": [], "reasons": [], "sample_ts": ""},
         )
         if job and job not in slot["jobs"]:
             slot["jobs"].append(job)
@@ -128,7 +166,7 @@ def detect_disk_machines(doc: dict) -> dict[str, dict[str, Any]]:
     for row in _coerce_rows(doc):
         job = _row_id(row)
         reason = str(row.get("giveup_reason") or "")
-        if DISK_RX.search(reason):
+        if is_disk_reason(reason):
             for seat in row.get("giveup_seats") or []:
                 if isinstance(seat, str):
                     touch(machine_from_nick(seat), job=job, seat=seat, reason=reason)
@@ -137,7 +175,7 @@ def detect_disk_machines(doc: dict) -> dict[str, dict[str, Any]]:
                 if not isinstance(o, dict):
                     continue
                 oreason = str(o.get("reason") or "")
-                if DISK_RX.search(oreason):
+                if is_disk_reason(oreason):
                     seat = str(o.get("seat") or "")
                     touch(
                         machine_from_nick(seat),
@@ -151,7 +189,7 @@ def detect_disk_machines(doc: dict) -> dict[str, dict[str, Any]]:
             if not isinstance(o, dict):
                 continue
             oreason = str(o.get("reason") or "")
-            if not DISK_RX.search(oreason):
+            if not is_disk_reason(oreason):
                 continue
             seat = str(o.get("seat") or "")
             touch(
@@ -297,6 +335,8 @@ def file_machine_pinned_issue(
     *,
     remediate: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    if not is_fleet_machine_id(machine):
+        return {"ok": True, "skipped": "invalid_machine", "machine": machine}
     script = resolve_report_script()
     if script is None:
         return {"ok": False, "error": "Report-BobiverseIntakeIssue.ps1 missing"}
@@ -402,14 +442,16 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
     # Fixture may pass precomputed machines
     if isinstance(doc, dict) and isinstance(doc.get("disk_machines"), dict) and not hits:
         for mach, meta in doc["disk_machines"].items():
-            if isinstance(meta, dict):
-                hits[str(mach).lower()] = {
-                    "machine": str(mach).lower(),
-                    "jobs": list(meta.get("jobs") or []),
-                    "seats": list(meta.get("seats") or []),
-                    "reasons": list(meta.get("reasons") or ["fixture"]),
-                    "sample_ts": str(meta.get("sample_ts") or ""),
-                }
+            mid = str(mach).lower()
+            if not is_fleet_machine_id(mid) or not isinstance(meta, dict):
+                continue
+            hits[mid] = {
+                "machine": mid,
+                "jobs": list(meta.get("jobs") or []),
+                "seats": list(meta.get("seats") or []),
+                "reasons": list(meta.get("reasons") or ["fixture"]),
+                "sample_ts": str(meta.get("sample_ts") or ""),
+            }
 
     findings = [
         f"disk starvation on {m}: jobs={','.join(h.get('jobs') or [])[:120]} seats={','.join(h.get('seats') or [])}"
