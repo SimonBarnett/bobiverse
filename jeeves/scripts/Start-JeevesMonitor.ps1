@@ -7,6 +7,9 @@
   The monitor_prompt tells the agent to read AGENTS.md and run the monitor-start skill
   immediately (do not wait for Simon). Looks for bob-worker.exe under sibling
   <ai root>\bob\worker (or -BobInstallRoot).
+  
+  FR #9691: DEPRECATED - use --mode jeeves instead. This script will be updated to use
+  --mode jeeves in a future version.
 
   FR #8577: Drive-root InstallRoot (J: or J:\) is supported. Split-Path -Parent of a
   drive root is empty; do not Join-Path that into bob. Fall back to
