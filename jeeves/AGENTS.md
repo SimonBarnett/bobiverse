@@ -69,12 +69,9 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 |---|---|---|
 | Health (services / chair home / local+public report) | `scripts\Test-JeevesMonitorHealth.ps1` | `tools\monitor\health.py` (FR #9836 heal starts ircJeeves; probe local+public) |
 | Chair progress vs /health (FR #9900) | `scripts\Test-JeevesMonitorChairProgress.ps1` | `tools\monitor\chair_progress.py` (/health ok + stale stdout/cmd-trace) |
-<<<<<<< HEAD
-| Webhooks up with chair (FR #9826 / #9836 / #9864) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (intended-up ircJeeves => local+public /bob/v1/report 200; start chair / heal BobCallback) |
-=======
 | Cmd-trace stall vs GIT announce (FR #9871 / #9872) | `scripts\Test-JeevesMonitorCmdTraceStall.ps1` | `tools\monitor\cmd_trace_stall.py` (cmd-trace stale + stdout fresh; +o retry in chair; live recycle `require_machine=walrus`) |
 | Webhooks up with chair (FR #9826 / #9836) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (intended-up ircJeeves => local+public /bob/v1/report 200; start chair / heal BobCallback) |
->>>>>>> c344bc076 (FR #9871/#9872: cmd-trace stall heal + chair +o/ChanServ retry backoff)
+| Webhooks up with chair (FR #9826 / #9836 / #9864) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (intended-up ircJeeves => local+public /bob/v1/report 200; start chair / heal BobCallback) |
 | Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
 | Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
