@@ -545,6 +545,14 @@ def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
         r for r in rows
         if isinstance(r, dict) and not any(repo_match(ig, str(r.get("repo") or "")) for ig in ignored)
     ]
+    # FR #9833: optional build-jeeves dispatch lock.
+    try:
+        import dispatch_lock as _dl
+
+        if _dl.is_on(home):
+            kept = [r for r in kept if _dl.row_blocked_reason(home, r) is None]
+    except Exception:
+        pass
     if doc.get("strict"):
         kept = [
             r for r in kept
@@ -642,6 +650,12 @@ def _set_repo(home: Path, token: str, pr: int, label: str) -> list[str]:
 def format_focus_lines(home: Path) -> list[str]:
     doc = load_focus(home)
     out = [f"focus strict: {'on' if doc['strict'] else 'off'}"]
+    try:
+        import dispatch_lock as _dl
+
+        out.append(_dl.status_line(home))
+    except Exception:
+        pass
     if not doc["items"] and not doc["repos"]:
         return out + ["focus: (none)"]
     if doc["items"]:
@@ -660,6 +674,43 @@ def handle_focus_cmd(home: Path, arg: str) -> list[str]:
     if not raw:
         return format_focus_lines(home)
     parts = raw.split()
+    # FR #9833: optional Jeeves tip-build dispatch lock.
+    if parts[0].lower() in ("build-jeeves", "build_jeeves"):
+        import dispatch_lock as _dl
+
+        if len(parts) == 1:
+            return [_dl.status_line(home)]
+        flag = parts[1].lower()
+        if flag in ("on", "1", "true", "yes", "off", "0", "false", "no"):
+            on = flag in ("on", "1", "true", "yes")
+            _dl.set_build_jeeves(home, on)
+            # Fleet notice when enabling.
+            if on:
+                try:
+                    import gitclaim as _gc
+
+                    with _gc._lock(home):
+                        docq = _gc._load_queue_unlocked(home)
+                        notes = docq.get("stand_down")
+                        if not isinstance(notes, list):
+                            notes = []
+                            docq["stand_down"] = notes
+                        notes.append(
+                            {
+                                "channel": "#bobiverse",
+                                "text": (
+                                    "dispatch-lock build-jeeves: on "
+                                    "(jeeves/+common/ tips + allowlisted gate FRs; FR #9833)"
+                                ),
+                            }
+                        )
+                        if len(notes) > 20:
+                            docq["stand_down"] = notes[-20:]
+                        _gc._write_queue(_gc.queue_path(home), docq)
+                except Exception:
+                    pass
+            return [_dl.status_line(home)]
+        return ["focus: usage !focus build-jeeves on|off"]
     if parts[0].lower() == "strict":
         if len(parts) == 1:
             return [f"focus strict: {'on' if is_strict(home) else 'off'}"]
@@ -825,7 +876,7 @@ def dispatch(
     foc_ok = bool(focus_ok) or ops_ok
     arg = parse_focus_cmd(body)
     if arg is not None:
-        read_only = arg == "" or arg.lower() == "strict"
+        read_only = arg == "" or arg.lower() == "strict" or arg.lower().startswith("build-jeeves") or arg.lower().startswith("build_jeeves")
         if not read_only and not foc_ok:
             return ["focus: denied (owner account required)"]
         return handle_focus_cmd(home, arg)

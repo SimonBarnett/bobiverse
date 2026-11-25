@@ -12832,6 +12832,14 @@ def mrb_yields_to_older_fr(
             continue
         if _row_queue_age_key(row) >= cand_age:
             continue
+        # FR #9833: do not yield to rows the build-jeeves dispatch lock would skip.
+        try:
+            import dispatch_lock as _dl
+
+            if _dl.row_blocked_reason(home, row):
+                continue
+        except Exception:
+            pass
         if rt == "FR":
             try:
                 if fr_is_superseded(
@@ -14162,6 +14170,15 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind="ignored", reason="repo-ignored"):
                         purged = True
                     return None
+                # FR #9833: build-jeeves dispatch lock (belt-and-braces with sort filter).
+                try:
+                    import dispatch_lock as _dl
+
+                    lock_why = _dl.row_blocked_reason(home, cand)
+                    if lock_why:
+                        return None
+                except Exception:
+                    pass
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
