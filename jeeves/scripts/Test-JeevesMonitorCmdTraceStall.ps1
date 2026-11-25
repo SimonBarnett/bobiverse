@@ -1,4 +1,4 @@
 [CmdletBinding()]
-param([switch], [string] = '', [string] = '', [string] = '')
-& (Join-Path  'Invoke-JeevesMonitorCheck.ps1') -Check cmd_trace_stall -DryRun: -InstallRoot  -ChairHome  -DigestHome 
-exit 
+param([switch]$DryRun, [string]$InstallRoot = '', [string]$ChairHome = '', [string]$DigestHome = '')
+& (Join-Path $PSScriptRoot 'Invoke-JeevesMonitorCheck.ps1') -Check cmd_trace_stall -DryRun:$DryRun -InstallRoot $InstallRoot -ChairHome $ChairHome -DigestHome $DigestHome
+exit $LASTEXITCODE
