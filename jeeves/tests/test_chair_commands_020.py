@@ -329,6 +329,26 @@ def test_recycle_unknown_machine_is_refused(chair, op):
     assert chair.sent == []
 
 
+def test_fr9780_recycle_seat_nick_routes_machine_wire(chair, op):
+    """FR #9780: !recycle flamingo-17160 maps to flamingo (not unknown machine)."""
+    out = pm(chair, op, "!recycle flamingo-17160")
+    assert out[0] == "Recycling flamingo (seat flamingo-17160)."
+    assert "seat=flamingo-17160" in out[1]
+    assert chair.sent == ["PRIVMSG #bobiverse :RECYCLE v1 flamingo"]
+    chair._cc().recycle_gate._last.clear()
+    out2 = pm(chair, op, "!recycle flamingo")
+    assert out2[0] == "Recycling flamingo."
+    assert "seat=" not in out2[1]
+    assert chair.sent == ["PRIVMSG #bobiverse :RECYCLE v1 flamingo"]
+
+
+def test_fr9780_recycle_seat_dry_run(chair, op):
+    out = pm(chair, op, "!recycle dry-run flamingo-17160")
+    assert out[0].startswith("recycle dry-run: would recycle flamingo seat=flamingo-17160")
+    assert "seat=flamingo-17160" in out[1]
+    assert chair.sent == []
+
+
 def test_recycle_one_machine_routes_a_wire_to_the_fleet_channel_with_cooldown(chair, op):
     out = pm(chair, op, "!recycle marchhare")
     assert out[0] == "Recycling marchhare." and "routed to bob seat(s) (local marchhare)" in out[1]

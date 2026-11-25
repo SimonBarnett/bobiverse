@@ -320,6 +320,9 @@ def ungated_unaccepted_count(
         open_keys = gitclaim.open_fr_issue_keys(qdoc)
     except Exception:
         open_keys = set()
+    # FR #9821 / #9553: pass issue_fetch so held fr-digest parents missing from
+    # the local queue still suppress offerable_count (parity with offer/assign).
+    _offer_fetch = gitclaim.depends_issue_fetch_checker()
     n = 0
     for row in rows or []:
         if not isinstance(row, dict):
@@ -330,8 +333,13 @@ def ungated_unaccepted_count(
             continue
         if gitclaim.row_on_cooldown(row, now_f, nick="", live=None):
             continue
-        # FR #9553 / #9455: same Depends-on gate as offer/assign/stuck (token-free).
-        if gitclaim.depends_gate_reason(row, qdoc, open_keys=open_keys):
+        # FR #9821 / BOB-G3: digest gate records are not offerable work.
+        if gitclaim.digest_issue_reason(row):
+            continue
+        # FR #9553 / #9455 / #9821: same Depends-on gate as offer/assign/stuck.
+        if gitclaim.depends_gate_reason(
+            row, qdoc, open_keys=open_keys, issue_fetch=_offer_fetch
+        ):
             continue
         n += 1
     return n
@@ -1669,6 +1677,7 @@ def run_stuck_sweep(
         "nudged": 0,
         "idle_offers": 0,
         "orphan_holds": 0,
+        "sticky_holds": 0,
     }
     cleared_doing: list[dict] = []
     if act:
@@ -1680,6 +1689,17 @@ def run_stuck_sweep(
             actions["orphan_holds"] = n_orphan
             if n_orphan and log:
                 log(f"stuck-sweep orphan-seat-holds cleared={n_orphan} (FR #9558)")
+        # FR #9783: clear stale via=offer holds past offer timeout (pin may
+        # already be gone; SEAT_HOLD_MAX_S otherwise leaves busy held for 1h).
+        with contextlib_suppress():
+            n_sticky = int(
+                gitclaim.release_stale_via_offer_holds(home, now=now_f) or 0
+            )
+            actions["sticky_holds"] = n_sticky
+            if n_sticky and log:
+                log(
+                    f"stuck-sweep sticky-via-offer-holds cleared={n_sticky} (FR #9783)"
+                )
         # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
         # accepted_holder_gone release can re-dispatch them.
         copilot_stats = settle_copilot_fr_with_open_prs(
@@ -1695,7 +1715,9 @@ def run_stuck_sweep(
             log=log,
             open_items=catalog,
         )
-        actions["released"] = len(released)
+        # Count sticky via=offer hold releases in released so announce
+        # released=N is not stuck at 0 for this class (FR #9783).
+        actions["released"] = len(released) + int(actions.get("sticky_holds") or 0)
         # FR #9402: clear ghost offered_to on held rows / idle no-ACK seats.
         ghost = release_ghost_offers(
             home,
@@ -1824,7 +1846,8 @@ def run_stuck_sweep(
             f"held={len(held)} released={actions['released']} "
             f"enqueued={actions['enqueued']} "
             f"cleared_doing={actions.get('cleared_doing', 0)} "
-            f"nudged={actions.get('nudged', 0)}"
+            f"nudged={actions.get('nudged', 0)} "
+            f"sticky_holds={actions.get('sticky_holds', 0)}"
         )
     return report
 
@@ -1888,11 +1911,109 @@ def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
     return lines
 
 
+def refresh_stuck_depends_from_live_queue(
+    home: Path, entries: list[dict]
+) -> list[dict]:
+    """FR #9555 ``bob_stuck_depends_live_refresh``: drop/recompute stale depends_* paint.
+
+    Digest paint used to echo the last stuck-report snapshot. After a row moved
+    to ACC (or Depends-on was stripped from the live body), ``depends_unresolved``
+    could linger and mislead monitors. Recompute against the live queue:
+
+    * accepted rows never keep a ``depends_*`` rule
+    * unaccepted rows re-run ``depends_gate_reason`` on the live body
+    * rows gone from the queue drop their depends_* held entries
+    """
+    import gitclaim
+
+    home = Path(home)
+    try:
+        doc = gitclaim.load_queue(home) or {}
+    except Exception:
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    accepted_keys: set[tuple[str, str]] = set()
+    unaccepted_by_key: dict[tuple[str, str], dict] = {}
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        repo = str(row.get("repo") or "").strip()
+        num = _norm_id(row.get("id"))
+        if repo and num:
+            accepted_keys.add((repo.lower(), num.lstrip("#")))
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        repo = str(row.get("repo") or "").strip()
+        num = _norm_id(row.get("id"))
+        if repo and num:
+            unaccepted_by_key[(repo.lower(), num.lstrip("#"))] = row
+
+    open_keys: set = set()
+    with contextlib.suppress(Exception):
+        open_keys = gitclaim.open_fr_issue_keys(doc)
+    issue_open = None
+    issue_fetch = None
+    with contextlib.suppress(Exception):
+        issue_open = gitclaim.depends_issue_open_checker()
+    with contextlib.suppress(Exception):
+        issue_fetch = gitclaim.depends_issue_fetch_checker()
+
+    out: list[dict] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        entry = dict(raw)
+        rule = str(entry.get("stuck_reason") or entry.get("rule") or "").strip()
+        if not rule.startswith("depends_"):
+            out.append(entry)
+            continue
+        repo = str(entry.get("repo") or "").strip()
+        num = _norm_id(entry.get("number") or entry.get("id"))
+        key = (repo.lower(), num.lstrip("#")) if repo and num else ("", "")
+        if key in accepted_keys:
+            # ACC: never surface depends_* (FR #9555).
+            continue
+        live = unaccepted_by_key.get(key)
+        if live is None:
+            # Row left the queue — drop stale depends paint.
+            continue
+        if str(live.get("task") or "").upper() != "FR":
+            continue
+        dep_why = None
+        with contextlib.suppress(Exception):
+            dep_why = gitclaim.depends_gate_reason(
+                live,
+                doc,
+                open_keys=open_keys,
+                issue_open=issue_open,
+                issue_fetch=issue_fetch,
+            )
+        if not dep_why:
+            continue
+        if dep_why == gitclaim.DEPENDS_HELD_REASON:
+            entry["rule"] = "depends_held"
+        elif dep_why == gitclaim.DEPENDS_UNRESOLVED_REASON:
+            entry["rule"] = "depends_unresolved"
+        else:
+            entry["rule"] = "depends_on_open"
+        entry["state"] = "held"
+        entry.pop("stuck_reason", None)
+        out.append(entry)
+    return out
+
+
 def digest_stuck_section(home: Path) -> list[dict]:
-    """Public digest ``stuck`` list (repo, number, task, state, rule, age, holder)."""
+    """Public digest ``stuck`` list (repo, number, task, state, rule, age, holder).
+
+    FR #9555: refresh ``depends_*`` rules from the live queue before paint so ACC
+    / stripped Depends-on rows do not linger as ``depends_unresolved``.
+    """
     report = load_stuck_report(home)
     paused = str(report.get("paused") or "").strip()
     stuck_held = list(report.get("stuck") or []) + list(report.get("held") or [])
+    stuck_held = refresh_stuck_depends_from_live_queue(home, stuck_held)
     if paused and not stuck_held:
         return [{"paused": paused}]
     out: list[dict] = []

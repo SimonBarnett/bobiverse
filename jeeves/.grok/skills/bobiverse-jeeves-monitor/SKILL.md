@@ -42,6 +42,11 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 >    **Code** child (`feature-request` only, no `needs-walrus`) + **Walrus action** child (`needs-walrus`;
 >    `Depends-on: #<code>` + digest). Pure code/docs/PR FRs are never `needs-walrus` (#9637). On needs-walrus NACK:
 >    stop wrong-machine re-offer; ensure the split exists; drive the walrus child via Jeeves-agent/Slab — do not only comment.
+> 10. **CAST IRON — remove `needs-*` when `!unpin` (FR #9708).** Implement-anywhere chair/worker **code**: remove every
+>     `needs-<machine>` label **and** `!unpin` (`require_machine=any`) in the **same turn**. Never leave `needs-*` on a
+>     row unpinned to `any` — that pair causes ACK→GIVEUP `reason=require_machine=<machine>` and wrong-shop re-offer
+>     loops (#9628/#9634 class; tip gate #9664). True host-action work: keep `needs-*` **and** keep `!pin` together;
+>     never `!unpin` while the label remains.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -68,7 +73,7 @@ Prefer **de-duped intake** when a product bug is the root. Use chair commands fo
 | Offer flow starved under strict focus | `!focus` / `!unfocus` / `!focus strict off` | Only to restore offer flow; prefer repo-level focus |
 | Idle seats + ungated work and auto-feed cannot hand out | `!assign <seat> owner/repo FR\|MRB\|UAT\|FIX N` | Last resort after `queue_flow` / idle_seats show true starve |
 | Give-up stamps blocking re-offer | `!cleargiveup owner/repo#N [seat]` | After confirming not a GIVEUP loop (do not clear-and-reloop) |
-| Machine pin wrong | `!pin` / `!unpin` | Ops pin only; prefer intake if cue inference is wrong |
+| Machine pin wrong | `!pin` / `!unpin` | Ops pin only; prefer intake if cue inference is wrong. **CAST IRON #9708:** implement-anywhere ⇒ remove `needs-*` **and** `!unpin` together; host-action ⇒ keep label+pin |
 
 **Auth:** nick `monitoring` (default `JEEVES_MONITOR_NICKS`) or services account in `JEEVES_MONITOR_ACCOUNTS`, or **ear relay** (append `PRIVMSG #bobiverse :!<cmd>` to `bob-<machine>` outbox). Details without secrets: `docs/monitoring.md`, `docs/jeeves-commands.md`. Tray intervene UI is BOB-43 (#8681).
 
@@ -183,6 +188,7 @@ On **walrus** (Ergo/chair host; ionos deprecated), NSSM `ircJeeves` may use `-Ch
 - When the last open child of an fr-digest batch closes, close the digest issue the same turn (monitor follow-up if ticket-closure did not).
 - Session reliability backlog for token-less chair: shared offerable predicate (list=assign=stuck), G1 assign when fr-digest not queued (#9548), auto-close fr-digest on last child, auto-pin tipform host-local after repeated GIVEUPs, stuck refresh, tray_session_missing rule, monitor ops_home on non-walrus, seat-hold clear on ACC nick move.
 - CAST IRON FR #9669: needs-walrus NACK → Jeeves agent does walrus (split code FR + walrus FR under Digest; stop wrong-machine re-offer).
+- CAST IRON FR #9708: implement-anywhere ⇒ remove every `needs-*` **and** `!unpin` same turn; host-action ⇒ keep label+pin; never `needs-*` + `rm=any`.
 
 ## Harvested monitor playbook (skill records #1215-#1456)
 

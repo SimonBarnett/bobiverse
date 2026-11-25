@@ -83,7 +83,8 @@ function Get-IntakeAllowRepos {
         'SimonBarnett/priority-mcp',
         'SimonBarnett/a-search',  # FR #3023
         'SimonBarnett/trutex',  # FR #3050
-        'SimonBarnett/ce-priority'  # FR #4830
+        'SimonBarnett/ce-priority',  # FR #4830
+        'SimonBarnett/jeeves-mcp'  # FR #9690
     )
     $candidates = @(
         (Join-Path $PSScriptRoot 'intake.py'),
