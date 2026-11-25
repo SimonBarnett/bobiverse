@@ -24,6 +24,7 @@ CLOSURE = frozenset(
         "bobiverse-jeeves-agent-install",
         "bobiverse-jeeves-agent-build",
         "bobiverse-jeeves-agent-monitor",
+        "bobiverse-jeeves-agent-winrm",
         "bobiverse-build",
     }
 )
