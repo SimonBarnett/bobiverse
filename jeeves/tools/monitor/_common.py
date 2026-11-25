@@ -510,6 +510,31 @@ def _report_doing_nicks(report: dict[str, Any] | None) -> set[str]:
     return out
 
 
+def local_idle_contradicted_by_live(
+    idle_nicks: list[str] | tuple[str, ...] | set[str],
+    report: dict[str, Any] | None,
+    *,
+    max_age_sec: float = LIVE_REPORT_MAX_AGE_SEC,
+) -> set[str]:
+    """FR #9849: local idle nicks that a fresh live /report shows as doing/accepted.
+
+    Returns lowercased nick keys. Empty when the report is missing/stale or no
+    overlap. Used so local idle+offerable ghosts do not EXIT 1 / !assign-storm
+    when the live chair already has those seats busy.
+    """
+    if not live_report_is_fresh(report, max_age_sec=max_age_sec):
+        return set()
+    doing = _report_doing_nicks(report)
+    if not doing:
+        return set()
+    out: set[str] = set()
+    for raw in idle_nicks or []:
+        key = str(raw or "").strip().lower()
+        if key and key in doing:
+            out.add(key)
+    return out
+
+
 def local_ops_stale_vs_live_report(
     chair: Path,
     digest: Path,

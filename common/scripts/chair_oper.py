@@ -1,4 +1,4 @@
-﻿"""Jeeves chair: IRC operator login + channel-operator (+o) upkeep + visibility of what Ergo allows.
+"""Jeeves chair: IRC operator login + channel-operator (+o) upkeep + visibility of what Ergo allows.
 
 * Credentials live in the INSTALL config (``<install>/config/oper.cred``), DPAPI-protected
   (machine scope, so the installer account and the service account both work). They are
@@ -226,3 +226,83 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(main())
+
+
+
+# ---------------------------------------------------------------- FR #9872: +o / ChanServ retry with backoff
+
+def op_retry_backoff_s(attempt: int, *, base: float = 15.0, cap: float = 300.0) -> float:
+    """Exponential backoff between SAMODE/ChanServ OP retries (FR #9872).
+
+    attempt 0 => base; grows 2**n up to cap. Never stops retrying --- callers
+    keep scheduling; do not leave commands gated forever on missing +o.
+    """
+    try:
+        n = max(0, int(attempt))
+    except (TypeError, ValueError):
+        n = 0
+    delay = float(base) * (2 ** min(n, 8))
+    return float(min(max(float(base), delay), float(cap)))
+
+
+def cs_sync_retry_backoff_s(fail_count: int, *, base: float = 30.0, cap: float = 300.0) -> float:
+    """Backoff after chanserv-sync timeout / empty result (FR #9872)."""
+    return op_retry_backoff_s(fail_count, base=base, cap=cap)
+
+
+def plan_chan_op_recover(
+    *,
+    oper_ok: bool,
+    channel: str,
+    nick: str,
+    attempt: int = 0,
+) -> list[dict]:
+    """Plan wire lines to restore chair +o in one channel.
+
+    Oper path: SAMODE first. After attempt>=1 also ask ChanServ OP (dual path)
+    so a stuck SAMODE does not mute forever. Non-oper: ChanServ OP only.
+    """
+    ch = (channel or '').strip()
+    who = (nick or '').strip() or 'Jeeves'
+    if not ch.startswith('#'):
+        ch = '#' + ch if ch else ''
+    if not ch:
+        return []
+    out: list[dict] = []
+    try:
+        att = max(0, int(attempt))
+    except (TypeError, ValueError):
+        att = 0
+    if oper_ok:
+        out.append(
+            {
+                'verb': 'SAMODE',
+                'line': f'SAMODE {ch} +o {who}',
+                'log': f'INFO chair not +o in {ch}: SAMODE {ch} +o {who} (oper samode attempt={att})',
+            }
+        )
+        if att >= 1:
+            out.append(
+                {
+                    'verb': 'CHANSERV_OP',
+                    'line': f'PRIVMSG ChanServ :OP {ch}',
+                    'log': f'INFO chair not +o in {ch}: ChanServ OP dual-path (attempt={att})',
+                }
+            )
+    else:
+        out.append(
+            {
+                'verb': 'CHANSERV_OP',
+                'line': f'PRIVMSG ChanServ :OP {ch}',
+                'log': (
+                    f'WARN chair not +o in {ch} and not oper; '
+                    f'asked ChanServ OP (attempt={att}; works only with founder/AMODE)'
+                ),
+            }
+        )
+    return out
+
+
+def commands_require_chan_op() -> bool:
+    """FR #9872 CAST IRON: ear/monitor !status/!assign must not wait on chair +o."""
+    return False

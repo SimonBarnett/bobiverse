@@ -591,6 +591,258 @@ def clear_held_fr_sticky_offers(doc: dict) -> list[str]:
     return dropped
 
 
+def clear_closed_fr_sticky_offers(
+    doc: dict, home: Path | None = None, *, log=None
+) -> list[str]:
+    """FR #9835: clear sticky offered_to / seat-holds on stamped ``state=closed`` FRs.
+
+    Phantom CLOSED (or webhook-stamped) FR rows must not pin a seat as
+    ``busy (offered FR ...)`` / ``busy (held ...)`` within the offer-timeout window
+    and must not refuse ``!assign`` tip MRBs. Drops the unaccepted row (same as
+    ``_purge_closed_fr_unaccepted`` stamped path) and clears matching seat-holds.
+    Returns human drop labels for one-shot announce logging.
+    """
+    dropped: list[str] = []
+    if not isinstance(doc, dict):
+        return dropped
+    keep: list[dict] = []
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) != "FR":
+            keep.append(row)
+            continue
+        if str(row.get("state") or "").strip().lower() != "closed":
+            keep.append(row)
+            continue
+        had_offer = bool(str(row.get("offered_to") or "").strip())
+        repo = str(row.get("repo") or "").strip()
+        ident = str(row.get("id") or "").strip()
+        clear_sticky_offer_fields(row)
+        if home is not None and repo and ident:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(home, repo, "FR", ident)
+                _clear_job_seat_holds_unlocked(home, repo, "PR", ident)
+                _clear_job_seat_holds_unlocked(home, repo, "UAT", ident)
+        label = f"{_row_drop_label(row)} closed_fr_clear_sticky"
+        dropped.append(label)
+        _log_queue_purge(
+            f"INFO git-claim purge closed-fr-sticky {repo}{ident} "
+            f"had_offer={int(had_offer)}",
+            log=log,
+        )
+        # Drop the unaccepted CLOSED phantom so it cannot re-pin.
+    doc["unaccepted"] = keep
+    return dropped
+
+def clear_offers_for_held_digest_children(
+    home: Path | None,
+    doc: dict,
+    digest_repo: str,
+    digest_id: str,
+) -> list[str]:
+    """FR #9832: when an fr-digest gains ``hold``, clear Depends-on child offers now.
+
+    Clears sticky ``offered_*`` on unaccepted children, soft-releases accepted
+    children back to unaccepted, and drops seat holds for those jobs. Returns
+    human labels for logging / fleet notice.
+    """
+    cleared: list[str] = []
+    if not isinstance(doc, dict):
+        return cleared
+    want_repo = _repo_key(digest_repo)
+    raw_id = str(digest_id or "").strip().lstrip("#")
+    try:
+        want_num = int(raw_id) if raw_id else 0
+    except ValueError:
+        return cleared
+    if not want_repo or want_num <= 0:
+        return cleared
+    want = (want_repo, want_num)
+
+    def _depends_on_digest(row: dict) -> bool:
+        return want in _row_depends_on_issue_refs(row)
+
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict) or _canon_task(row) != "FR":
+            continue
+        if not _depends_on_digest(row):
+            continue
+        had = bool(str(row.get("offered_to") or "").strip())
+        clear_sticky_offer_fields(row)
+        if home is not None:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(row.get("repo") or ""),
+                    "FR",
+                    str(row.get("id") or ""),
+                )
+        if had:
+            cleared.append(f"{_row_drop_label(row)} digest_hold_clear_offer")
+
+    kept_acc: list[dict] = []
+    released_rows: list[dict] = []
+    for row in list(doc.get("accepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) != "FR" or not _depends_on_digest(row):
+            kept_acc.append(row)
+            continue
+        if home is not None:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(row.get("repo") or ""),
+                    "FR",
+                    str(row.get("id") or ""),
+                )
+        retry = _row_to_unaccepted_retry(row)
+        clear_sticky_offer_fields(retry)
+        released_rows.append(retry)
+        cleared.append(f"{_row_drop_label(row)} digest_hold_release_accepted")
+    if released_rows:
+        doc["accepted"] = kept_acc
+        doc["unaccepted"] = list(doc.get("unaccepted") or []) + released_rows
+    return cleared
+
+# FR #9848: injectable GitHub label remover for tests (callable(repo, num, label) -> bool).
+_FR9848_REMOVE_LABEL = None
+
+
+def _default_remove_github_issue_label(repo: str, issue_num: int, label: str) -> bool:
+    """Best-effort ``gh api -X DELETE repos/.../issues/N/labels/LABEL`` (FR #9848)."""
+    import shutil
+    import subprocess
+    import urllib.parse
+
+    gh = shutil.which("gh")
+    if not gh:
+        return False
+    lab = urllib.parse.quote(str(label or "").strip(), safe="")
+    if not lab or int(issue_num) <= 0:
+        return False
+    try:
+        r = subprocess.run(
+            [
+                gh,
+                "api",
+                "-X",
+                "DELETE",
+                f"repos/{repo}/issues/{int(issue_num)}/labels/{lab}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def strip_hold_from_digest_children(
+    home: Path | None,
+    doc: dict,
+    digest_repo: str,
+    digest_id: str,
+    *,
+    remove_github_label=None,
+) -> list[str]:
+    """FR #9848: parent digest unhold strips ``hold`` from ordinary Depends-on children.
+
+    Nested digest children keep hold (FR #9860 no auto-unhold). Updates queue labels
+    in place and best-effort removes the GitHub label so the next resync stays clear.
+    """
+    actions: list[str] = []
+    if not isinstance(doc, dict):
+        return actions
+    want_repo = _repo_key(digest_repo)
+    raw_id = str(digest_id or "").strip().lstrip("#")
+    try:
+        want_num = int(raw_id) if raw_id else 0
+    except ValueError:
+        return actions
+    if not want_repo or want_num <= 0:
+        return actions
+    want = (want_repo, want_num)
+
+    try:
+        import fr_digest_gate as _fdg
+    except ImportError:
+        _fdg = None  # type: ignore[assignment]
+
+    remover = remove_github_label
+    if remover is None:
+        remover = _FR9848_REMOVE_LABEL
+    if remover is None:
+        remover = _default_remove_github_issue_label
+
+    def _depends_on_digest(row: dict) -> bool:
+        return want in _row_depends_on_issue_refs(row)
+
+    for bucket in ("unaccepted", "accepted"):
+        for row in list(doc.get(bucket) or []):
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if not _depends_on_digest(row):
+                continue
+            if _fdg is not None:
+                if not _fdg.should_strip_child_hold_on_parent_unhold(row):
+                    continue
+                new_labs = _fdg.strip_hold_labels(row.get("labels") or [])
+            else:
+                labs = {
+                    str(x).strip().lower()
+                    for x in (row.get("labels") or [])
+                    if str(x).strip()
+                }
+                if labs & DIGEST_ISSUE_LABELS:
+                    continue
+                if "hold" not in labs and "on-hold" not in labs:
+                    continue
+                new_labs = [
+                    str(x)
+                    for x in (row.get("labels") or [])
+                    if str(x).strip().lower() not in ISSUES_ONLY_HOLD_LABELS
+                ]
+            old_labs = [str(x) for x in (row.get("labels") or [])]
+            old_hold = [
+                x
+                for x in old_labs
+                if str(x).strip().lower() in ISSUES_ONLY_HOLD_LABELS
+            ]
+            if not old_hold:
+                continue
+            row["labels"] = new_labs
+            child_repo = str(row.get("repo") or digest_repo)
+            child_raw = str(row.get("id") or "").strip().lstrip("#")
+            try:
+                child_num = int(child_raw)
+            except ValueError:
+                child_num = 0
+            for lab in old_hold:
+                ok = False
+                if callable(remover) and child_num > 0:
+                    try:
+                        ok = bool(remover(child_repo, child_num, str(lab).strip()))
+                    except Exception:
+                        ok = False
+                actions.append(
+                    f"{_row_drop_label(row)} digest_unhold_strip_{lab}"
+                    f"{'' if ok else '_queued'}"
+                )
+            # Ensure hold no longer gates this row locally.
+            if home is not None:
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home,
+                        child_repo,
+                        "FR",
+                        str(row.get("id") or ""),
+                    )
+    return actions
+
 
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
 _DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
@@ -1397,6 +1649,22 @@ def format_claimed(job: dict) -> str:
 
 def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
+
+
+_WORKER_READY_RE = re.compile(
+    r"(?i)^(?:[\w][\w.-]*\s+)?worker\s+ready\b"
+)
+
+
+def is_worker_ready_line(body: str) -> bool:
+    """FR #9882: shop ``worker ready`` (optionally prefixed with nick) — primary offer cue.
+
+    ``!bored`` remains a fallback when the chair missed ready/DONE.
+    """
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(_WORKER_READY_RE.match(text))
 
 
 def shop_line_resets_bored_clock(body: str) -> bool:
@@ -5525,6 +5793,9 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             return "removed" if n else "noop"
     updated = False
     found_unaccepted = False
+    # FR #9848: detect digest hold removal before labels mutate in place.
+    # FR #9832: detect newly applied digest hold before labels mutate in place.
+    was_held_digest = False
     for bucket in ("unaccepted", "accepted"):
         for row in doc.get(bucket) or []:
             if not isinstance(row, dict):
@@ -5533,6 +5804,14 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
                 continue
             if bucket == "unaccepted":
                 found_unaccepted = True
+            if claim.task == "FR" and digest_issue_reason(row):
+                labs_prev = {
+                    str(x).strip().lower()
+                    for x in (row.get("labels") or [])
+                    if str(x).strip()
+                }
+                if "hold" in labs_prev or "on-hold" in labs_prev:
+                    was_held_digest = True
             row["labels"] = list(claim.labels)
             row["action"] = claim.action
             row["event"] = claim.event
@@ -5559,6 +5838,65 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             "labels": list(claim.labels),
         }
         if digest_issue_reason(_digest_probe):
+            labs_now = {
+                str(x).strip().lower() for x in (claim.labels or []) if str(x).strip()
+            }
+            now_held = "hold" in labs_now or "on-hold" in labs_now
+            # FR #9832: hold newly applied -> clear child offers/accepted pins now.
+            if (
+                now_held
+                and not was_held_digest
+                and str(claim.action or "").strip().lower() in ("labeled", "edited")
+            ):
+                cleared = clear_offers_for_held_digest_children(
+                    home, doc, claim.repo, claim.id
+                )
+                if cleared:
+                    updated = True
+                    notes = doc.get("stand_down")
+                    if not isinstance(notes, list):
+                        notes = []
+                        doc["stand_down"] = notes
+                    notes.append(
+                        {
+                            "channel": "#bobiverse",
+                            "text": (
+                                f"hold {claim.repo}#{str(claim.id).lstrip('#')}: "
+                                f"cleared {len(cleared)} Depends-on child offer(s) "
+                                "(FR #9832)"
+                            ),
+                        }
+                    )
+                    if len(notes) > 20:
+                        doc["stand_down"] = notes[-20:]
+            # FR #9848: parent digest unhold -> strip hold from ordinary children.
+            if (
+                was_held_digest
+                and not now_held
+                and str(claim.action or "").strip().lower()
+                in ("unlabeled", "edited", "labeled")
+            ):
+                stripped = strip_hold_from_digest_children(
+                    home, doc, claim.repo, claim.id
+                )
+                if stripped:
+                    updated = True
+                    notes = doc.get("stand_down")
+                    if not isinstance(notes, list):
+                        notes = []
+                        doc["stand_down"] = notes
+                    notes.append(
+                        {
+                            "channel": "#bobiverse",
+                            "text": (
+                                f"unhold {claim.repo}#{str(claim.id).lstrip('#')}: "
+                                f"stripped hold from {len(stripped)} Depends-on "
+                                f"child(ren) (FR #9848)"
+                            ),
+                        }
+                    )
+                    if len(notes) > 20:
+                        doc["stand_down"] = notes[-20:]
             if (
                 not found_unaccepted
                 and not repo_archived_for_queue(claim.repo)
@@ -7588,7 +7926,7 @@ def load_accepted(home: Path) -> list[dict]:
 
 
 def _sort_key(row: dict) -> tuple:
-    """FR #3205 fallback / claim_top key: MRB < UAT < FR, then lowest number, then repo.
+    """FR #3205 fallback / claim_top key: MRB < UAT < FIX < FR, then lowest number, then repo.
 
     Prefer ``focus_ignore.offer_sort_key`` / ``ordered_unaccepted`` when a home is available.
     """
@@ -7596,7 +7934,7 @@ def _sort_key(row: dict) -> tuple:
 
     task = str(row.get("task") or "").strip().upper()
     return (
-        _fi._TASK_ORDER.get(task, 3),
+        _fi._TASK_ORDER.get(task, 4),
         _fi.row_offer_number(row),
         str(row.get("repo") or "").lower(),
         str(row.get("id") or ""),
@@ -8602,13 +8940,16 @@ def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
     global _PR_EXISTS_BACKOFF_UNTIL
     rem = _rate_remaining_from_headers(hdrs)
     reset_raw = ""
+    retry_raw = ""
     if hdrs is not None:
         try:
             get = getattr(hdrs, "get", None)
             if callable(get):
                 reset_raw = str(get("X-RateLimit-Reset") or get("x-ratelimit-reset") or "").strip()
+                retry_raw = str(get("Retry-After") or get("retry-after") or "").strip()
         except Exception:
             reset_raw = ""
+            retry_raw = ""
     rem_i = None
     if rem is not None and str(rem).strip() != "":
         try:
@@ -8624,7 +8965,14 @@ def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
                     until = parsed
             except ValueError:
                 pass
+        if retry_raw:
+            try:
+                until = max(until, pr_exists_now() + float(retry_raw))
+            except ValueError:
+                pass
         _PR_EXISTS_BACKOFF_UNTIL = max(float(_PR_EXISTS_BACKOFF_UNTIL), until)
+        # FR #9865: core rate death also pauses unbudgeted issue_open probes.
+        _arm_issue_open_backoff_until(until, rem=rem, log_warn=False)
         print(
             "WARN git-claim pr_exists backoff "
             f"until={int(_PR_EXISTS_BACKOFF_UNTIL)} "
@@ -8634,9 +8982,135 @@ def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
             flush=True,
         )
     return rem
+
+
 # FR #3188: shared TTL across !bored so two seats do not re-GET the same rows every cycle.
 ISSUE_OPEN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
 IS_PULL_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+
+# FR #9865: after HTTP 403 or rate_remaining=0, skip issue_open until reset.
+_ISSUE_OPEN_BACKOFF_UNTIL = 0.0
+_ISSUE_OPEN_NETWORK_CALLS = 0
+_ISSUE_OPEN_BACKOFF_LOGGED = False
+
+
+def issue_open_now() -> float:
+    return time.time()
+
+
+def issue_open_backoff_active() -> bool:
+    if issue_open_now() < float(_ISSUE_OPEN_BACKOFF_UNTIL):
+        return True
+    # Share pr_exists core-rate pause so one 403 stops both probe kinds.
+    return pr_exists_backoff_active()
+
+
+def clear_issue_open_backoff() -> None:
+    global _ISSUE_OPEN_BACKOFF_UNTIL, _ISSUE_OPEN_NETWORK_CALLS, _ISSUE_OPEN_BACKOFF_LOGGED
+    _ISSUE_OPEN_BACKOFF_UNTIL = 0.0
+    _ISSUE_OPEN_NETWORK_CALLS = 0
+    _ISSUE_OPEN_BACKOFF_LOGGED = False
+
+
+def _arm_issue_open_backoff_until(
+    until: float, *, rem: str | None = None, log_warn: bool = True
+) -> None:
+    """Extend the global issue_open pause; WARN at most once per arming (FR #9865)."""
+    global _ISSUE_OPEN_BACKOFF_UNTIL, _ISSUE_OPEN_BACKOFF_LOGGED
+    prev = float(_ISSUE_OPEN_BACKOFF_UNTIL)
+    _ISSUE_OPEN_BACKOFF_UNTIL = max(prev, float(until))
+    if not log_warn:
+        return
+    if _ISSUE_OPEN_BACKOFF_LOGGED and prev >= issue_open_now():
+        return
+    _ISSUE_OPEN_BACKOFF_LOGGED = True
+    print(
+        "WARN git-claim issue_open backoff "
+        f"until={int(_ISSUE_OPEN_BACKOFF_UNTIL)} "
+        f"rate_remaining={rem if rem is not None else '-'} "
+        f"calls={_ISSUE_OPEN_NETWORK_CALLS}",
+        flush=True,
+    )
+
+
+def note_issue_open_rate(hdrs, *, code: int | None = None) -> str | None:
+    """Back off until X-RateLimit-Reset / Retry-After when core limit is gone (FR #9865)."""
+    rem = _rate_remaining_from_headers(hdrs)
+    reset_raw = ""
+    retry_raw = ""
+    if hdrs is not None:
+        try:
+            get = getattr(hdrs, "get", None)
+            if callable(get):
+                reset_raw = str(get("X-RateLimit-Reset") or get("x-ratelimit-reset") or "").strip()
+                retry_raw = str(get("Retry-After") or get("retry-after") or "").strip()
+        except Exception:
+            reset_raw = ""
+            retry_raw = ""
+    rem_i = None
+    if rem is not None and str(rem).strip() != "":
+        try:
+            rem_i = int(str(rem).strip())
+        except ValueError:
+            rem_i = None
+    if rem_i == 0 or code == 403:
+        until = issue_open_now() + 60.0
+        if reset_raw:
+            try:
+                parsed = float(reset_raw)
+                if parsed > issue_open_now():
+                    until = parsed
+            except ValueError:
+                pass
+        if retry_raw:
+            try:
+                until = max(until, issue_open_now() + float(retry_raw))
+            except ValueError:
+                pass
+        _arm_issue_open_backoff_until(until, rem=rem, log_warn=True)
+        # Keep pr_exists paused too while core remaining is zero.
+        global _PR_EXISTS_BACKOFF_UNTIL
+        _PR_EXISTS_BACKOFF_UNTIL = max(float(_PR_EXISTS_BACKOFF_UNTIL), until)
+    return rem
+
+
+def _issue_open_backoff_from_api_budget(home: Path | None) -> bool:
+    """If durable GithubApiBudget already has rate_remaining=0 (or core floor), arm pause (FR #9865)."""
+    try:
+        import github_api_budget as gab
+    except Exception:
+        return False
+    root: Path | None = None
+    if home is not None:
+        root = Path(home)
+    else:
+        env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+        if env_home:
+            root = Path(env_home)
+    if root is None or not root.is_dir():
+        return False
+    try:
+        bud = gab.GithubApiBudget(root, log=lambda _s: None)
+        bud.clear_rate_limit_if_reset()
+        rem = bud.rate_remaining
+        if rem is None:
+            return False
+        rem_i = int(rem)
+        # rate_remaining=0 always pauses; core floor pause when budget already in backoff.
+        if rem_i != 0 and not (bud.in_backoff() and rem_i < int(bud.floor)):
+            return False
+        until = issue_open_now() + 60.0
+        if bud.rate_reset is not None:
+            try:
+                rst = float(bud.rate_reset)
+                if rst > issue_open_now():
+                    until = rst
+            except (TypeError, ValueError):
+                pass
+        _arm_issue_open_backoff_until(until, rem=str(rem_i), log_warn=True)
+        return True
+    except Exception:
+        return False
 
 # FR #3188: at most one live GitHub lookup while picking the next !bored offer.
 # FR #3212: !bored is local-state only - zero live GitHub calls on the IRC offer path.
@@ -8984,6 +9458,9 @@ def github_issue_open_checker(
 
     FR #3188: non-404 failures raise ``GitHubLookupUnknown`` - never False - so a
     rate-limit / 5xx / timeout cannot purge the whole unaccepted queue.
+
+    FR #9865: when core ``rate_remaining=0`` (or ApiBudget already at the floor),
+    pause all issue_open probes until reset / Retry-After — one WARN, no 403 storm.
     """
     try:
         import gh_filer
@@ -9006,6 +9483,12 @@ def github_issue_open_checker(
                 return hit
         elif key in store:
             return store[key]
+        if not issue_open_backoff_active():
+            _issue_open_backoff_from_api_budget(home)
+        if issue_open_backoff_active():
+            raise GitHubLookupUnknown(
+                f"issue_open {repo}#{num} backoff rate_remaining=0"
+            )
         api = f"https://api.github.com/repos/{repo}/issues/{num}"
         req = urllib.request.Request(
             api,
@@ -9017,7 +9500,10 @@ def github_issue_open_checker(
             method="GET",
         )
         try:
+            global _ISSUE_OPEN_NETWORK_CALLS
+            _ISSUE_OPEN_NETWORK_CALLS += 1
             with urllib.request.urlopen(req, timeout=8) as resp:
+                note_issue_open_rate(getattr(resp, "headers", None))
                 if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
                     raw = resp.read()
                     try:
@@ -9036,15 +9522,21 @@ def github_issue_open_checker(
                 )
         except urllib.error.HTTPError as e:
             code = int(getattr(e, "code", 0) or 0)
+            rem = note_issue_open_rate(getattr(e, "headers", None), code=code)
             if code in (404, 410):
                 store[key] = False
                 return False
+            # FR #9865: rate-limit arm already emitted one backoff WARN — skip storm.
+            if issue_open_backoff_active() and (code == 403 or rem == "0"):
+                raise GitHubLookupUnknown(
+                    f"issue_open {repo}#{num} http={code}"
+                ) from e
             _log_github_lookup_failure(
                 "issue_open",
                 repo,
                 num,
                 code=code,
-                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                rate_remaining=rem,
                 exc=e,
             )
             raise GitHubLookupUnknown(f"issue_open {repo}#{num} http={code}") from e
@@ -9104,14 +9596,19 @@ def _log_queue_purge(msg: str, *, log=None) -> None:
     print(line, flush=True)
 
 
-def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None, log=None) -> int:
-    """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340).
+def _purge_closed_fr_unaccepted(
+    doc: dict, *, issue_open=None, home: Path | None = None, log=None
+) -> int:
+    """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340 / #9835).
 
     Mirrors ``_purge_dead_mrb_unaccepted`` for FR: stamped ``state=closed`` and/or
     live ``issue_open(repo, num) is False`` remove the row before offer.
 
     FR #3188: ``issue_open`` raising / unknown must not purge (see ``_fr_issue_is_closed``).
     Every drop is logged with a reason so a wipe cannot happen silently.
+
+    FR #9835: when ``home`` is set, also clear FR/PR/UAT seat-holds for the dropped
+    id so a residual ``via=offer`` pin cannot busy the seat after the row is gone.
     """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
@@ -9127,6 +9624,11 @@ def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None, log=None) -> int:
                 f"INFO git-claim purge closed-fr {repo}{ident} reason={why}",
                 log=log,
             )
+            if home is not None and repo and ident:
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(home, repo, "FR", ident)
+                    _clear_job_seat_holds_unlocked(home, repo, "PR", ident)
+                    _clear_job_seat_holds_unlocked(home, repo, "UAT", ident)
             continue
         kept.append(row)
     doc["unaccepted"] = kept
@@ -12842,6 +13344,14 @@ def mrb_yields_to_older_fr(
                     continue
             except Exception:
                 pass
+        # FR #9833 / #9875: do not yield to rows the build-jeeves dispatch lock would skip.
+        try:
+            import dispatch_lock as _dl
+
+            if _dl.row_blocked_reason(home, row):
+                continue
+        except Exception:
+            pass
         if not _free_seat_can_take_row(home, row, nick, now, live, ledger):
             continue
         # Same machine / self-review gates as the offer path for this seat.
@@ -13334,16 +13844,73 @@ def purge_orphan_seat_holds(
         return 0
 
 
-def release_stale_via_offer_holds(
-    home: Path, *, now: float | None = None
-) -> int:
-    """FR #9783: stuck-sweep clears stale via=offer seat-holds past offer timeout.
+def _row_job_finished(row: dict) -> bool:
+    """True when a queue row is stamped MERGED/CLOSED (FR #9855)."""
+    if not isinstance(row, dict):
+        return False
+    state = str(row.get("state") or "").strip().lower()
+    if state in ("closed", "merged"):
+        return True
+    result = str(row.get("result") or "").strip().upper()
+    if result in ("MERGED", "CLOSED"):
+        return True
+    if row.get("merged") in (True, "true", "1", 1):
+        return True
+    return False
 
-    After ``offered_to`` ages out (~90s), ``via=offer`` holds can linger until
-    ``SEAT_HOLD_MAX_S`` (1h) and leave digest-idle seats ``busy (held …)`` while
-    stuck-sweep reports ``released=0``. Clear those holds (and matching aged
-    pins). ``ack-missing`` stays (FR #4115). Complements ``release_sticky_offer_on_bored``
-    / ``!cleargiveup`` (FR #9633 / #9771).
+
+def _hold_job_finished(doc: dict, repo: str, task: str, ident: str) -> bool:
+    """FR #9855: hold's job is finished when done[] or live row is MERGED/CLOSED."""
+    repo_k = _repo_key(repo)
+    ident_s = _norm_row_id(ident)
+    task_u = str(task or "").upper()
+    if not repo_k or not ident_s:
+        return False
+
+    def _same(row: dict) -> bool:
+        if _repo_key(row.get("repo")) != repo_k:
+            return False
+        if _norm_row_id(row.get("id")) != ident_s:
+            return False
+        if task_u and str(row.get("task") or "").upper() not in ("", task_u):
+            # Allow FR/PR/UAT alias mismatch only when task omitted on hold.
+            rt = str(row.get("task") or "").upper()
+            if task_u in ("FR", "PR", "UAT") and rt in ("FR", "PR", "UAT"):
+                return True
+            if task_u != rt:
+                return False
+        return True
+
+    for row in list(doc.get("done") or []):
+        if isinstance(row, dict) and _same(row):
+            # Any done[] match for this job key is finished work.
+            return True
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if isinstance(row, dict) and _same(row) and _row_job_finished(row):
+                return True
+    return False
+
+
+def release_stale_via_offer_holds(
+    home: Path,
+    *,
+    now: float | None = None,
+    idle: set[str] | None = None,
+) -> int:
+    """FR #9783 / FR #9855: stuck-sweep clears stale or post-merge via=offer holds.
+
+    FR #9783: after ``offered_to`` ages out (~90s), ``via=offer`` holds can linger
+    until ``SEAT_HOLD_MAX_S`` (1h) and leave digest-idle seats ``busy (held …)``
+    while stuck-sweep reports ``released=0``. Clear those holds (and matching
+    aged pins).
+
+    FR #9855: also clear when report/digest lastSeen is idle with empty
+    ``working_on`` *and* the held job is MERGED/CLOSED (or already in done[]),
+    even inside the offer-timeout window — post-merge ghost holds that refuse
+    ``!assign`` while the digest paints idle. Fresh open offers with a live pin
+    stay. ``ack-missing`` stays (FR #4115). Complements
+    ``release_sticky_offer_on_bored`` / ``!cleargiveup`` (FR #9633 / #9771).
 
     Returns the number of seat-holds cleared.
     """
@@ -13351,12 +13918,17 @@ def release_stale_via_offer_holds(
 
     now_f = _time.time() if now is None else float(now)
     timeout = float(offer_timeout_s(None))
+    idle_l = {
+        (canonical_worker_nick(n) or n or "").strip().lower()
+        for n in (idle or set())
+        if (canonical_worker_nick(n) or n or "").strip()
+    }
     try:
         with _lock(home):
             try:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
-                doc = {"unaccepted": [], "accepted": []}
+                doc = {"unaccepted": [], "accepted": [], "done": []}
             holds = _load_seat_holds_unlocked(home, now_f)
             if not holds:
                 return 0
@@ -13387,14 +13959,12 @@ def release_stale_via_offer_holds(
                 ).strip().lower()
                 if hold_nick and hold_nick in accepted_nicks:
                     continue
-                age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
-                if age < timeout:
-                    continue
-                holds.pop(nick_key, None)
-                cleared += 1
                 repo_s = str(h.get("repo") or "")
                 task_u = str(h.get("task") or "").upper()
                 ident_s = _norm_row_id(h.get("id"))
+                finished = _hold_job_finished(doc, repo_s, task_u, ident_s)
+                age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
+                pin_alive = False
                 for cand in doc.get("unaccepted") or []:
                     if not isinstance(cand, dict):
                         continue
@@ -13410,10 +13980,85 @@ def release_stale_via_offer_holds(
                         continue
                     if task_u and str(cand.get("task") or "").upper() != task_u:
                         continue
-                    if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
+                    pin_alive = True
+                    break
+                # FR #9855: idle digest + empty working_on (caller idle set) with
+                # pin already gone is a ghost hold even inside offer timeout.
+                idle_ghost = bool(
+                    hold_nick and hold_nick in idle_l and not pin_alive
+                )
+                # FR #9855: MERGED/CLOSED (or done[]) clears even inside timeout.
+                # FR #9783: otherwise require age past offer timeout.
+                if not finished and not idle_ghost and age < timeout:
+                    continue
+                holds.pop(nick_key, None)
+                cleared += 1
+                for cand in doc.get("unaccepted") or []:
+                    if not isinstance(cand, dict):
+                        continue
+                    if _repo_key(cand.get("repo")) != _repo_key(repo_s):
+                        continue
+                    if _norm_row_id(cand.get("id")) != ident_s:
+                        continue
+                    if task_u and str(cand.get("task") or "").upper() != task_u:
+                        continue
+                    to = str(cand.get("offered_to") or "").strip()
+                    if to:
+                        them = (canonical_worker_nick(to) or to).strip().lower()
+                        if hold_nick and them != hold_nick:
+                            continue
+                    elif not finished:
+                        continue
+                    # Age gate only for the pure stale path; finished clears now.
+                    if (
+                        not finished
+                        and _offer_age_s(cand, now_f) < offer_timeout_s(cand)
+                    ):
                         continue
                     clear_sticky_offer_fields(cand)
                     dirty_queue = True
+            # FR #9855: strip MERGED/CLOSED offered_to pins, drop matching
+            # via=offer holds, and remove finished rows from unaccepted so the
+            # idle-offer push cannot re-pin a ghost job (parity with
+            # clear_closed_fr_sticky_offers drop).
+            keep_unacc: list = []
+            for cand in list(doc.get("unaccepted") or []):
+                if not isinstance(cand, dict):
+                    continue
+                if not _row_job_finished(cand):
+                    keep_unacc.append(cand)
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                repo_c = str(cand.get("repo") or "")
+                task_c = str(cand.get("task") or "")
+                id_c = str(cand.get("id") or "")
+                clear_sticky_offer_fields(cand)
+                dirty_queue = True
+                for nk, hv in list(holds.items()):
+                    if not isinstance(hv, dict):
+                        continue
+                    via_h = str(hv.get("via") or "offer").strip().lower() or "offer"
+                    if via_h == "ack-missing":
+                        continue
+                    if not _hold_matches_job(hv, repo_c, task_c, id_c):
+                        continue
+                    hold_n = (
+                        canonical_worker_nick(str(hv.get("nick") or nk))
+                        or str(hv.get("nick") or nk)
+                    ).strip().lower()
+                    if hold_n and hold_n in accepted_nicks:
+                        continue
+                    holds.pop(nk, None)
+                    cleared += 1
+                # Drop finished row (do not keep for re-offer).
+                _log_queue_purge(
+                    f"INFO git-claim purge finished-sticky "
+                    f"{repo_c}{id_c} task={task_c} had_offer={int(bool(to))} "
+                    f"(FR #9855)",
+                    log=None,
+                )
+            if dirty_queue:
+                doc["unaccepted"] = keep_unacc
             if cleared:
                 with contextlib.suppress(OSError):
                     _save_seat_holds_unlocked(home, holds)
@@ -13696,6 +14341,8 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
         return ""
     # FR #9402 / #9406: held FR sticky offered_to must not busy the seat.
     clear_held_fr_sticky_offers(doc)
+    # FR #9835: stamped CLOSED FR sticky offered_to / holds must not busy the seat.
+    clear_closed_fr_sticky_offers(doc, home)
     for row in doc.get("accepted") or []:
         if not isinstance(row, dict):
             continue
@@ -14044,6 +14691,9 @@ def offer_focus_top(
             # FR #9402 / #9406: drop hold-gated FR sticky offers before pick.
             if clear_held_fr_sticky_offers(doc):
                 purged = True
+            # FR #9835: drop stamped CLOSED FR sticky offers/holds before pick.
+            if clear_closed_fr_sticky_offers(doc, home):
+                purged = True
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
             # FR #3188: no live pr_exists fan-out here - stamped/ledger only.
@@ -14054,7 +14704,7 @@ def offer_focus_top(
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
-            purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
+            purged = bool(_purge_closed_fr_unaccepted(doc, home=home)) or purged
             # FR #2361: accepted list is small (busy seats) - live check OK under the shared budget
             # unless FR #3205 precompute says zero GitHub on this !bored.
             if bored_budget > 0:
@@ -14162,6 +14812,14 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind="ignored", reason="repo-ignored"):
                         purged = True
                     return None
+                # FR #9875 / #9833: dispatch-lock belt-and-braces (even if sort filter missed).
+                try:
+                    import dispatch_lock as _dl
+
+                    if _dl.row_blocked_reason(home, cand):
+                        return None
+                except Exception:
+                    pass
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
@@ -14622,7 +15280,7 @@ def offer_top(
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             open_dep_keys_top = open_fr_issue_keys(doc)
-            purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
+            purged = bool(_purge_closed_fr_unaccepted(doc, home=home)) or purged
             # Accepted list is small - live check under the shared budget (FR #2361).
             purged = bool(
                 _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
@@ -17338,6 +17996,108 @@ def _row_to_unaccepted_retry(row: dict) -> dict:
     return out
 
 
+
+def clear_live_mrb_hold_for_ci_red(doc: dict, repo: str, ident: str) -> list[str]:
+    """FR #9924: drop accepted/offered MRB for repo#id; return holder nicks.
+
+    Accepted rows move to ``done`` with ``result=CI-RED`` (seat freed). Unaccepted
+    MRB rows for the same id are removed so CI-red tips are not re-offered as MRB.
+    """
+    repo_c = canonical_queue_repo(repo)
+    want = _norm_row_id(ident)
+    if not repo_c or not want or not isinstance(doc, dict):
+        return []
+    holders: list[str] = []
+    done = doc.setdefault("done", [])
+    kept_acc: list[dict] = []
+    for row in list(doc.get("accepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "MRB":
+            kept_acc.append(row)
+            continue
+        if canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+            kept_acc.append(row)
+            continue
+        if _norm_row_id(str(row.get("id") or "")) != want:
+            kept_acc.append(row)
+            continue
+        who = _accepted_holder_nick(row) or str(
+            row.get("offered_to") or row.get("nick") or ""
+        ).strip()
+        if who:
+            holders.append(who)
+        fin = dict(row)
+        for key in (
+            "nick",
+            "channel",
+            "accepted_ts",
+            "accepted_by",
+            "offered_to",
+            "offered_ts",
+            "offered_channel",
+        ):
+            fin.pop(key, None)
+        fin["result"] = "CI-RED"
+        fin["done_ts"] = _utc_now()
+        fin["note"] = "FR #9924 required CI red; hold cleared for FIX"
+        done.append(fin)
+    doc["accepted"] = kept_acc
+    kept_un: list[dict] = []
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "MRB":
+            kept_un.append(row)
+            continue
+        if canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+            kept_un.append(row)
+            continue
+        if _norm_row_id(str(row.get("id") or "")) != want:
+            kept_un.append(row)
+            continue
+        who = str(row.get("offered_to") or row.get("nick") or "").strip()
+        if who and who not in holders:
+            holders.append(who)
+        # Drop the unaccepted MRB entirely (do not re-offer while CI red).
+        continue
+    doc["unaccepted"] = kept_un
+    if len(done) > DONE_CAP:
+        doc["done"] = done[-DONE_CAP:]
+    return holders
+
+
+def live_mrb_hold_nicks(doc: dict, repo: str, ident: str) -> list[str]:
+    """Nicks holding accepted or offered MRB for repo#id (FR #9924)."""
+    repo_c = canonical_queue_repo(repo)
+    want = _norm_row_id(ident)
+    out: list[str] = []
+    if not repo_c or not want or not isinstance(doc, dict):
+        return out
+    for bucket in ("accepted", "unaccepted"):
+        for row in doc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "MRB":
+                continue
+            if canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            if _norm_row_id(str(row.get("id") or "")) != want:
+                continue
+            if bucket == "unaccepted" and not str(row.get("offered_to") or "").strip():
+                # Unoffered queued MRB is not a live hold yet.
+                if not str(row.get("nick") or "").strip():
+                    continue
+            who = (
+                _accepted_holder_nick(row)
+                if bucket == "accepted"
+                else str(row.get("offered_to") or row.get("nick") or "").strip()
+            )
+            if who and who not in out:
+                out.append(who)
+    return out
+
+
 def _release_accepted_for_nick_unlocked(doc: dict, nick: str) -> list[dict]:
     """Move accepted rows held by ``nick`` back onto ``unaccepted`` (caller holds lock).
 
@@ -18452,6 +19212,15 @@ def assign_row(
             digest_why = digest_issue_reason(cand)
             if digest_why:
                 return "refused", f"row is digest gate (not work): {digest_why}"
+            # FR #9833 / #9875: !assign obeys build-jeeves dispatch lock (same as !bored / !list).
+            try:
+                import dispatch_lock as _dl
+
+                lock_why = _dl.row_blocked_reason(home, cand)
+                if lock_why:
+                    return "refused", f"build-jeeves lock: {lock_why}"
+            except Exception:
+                pass
             # FR #9455 bob_g1_shared_gate: !assign uses the same helper as offer/stuck.
             live_dep = depends_gate_reason(
                 cand,
@@ -19684,6 +20453,51 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
+            # FR #9924: accepted/offered MRB + required CI red → clear hold + FIX
+            # (same family as DONE MRB FAIL / FR #4718). Soft-only (#9881) skips.
+            try:
+                check_state_hold = _resync_pr_check_state(pr, repo, num, token=token)
+            except Exception:  # noqa: BLE001
+                check_state_hold = ""
+            try:
+                import mrb_merge_on_green as _mog_9924
+
+                trigger_9924 = _mog_9924.ci_failure_triggers_mrb_reset(check_state_hold)
+            except Exception:  # noqa: BLE001
+                trigger_9924 = False
+            if trigger_9924 and head_sha:
+                try:
+                    qpeek = load_queue(_root(home))
+                except Exception:  # noqa: BLE001
+                    qpeek = {}
+                holders_9924 = live_mrb_hold_nicks(qpeek, repo, f"#{num}")
+                if holders_9924:
+                    try:
+                        import mrb_merge_on_green as _mog_9924
+
+                        fix_result = _mog_9924.reset_live_mrb_hold_on_ci_red(
+                            _root(home),
+                            repo=repo,
+                            pr=str(num),
+                            sha=head_sha,
+                            url=str(pr.get("html_url") or ""),
+                            detail=check_state_hold or "failure",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        fix_result = f"error:{type(exc).__name__}"
+                    fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                        fix_result,
+                        fix_added=fix_added,
+                        fix_dup=fix_dup,
+                        fix_skip_main_red=fix_skip_main_red,
+                    )
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync FR #9924 CI-red reset MRB→FIX {repo}#{num} "
+                        f"holders={','.join(holders_9924)} result={fix_result}",
+                        flush=True,
+                    )
+                    continue
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
             # FR #4661: ledger race --- done[] PASS + auto_merge tip still ci-wait.
             if not pass_sha:

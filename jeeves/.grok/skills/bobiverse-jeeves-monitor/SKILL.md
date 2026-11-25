@@ -34,8 +34,10 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 >    chair-heal (`push_idle_offers_via_chair_outbox` / `offer_to_idle` + #9461 ear-relay); report-only is opt-in.
 >    Reaffirm #9628 / #9460. Same-turn bridge still owes #9627.
 > 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
->    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each parked child gets `Depends-on: #<digest>`. Digests stay useful
 >    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
+>    **FR #9854 tip-priority LIST ONLY:** tip-blocking FIX while digest held = list on digest, no Depends-on (held gate would starve tip).
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 > 9. **CAST IRON — needs-walrus NACK → Jeeves agent does walrus (FR #9669).** When a seat NACK/GIVEUP is `needs-walrus` /
 >    `require_machine=walrus`, the **Jeeves agent** (receipt + Slab/Si-yes install/heal/patch on walrus) owns the walrus
 >    action — do not leave ACK→GIVEUP thrash on redqueen/flamingo. Mixed code+walrus work **must** split under one Digest:
@@ -47,6 +49,8 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 >     row unpinned to `any` — that pair causes ACK→GIVEUP `reason=require_machine=<machine>` and wrong-shop re-offer
 >     loops (#9628/#9634 class; tip gate #9664). True host-action work: keep `needs-*` **and** keep `!pin` together;
 >     never `!unpin` while the label remains.
+
+> 11. **CAST IRON --- lessons digest harvest each cycle (FR #9880 / `9830_harvest`).** While an OPEN+held *lessons* fr-digest is active (detect held `fr-digest` lessons batch, or env `JEEVES_LESSONS_DIGEST` / `BOB_LESSONS_DIGEST`, documented current default `#9830`), every MONITORING cycle that learns a Jeeves/IRCD/ear/webhook lesson must **same-turn** file a child FR (`Depends-on: #<digest>`) or de-dup-comment --- never leave findings only in chat. Helper: `Compare-JeevesLessonsDigestFindings.ps1` / check `9830_harvest`.
 
 Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-ops`, `harvest` -> https://github.com/SimonBarnett/bobiverse. Authoritative commands: `docs/jeeves-commands.md`.
 
@@ -79,7 +83,7 @@ Prefer **de-duped intake** when a product bug is the root. Use chair commands fo
 
 ## Prefer token-free scripts (t865u)
 
-Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorOpencodeSeats`, `Test-JeevesMonitorSkillPromoteBacklog`, `Test-JeevesMonitorIntakeAllowlist`, `Test-JeevesMonitorGithubResyncFocus`, `Test-JeevesMonitorOpenPrStaleBase`, `Test-JeevesMonitorOpenPrMrbMissing`, `Test-JeevesMonitorTicketClosure`, `Test-JeevesMonitorDependsOn`, `Test-JeevesMonitorFrDigest`, `Test-JeevesMonitorGithubRateLimit` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1729 / FR #3117 / FR #3146 / FR #8333 / FR #8377 / FR #6063 / FR #8583 / FR #8848 / FR #8849 / FR #9104). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). When a monitor playbook is proven, promote it into the token-less chair the same way: FR + PR into `jeeves.exe` / `common/scripts` / `jeeves/checks` so the learning survives without a monitoring LLM. **FR #9691:** Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (deprecated, use `--mode jeeves`) (NEW agent every time, never resume; CWD = this Jeeves install).
+Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorOpencodeSeats`, `Test-JeevesMonitorSkillPromoteBacklog`, `Test-JeevesMonitorIntakeAllowlist`, `Test-JeevesMonitorGithubResyncFocus`, `Test-JeevesMonitorOpenPrStaleBase`, `Test-JeevesMonitorOpenPrMrbMissing`, `Test-JeevesMonitorTicketClosure`, `Test-JeevesMonitorDependsOn`, `Test-JeevesMonitorFrDigest`, `Test-JeevesMonitorDigestCiGate`, `Test-JeevesMonitorGithubRateLimit` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1729 / FR #3117 / FR #3146 / FR #8333 / FR #8377 / FR #6063 / FR #8583 / FR #8848 / FR #8849 / FR #9877 / FR #9104). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). When a monitor playbook is proven, promote it into the token-less chair the same way: FR + PR into `jeeves.exe` / `common/scripts` / `jeeves/checks` so the learning survives without a monitoring LLM. **FR #9691:** Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (deprecated, use `--mode jeeves`) (NEW agent every time, never resume; CWD = this Jeeves install).
 **OpenCode seats (FR #8583):** `opencode_seats` probes live `GET /bob/v1/report` for flamingo `kind=opencode` (stuck age, model_mismatch, week-exhausted while busy). Local digest `seats_stuck_doing` alone misses remote OpenCode. Report only (harvest #1967).
 **Stream heartbeats (FR #8795 / #8796):** `seats_stuck_doing` (and `opencode_seats`) age on `accepted_ts` / `doing_ts` / `offered_ts` only — never `last_progress`, `updated`, `state_ts`, or `ts`. Fresh stream heartbeats are not substantive progress. Doing + accept age >15m + no ACK/DONE/GIVEUP → `stream_heartbeat_no_wire` / `aged_no_wire`; doing + accept age >15m + ACK but no DONE → `stream_heartbeat_no_substantive` / `heartbeat_no_done` / `accepted_no_done`. Report only (harvest #1967); recycle/GIVEUP is chair/ops.
 **Skill promote backlog (FR #1729):** after #1682 offer-all, `skill_promote_backlog` reports `open_skill_without_promote_pr` when open skill/harvest receipts exceed `BOB_SKILL_PROMOTE_THRESHOLD` (default 15) with no open `harvest/*` promote PR and no queued skill FR. Needs `GH_TOKEN`/`GITHUB_TOKEN` on the monitor host for the GitHub count (queue-only without token). Live chair verify is **walrus** (ionos deprecated).
@@ -97,14 +101,15 @@ Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2**
 
 ## Depends-on + fr-digest go-gates (BOB-D* / BOB-G*)
 
-Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `Depends-on: #N` all CLOSED, (3) `fr-digest` hold/unhold-releases + CI open-children.
+Net result (Simon confirm 2026-11-21): three gates — (1) label `hold`, (2) `Depends-on: #N` all CLOSED, (3) `fr-digest` hold/unhold-releases + CI open-children. **FR #9877:** digest-level covering CI / `!build` / install receipt only after all digest children CLOSED (`digest_ci_gate`).
 
 | Skill | When |
 |---|---|
 | `bobiverse-jeeves-agent-depends-on` | Every monitor cycle **once BOB-D offer skip is on tip** (D1/D3+); until then load on demand only |
 | `bobiverse-jeeves-agent-fr-digest` | Every cycle **after** depends-on once BOB-G1 is on tip; until then on demand only |
 
-Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo. **CAST IRON (FR #9400):** never let a tool-only PR `Closes` #9376 (or any walrus rebuild/install / GateIssues tracker) while Depends-on / GateIssues remain OPEN — use `Refs` / `Toward` until acceptance; reopen if GitHub auto-closed early.
+Token-free checks (when landed): `depends_on`, `fr_digest`, `tip_merge_gate` (FR #9847), `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo. **CAST IRON (FR #9400):** never let a tool-only PR `Closes` #9376 (or any walrus rebuild/install / GateIssues tracker) while Depends-on / GateIssues remain OPEN — use `Refs` / `Toward` until acceptance; reopen if GitHub auto-closed early.
+Token-free checks (when landed): `depends_on`, `fr_digest`, `digest_ci_gate` (FR #9877), `walrus_jeeves_install_ready` via `Invoke-JeevesMonitorCheck.ps1`. Correct skips (`depends-open` / `depends-held`) are **not** starve. D*/G* issues stay on `hold` until Simon unholds; #8754 waits for BOB-D9. Do not edit parked VIS-D* / BOB-D* bodies. FR #9376: when `walrus_jeeves_install_ready` is ok, DryRun `Install-JeevesWalrusWinRm.ps1`; live mutate needs Si `-SiYes` and closed gates — never Ergo. **CAST IRON (FR #9400):** never let a tool-only PR `Closes` #9376 (or any walrus rebuild/install / GateIssues tracker) while Depends-on / GateIssues remain OPEN — use `Refs` / `Toward` until acceptance; reopen if GitHub auto-closed early. **CAST IRON (FR #9877):** `BLOCK_DIGEST_CI` while any recorded digest child is OPEN — do not stamp digest covering CI / batch install receipt mid-batch (children-only; complementary to tip_merge_gate #9847).
 
 **Ops until BOB-G1 (FR #9344):** unhold alone does not release children whose bodies still list `Depends-on: #<digest>` while live D3 skips open parents --- close the digest (or clear Depends-on) so assign can proceed.
 
@@ -112,6 +117,19 @@ Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_insta
 ## Auto-start (FR #954)
 
 On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md first-turn rule). Do not wait for a human prompt. Skills are under `.grok\skills` only (no top-level `.\skills`). The Start Menu shortcut / `monitor_prompt` tells the agent to run `monitor-start` now.
+
+## Bored push notify (FR #9879)
+
+`!bored` is a **push** event (fallback after `worker ready` / `DONE` — see #9882). Do **not** wait for the 5–15 minute health tick to assign.
+
+| Piece | Role |
+|---|---|
+| `scripts\watch_bored_push_notify.ps1` | 1s poll of `home/inbound-transcript.log`; emits `READY` / `DONE` / `BORED` on stdout + `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log` |
+| `scripts\Ensure-BoredPushNotify.ps1` | Singleton / PID dedupe (saw triple notifiers); Start-JeevesMonitor runs this first |
+| MONITORING agent | monitor tool on the notifier or events log; **same-turn** `!assign` / intervene when a line arrives |
+| Health cycle | token-free checks only — **health-only**; never the assign owner |
+
+Fail-when: idle seats only get work after the next 5m scheduler tick while inbound already showed `!bored` / `worker ready`.
 
 ## Self-harvest loop (t865u)
 

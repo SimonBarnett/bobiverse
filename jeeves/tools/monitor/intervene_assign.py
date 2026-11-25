@@ -161,10 +161,21 @@ def plan_assigns(
         candidates.append(row)
 
     def _sort_key(r: dict) -> tuple:
+        # FR #9850 / #9867: tip DIRTY FIX / tip CLEAN MRB before lesson FRs.
+        tip_rank = 3
+        try:
+            from _common import ensure_script_dir_on_path
+
+            ensure_script_dir_on_path("tip_offer_prefer.py", "gitclaim.py")
+            import tip_offer_prefer as _tip
+
+            tip_rank = int(_tip.tip_prefer_rank(r))
+        except Exception:
+            tip_rank = 3
         task = row_task(r)
         pref = 0 if (task == "MRB" and is_mergeable_preferred(r)) else 1
-        pref2 = 0 if task == "MRB" else 1
-        return (pref, pref2, row_repo(r), row_num(r))
+        pref2 = 0 if task == "MRB" else (1 if task == "FIX" else 2)
+        return (tip_rank, pref, pref2, row_repo(r), row_num(r))
 
     candidates.sort(key=_sort_key)
 
@@ -342,7 +353,49 @@ def intervene_from_report(
     truncate: bool = False,
     sleeper: Callable[[float], None] | None = None,
     offerable_fn: Callable[[dict, str], bool] | None = None,
+    chair_home: Path | None = None,
+    chair_outbox: Path | None = None,
+    prefer_shop_wire_on_mute: bool = False,
+    force_shop_wire: bool = False,
+    cmd_trace_mute_s: float | None = None,
 ) -> dict[str, Any]:
+    """Ear-relay !assign, or FR #9878 shop-wire when cmd-trace mute / forced."""
+    use_shop = bool(force_shop_wire)
+    mute_snap: dict[str, Any] | None = None
+    if prefer_shop_wire_on_mute and chair_home is not None and not use_shop:
+        try:
+            import shop_wire_assign as sw
+
+            mute_snap = sw.cmd_trace_mute_snapshot(
+                Path(chair_home), max_age_s=cmd_trace_mute_s
+            )
+            use_shop = bool(mute_snap.get("stale"))
+        except Exception as e:
+            mute_snap = {"stale": False, "reason": f"probe_error:{type(e).__name__}"}
+            use_shop = False
+
+    if use_shop:
+        import shop_wire_assign as sw
+
+        target = Path(chair_outbox) if chair_outbox else sw.default_chair_outbox()
+        # Shop-wire lines are pairs; keep pace only between assigns (0 inside helper
+        # when caller already paced ear path). Prefer caller pace_s as-is.
+        payload = sw.intervene_shop_wire_from_report(
+            report,
+            outbox=target,
+            dry_run=dry_run,
+            force_needs_human=force_needs_human,
+            pace_s=pace_s,
+            max_assigns=max_assigns,
+            truncate=truncate,
+            sleeper=sleeper,
+            offerable_fn=offerable_fn,
+        )
+        if mute_snap is not None:
+            payload["cmd_trace_mute"] = mute_snap
+        payload["force_shop_wire"] = bool(force_shop_wire)
+        return payload
+
     idle = idle_from_report(report)
     rows = rows_from_report(report)
     planned = plan_assigns(
@@ -358,6 +411,7 @@ def intervene_from_report(
     )
     payload: dict[str, Any] = {
         "ok": True,
+        "mode": "ear_assign",
         "dry_run": bool(dry_run),
         "planned": planned,
         "written": written,
@@ -367,6 +421,8 @@ def intervene_from_report(
         "row_count": len(rows),
         "findings": [],
     }
+    if mute_snap is not None:
+        payload["cmd_trace_mute"] = mute_snap
     if truncate and not dry_run:
         payload["truncate"] = truncate_drained_outbox(outbox)
     return payload
@@ -462,6 +518,13 @@ def check(args: argparse.Namespace):
         def offerable_fn(row: dict, nick: str) -> bool:  # noqa: F811
             return True
 
+    chair_for_mute = None
+    try:
+        chair_for_mute, _digest = resolve_homes(args)
+    except Exception:
+        chair_for_mute = None
+    mute_s = float(getattr(args, "cmd_trace_mute_s", 0.0) or 0.0)
+    chair_out_raw = getattr(args, "chair_outbox", "") or ""
     payload = intervene_from_report(
         report,
         outbox=outbox,
@@ -471,6 +534,11 @@ def check(args: argparse.Namespace):
         max_assigns=max_a,
         truncate=truncate,
         offerable_fn=offerable_fn,
+        chair_home=chair_for_mute,
+        chair_outbox=Path(chair_out_raw) if chair_out_raw else None,
+        prefer_shop_wire_on_mute=bool(getattr(args, "prefer_shop_wire_on_mute", False)),
+        force_shop_wire=bool(getattr(args, "shop_wire", False)),
+        cmd_trace_mute_s=mute_s if mute_s > 0 else None,
     )
     idle_n = len(idle_from_report(report))
     try:
@@ -507,6 +575,27 @@ def main(argv=None) -> int:
     p.add_argument("--allow-fast-pace", action="store_true", help="allow pace-s < 3 (tests)")
     p.add_argument("--max-assigns", type=int, default=8, help="cap assigns per run")
     p.add_argument("--truncate-outbox", action="store_true", help="truncate when *.pos at EOF")
+    p.add_argument(
+        "--shop-wire",
+        action="store_true",
+        help="FR #9878: force Jeeves outbox shop-wire (skip ear !assign)",
+    )
+    p.add_argument(
+        "--prefer-shop-wire-on-mute",
+        action="store_true",
+        help="FR #9878: use shop-wire when chair cmd-trace is stale/missing",
+    )
+    p.add_argument(
+        "--chair-outbox",
+        default="",
+        help="Jeeves outbox.txt for shop-wire (BOB_CHAIR_OUTBOX / ~/.jeeves/outbox.txt)",
+    )
+    p.add_argument(
+        "--cmd-trace-mute-s",
+        type=float,
+        default=0.0,
+        help="cmd-trace silence seconds before mute (0=env/default 120)",
+    )
     args = p.parse_args(argv)
     if getattr(args, "help_exit0", False):
         p.print_help()

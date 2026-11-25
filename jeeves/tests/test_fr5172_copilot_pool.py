@@ -57,7 +57,20 @@ def test_parse_unlimited_limited_unknown():
 
 
 def test_dispatch_on_off(tmp_path):
-    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
+    # FR #9986: need remaining>0 (unlimited+remaining0 is phantom, not fuel)
+    cd.refresh_allowance(
+        tmp_path,
+        fetch_user=lambda: {
+            "quota_snapshots": {
+                "premium_interactions": {
+                    "unlimited": False,
+                    "remaining": 12,
+                    "percent_remaining": 40,
+                }
+            }
+        },
+        now=1.0,
+    )
     assert cd.has_allowance(tmp_path) is True
     cd.refresh_allowance(
         tmp_path,
@@ -184,7 +197,7 @@ def test_digest_includes_copilot(tmp_path, monkeypatch):
         "max_recorded_usage",
         # FR #7178: explicit unread/error; never omit the pool.
         "last_error", "overage_permitted",
-        # FR #9748: nested live Copilot jobs under digest.copilot.tasks.
+        # FR #9748: nested live Copilot coding-agent tasks (never machines.copilot).
         "tasks",
     }
     assert set(obj["copilot"].keys()) <= allowed

@@ -108,11 +108,13 @@ COMMANDS: tuple = (
     CommandSpec("unignore", "!unignore {repo}", "resume handling a previously ignored repo (simon/ops)", OPS_ROLES,
                 "!unignore old-sandbox", "Removes the repo from ignored.json; new events are handled again.",
                 ("ignore", "ignored")),
-    CommandSpec("focus", "!focus [strict on|off]|[n|high|medium|low] {repo|owner/repo#N}",
+    CommandSpec("focus", "!focus [strict on|off]|[build-jeeves on|off]|[n|high|medium|low] {repo|owner/repo#N}",
                 "priority-sort !list and assign-on-!bored (simon/ops)", OPS_ROLES, "!focus strict on",
                 "focus.json beside the queue. Items (owner/repo#N) rank ahead of repo focus. Lower number first. "
-                "Bare !focus lists strict flag, items, repos (read is open). !focus strict on|off: when on, "
-                "!list and !bored only use focused work. Repos with GitHub topic priority-customer sort "
+                "Bare !focus lists strict flag, dispatch-lock line, items, repos (read is open). !focus strict on|off: when on, "
+                "!list and !bored only use focused work. FR #9833: !focus build-jeeves on|off writes dispatch-lock.json "
+                "so offers admit only jeeves/+common/ tip MRB/FIX and allowlisted gate FRs (default off). "
+                "Repos with GitHub topic priority-customer sort "
                 "after non-customer work (refreshed on resync). Tag: "
                 "gh repo edit SimonBarnett/<repo> --add-topic priority-customer. "
                 "Explicit !focus / item focus on a customer repo still wins.", ("unfocus", "list")),
@@ -248,16 +250,22 @@ def _csv_env(name: str) -> set:
 
 
 # FR #8827: MONITORING principal — same queue-mutator class as owner/ear.
-# Default nick ``monitoring`` when JEEVES_MONITOR_NICKS is unset; empty env disables nick default.
+# Default nick ``monitoring`` when JEEVES_MONITOR_NICKS is unset or blank.
+# Explicit ``-`` / ``off`` / ``none`` disables nick default (empty string must not
+# wipe the default — CI often exports empty vars; tip-red #9968).
 # Services accounts listed in JEEVES_MONITOR_ACCOUNTS (fail closed when unset).
 _DEFAULT_MONITOR_NICKS = frozenset({"monitoring"})
+_MONITOR_NICKS_OFF = frozenset({"-", "off", "none"})
 
 
 def monitor_nicks() -> set:
     raw = os.environ.get("JEEVES_MONITOR_NICKS")
-    if raw is None:
+    if raw is None or not str(raw).strip():
         return set(_DEFAULT_MONITOR_NICKS)
-    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+    parts = {p.strip().lower() for p in str(raw).split(",") if p.strip()}
+    if parts & _MONITOR_NICKS_OFF:
+        return set()
+    return parts
 
 
 def monitor_accounts() -> set:
@@ -325,6 +333,11 @@ def may(cmd: str, who: Principal) -> bool:
     if rule == "ops+allow":
         return who.ops or who.kind == "allowlist"
     return who.ops
+
+
+def commands_require_chan_op() -> bool:
+    """FR #9872: command auth is principal-based; never gate on chair channel +o."""
+    return False
 
 
 def denied_line(cmd: str) -> str:
