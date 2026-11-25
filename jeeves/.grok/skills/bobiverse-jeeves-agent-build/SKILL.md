@@ -125,10 +125,11 @@ Receipt complete, hash re-computed and matching, run green on the exact SHA, and
 - Red main for that component, hash mismatch, missing manifest, or SHA not on main: stop and report.
 - Never publish/promote a release, or send `!build`, without the operator's explicit go for that SHA/version.
 - Never paste tokens or PATs into commands shown in chat; rely on the host's existing gh auth.
+- **Active ARM FR #9847** (`docs/ARM_JEEVES_PRS_THEN_9830_9148_WALRUS.md`): without a fresh live `tip_merge_gate` **`OK_FOR_RECEIPT`** (`source=live`, `observed_at` attached to the receipt), do **not** `!build`, do **not** issue a build/install receipt, and do **not** use the older-green-SHA path above for a walrus rebuild. `NO_INSTALL` during steps 1–2 is expected.
 - **CAST IRON FR #9877** (`digest_ci_gate`): without a fresh live `ALLOW_DIGEST_CI` for the active fr-digest batch (all recorded children CLOSED), do **not** treat digest covering / omnibus CI as the merge/release gate, do **not** send batch `!build` / ready-to-install receipts for that digest, and do **not** stamp the digest done mid-batch. Child FR PRs may still run per-child CI. Complementary to tip_merge_gate (#9847). See `docs/fr-digest-vs-hold-vs-depends-on.md` §4.
 
 ## After a green build-jeeves (walrus)
 
 If `build-jeeves` (or tip CI that gates the artifact) **fails**: file FRs for the failures and **do not install** on walrus. No `-SiYes`, no WinRM, no Slab until a green run produces a verified artifact.
 
-When Depends-on / Plan-agent gates are CLOSED and Si says yes, install with `jeeves/scripts/Install-JeevesWalrusWinRm.ps1 -SiYes` (FR #9376). See `bobiverse-jeeves-agent-install`. Gate readiness: monitor check `walrus_jeeves_install_ready`.
+When Depends-on / Plan-agent gates are CLOSED and Si says yes, install with `jeeves/scripts/Install-JeevesWalrusWinRm.ps1 -SiYes` (FR #9376). See `bobiverse-jeeves-agent-install`. Gate readiness: monitor check `walrus_jeeves_install_ready`. While ARM #9847 is active, also require live `tip_merge_gate` `OK_FOR_RECEIPT` and build from **main tip after step 2** (not an older green SHA).
