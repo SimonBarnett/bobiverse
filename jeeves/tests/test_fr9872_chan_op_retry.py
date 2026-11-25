@@ -53,9 +53,11 @@ def test_fr9872_plan_dual_path_after_first_miss():
     assert [x["verb"] for x in non] == ["CHANSERV_OP"]
 
 
-def test_fr9872_commands_not_gated_on_chan_op():
+def test_fr9872_commands_not_gated_on_chan_op(monkeypatch):
     assert chair_commands.commands_require_chan_op() is False
     assert co.commands_require_chan_op() is False
+    # Unset / blank must keep default nick ``monitoring`` (#9968).
+    monkeypatch.delenv("JEEVES_MONITOR_NICKS", raising=False)
     ear = chair_commands.classify("bob-redqueen", ear_machine=lambda n: "redqueen")
     mon = chair_commands.classify("monitoring")
     assert ear.ops and mon.ops
@@ -63,6 +65,10 @@ def test_fr9872_commands_not_gated_on_chan_op():
     assert chair_commands.may("assign", ear)
     assert chair_commands.may("status", mon)
     assert chair_commands.may("assign", mon)
+    monkeypatch.setenv("JEEVES_MONITOR_NICKS", "")
+    assert chair_commands.classify("monitoring").ops is True
+    monkeypatch.setenv("JEEVES_MONITOR_NICKS", "off")
+    assert chair_commands.classify("monitoring").ops is False
 
 
 class _FakeChair:
