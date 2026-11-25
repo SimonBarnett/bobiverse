@@ -34,10 +34,19 @@ def test_fr9689_sync_mirrors_jeeves_into_vendor():
 def test_fr9689_copy_helper_stages_vendor_jeeves_exe(tmp_path: Path):
     """Offline: Copy-BobTrayVendorExes mirrors jeeves into vendor JeevesAgent only."""
     root = tmp_path / "install"
-    jeeves_dir = root / "jeeves"
-    jeeves_dir.mkdir(parents=True)
-    (jeeves_dir / "JeevesAgent.exe").write_bytes(b"MZ-jeeves-stub")
-    (jeeves_dir / "JeevesAgent.MANIFEST.json").write_text(
+    # -Require also needs plan + priority sources (FR #9468); stub them for isolation.
+    for name, stub in (
+        ("plan", b"MZ-plan-stub"),
+        ("priority", b"MZ-priority-stub"),
+        ("jeeves", b"MZ-jeeves-stub"),
+    ):
+        d = root / name
+        d.mkdir(parents=True)
+        exe = "PlanAgent.exe" if name == "plan" else (
+            "PriorityAgent.exe" if name == "priority" else "JeevesAgent.exe"
+        )
+        (d / exe).write_bytes(stub)
+    (root / "jeeves" / "JeevesAgent.MANIFEST.json").write_text(
         '{"tag":"launcher-v1.0.0","repo":"SimonBarnett/jeeves-mcp"}\n',
         encoding="utf-8",
     )
