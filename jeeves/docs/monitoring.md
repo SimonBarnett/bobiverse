@@ -70,6 +70,19 @@ Chair note for the three gates (digest go-gate vs hold vs Depends-on CLOSED): [f
 
 `Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that is still a **held digest** (BOB-G1 + BOB-G3 Digest flag: `digest` or `fr-digest` label, or `Kind: digest|fr-digest`, plus `hold`). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Title alone never makes a digest. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
 
+## digest_ci_gate (FR #9877)
+
+`Test-JeevesMonitorDigestCiGate.ps1` / `tools/monitor/digest_ci_gate.py` is **token-free** and **never soft_ok**.
+
+**CAST IRON:** digest covering / omnibus CI, tip rebuild + walrus install driven by a digest, unhold→drain completion CI, and ready-to-ship stamps for the **batch** wait until **every recorded child** under that digest is **CLOSED**. Child FRs may still open PRs and run per-child CI. Complementary to `tip_merge_gate` (FR #9847 tip PR cohort + digests); this check is **children-only**.
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `BLOCK_DIGEST_CI` | 1 | Any recorded child open/unknown, empty digests cohort, or empty children list for a digest |
+| `ALLOW_DIGEST_CI` | 0 | Every recorded child CLOSED (digest itself may still be open; #9552 auto-close may lag) |
+
+Fixture: `JEEVES_MONITOR_DIGEST_CI_GATE_FIXTURE` JSON `{issues:{N:{state}}}`. Overrides: `JEEVES_MONITOR_DIGEST_CI_GATE_DIGESTS`, `JEEVES_MONITOR_DIGEST_CI_GATE_CHILDREN` (`9830:9831|9832;9148:8775`), `JEEVES_MONITOR_DIGEST_CI_GATE_REPO`. Expected `BLOCK_DIGEST_CI` mid-batch: comment on the digest / one dedup tracker; intake for `state_unknown` / `cohort_undefined` / `children_undefined`. Chair note: [fr-digest-vs-hold-vs-depends-on.md](fr-digest-vs-hold-vs-depends-on.md) §4.
+
 ## Digest flag (BOB-G3 / FR #9108)
 
 Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR rows with label `digest` or `fr-digest`, or line-anchored `Kind: digest|fr-digest`. Never offered or `!assign`ed as work (stay queued as gate records). `!list` marks `[digest]`. Intake strips those labels from PRs.

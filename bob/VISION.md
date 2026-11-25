@@ -36,6 +36,7 @@ Default: Python `irc_agent` / `bob_worker.py` (PyInstaller `bob-worker.exe`), Po
 Why: Matches live fleet install trees under `<ai root>\bob` and the composed flat runtime.
 
 Why-not: Cloud-only agents or public Libera — shops and digests are Ergo + Jeeves.
+Digest go-gates (FR #9877): child FRs may run per-child CI; digest-level covering CI / batch `!build` / install receipt wait until all digest children are CLOSED (`digest_ci_gate`).
 
 LOCKED
 

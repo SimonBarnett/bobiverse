@@ -125,6 +125,7 @@ Receipt complete, hash re-computed and matching, run green on the exact SHA, and
 - Red main for that component, hash mismatch, missing manifest, or SHA not on main: stop and report.
 - Never publish/promote a release, or send `!build`, without the operator's explicit go for that SHA/version.
 - Never paste tokens or PATs into commands shown in chat; rely on the host's existing gh auth.
+- **CAST IRON FR #9877** (`digest_ci_gate`): without a fresh live `ALLOW_DIGEST_CI` for the active fr-digest batch (all recorded children CLOSED), do **not** treat digest covering / omnibus CI as the merge/release gate, do **not** send batch `!build` / ready-to-install receipts for that digest, and do **not** stamp the digest done mid-batch. Child FR PRs may still run per-child CI. Complementary to tip_merge_gate (#9847). See `docs/fr-digest-vs-hold-vs-depends-on.md` §4.
 
 ## After a green build-jeeves (walrus)
 
