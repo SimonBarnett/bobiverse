@@ -135,6 +135,8 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
 **FR #9557 (empty/stale local ops home):** a present but empty `queue.json` / empty digest on a non-chair host (typical Admin `~/.jeeves` on redqueen while ACC lives on walrus) must not paint false idle/starve. `local_ops_stale_vs_live_report` compares local buckets to a fresh `/bob/v1/report` (`empty_local_queue` / `missing_local_queue` / `missing_local_digest` / `seat_state_mismatch`). When stale and the live report is usable, idle_seats prefers the live report (`source=live_report_stale_local`, `stale_local_home=<why>`). When stale and the live report is unusable, soft-skip EXIT 0 with `skipped=stale_local_home` (no false starve). Token-free monitors may set `JEEVES_MONITOR_DIGEST_HOME` (UNC/shared chair digest) ahead of seat-local `BOB_DIGEST_HOME`.
 
+**FR #9849 (local idle ghosts vs live busy):** when local digest paints shop seats `idle` (and idle+offerable would EXIT 1 / true-starve) but a fresh live `/bob/v1/report` shows those same nicks as doing/accepted, `idle_seats` and `queue_flow` drop the contradicted nicks, annotate `local_stale` + `local_stale_idle_nicks`, and soft-ok when no real idle seats remain. Remaining real idles still EXIT 1. Prevents !assign storms from stale local paint while the live chair is busy.
+
 - Gated-only queue + idle seats â†’ EXIT 0
 - Idle seats + offerable row â†’ EXIT 1
 - Pin-only empty offer sustained >10m â†’ EXIT 1 (`queue_flow`, FR #2448 / #2446)
