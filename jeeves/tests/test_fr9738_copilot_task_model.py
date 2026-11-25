@@ -39,7 +39,8 @@ def test_fr9738_model_from_env(monkeypatch):
     assert body["base_ref"] == "main"
 
 
-def test_fr9738_model_from_allowance_when_env_unset(tmp_path, monkeypatch):
+def test_fr9738_allowance_model_ignored_when_home_set_empty_weights(tmp_path, monkeypatch):
+    """FR #9749: with home, Weights is locked; empty Copilot omits even if allowance set."""
     monkeypatch.delenv("BOB_COPILOT_MODEL", raising=False)
     monkeypatch.delenv("BOB_COPILOT_BASE_REF", raising=False)
     (tmp_path / cd.ALLOWANCE_NAME).write_text(
@@ -47,18 +48,19 @@ def test_fr9738_model_from_allowance_when_env_unset(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     body = cd.build_task_body(_row(), home=tmp_path)
-    assert body["model"] == "claude-haiku-4.5"
+    assert "model" not in body
     assert body["base_ref"] == "develop"
 
 
-def test_fr9738_env_model_wins_over_allowance(tmp_path, monkeypatch):
+def test_fr9738_env_ignored_when_home_set_empty_weights(tmp_path, monkeypatch):
+    """FR #9749: home present → Weights empty wins over env (locked picker)."""
     monkeypatch.setenv("BOB_COPILOT_MODEL", "claude-haiku-4.5")
     (tmp_path / cd.ALLOWANCE_NAME).write_text(
         json.dumps({"model": "sweagent-capi:gpt-6-luna"}),
         encoding="utf-8",
     )
     body = cd.build_task_body(_row(), home=tmp_path)
-    assert body["model"] == "claude-haiku-4.5"
+    assert "model" not in body
 
 
 def test_fr9738_empty_base_ref_env_omits_field(monkeypatch):

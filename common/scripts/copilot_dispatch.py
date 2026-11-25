@@ -5,10 +5,12 @@ with a ``prompt`` field (not ``problem_statement``), tracks the task + PR
 webhooks instead of IRC ACK/DONE, and falls back to shop seats when allowance
 is exhausted.
 
-FR #9738: optional CCA ``model`` (``BOB_COPILOT_MODEL`` / allowance ``model``;
-omit = Auto) and ``base_ref`` (default ``main``). ``tick()`` dispatches one
-job per pass; concurrent in-flight Copilot seats equal ``copilot-jobs.json``
-length (ops refill / Haiku quota separately).
+FR #9738 / #9749: optional CCA ``model`` and ``base_ref`` (default ``main``).
+FR #9749 locks the picker to Weights Copilot agent row (``models-catalog.json``);
+empty Weights model omits the POST key (GitHub Auto). Env ``BOB_COPILOT_MODEL``
+remains a home-less / ops override when no catalog home is passed. ``tick()``
+dispatches one job per pass; concurrent in-flight Copilot seats equal
+``copilot-jobs.json`` length (ops refill / Haiku quota separately).
 """
 from __future__ import annotations
 
@@ -18,7 +20,6 @@ import json
 import logging
 import os
 import re
-import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -1131,23 +1132,43 @@ def record_api_result(
             set_allowance(home, exhausted=False)
 
 
-def resolve_copilot_model(*, home: Path | None = None) -> str:
-    """CCA ``model`` for ``agents/.../tasks`` (FR #9738).
+def weights_copilot_model(home: Path | str | None) -> str:
+    """Weights Copilot agent ``model`` from ``models-catalog.json`` (FR #9749).
 
-    Env ``BOB_COPILOT_MODEL`` wins (e.g. ``claude-haiku-4.5``). Else allowance
-    ``model``. Empty = omit from the POST body so GitHub uses Auto / default.
+    Empty string when home missing, catalog unavailable, or Copilot row blank
+    (omit key on task POST → GitHub Auto).
     """
+    if home is None:
+        return ""
+    try:
+        import models_catalog as mc
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        rows = mc.load_catalog_file(home)
+    except Exception:  # noqa: BLE001
+        return ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("agent") or "").strip() != "Copilot":
+            continue
+        return str(row.get("model") or "").strip()
+    return ""
+
+
+def resolve_copilot_model(*, home: Path | None = None) -> str:
+    """CCA ``model`` for ``agents/.../tasks`` (FR #9738 / #9749).
+
+    When ``home`` is set, Weights Copilot row is the locked source (FR #9749):
+    non-empty → include; empty → omit (do not fall through to env/allowance).
+    Without ``home``, env ``BOB_COPILOT_MODEL`` then allowance ``model``.
+    """
+    if home is not None:
+        return weights_copilot_model(home)
     raw = (os.environ.get("BOB_COPILOT_MODEL") or "").strip()
     if raw:
         return raw
-    if home is not None:
-        try:
-            doc = load_allowance(home)
-        except Exception:  # noqa: BLE001
-            doc = {}
-        m = str(doc.get("model") or "").strip()
-        if m:
-            return m
     return ""
 
 
@@ -1475,11 +1496,8 @@ def dispatch_row(
     if st not in ("ok", "duplicate"):
         return {"status": "accept-failed", "accept": st}
     doc = _load_jobs(home)
-    model = ""
-    with contextlib.suppress(Exception):
-        allow = load_allowance(home)
-        if isinstance(allow, dict):
-            model = str(allow.get("model") or allow.get("start_model") or "").strip()
+    # FR #9749: persist Weights Copilot model on the job for digest/tray (#9748).
+    model = resolve_copilot_model(home=home)
     job_row = {
         "repo": repo,
         "task": task,
