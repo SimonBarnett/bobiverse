@@ -8768,13 +8768,16 @@ def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
     global _PR_EXISTS_BACKOFF_UNTIL
     rem = _rate_remaining_from_headers(hdrs)
     reset_raw = ""
+    retry_raw = ""
     if hdrs is not None:
         try:
             get = getattr(hdrs, "get", None)
             if callable(get):
                 reset_raw = str(get("X-RateLimit-Reset") or get("x-ratelimit-reset") or "").strip()
+                retry_raw = str(get("Retry-After") or get("retry-after") or "").strip()
         except Exception:
             reset_raw = ""
+            retry_raw = ""
     rem_i = None
     if rem is not None and str(rem).strip() != "":
         try:
@@ -8790,7 +8793,14 @@ def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
                     until = parsed
             except ValueError:
                 pass
+        if retry_raw:
+            try:
+                until = max(until, pr_exists_now() + float(retry_raw))
+            except ValueError:
+                pass
         _PR_EXISTS_BACKOFF_UNTIL = max(float(_PR_EXISTS_BACKOFF_UNTIL), until)
+        # FR #9865: core rate death also pauses unbudgeted issue_open probes.
+        _arm_issue_open_backoff_until(until, rem=rem, log_warn=False)
         print(
             "WARN git-claim pr_exists backoff "
             f"until={int(_PR_EXISTS_BACKOFF_UNTIL)} "
@@ -8800,9 +8810,135 @@ def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
             flush=True,
         )
     return rem
+
+
 # FR #3188: shared TTL across !bored so two seats do not re-GET the same rows every cycle.
 ISSUE_OPEN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
 IS_PULL_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+
+# FR #9865: after HTTP 403 or rate_remaining=0, skip issue_open until reset.
+_ISSUE_OPEN_BACKOFF_UNTIL = 0.0
+_ISSUE_OPEN_NETWORK_CALLS = 0
+_ISSUE_OPEN_BACKOFF_LOGGED = False
+
+
+def issue_open_now() -> float:
+    return time.time()
+
+
+def issue_open_backoff_active() -> bool:
+    if issue_open_now() < float(_ISSUE_OPEN_BACKOFF_UNTIL):
+        return True
+    # Share pr_exists core-rate pause so one 403 stops both probe kinds.
+    return pr_exists_backoff_active()
+
+
+def clear_issue_open_backoff() -> None:
+    global _ISSUE_OPEN_BACKOFF_UNTIL, _ISSUE_OPEN_NETWORK_CALLS, _ISSUE_OPEN_BACKOFF_LOGGED
+    _ISSUE_OPEN_BACKOFF_UNTIL = 0.0
+    _ISSUE_OPEN_NETWORK_CALLS = 0
+    _ISSUE_OPEN_BACKOFF_LOGGED = False
+
+
+def _arm_issue_open_backoff_until(
+    until: float, *, rem: str | None = None, log_warn: bool = True
+) -> None:
+    """Extend the global issue_open pause; WARN at most once per arming (FR #9865)."""
+    global _ISSUE_OPEN_BACKOFF_UNTIL, _ISSUE_OPEN_BACKOFF_LOGGED
+    prev = float(_ISSUE_OPEN_BACKOFF_UNTIL)
+    _ISSUE_OPEN_BACKOFF_UNTIL = max(prev, float(until))
+    if not log_warn:
+        return
+    if _ISSUE_OPEN_BACKOFF_LOGGED and prev >= issue_open_now():
+        return
+    _ISSUE_OPEN_BACKOFF_LOGGED = True
+    print(
+        "WARN git-claim issue_open backoff "
+        f"until={int(_ISSUE_OPEN_BACKOFF_UNTIL)} "
+        f"rate_remaining={rem if rem is not None else '-'} "
+        f"calls={_ISSUE_OPEN_NETWORK_CALLS}",
+        flush=True,
+    )
+
+
+def note_issue_open_rate(hdrs, *, code: int | None = None) -> str | None:
+    """Back off until X-RateLimit-Reset / Retry-After when core limit is gone (FR #9865)."""
+    rem = _rate_remaining_from_headers(hdrs)
+    reset_raw = ""
+    retry_raw = ""
+    if hdrs is not None:
+        try:
+            get = getattr(hdrs, "get", None)
+            if callable(get):
+                reset_raw = str(get("X-RateLimit-Reset") or get("x-ratelimit-reset") or "").strip()
+                retry_raw = str(get("Retry-After") or get("retry-after") or "").strip()
+        except Exception:
+            reset_raw = ""
+            retry_raw = ""
+    rem_i = None
+    if rem is not None and str(rem).strip() != "":
+        try:
+            rem_i = int(str(rem).strip())
+        except ValueError:
+            rem_i = None
+    if rem_i == 0 or code == 403:
+        until = issue_open_now() + 60.0
+        if reset_raw:
+            try:
+                parsed = float(reset_raw)
+                if parsed > issue_open_now():
+                    until = parsed
+            except ValueError:
+                pass
+        if retry_raw:
+            try:
+                until = max(until, issue_open_now() + float(retry_raw))
+            except ValueError:
+                pass
+        _arm_issue_open_backoff_until(until, rem=rem, log_warn=True)
+        # Keep pr_exists paused too while core remaining is zero.
+        global _PR_EXISTS_BACKOFF_UNTIL
+        _PR_EXISTS_BACKOFF_UNTIL = max(float(_PR_EXISTS_BACKOFF_UNTIL), until)
+    return rem
+
+
+def _issue_open_backoff_from_api_budget(home: Path | None) -> bool:
+    """If durable GithubApiBudget already has rate_remaining=0 (or core floor), arm pause (FR #9865)."""
+    try:
+        import github_api_budget as gab
+    except Exception:
+        return False
+    root: Path | None = None
+    if home is not None:
+        root = Path(home)
+    else:
+        env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+        if env_home:
+            root = Path(env_home)
+    if root is None or not root.is_dir():
+        return False
+    try:
+        bud = gab.GithubApiBudget(root, log=lambda _s: None)
+        bud.clear_rate_limit_if_reset()
+        rem = bud.rate_remaining
+        if rem is None:
+            return False
+        rem_i = int(rem)
+        # rate_remaining=0 always pauses; core floor pause when budget already in backoff.
+        if rem_i != 0 and not (bud.in_backoff() and rem_i < int(bud.floor)):
+            return False
+        until = issue_open_now() + 60.0
+        if bud.rate_reset is not None:
+            try:
+                rst = float(bud.rate_reset)
+                if rst > issue_open_now():
+                    until = rst
+            except (TypeError, ValueError):
+                pass
+        _arm_issue_open_backoff_until(until, rem=str(rem_i), log_warn=True)
+        return True
+    except Exception:
+        return False
 
 # FR #3188: at most one live GitHub lookup while picking the next !bored offer.
 # FR #3212: !bored is local-state only - zero live GitHub calls on the IRC offer path.
@@ -9150,6 +9286,9 @@ def github_issue_open_checker(
 
     FR #3188: non-404 failures raise ``GitHubLookupUnknown`` - never False - so a
     rate-limit / 5xx / timeout cannot purge the whole unaccepted queue.
+
+    FR #9865: when core ``rate_remaining=0`` (or ApiBudget already at the floor),
+    pause all issue_open probes until reset / Retry-After — one WARN, no 403 storm.
     """
     try:
         import gh_filer
@@ -9172,6 +9311,12 @@ def github_issue_open_checker(
                 return hit
         elif key in store:
             return store[key]
+        if not issue_open_backoff_active():
+            _issue_open_backoff_from_api_budget(home)
+        if issue_open_backoff_active():
+            raise GitHubLookupUnknown(
+                f"issue_open {repo}#{num} backoff rate_remaining=0"
+            )
         api = f"https://api.github.com/repos/{repo}/issues/{num}"
         req = urllib.request.Request(
             api,
@@ -9183,7 +9328,10 @@ def github_issue_open_checker(
             method="GET",
         )
         try:
+            global _ISSUE_OPEN_NETWORK_CALLS
+            _ISSUE_OPEN_NETWORK_CALLS += 1
             with urllib.request.urlopen(req, timeout=8) as resp:
+                note_issue_open_rate(getattr(resp, "headers", None))
                 if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
                     raw = resp.read()
                     try:
@@ -9202,15 +9350,21 @@ def github_issue_open_checker(
                 )
         except urllib.error.HTTPError as e:
             code = int(getattr(e, "code", 0) or 0)
+            rem = note_issue_open_rate(getattr(e, "headers", None), code=code)
             if code in (404, 410):
                 store[key] = False
                 return False
+            # FR #9865: rate-limit arm already emitted one backoff WARN — skip storm.
+            if issue_open_backoff_active() and (code == 403 or rem == "0"):
+                raise GitHubLookupUnknown(
+                    f"issue_open {repo}#{num} http={code}"
+                ) from e
             _log_github_lookup_failure(
                 "issue_open",
                 repo,
                 num,
                 code=code,
-                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                rate_remaining=rem,
                 exc=e,
             )
             raise GitHubLookupUnknown(f"issue_open {repo}#{num} http={code}") from e
