@@ -30,8 +30,10 @@
 >    `!assign` bridge per #9461) â€” report-only is opt-in. Gated-only queues are not this fail. Durable chair acceptance
 >    also reaffirms #9628 / #9460 (`offer_to_idle` / `offer_after_done`). Same-turn intervene still owes #9627.
 > 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
->    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
+>    parent `Digest: …` (`feature-request` + `fr-digest`); each parked child gets `Depends-on: #<digest>`. Digests stay useful
 >    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
+>    **FR #9854:** tip-blocking FIX/MRB that must merge while the digest is held are tip-priority LIST ONLY (no Depends-on
+>    until unhold); never auto-wire Depends-on onto them or the held-digest gate starves the tip.
 >    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 > 9. **CAST IRON — needs-walrus NACK → Jeeves agent does walrus (FR #9669).** When a seat NACK/GIVEUP is `needs-walrus` /
 >    `require_machine=walrus`, the **Jeeves agent** owns the walrus action (receipt + Slab/Si-yes) — do not leave
