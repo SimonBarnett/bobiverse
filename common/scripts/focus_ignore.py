@@ -11,6 +11,8 @@ Behaviour and on-disk formats follow gh-Jeeves (read-only reference @ 8d76d9a) s
 Order used by !list and !bored:
   0. ``priority/critical`` labelled rows first (oldest ts, then lowest number; FR #7204),
   1. item-focused rows by rank, 2. repo-focused rows by priority, 3. queue seq.
+  FR #9850 / #9867: within a focus band, tip-allowlist DIRTY/CONFLICTING FIX and tip
+  CLEAN MRB rank ahead of harvest-lesson / plain FRs (``tip_offer_prefer``).
 Strict mode keeps only focused rows. Ignored repos are dropped everywhere.
 
 This is a clean re-implementation of the subset needed, NOT a vendored copy of the
@@ -381,11 +383,23 @@ load_ignored = ignored_list
 
 
 # ---------------------------------------------------------------- ordering
-_TASK_ORDER = {"MRB": 0, "UAT": 1, "FR": 2}
+# FR #9850: FIX before FR so conflict/dirty tip FIX is not starved by new FRs
+# when tip_prefer ranks tie. UAT stays ahead of FIX.
+_TASK_ORDER = {"MRB": 0, "UAT": 1, "FIX": 2, "FR": 3}
 
 
 def _task_order(row: dict) -> int:
-    return _TASK_ORDER.get(str(row.get("task") or "").strip().upper(), 3)
+    return _TASK_ORDER.get(str(row.get("task") or "").strip().upper(), 4)
+
+
+def _tip_prefer_rank(row: dict) -> int:
+    """FR #9850 / #9867: tip dirty FIX / tip CLEAN MRB before lesson FRs."""
+    try:
+        import tip_offer_prefer as _tip
+
+        return int(_tip.tip_prefer_rank(row))
+    except Exception:
+        return 3
 
 
 def _label_names(row: dict) -> list[str]:
@@ -467,17 +481,18 @@ def row_offer_number(row: dict) -> int:
 
 
 def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
-    """FR #3205 / #7204 offer order key.
+    """FR #3205 / #7204 / #9850 offer order key.
 
     0. ``priority/critical`` first; among those, oldest ``ts`` then lowest number
     1. Per-item focus rank (if any)
     2. Repo focus priority (lower wins); unfocused last
     3. FR #4969: same-priority customer topic lags non-customer; unfocused customer
        after all non-customer rows. Explicit item/repo !focus still applies.
-    4. Task kind: MRB < UAT < FR
-    5. release-blocker before plain work (FR #4373)
-    6. Lowest issue/PR number
-    7. Repo name (final tie-break — not focus timestamp)
+    4. FR #9850 / #9867: tip-allowlist DIRTY FIX / tip CLEAN MRB before lesson FRs
+    5. Task kind: MRB < UAT < FIX < FR
+    6. release-blocker before plain work (FR #4373)
+    7. Lowest issue/PR number
+    8. Repo name (final tie-break — not focus timestamp)
     """
     if doc is None:
         doc = load_focus(home)
@@ -494,13 +509,14 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
         )
     customer = _pc.is_priority_customer(home, repo)
     blocker = _release_blocker_rank(row)
+    tip = _tip_prefer_rank(row)
     ir = item_rank(doc, row)
     if ir is not None:
         return (
             1,
             0,
             ir,
-            0,
+            tip,
             blocker,
             "",
             row_offer_number(row),
@@ -515,6 +531,7 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
             1,
             pri,
             lag,
+            tip,
             _task_order(row),
             blocker,
             row_offer_number(row),
@@ -525,6 +542,7 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
         1,
         int(ent[0]),
         lag,
+        tip,
         _task_order(row),
         blocker,
         row_offer_number(row),
@@ -535,8 +553,8 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
 def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
     """Drop ignored rows; strict drops unfocused rows; then FR #3205 offer order.
 
-    priority/critical first (FR #7204), then item rank > repo priority > MRB/UAT/FR >
-    lowest number > repo name.
+    priority/critical first (FR #7204), then item rank > repo priority >
+    tip-prefer (FR #9850) > MRB/UAT/FIX/FR > lowest number > repo name.
     A repo-level focus admits every real offerable row of that repo (FR #628).
     """
     ignored = ignored_list(home)

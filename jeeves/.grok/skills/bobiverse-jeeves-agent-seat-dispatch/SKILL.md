@@ -2,10 +2,11 @@
 name: bobiverse-jeeves-agent-seat-dispatch
 description: >
   Offer and assign rules for worker seats: priority/critical first, then MRB
-  before UAT before FR, lowest number first; free seats get FRs first, Grok
-  seats saved for MRB; hostile MRB from a different seat than the author; when
-  and how !assign is used if the queue stalls. Use for dispatch decisions,
-  idle seats with work queued, or /bobiverse-jeeves-agent-seat-dispatch.
+  before UAT before FIX before FR, lowest number first; tip-allowlist DIRTY FIX
+  and tip CLEAN MRB prefer over lesson FRs (FR #9850/#9867); free seats get FRs
+  first, Grok seats saved for MRB; hostile MRB from a different seat than the
+  author; when and how !assign is used if the queue stalls. Use for dispatch
+  decisions, idle seats with work queued, or /bobiverse-jeeves-agent-seat-dispatch.
 depends_on:
   - bobiverse-jeeves-agent-queue-triage
 ---
@@ -21,11 +22,12 @@ depends_on:
 Jeeves offers deterministically on `!bored`; this skill is how an operator/agent judges whether it did right
 and what to recommend when it stalls.
 
-## Offer order (chair, FR #3205 / #7204)
+## Offer order (chair, FR #3205 / #7204 / #9850)
 
 1. Label `priority/critical` first (oldest, then lowest number).
-2. Within focus priority: **MRB, then UAT, then FR**; **lowest issue/PR number first**.
-3. A seat ineligible for the waiting MRB/UAT still gets the next eligible FR.
+2. Within focus priority: **MRB, then UAT, then FIX, then FR**; **lowest issue/PR number first**.
+3. FR #9850 / #9867 tip prefer (`tip_offer_prefer`): tip-allowlist **DIRTY/CONFLICTING FIX** and tip **CLEAN MRB** rank ahead of harvest-lesson / plain FRs so the tip merge gate is not starved while seats auto-take lesson CCA/FR offers. Tip membership = `BOB_TIP_ALLOWLIST` numbers or `changed_files` under `jeeves/`+`common/`.
+4. A seat ineligible for the waiting MRB/UAT/FIX still gets the next eligible FR.
 
 ## Seat choice (fleet policy)
 
