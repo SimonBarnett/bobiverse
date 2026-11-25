@@ -56,6 +56,20 @@ Omnibus FRs. Filing the same thing twice because a search was too narrow.
 
 The CAST IRON *rule* FR itself (#9652) is a normal FR (not an `fr-digest` parent). Batch parents use the `Digest: …` title + `fr-digest` label.
 
+### Digest receipt + wire (FR #9837)
+
+Capture the reporter object; do **not** regex formatted prose or rely on `$Matches`:
+
+```powershell
+$r = & .\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind fr -Title 'Digest: …' -Body '…'
+# PowerShell: $r.number (positive [int] or $null) and $r.url
+# Non-PowerShell / process callers: grep host lines ISSUE_NUMBER=<N> and ISSUE_URL=<url>
+```
+
+- If `$r.number` is null and `$r.queued` / `$r.queued_local` is true: the issue is **unresolved**. Poll `GET /bob/v1/intake/<intake_id>` or flush the local outbox; do **not** claim the Digest is wired.
+- If `$r.action` is `commented` or `reopened`: inspect the existing issue; preserve its body and dependencies before adding `Depends-on`.
+- Wire order: file parent → add `fr-digest` with `gh` (intake does not add it) → prepend `Depends-on: #<digest>` on each child → update parent child list → verify labels and both link directions.
+
 ## needs-walrus split — CAST IRON (FR #9669)
 
 When work mixes **code** and **walrus host action**, file **two** FRs under one Digest (`feature-request` + `fr-digest`):

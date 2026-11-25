@@ -50,6 +50,7 @@ depends_on: []
 >    Never leave a multi-FR batch free-floating. Digests stay useful when unheld; `hold` parks the whole batch. Same-turn
 >    repair: if ≥2 related FRs already filed without a digest, file the digest immediately and add Depends-on on children.
 >    Last open child close closes the digest (#9552). One issue per issue inside the digest.
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 

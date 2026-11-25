@@ -32,6 +32,7 @@
 > 8. **CAST IRON — multiple FRs require a Digest (FR #9652).** Filing ≥2 related FRs in one turn/batch **must** include a
 >    parent `Digest: …` (`feature-request` + `fr-digest`); each child gets `Depends-on: #<digest>`. Digests stay useful
 >    when unheld. If a batch was filed without a digest, create it the same turn and wire children.
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 > 9. **CAST IRON — needs-walrus NACK → Jeeves agent does walrus (FR #9669).** When a seat NACK/GIVEUP is `needs-walrus` /
 >    `require_machine=walrus`, the **Jeeves agent** owns the walrus action (receipt + Slab/Si-yes) — do not leave
 >    ACK→GIVEUP thrash on redqueen/flamingo. Mixed code+walrus work splits under one Digest: **Code** child (no
