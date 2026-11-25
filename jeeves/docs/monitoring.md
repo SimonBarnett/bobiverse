@@ -8,6 +8,15 @@ Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for 
 - Use label `hold` while gates are open; tool-only PRs use `Refs` / `Toward`, never `Closes`, until install acceptance (FR #9400).
 - If a tracker was already offered, labeling `hold` (or the ops body cues) clears `offered_to` / seat-holds. `!stuck` / `!sweep` also release ghost offers (`released_offers`) for held rows and idle seats past offer timeout with no ACK.
 
+## Bored push notify (FR #9879)
+
+`!bored` (and shop `worker ready` / `DONE`) must reach the MONITORING agent as a **push** from the ear inbound transcript — not via the 5–15 minute health loop.
+
+- **Notifier:** `scripts/watch_bored_push_notify.ps1` polls `inbound-transcript.log` every **1s** (override `BOB_INBOUND_TRANSCRIPT` / `BOB_HOME`). Prints `READY nick=…`, `DONE nick=…`, `BORED nick=… (fallback)` and appends the same lines to `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log`.
+- **Start path:** `Start-JeevesMonitor.ps1` calls `Ensure-BoredPushNotify.ps1` before `bob-worker --mode monitor`. Ensure starts one Hidden notifier and **kills duplicate PIDs** (keeps the oldest).
+- **Agent path:** first turn of `monitor-start` attaches a monitor tool to the notifier stdout or the events log; on each event, dispatch **same turn** (`Invoke-JeevesMonitorInterveneAssign` / ear-relay `!assign` / chair outbox). The scheduled health sleep is **health-only** and must not own assign.
+- **Related:** #9882 (chair should offer on ready/DONE; `!bored` is fallback). Until chair owns that, this overlay keeps latency under ~2s.
+
 ## MONITORING command access (FR #8827)
 
 The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / â€¦) **to keep the queue moving**. Chair auth: principal kind `monitor` â€” nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
@@ -61,6 +70,19 @@ Chair note for the three gates (digest go-gate vs hold vs Depends-on CLOSED): [f
 
 `Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that is still a **held digest** (BOB-G1 + BOB-G3 Digest flag: `digest` or `fr-digest` label, or `Kind: digest|fr-digest`, plus `hold`). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Title alone never makes a digest. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
 
+## digest_ci_gate (FR #9877)
+
+`Test-JeevesMonitorDigestCiGate.ps1` / `tools/monitor/digest_ci_gate.py` is **token-free** and **never soft_ok**.
+
+**CAST IRON:** digest covering / omnibus CI, tip rebuild + walrus install driven by a digest, unhold→drain completion CI, and ready-to-ship stamps for the **batch** wait until **every recorded child** under that digest is **CLOSED**. Child FRs may still open PRs and run per-child CI. Complementary to `tip_merge_gate` (FR #9847 tip PR cohort + digests); this check is **children-only**.
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `BLOCK_DIGEST_CI` | 1 | Any recorded child open/unknown, empty digests cohort, or empty children list for a digest |
+| `ALLOW_DIGEST_CI` | 0 | Every recorded child CLOSED (digest itself may still be open; #9552 auto-close may lag) |
+
+Fixture: `JEEVES_MONITOR_DIGEST_CI_GATE_FIXTURE` JSON `{issues:{N:{state}}}`. Overrides: `JEEVES_MONITOR_DIGEST_CI_GATE_DIGESTS`, `JEEVES_MONITOR_DIGEST_CI_GATE_CHILDREN` (`9830:9831|9832;9148:8775`), `JEEVES_MONITOR_DIGEST_CI_GATE_REPO`. Expected `BLOCK_DIGEST_CI` mid-batch: comment on the digest / one dedup tracker; intake for `state_unknown` / `cohort_undefined` / `children_undefined`. Chair note: [fr-digest-vs-hold-vs-depends-on.md](fr-digest-vs-hold-vs-depends-on.md) §4.
+
 ## Digest flag (BOB-G3 / FR #9108)
 
 Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR rows with label `digest` or `fr-digest`, or line-anchored `Kind: digest|fr-digest`. Never offered or `!assign`ed as work (stay queued as gate records). `!list` marks `[digest]`. Intake strips those labels from PRs.
@@ -110,6 +132,8 @@ UNC installs such as `\\walrus\Jeeves` need `BOBIVERSE_REPO` pointing at a check
 Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` with `$env:BOBIVERSE_REPO` set to a tip checkout (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host). After Sync, `tools\monitor\opencode_seats.py` and `scripts\Test-JeevesMonitorOpencodeSeats.ps1` must be present.
 
 ## empty-offer playbook (FR #2448 / #2446)
+**FR #9882 CAST IRON:** chair offers on shop `worker ready` and on `DONE` same-tick; `!bored` is fallback only (see [empty-offer-operator.md](empty-offer-operator.md)). Sibling FR #9879 covers inbound-transcript push notify for monitor overlay.
+
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 

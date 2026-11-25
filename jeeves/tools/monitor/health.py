@@ -4,6 +4,8 @@
 FR #9836: when ircJeeves is Stopped (intended-up) or public /bob/v1/report is 502/timeout
 while Ergo is up, EXIT 1 and optionally heal (start chair + BobCallback/W3SVC), then
 re-probe local :7700 and public report before returning OK. Never touch Ergo/BobIrcd.
+
+FR #9864: digest-ok XOR report-fail => EXIT 1 + fingerprint ``webhook:digest_ok_report_hang``.
 """
 from __future__ import annotations
 
@@ -27,6 +29,8 @@ from _common import (
 
 BOBCALLBACK_PORT = 7700
 DEFAULT_LOCAL_REPORT = "http://127.0.0.1:7700/bob/v1/report"
+DEFAULT_LOCAL_DIGEST = "http://127.0.0.1:7700/bob/v1/digest"
+DIGEST_OK_REPORT_HANG_FP = "webhook:digest_ok_report_hang"
 
 
 def auto_heal_enabled(env: Optional[dict] = None) -> bool:
@@ -42,6 +46,31 @@ def local_report_url(env: Optional[dict] = None) -> str:
 
 def public_report_url(env: Optional[dict] = None) -> str:
     return live_report_url(env)
+
+
+def _report_to_digest_url(report_url: str) -> str:
+    u = (report_url or "").rstrip("/")
+    if u.endswith("/bob/v1/report"):
+        return u[: -len("/bob/v1/report")] + "/bob/v1/digest"
+    if u.endswith("/report"):
+        return u[: -len("/report")] + "/digest"
+    return DEFAULT_LOCAL_DIGEST
+
+
+def local_digest_url(env: Optional[dict] = None) -> str:
+    env = os.environ if env is None else env
+    override = (env.get("BOB_WEBHOOKS_LOCAL_DIGEST_URL") or "").strip()
+    if override:
+        return override
+    return _report_to_digest_url(local_report_url(env))
+
+
+def public_digest_url(env: Optional[dict] = None) -> str:
+    env = os.environ if env is None else env
+    override = (env.get("BOB_WEBHOOKS_PUBLIC_DIGEST_URL") or "").strip()
+    if override:
+        return override
+    return _report_to_digest_url(public_report_url(env))
 
 
 def chair_intended_up(start_type: str) -> bool:
@@ -201,6 +230,30 @@ def probe_public_report(
     )
 
 
+def probe_local_digest(
+    url: Optional[str] = None,
+    *,
+    timeout_s: float = 6.0,
+) -> tuple[bool, int, str]:
+    return _probe_http_report(
+        url or local_digest_url(),
+        timeout_s=timeout_s,
+        ua="BobiverseJeevesMonitor-health-digest/1.0",
+    )
+
+
+def probe_public_digest(
+    url: Optional[str] = None,
+    *,
+    timeout_s: float = 8.0,
+) -> tuple[bool, int, str]:
+    return _probe_http_report(
+        url or public_digest_url(),
+        timeout_s=timeout_s,
+        ua="BobiverseJeevesMonitor-health-digest-public/1.0",
+    )
+
+
 def heal_start_ircjeeves() -> dict[str, Any]:
     """Start ircJeeves when Stopped. Never touches Ergo or BobIrcd (FR #9836)."""
     if sys.platform != "win32":
@@ -340,14 +393,19 @@ def check(args):
 
     local_url = local_report_url()
     public_url = public_report_url()
+    local_dig_url = local_digest_url()
+    public_dig_url = public_digest_url()
     local_ok, local_status, local_detail = probe_local_report(local_url)
     public_ok, public_status, public_detail = probe_public_report(public_url)
+    local_dig_ok, local_dig_status, local_dig_detail = probe_local_digest(local_dig_url)
+    public_dig_ok, public_dig_status, public_dig_detail = probe_public_digest(public_dig_url)
     irc_state = str(services.get("ircJeeves") or "")
     bobircd_state = str(services.get("BobIrcd") or "")
     intended = chair_intended_up(irc_start)
     ergo_up = ergo_is_up(bobircd_state, bobircd_start)
     chair_up = irc_state.lower() == "running"
     webhooks_up = bool(local_ok and public_ok)
+    fingerprint = ""
 
     # FR #9836: intended-up disagreeing with webhooks (public or local down) while Ergo up.
     if ergo_up and irc_state.lower() != "skipped":
@@ -369,12 +427,24 @@ def check(args):
                     f"while Ergo up; public={public_detail}"
                 )
 
+    # FR #9864: digest-ok XOR report-fail.
+    xor_local = bool(local_dig_ok and not local_ok)
+    xor_public = bool(public_dig_ok and not public_ok)
+    if chair_up and (xor_local or xor_public):
+        fingerprint = DIGEST_OK_REPORT_HANG_FP
+        findings.append(
+            f"CAST IRON FR #9864: digest ok but report hang/fail "
+            f"(local digest={local_dig_detail} report={local_detail}; "
+            f"public digest={public_dig_detail} report={public_detail}; "
+            f"fingerprint={DIGEST_OK_REPORT_HANG_FP})"
+        )
+
     # Same-turn heal: start chair when Stopped+intended+Ergo-up; restore webhooks; re-probe both.
     need_heal = bool(findings) and auto_heal_enabled() and not getattr(args, "dry_run", False)
     if need_heal and ergo_up and intended and irc_state.lower() != "skipped":
         if not chair_up:
             heal["ircjeeves"] = heal_start_ircjeeves()
-        if not webhooks_up or not bc_ok:
+        if not webhooks_up or not bc_ok or fingerprint:
             heal["bobcallback"] = heal_bobcallback_local()
         try:
             import time
@@ -389,6 +459,8 @@ def check(args):
         services["BobCallback"] = bc_label
         local_ok, local_status, local_detail = probe_local_report(local_url)
         public_ok, public_status, public_detail = probe_public_report(public_url)
+        local_dig_ok, local_dig_status, local_dig_detail = probe_local_digest(local_dig_url)
+        public_dig_ok, public_dig_status, public_dig_detail = probe_public_digest(public_dig_url)
         chair_up = irc_state.lower() == "running"
         webhooks_up = bool(local_ok and public_ok)
         if chair_up and webhooks_up and bc_ok:
@@ -400,13 +472,25 @@ def check(args):
                     or "BobCallback" in f
                     or "9836" in f
                     or "9826" in f
+                    or "9864" in f
                     or "public report" in f
                     or "local report" in f
                 )
             ]
+            fingerprint = ""
             notes.append(
                 "FR #9836 heal restored ircJeeves + local/public /bob/v1/report HTTP 200"
             )
+        else:
+            xor_local = bool(local_dig_ok and not local_ok)
+            xor_public = bool(public_dig_ok and not public_ok)
+            if chair_up and (xor_local or xor_public):
+                fingerprint = DIGEST_OK_REPORT_HANG_FP
+                if not any("9864" in f for f in findings):
+                    findings.append(
+                        f"CAST IRON FR #9864: digest ok but report hang/fail after heal "
+                        f"(fingerprint={DIGEST_OK_REPORT_HANG_FP})"
+                    )
 
     if findings:
         # FR #8579: local chair services absent on a worker/monitor host while the
@@ -422,6 +506,7 @@ def check(args):
                 f"chairNick={overlay.get('live_chair_nick')}"
             )
             findings = []
+            fingerprint = ""
     ok = not findings
     payload = {
         "ok": ok,
@@ -437,18 +522,29 @@ def check(args):
         "public_report_ok": public_ok,
         "public_report_status": public_status,
         "public_report_detail": public_detail,
+        "local_digest_url": local_dig_url,
+        "local_digest_ok": local_dig_ok,
+        "local_digest_status": local_dig_status,
+        "local_digest_detail": local_dig_detail,
+        "public_digest_url": public_dig_url,
+        "public_digest_ok": public_dig_ok,
+        "public_digest_status": public_dig_status,
+        "public_digest_detail": public_dig_detail,
         "chair_intended_up": intended,
         "ergo_up": ergo_up,
         "heal": heal,
         "remediation": (
             "Start-Service ircJeeves; Start-Jeeves / BobCallback / schtasks BobCallback; "
             "optional Start-Service W3SVC; probe local :7700 and public report; "
-            "never Ergo/BobIrcd (FR #9836 / #9826)"
+            "never Ergo/BobIrcd (FR #9836 / #9826 / #9864)"
             if findings
             else ""
         ),
-        "fr_hint": "CAST IRON chair heal + public report (FR #9836)",
+        "fr_hint": "CAST IRON chair heal + public report (FR #9836 / #9864)",
     }
+    if fingerprint:
+        payload["fingerprint"] = fingerprint
+        payload["fingerprints"] = [fingerprint]
     if overlay:
         payload.update(overlay)
     return (payload, EXIT_OK if ok else EXIT_FINDING)

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""FR #9826 / #9836: when ircJeeves is intended-up, /bob/v1/report must serve HTTP 200.
+"""FR #9826 / #9836 / #9864: when ircJeeves is intended-up, /bob/v1/report must serve HTTP 200.
 
 CAST IRON: Jeeves on IRC implies webhooks up. Detect chair-up + report-down,
 or chair-Stopped (Automatic) while Ergo up; optionally heal by starting ircJeeves
 + BobCallback (never Ergo/BobIrcd), re-probe local :7700 and public report, EXIT 1
 if still down.
+
+FR #9864: digest-ok XOR report-fail (hang/timeout) is EXIT 1 with fingerprint
+``webhook:digest_ok_report_hang`` and same-turn BobCallback heal.
 """
 from __future__ import annotations
 
@@ -21,6 +24,8 @@ from _common import EXIT_FINDING, EXIT_OK, live_report_url, non_chair_overlay, r
 
 BOBCALLBACK_PORT = 7700
 DEFAULT_LOCAL_REPORT = "http://127.0.0.1:7700/bob/v1/report"
+DEFAULT_LOCAL_DIGEST = "http://127.0.0.1:7700/bob/v1/digest"
+DIGEST_OK_REPORT_HANG_FP = "webhook:digest_ok_report_hang"
 
 
 def auto_heal_enabled(env: Optional[dict] = None) -> bool:
@@ -36,6 +41,31 @@ def local_report_url(env: Optional[dict] = None) -> str:
 
 def public_report_url(env: Optional[dict] = None) -> str:
     return live_report_url(env)
+
+
+def _report_to_digest_url(report_url: str) -> str:
+    u = (report_url or "").rstrip("/")
+    if u.endswith("/bob/v1/report"):
+        return u[: -len("/bob/v1/report")] + "/bob/v1/digest"
+    if u.endswith("/report"):
+        return u[: -len("/report")] + "/digest"
+    return DEFAULT_LOCAL_DIGEST
+
+
+def local_digest_url(env: Optional[dict] = None) -> str:
+    env = os.environ if env is None else env
+    override = (env.get("BOB_WEBHOOKS_LOCAL_DIGEST_URL") or "").strip()
+    if override:
+        return override
+    return _report_to_digest_url(local_report_url(env))
+
+
+def public_digest_url(env: Optional[dict] = None) -> str:
+    env = os.environ if env is None else env
+    override = (env.get("BOB_WEBHOOKS_PUBLIC_DIGEST_URL") or "").strip()
+    if override:
+        return override
+    return _report_to_digest_url(public_report_url(env))
 
 
 def chair_intended_up(start_type: str) -> bool:
@@ -148,6 +178,30 @@ def probe_public_report(
     )
 
 
+def probe_local_digest(
+    url: Optional[str] = None,
+    *,
+    timeout_s: float = 6.0,
+) -> tuple[bool, int, str]:
+    return _probe_http_report(
+        url or local_digest_url(),
+        timeout_s=timeout_s,
+        ua="BobiverseJeevesMonitor-webhooks_up_digest/1.0",
+    )
+
+
+def probe_public_digest(
+    url: Optional[str] = None,
+    *,
+    timeout_s: float = 8.0,
+) -> tuple[bool, int, str]:
+    return _probe_http_report(
+        url or public_digest_url(),
+        timeout_s=timeout_s,
+        ua="BobiverseJeevesMonitor-webhooks_up_digest_public/1.0",
+    )
+
+
 def heal_start_ircjeeves() -> dict[str, Any]:
     """Start ircJeeves when Stopped. Never touches Ergo or BobIrcd (FR #9836)."""
     if sys.platform != "win32":
@@ -250,12 +304,17 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
     bobircd_start = _service_start_type("BobIrcd")
     url = local_report_url()
     pub_url = public_report_url()
+    dig_url = local_digest_url()
+    pub_dig_url = public_digest_url()
     listening = _port_listening(BOBCALLBACK_PORT)
     ok_probe, status, detail = probe_local_report(url)
     pub_ok, pub_status, pub_detail = probe_public_report(pub_url)
+    dig_ok, dig_status, dig_detail = probe_local_digest(dig_url)
+    pub_dig_ok, pub_dig_status, pub_dig_detail = probe_public_digest(pub_dig_url)
     heal: dict[str, Any] = {}
     findings: list[str] = []
     notes: list[str] = []
+    fingerprint = ""
 
     if irc.lower() == "skipped":
         # Non-Windows / CI: soft ok.
@@ -269,6 +328,8 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
                 "local_report_ok": ok_probe,
                 "public_report_url": pub_url,
                 "public_report_ok": pub_ok,
+                "local_digest_ok": dig_ok,
+                "public_digest_ok": pub_dig_ok,
                 "port_listening": listening,
                 "findings": [],
             },
@@ -291,6 +352,17 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
             f"CAST IRON FR #9836: ircJeeves Running but public report not 200 "
             f"({pub_detail}; url={pub_url})"
         )
+    # FR #9864: digest-ok XOR report-fail (hang while digest still serves).
+    xor_local = bool(dig_ok and not ok_probe)
+    xor_public = bool(pub_dig_ok and not pub_ok)
+    if chair_up and (xor_local or xor_public):
+        fingerprint = DIGEST_OK_REPORT_HANG_FP
+        findings.append(
+            f"CAST IRON FR #9864: digest ok but report hang/fail "
+            f"(local digest={dig_detail} report={detail}; "
+            f"public digest={pub_dig_detail} report={pub_detail}; "
+            f"fingerprint={DIGEST_OK_REPORT_HANG_FP})"
+        )
     # FR #9836: Stopped + intended-up + Ergo up
     if (not chair_up) and intended and ergo_up:
         findings.append(
@@ -312,15 +384,19 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
         chair_up = irc.lower() == "running"
         ok_probe, status, detail = probe_local_report(url)
         pub_ok, pub_status, pub_detail = probe_public_report(pub_url)
+        dig_ok, dig_status, dig_detail = probe_local_digest(dig_url)
+        pub_dig_ok, pub_dig_status, pub_dig_detail = probe_public_digest(pub_dig_url)
         listening = _port_listening(BOBCALLBACK_PORT)
         if chair_up and ok_probe and pub_ok:
             findings = []
+            fingerprint = ""
             notes.append(
                 "FR #9836 heal restored ircJeeves + local/public /bob/v1/report HTTP 200"
             )
         elif findings:
             # refresh finding text after heal attempt
             findings = []
+            fingerprint = ""
             if chair_up and not ok_probe:
                 findings.append(
                     f"CAST IRON FR #9826: ircJeeves Running but local report not 200 "
@@ -330,6 +406,14 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
                 findings.append(
                     f"CAST IRON FR #9836: ircJeeves Running but public report not 200 "
                     f"({pub_detail}; url={pub_url})"
+                )
+            xor_local = bool(dig_ok and not ok_probe)
+            xor_public = bool(pub_dig_ok and not pub_ok)
+            if chair_up and (xor_local or xor_public):
+                fingerprint = DIGEST_OK_REPORT_HANG_FP
+                findings.append(
+                    f"CAST IRON FR #9864: digest ok but report hang/fail after heal "
+                    f"(fingerprint={DIGEST_OK_REPORT_HANG_FP})"
                 )
             if (not chair_up) and intended and ergo_up:
                 findings.append(
@@ -343,6 +427,7 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
             for f in findings:
                 notes.append(f"non-chair soft-ok (live /report fresh): {f}")
             findings = []
+            fingerprint = ""
             notes.append(
                 "FR #8579 non-chair overlay: local ircJeeves/BobCallback are not the live chair"
             )
@@ -356,6 +441,10 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
                 "public_report_url": pub_url,
                 "public_report_ok": pub_ok,
                 "public_report_status": pub_status,
+                "local_digest_url": dig_url,
+                "local_digest_ok": dig_ok,
+                "public_digest_url": pub_dig_url,
+                "public_digest_ok": pub_dig_ok,
                 "port_listening": listening,
                 "heal": heal,
                 "findings": [],
@@ -365,34 +454,44 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
             return payload, EXIT_OK
 
     ok = not findings
-    return (
-        {
-            "ok": ok,
-            "ircJeeves": irc,
-            "ircJeeves_start_type": irc_start,
-            "local_report_url": url,
-            "local_report_ok": ok_probe,
-            "local_report_status": status,
-            "local_report_detail": detail,
-            "public_report_url": pub_url,
-            "public_report_ok": pub_ok,
-            "public_report_status": pub_status,
-            "public_report_detail": pub_detail,
-            "port_listening": listening,
-            "heal": heal,
-            "findings": findings,
-            "notes": notes,
-            "chair_home": str(chair),
-            "remediation": (
-                "Start-Service ircJeeves; Start-Jeeves / BobCallback / schtasks BobCallback; "
-                "optional Start-Service W3SVC; never Ergo/BobIrcd (FR #9836 / #9826)"
-                if findings
-                else ""
-            ),
-            "fr_hint": "CAST IRON Jeeves on IRC => webhooks up (FR #9826 / #9836)",
-        },
-        EXIT_OK if ok else EXIT_FINDING,
-    )
+    payload = {
+        "ok": ok,
+        "ircJeeves": irc,
+        "ircJeeves_start_type": irc_start,
+        "local_report_url": url,
+        "local_report_ok": ok_probe,
+        "local_report_status": status,
+        "local_report_detail": detail,
+        "public_report_url": pub_url,
+        "public_report_ok": pub_ok,
+        "public_report_status": pub_status,
+        "public_report_detail": pub_detail,
+        "local_digest_url": dig_url,
+        "local_digest_ok": dig_ok,
+        "local_digest_status": dig_status,
+        "local_digest_detail": dig_detail,
+        "public_digest_url": pub_dig_url,
+        "public_digest_ok": pub_dig_ok,
+        "public_digest_status": pub_dig_status,
+        "public_digest_detail": pub_dig_detail,
+        "port_listening": listening,
+        "heal": heal,
+        "findings": findings,
+        "notes": notes,
+        "chair_home": str(chair),
+        "remediation": (
+            "Start-Service ircJeeves; Start-Jeeves / BobCallback / schtasks BobCallback; "
+            "optional Start-Service W3SVC; never Ergo/BobIrcd "
+            "(FR #9836 / #9826 / #9864 digest-ok+report-hang)"
+            if findings
+            else ""
+        ),
+        "fr_hint": "CAST IRON Jeeves on IRC => webhooks up (FR #9826 / #9836 / #9864)",
+    }
+    if fingerprint:
+        payload["fingerprint"] = fingerprint
+        payload["fingerprints"] = [fingerprint]
+    return payload, EXIT_OK if ok else EXIT_FINDING
 
 
 def main(argv: Optional[list[str]] = None) -> int:

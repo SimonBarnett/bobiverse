@@ -43,6 +43,16 @@ Three different gates. Do not collapse them.
 | Exception | Unheld digests are allowed OPEN (BOB-G1 `ok-fr-digest`). Held digests use gate 1 (`depends-held`), not this CLOSED rule. |
 | Monitor | `depends_on` (FR #8848): EXIT 1 when an offered/accepted row still Depends-on an OPEN local queue row (chair missed BOB-D3). |
 
+## 4. Digest-level CI / build after children CLOSED (FR #9877)
+
+| | |
+|---|---|
+| What | **CAST IRON:** digest covering / omnibus CI, tip rebuild + walrus install driven by that digest, unhold→drain completion CI, and any ready-to-ship stamp for the **batch** wait until **every** Depends-on child under the digest is **CLOSED**. |
+| Clarifies | Child FRs may still open PRs and run **per-child** CI (normal FR→PR→MRB). CI-G1/G2 `open_children_gate` still fails a PR that would close a parent while open children remain. |
+| Distinct from | FR #9847 `tip_merge_gate` (tip PR cohort **plus** digests/children before walrus). This gate is **children-only**. |
+| Monitor | `digest_ci_gate` / `Test-JeevesMonitorDigestCiGate.ps1`: `BLOCK_DIGEST_CI` (exit 1) while any recorded child is open/unknown; `ALLOW_DIGEST_CI` (exit 0) when all children CLOSED. Never soft_ok. |
+| Fail-when | Mid-batch digest covering CI / `!build` / install receipt while any child is still OPEN. |
+
 ## Quick map
 
 ```
@@ -52,9 +62,24 @@ digest/fr-digest + hold          -> block children until unhold (close optional)
 parent unhold (FR #9848)         -> strip hold from ordinary Depends-on kids
 Depends-on ordinary OPEN         -> block until parent CLOSED
 Depends-on unheld digest OPEN    -> offer OK (BOB-G1)
+digest children still OPEN       -> BLOCK digest-level CI/build/install (#9877)
+tip-priority sibling (held)      -> LIST ONLY on digest; no Depends-on (FR #9854)
 ```
 
-Architecture (theme LOCKED): `hold label | fr-digest Depends-on | parent CLOSED Depends-on`.
+Architecture (theme LOCKED): `hold label | fr-digest Depends-on | parent CLOSED Depends-on | digest CI after children`.
+
+## Tip-priority siblings (LIST ONLY) — FR #9854
+
+Digest body has **two** child sections while held:
+
+| Section | Child body | Offer while digest held |
+|---|---|---|
+| **Tip-priority siblings (LIST ONLY)** | **No** `Depends-on: #<digest>` | Offerable (tip merge FIX/MRB must not starve) |
+| **Children (Depends-on this digest)** | Plain `Depends-on: #<digest>` | Skipped (`depends-held` / #9821) |
+
+Use tip-priority for tip-blocking work (e.g. main/tip `build-jeeves` red FIX) that must merge **before** the held lessons digest unholds. Still **list** those issues on the digest so the batch is visible; never wire `Depends-on` onto them while `hold` remains. Helpers: `fr_digest_gate.stamp_digest_depends_on(digest_held=..., tip_priority=...)` and section markers `TIP_PRIORITY_SECTION` / `CHILDREN_SECTION`. After unhold, tip-priority rows may take Depends-on like parked children if desired.
+
+Fail-when: MONITORING / harvest auto-stamps `Depends-on: #<held-digest>` on a tip-blocking FIX → held-digest gate starves the tip merge (class of #9840 cleared by Haiku).
 
 ## Related
 
@@ -63,6 +88,10 @@ Architecture (theme LOCKED): `hold label | fr-digest Depends-on | parent CLOSED 
 - FR #9418 / #9420: live digest when go-gate row absent from queue
 - FR #9434 / #9444: stuck/report + Depends-on annotations share `issue_fetch`
 - FR #9455: `depends_gate_reason` (`bob_g1_shared_gate`) — offer = assign = stuck
+- FR #9552: last child close closes digest
+- FR #9847: tip_merge_gate (tip PRs then digests/children then walrus)
+- FR #9877: digest_ci_gate (children-only digest-level CI/build gate)
+- FR #9854: tip-blocking FIX list-only (no Depends-on while digest held)
 - VIS-G3 Plan skill: SimonBarnett/skills-visionary VIS-G3
 - BOB-G3 Digest flag recognition: FR #9108
 - Product Depends-on vs hold docs theme (BOB-D8 #8812) is the D* track; this note is the G* digest go-gate track

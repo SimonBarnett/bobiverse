@@ -1651,6 +1651,22 @@ def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
 
 
+_WORKER_READY_RE = re.compile(
+    r"(?i)^(?:[\w][\w.-]*\s+)?worker\s+ready\b"
+)
+
+
+def is_worker_ready_line(body: str) -> bool:
+    """FR #9882: shop ``worker ready`` (optionally prefixed with nick) — primary offer cue.
+
+    ``!bored`` remains a fallback when the chair missed ready/DONE.
+    """
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(_WORKER_READY_RE.match(text))
+
+
 def shop_line_resets_bored_clock(body: str) -> bool:
     """FR #5203: ACK/DONE/NACK/GIVEUP mean the seat is not waiting to !bored."""
     text = (body or "").strip()
@@ -13820,16 +13836,73 @@ def purge_orphan_seat_holds(
         return 0
 
 
-def release_stale_via_offer_holds(
-    home: Path, *, now: float | None = None
-) -> int:
-    """FR #9783: stuck-sweep clears stale via=offer seat-holds past offer timeout.
+def _row_job_finished(row: dict) -> bool:
+    """True when a queue row is stamped MERGED/CLOSED (FR #9855)."""
+    if not isinstance(row, dict):
+        return False
+    state = str(row.get("state") or "").strip().lower()
+    if state in ("closed", "merged"):
+        return True
+    result = str(row.get("result") or "").strip().upper()
+    if result in ("MERGED", "CLOSED"):
+        return True
+    if row.get("merged") in (True, "true", "1", 1):
+        return True
+    return False
 
-    After ``offered_to`` ages out (~90s), ``via=offer`` holds can linger until
-    ``SEAT_HOLD_MAX_S`` (1h) and leave digest-idle seats ``busy (held …)`` while
-    stuck-sweep reports ``released=0``. Clear those holds (and matching aged
-    pins). ``ack-missing`` stays (FR #4115). Complements ``release_sticky_offer_on_bored``
-    / ``!cleargiveup`` (FR #9633 / #9771).
+
+def _hold_job_finished(doc: dict, repo: str, task: str, ident: str) -> bool:
+    """FR #9855: hold's job is finished when done[] or live row is MERGED/CLOSED."""
+    repo_k = _repo_key(repo)
+    ident_s = _norm_row_id(ident)
+    task_u = str(task or "").upper()
+    if not repo_k or not ident_s:
+        return False
+
+    def _same(row: dict) -> bool:
+        if _repo_key(row.get("repo")) != repo_k:
+            return False
+        if _norm_row_id(row.get("id")) != ident_s:
+            return False
+        if task_u and str(row.get("task") or "").upper() not in ("", task_u):
+            # Allow FR/PR/UAT alias mismatch only when task omitted on hold.
+            rt = str(row.get("task") or "").upper()
+            if task_u in ("FR", "PR", "UAT") and rt in ("FR", "PR", "UAT"):
+                return True
+            if task_u != rt:
+                return False
+        return True
+
+    for row in list(doc.get("done") or []):
+        if isinstance(row, dict) and _same(row):
+            # Any done[] match for this job key is finished work.
+            return True
+    for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+        for row in bucket:
+            if isinstance(row, dict) and _same(row) and _row_job_finished(row):
+                return True
+    return False
+
+
+def release_stale_via_offer_holds(
+    home: Path,
+    *,
+    now: float | None = None,
+    idle: set[str] | None = None,
+) -> int:
+    """FR #9783 / FR #9855: stuck-sweep clears stale or post-merge via=offer holds.
+
+    FR #9783: after ``offered_to`` ages out (~90s), ``via=offer`` holds can linger
+    until ``SEAT_HOLD_MAX_S`` (1h) and leave digest-idle seats ``busy (held …)``
+    while stuck-sweep reports ``released=0``. Clear those holds (and matching
+    aged pins).
+
+    FR #9855: also clear when report/digest lastSeen is idle with empty
+    ``working_on`` *and* the held job is MERGED/CLOSED (or already in done[]),
+    even inside the offer-timeout window — post-merge ghost holds that refuse
+    ``!assign`` while the digest paints idle. Fresh open offers with a live pin
+    stay. ``ack-missing`` stays (FR #4115). Complements
+    ``release_sticky_offer_on_bored`` / ``!cleargiveup`` (FR #9633 / #9771).
 
     Returns the number of seat-holds cleared.
     """
@@ -13837,12 +13910,17 @@ def release_stale_via_offer_holds(
 
     now_f = _time.time() if now is None else float(now)
     timeout = float(offer_timeout_s(None))
+    idle_l = {
+        (canonical_worker_nick(n) or n or "").strip().lower()
+        for n in (idle or set())
+        if (canonical_worker_nick(n) or n or "").strip()
+    }
     try:
         with _lock(home):
             try:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
-                doc = {"unaccepted": [], "accepted": []}
+                doc = {"unaccepted": [], "accepted": [], "done": []}
             holds = _load_seat_holds_unlocked(home, now_f)
             if not holds:
                 return 0
@@ -13873,14 +13951,12 @@ def release_stale_via_offer_holds(
                 ).strip().lower()
                 if hold_nick and hold_nick in accepted_nicks:
                     continue
-                age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
-                if age < timeout:
-                    continue
-                holds.pop(nick_key, None)
-                cleared += 1
                 repo_s = str(h.get("repo") or "")
                 task_u = str(h.get("task") or "").upper()
                 ident_s = _norm_row_id(h.get("id"))
+                finished = _hold_job_finished(doc, repo_s, task_u, ident_s)
+                age = _offer_age_s({"offered_ts": h.get("ts")}, now_f)
+                pin_alive = False
                 for cand in doc.get("unaccepted") or []:
                     if not isinstance(cand, dict):
                         continue
@@ -13896,10 +13972,85 @@ def release_stale_via_offer_holds(
                         continue
                     if task_u and str(cand.get("task") or "").upper() != task_u:
                         continue
-                    if _offer_age_s(cand, now_f) < offer_timeout_s(cand):
+                    pin_alive = True
+                    break
+                # FR #9855: idle digest + empty working_on (caller idle set) with
+                # pin already gone is a ghost hold even inside offer timeout.
+                idle_ghost = bool(
+                    hold_nick and hold_nick in idle_l and not pin_alive
+                )
+                # FR #9855: MERGED/CLOSED (or done[]) clears even inside timeout.
+                # FR #9783: otherwise require age past offer timeout.
+                if not finished and not idle_ghost and age < timeout:
+                    continue
+                holds.pop(nick_key, None)
+                cleared += 1
+                for cand in doc.get("unaccepted") or []:
+                    if not isinstance(cand, dict):
+                        continue
+                    if _repo_key(cand.get("repo")) != _repo_key(repo_s):
+                        continue
+                    if _norm_row_id(cand.get("id")) != ident_s:
+                        continue
+                    if task_u and str(cand.get("task") or "").upper() != task_u:
+                        continue
+                    to = str(cand.get("offered_to") or "").strip()
+                    if to:
+                        them = (canonical_worker_nick(to) or to).strip().lower()
+                        if hold_nick and them != hold_nick:
+                            continue
+                    elif not finished:
+                        continue
+                    # Age gate only for the pure stale path; finished clears now.
+                    if (
+                        not finished
+                        and _offer_age_s(cand, now_f) < offer_timeout_s(cand)
+                    ):
                         continue
                     clear_sticky_offer_fields(cand)
                     dirty_queue = True
+            # FR #9855: strip MERGED/CLOSED offered_to pins, drop matching
+            # via=offer holds, and remove finished rows from unaccepted so the
+            # idle-offer push cannot re-pin a ghost job (parity with
+            # clear_closed_fr_sticky_offers drop).
+            keep_unacc: list = []
+            for cand in list(doc.get("unaccepted") or []):
+                if not isinstance(cand, dict):
+                    continue
+                if not _row_job_finished(cand):
+                    keep_unacc.append(cand)
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                repo_c = str(cand.get("repo") or "")
+                task_c = str(cand.get("task") or "")
+                id_c = str(cand.get("id") or "")
+                clear_sticky_offer_fields(cand)
+                dirty_queue = True
+                for nk, hv in list(holds.items()):
+                    if not isinstance(hv, dict):
+                        continue
+                    via_h = str(hv.get("via") or "offer").strip().lower() or "offer"
+                    if via_h == "ack-missing":
+                        continue
+                    if not _hold_matches_job(hv, repo_c, task_c, id_c):
+                        continue
+                    hold_n = (
+                        canonical_worker_nick(str(hv.get("nick") or nk))
+                        or str(hv.get("nick") or nk)
+                    ).strip().lower()
+                    if hold_n and hold_n in accepted_nicks:
+                        continue
+                    holds.pop(nk, None)
+                    cleared += 1
+                # Drop finished row (do not keep for re-offer).
+                _log_queue_purge(
+                    f"INFO git-claim purge finished-sticky "
+                    f"{repo_c}{id_c} task={task_c} had_offer={int(bool(to))} "
+                    f"(FR #9855)",
+                    log=None,
+                )
+            if dirty_queue:
+                doc["unaccepted"] = keep_unacc
             if cleared:
                 with contextlib.suppress(OSError):
                     _save_seat_holds_unlocked(home, holds)
