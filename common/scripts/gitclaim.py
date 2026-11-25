@@ -591,6 +591,143 @@ def clear_held_fr_sticky_offers(doc: dict) -> list[str]:
     return dropped
 
 
+# FR #9848: injectable GitHub label remover for tests (callable(repo, num, label) -> bool).
+_FR9848_REMOVE_LABEL = None
+
+
+def _default_remove_github_issue_label(repo: str, issue_num: int, label: str) -> bool:
+    """Best-effort ``gh api -X DELETE repos/.../issues/N/labels/LABEL`` (FR #9848)."""
+    import shutil
+    import subprocess
+    import urllib.parse
+
+    gh = shutil.which("gh")
+    if not gh:
+        return False
+    lab = urllib.parse.quote(str(label or "").strip(), safe="")
+    if not lab or int(issue_num) <= 0:
+        return False
+    try:
+        r = subprocess.run(
+            [
+                gh,
+                "api",
+                "-X",
+                "DELETE",
+                f"repos/{repo}/issues/{int(issue_num)}/labels/{lab}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def strip_hold_from_digest_children(
+    home: Path | None,
+    doc: dict,
+    digest_repo: str,
+    digest_id: str,
+    *,
+    remove_github_label=None,
+) -> list[str]:
+    """FR #9848: parent digest unhold strips ``hold`` from ordinary Depends-on children.
+
+    Nested digest children keep hold (FR #9860 no auto-unhold). Updates queue labels
+    in place and best-effort removes the GitHub label so the next resync stays clear.
+    """
+    actions: list[str] = []
+    if not isinstance(doc, dict):
+        return actions
+    want_repo = _repo_key(digest_repo)
+    raw_id = str(digest_id or "").strip().lstrip("#")
+    try:
+        want_num = int(raw_id) if raw_id else 0
+    except ValueError:
+        return actions
+    if not want_repo or want_num <= 0:
+        return actions
+    want = (want_repo, want_num)
+
+    try:
+        import fr_digest_gate as _fdg
+    except ImportError:
+        _fdg = None  # type: ignore[assignment]
+
+    remover = remove_github_label
+    if remover is None:
+        remover = _FR9848_REMOVE_LABEL
+    if remover is None:
+        remover = _default_remove_github_issue_label
+
+    def _depends_on_digest(row: dict) -> bool:
+        return want in _row_depends_on_issue_refs(row)
+
+    for bucket in ("unaccepted", "accepted"):
+        for row in list(doc.get(bucket) or []):
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if not _depends_on_digest(row):
+                continue
+            if _fdg is not None:
+                if not _fdg.should_strip_child_hold_on_parent_unhold(row):
+                    continue
+                new_labs = _fdg.strip_hold_labels(row.get("labels") or [])
+            else:
+                labs = {
+                    str(x).strip().lower()
+                    for x in (row.get("labels") or [])
+                    if str(x).strip()
+                }
+                if labs & DIGEST_ISSUE_LABELS:
+                    continue
+                if "hold" not in labs and "on-hold" not in labs:
+                    continue
+                new_labs = [
+                    str(x)
+                    for x in (row.get("labels") or [])
+                    if str(x).strip().lower() not in ISSUES_ONLY_HOLD_LABELS
+                ]
+            old_labs = [str(x) for x in (row.get("labels") or [])]
+            old_hold = [
+                x
+                for x in old_labs
+                if str(x).strip().lower() in ISSUES_ONLY_HOLD_LABELS
+            ]
+            if not old_hold:
+                continue
+            row["labels"] = new_labs
+            child_repo = str(row.get("repo") or digest_repo)
+            child_raw = str(row.get("id") or "").strip().lstrip("#")
+            try:
+                child_num = int(child_raw)
+            except ValueError:
+                child_num = 0
+            for lab in old_hold:
+                ok = False
+                if callable(remover) and child_num > 0:
+                    try:
+                        ok = bool(remover(child_repo, child_num, str(lab).strip()))
+                    except Exception:
+                        ok = False
+                actions.append(
+                    f"{_row_drop_label(row)} digest_unhold_strip_{lab}"
+                    f"{'' if ok else '_queued'}"
+                )
+            # Ensure hold no longer gates this row locally.
+            if home is not None:
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home,
+                        child_repo,
+                        "FR",
+                        str(row.get("id") or ""),
+                    )
+    return actions
+
 
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
 _DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
@@ -5525,6 +5662,8 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             return "removed" if n else "noop"
     updated = False
     found_unaccepted = False
+    # FR #9848: detect digest hold removal before labels mutate in place.
+    was_held_digest = False
     for bucket in ("unaccepted", "accepted"):
         for row in doc.get(bucket) or []:
             if not isinstance(row, dict):
@@ -5533,6 +5672,14 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
                 continue
             if bucket == "unaccepted":
                 found_unaccepted = True
+            if claim.task == "FR" and digest_issue_reason(row):
+                labs_prev = {
+                    str(x).strip().lower()
+                    for x in (row.get("labels") or [])
+                    if str(x).strip()
+                }
+                if "hold" in labs_prev or "on-hold" in labs_prev:
+                    was_held_digest = True
             row["labels"] = list(claim.labels)
             row["action"] = claim.action
             row["event"] = claim.event
@@ -5559,6 +5706,38 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             "labels": list(claim.labels),
         }
         if digest_issue_reason(_digest_probe):
+            labs_now = {
+                str(x).strip().lower() for x in (claim.labels or []) if str(x).strip()
+            }
+            now_held = "hold" in labs_now or "on-hold" in labs_now
+            # FR #9848: parent digest unhold -> strip hold from ordinary children.
+            if (
+                was_held_digest
+                and not now_held
+                and str(claim.action or "").strip().lower()
+                in ("unlabeled", "edited", "labeled")
+            ):
+                stripped = strip_hold_from_digest_children(
+                    home, doc, claim.repo, claim.id
+                )
+                if stripped:
+                    updated = True
+                    notes = doc.get("stand_down")
+                    if not isinstance(notes, list):
+                        notes = []
+                        doc["stand_down"] = notes
+                    notes.append(
+                        {
+                            "channel": "#bobiverse",
+                            "text": (
+                                f"unhold {claim.repo}#{str(claim.id).lstrip('#')}: "
+                                f"stripped hold from {len(stripped)} Depends-on "
+                                f"child(ren) (FR #9848)"
+                            ),
+                        }
+                    )
+                    if len(notes) > 20:
+                        doc["stand_down"] = notes[-20:]
             if (
                 not found_unaccepted
                 and not repo_archived_for_queue(claim.repo)
