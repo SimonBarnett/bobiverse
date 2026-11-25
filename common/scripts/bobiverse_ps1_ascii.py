@@ -1,8 +1,13 @@
-"""FR #8765: write and scan BOM-less ASCII *.ps1 (pytest-ascii-bom / WinPS 5.1).
+"""FR #8765 / #9881: write and scan BOM-less ASCII *.ps1 (pytest-ascii-bom / WinPS 5.1).
 
 BOM-less PowerShell with U+2014 (em dash) or other ord>127 bytes fails
 ``test_fr3391_staged_ps1_parse_and_bomless_ascii``. Writers (agents, intake,
 pack edits) must sanitize to ASCII and write UTF-8 without BOM.
+
+Prefer (A) durable tip hygiene (FR #9881): use ``write_ps1_ascii_nobom`` /
+``Write-BobiversePs1AsciiNoBom.ps1`` for *.ps1, and ``Write-BobiverseUtf8NoBom.ps1``
+/ ``UTF8Encoding($false)`` for body-files. Soft tip proceed exists when only
+this check is red and build-jeeves is green; Prefer (A) still clears the check.
 """
 from __future__ import annotations
 
@@ -149,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
         print("BOM-less *.ps1 with non-ASCII (WinPS 5.1 ANSI mis-parse risk):")
         for line in problems[:80]:
             print(line)
+        print(
+            "Prefer (A) FR #9881: rewrite via Write-BobiversePs1AsciiNoBom.ps1 "
+            "or: python common/scripts/bobiverse_ps1_ascii.py write <path>"
+        )
         return 2
     print(f"PS1_ASCII_OK count={len(paths)}")
     return 0

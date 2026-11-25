@@ -63,6 +63,24 @@ Theme index: BOB-G1 #8837, BOB-G2 #8838, CI-G1 #8839, CI-G2 #8841. Vision packs 
 | 2 | `Depends-on: #N` all **CLOSED** (BOB-D*) - see `bobiverse-jeeves-agent-depends-on` |
 | 3 | **This skill:** digest issue labeled `fr-digest` (+ usually `hold`); children `Depends-on: #digest`; while digest has `hold`, skip children (`depends-held`); **unhold alone releases** (close optional); CI fails PRs whose FR still has open children Depending-on it |
 
+## CAST IRON — digest-level CI only after children CLOSED (FR #9877)
+
+Digests are go-gates (#9552). **Child FRs may open PRs and run per-child CI.** What must wait until **every** child under that digest is **CLOSED**:
+
+- Digest covering / omnibus CI green-as-batch
+- Tip rebuild + walrus install driven by that digest (also see tip_merge_gate #9847)
+- Unhold→drain completion CI that stamps the digest done
+- Any workflow that treats the digest issue/PR as ready-to-ship
+
+Token-free check: `digest_ci_gate` / `Test-JeevesMonitorDigestCiGate.ps1` / `Invoke-JeevesMonitorCheck.ps1 -Check digest_ci_gate`.
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `BLOCK_DIGEST_CI` | 1 | Any recorded child open/unknown; empty cohort; empty children list |
+| `ALLOW_DIGEST_CI` | 0 | All recorded children CLOSED |
+
+Never soft_ok. Complementary to `tip_merge_gate` (#9847): that gate also requires tip PR merges; `digest_ci_gate` is **children-only**. Fail-when: mid-batch digest covering CI / `!build` / install receipt while children remain OPEN. Docs: `docs/fr-digest-vs-hold-vs-depends-on.md` §4, `docs/monitoring.md`.
+
 ## Encoding (LOCKED)
 
 - One digest issue per target repo for a batch park
@@ -73,7 +91,8 @@ Theme index: BOB-G1 #8837, BOB-G2 #8838, CI-G1 #8839, CI-G2 #8841. Vision packs 
 - Nested digests: sub-digests may `Depends-on:` a parent digest; operator unholds each held parent (no auto-unhold next-phase cascade)
 - Parallel default: siblings under an unheld digest are offerable together unless a child also Depends-on a sibling
 - Offer path: parse Depends-on -> if depend has `hold` skip `depends-held` -> else if depend is `fr-digest` without hold, allow even while OPEN -> else OPEN skip (D3)
-- CI: open issues that still `Depends-on` the PR's FR => fail build-jeeves (CI-G1/G2)
+- CI (per PR): open issues that still `Depends-on` the PR's FR => fail build-jeeves (CI-G1/G2)
+- CI (digest batch, FR #9877): digest-level covering / `!build` / install receipt only after all children CLOSED (`digest_ci_gate`)
 
 ## No auto-unhold (CAST IRON)
 
@@ -90,9 +109,10 @@ Run **after** `bobiverse-jeeves-agent-depends-on` each cycle once BOB-G1 is on t
 2. For each digest, find children (open issues whose body Depends-on that `#N`).
 3. **Finding:** child offered/accepted while digest still has `hold` -> intake (comment on #8837).
 4. **Not a finding:** child correctly skipped with `depends-held`; or digest unheld and child offered while digest still OPEN (go-gate working).
-5. **CI:** if build-jeeves fails open-children gate, comment on #8839/#8841 with PR number; do not invent a twin FR.
-6. Prefer script when present: `Invoke-JeevesMonitorCheck.ps1 -Check fr_digest` (FR filed with this skill).
-7. CAST IRON point 5: when the fr-digest monitor playbook is proven, FR the durable check into the token-less chair (`tools\monitor\fr_digest.py` + wrapper + chair go-gate) so it runs without an LLM.
+5. **CI (per PR):** if build-jeeves fails open-children gate, comment on #8839/#8841 with PR number; do not invent a twin FR.
+6. **CI (digest batch, FR #9877):** run `Invoke-JeevesMonitorCheck.ps1 -Check digest_ci_gate`. `BLOCK_DIGEST_CI` while children open → do not stamp covering CI / `!build` / ready-to-install; comment on the digest. `ALLOW_DIGEST_CI` → batch CI/build allowed (still subject to tip_merge_gate #9847 when that ARM is active).
+7. Prefer script when present: `Invoke-JeevesMonitorCheck.ps1 -Check fr_digest` (FR filed with this skill).
+8. CAST IRON point 5: when the fr-digest monitor playbook is proven, FR the durable check into the token-less chair (`tools\monitor\fr_digest.py` + wrapper + chair go-gate) so it runs without an LLM.
 
 ## Until BOB-G is live
 
@@ -119,6 +139,8 @@ Empty table with `no fr-digest batches in flight` is valid.
 - G1 offer: #8837
 - G2 docs: #8838
 - CI-G1/G2: #8839 / #8841
+- Digest-level CI after children: #9877 (`digest_ci_gate`)
+- Tip then digests then walrus: #9847 (`tip_merge_gate`)
 - Depends-on parse/skip: #8805 / #8807
 - Sibling: `bobiverse-jeeves-agent-depends-on`
 - Live MONITORING loop: `bobiverse-jeeves-monitor`, `monitor-start`

@@ -1,6 +1,8 @@
-# FR #8765: write *.ps1 as UTF-8 without BOM after ASCII sanitization.
+# FR #8765 / #9881: write *.ps1 as UTF-8 without BOM after ASCII sanitization.
 # Replaces U+2014/U+2013/smart quotes/ellipsis/nbsp; refuses leftover non-ASCII.
 # Prefer this over Set-Content -Encoding utf8 (BOM) or raw WriteAllText with em dashes.
+# Prefer (A) durable tip hygiene: new/edited *.ps1 must go through this helper
+# (or bobiverse_ps1_ascii.py write) so pytest-ascii-bom stays green.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
