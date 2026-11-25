@@ -71,9 +71,16 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | MRB same-machine starve | `mrb_same_machine_starve` | FR #9478 idle same-machine siblings blocked from offerable MRBs with no free cross-machine reviewer (hard #9401 / free= omit). Prefer cross-machine `!assign`; tip soft free-other-machine; install waits on #9475/#9476. |
 | Models PUT forward | `models_put_forward` | FR #9585 Weights Save: public `PUT /bob/v1/models` must reach bobcallback (not IIS HTML 404). Remediation: re-run `Install-BobWebhooks.ps1` on walrus so `BobModelsWebhook` uses `^(GET\|HEAD\|POST\|PUT)$` (FR #9273). Fixture `JEEVES_MODELS_PUT_FORWARD_FIXTURE`. |
 
+| Lessons digest harvest (`9830_harvest`) | `9830_harvest` / `lessons_digest_harvest` | FR #9880 CAST IRON: while an OPEN+held *lessons* fr-digest is active, every cycle that learns a Jeeves/IRCD/ear/webhook lesson must same-turn file a child FR (`Depends-on: #<digest>`) or de-dup-comment. Helper: `Compare-JeevesLessonsDigestFindings.ps1` / fixture `JEEVES_LESSONS_DIGEST_FIXTURE`. Do not hardcode forever #9830 --- detect active held lessons digest or env `JEEVES_LESSONS_DIGEST` (documented current default #9830). |
+
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
 After the script checks, if BOB-D / BOB-G product is on tip, open and follow `.grok/skills/bobiverse-jeeves-agent-depends-on/SKILL.md` then `.grok/skills/bobiverse-jeeves-agent-fr-digest/SKILL.md` (go-gate after Depends-on). Until those ship, skip the two checks (missing check name = soft skip / do not EXIT 2).
+
+
+## CAST IRON lessons digest harvest (FR #9880 / checklist `9830_harvest`)
+
+While the active held *lessons* fr-digest is OPEN+held (detection / `JEEVES_LESSONS_DIGEST` / documented default `#9830`), **never** leave a new Jeeves/IRCD/ear/webhook lesson only in chat. Same turn: file a child FR with `Depends-on: #<digest>` or de-dup-comment an existing child. Run `Invoke-JeevesMonitorCheck.ps1 -Check 9830_harvest` (or `Compare-JeevesLessonsDigestFindings.ps1 -FindingsPath session.json`) each cycle after script checks.
 
 ## Report format (intake)
 
