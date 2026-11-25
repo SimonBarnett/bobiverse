@@ -673,6 +673,35 @@ def main(argv=None) -> int:
         action="store_true",
         help="truncate drained ear outbox after intervene",
     )
+    # FR #9878: ear mute / cmd-trace stale => Jeeves outbox shop-wire fallback.
+    p.add_argument(
+        "--shop-wire",
+        action="store_true",
+        help="FR #9878: force intervene via Jeeves outbox shop-wire",
+    )
+    p.add_argument(
+        "--prefer-shop-wire-on-mute",
+        action="store_true",
+        default=True,
+        help="FR #9878: shop-wire when cmd-trace stale (default on)",
+    )
+    p.add_argument(
+        "--no-prefer-shop-wire-on-mute",
+        dest="prefer_shop_wire_on_mute",
+        action="store_false",
+        help="FR #9878: always ear-relay !assign even if cmd-trace stale",
+    )
+    p.add_argument(
+        "--chair-outbox",
+        default="",
+        help="Jeeves outbox.txt for shop-wire (BOB_CHAIR_OUTBOX / ~/.jeeves/outbox.txt)",
+    )
+    p.add_argument(
+        "--cmd-trace-mute-s",
+        type=float,
+        default=0.0,
+        help="cmd-trace silence seconds before mute fallback (0=env/default 120)",
+    )
     # FR #9644: chair heal default ON (report-only requires both no-intervene + no-chair-heal).
     p.add_argument(
         "--chair-heal",
@@ -771,6 +800,8 @@ def main(argv=None) -> int:
             dry_i = bool(getattr(args, "intervene_dry_run", False))
             chair, digest = resolve_homes(args)
             offerable_fn = ia._offerable_fn_from_homes(chair, digest)
+            chair_out_raw = getattr(args, "chair_outbox", "") or ""
+            mute_s = float(getattr(args, "cmd_trace_mute_s", 0.0) or 0.0)
             inter = ia.intervene_from_report(
                 report,
                 outbox=outbox,
@@ -779,19 +810,36 @@ def main(argv=None) -> int:
                 pace_s=float(getattr(args, "pace_s", 3.0) or 3.0),
                 truncate=bool(getattr(args, "truncate_outbox", False)),
                 offerable_fn=offerable_fn,
+                chair_home=chair,
+                chair_outbox=Path(chair_out_raw) if chair_out_raw else None,
+                prefer_shop_wire_on_mute=bool(
+                    getattr(args, "prefer_shop_wire_on_mute", True)
+                ),
+                force_shop_wire=bool(getattr(args, "shop_wire", False)),
+                cmd_trace_mute_s=mute_s if mute_s > 0 else None,
             )
             payload["intervene"] = inter
             notes = list(payload.get("notes") or [])
+            mode = str(inter.get("mode") or "ear_assign")
+            target = inter.get("outbox") or outbox
             if inter.get("written_count", 0) > 0:
-                notes.append(
-                    f"FR #9461 intervene wrote {inter['written_count']} !assign line(s) to {outbox}"
-                )
+                if mode == "shop_wire":
+                    notes.append(
+                        f"FR #9878 shop-wire wrote {inter['written_count']} line(s) to {target}"
+                    )
+                else:
+                    notes.append(
+                        f"FR #9461 intervene wrote {inter['written_count']} !assign line(s) to {outbox}"
+                    )
             elif dry_i and inter.get("planned"):
+                tag = "FR #9878 shop-wire" if mode == "shop_wire" else "FR #9461 intervene"
                 notes.append(
-                    f"FR #9461 intervene dry-run planned {len(inter['planned'])} !assign line(s)"
+                    f"{tag} dry-run planned {len(inter['planned'])} assign(s)"
                 )
             else:
-                notes.append("FR #9461 intervene ran but planned 0 assigns")
+                notes.append(
+                    f"FR #9461/#9878 intervene ({mode}) ran but planned 0 assigns"
+                )
             payload["notes"] = notes
         except Exception as e:
             notes = list(payload.get("notes") or [])
