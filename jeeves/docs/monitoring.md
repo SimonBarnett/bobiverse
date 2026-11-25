@@ -27,6 +27,20 @@ Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for 
 - **Agent path:** first turn of `monitor-start` attaches a monitor tool to the notifier stdout or the events log; on each event, dispatch **same turn** (`Invoke-JeevesMonitorInterveneAssign` / ear-relay `!assign` / chair outbox). The scheduled health sleep is **health-only** and must not own assign.
 - **Related:** #9882 (chair should offer on ready/DONE; `!bored` is fallback). Until chair owns that, this overlay keeps latency under ~2s.
 
+
+## cmd-trace stall + chair +o recover (FR #9871 / #9872)
+
+Chair-side recovery for the mute class where **cmd-trace.log freezes** while **GIT/stdout announce continues**, often paired with **lost +o** / ``chanserv-sync timeout`` after ircJeeves restart.
+
+| Check / helper | Role |
+|---|---|
+| ``tools/monitor/cmd_trace_stall.py`` / ``Test-JeevesMonitorCmdTraceStall.ps1`` | EXIT 1 when cmd-trace age > ``BOB_CMD_TRACE_STALL_S`` (default 120; also reads ``BOB_CMD_TRACE_MUTE_S``) **and** NSSM ``stdout.log`` is still fresh. Writes ``cmd-trace-stall.json`` fingerprint; prefers shop-wire when FR #9878 helpers are present. |
+| ``common/scripts/chair_log_freshness.cmd_trace_stall_snapshot`` | Pure differential (FR #9900 ``progress_ok`` can stay True when only stdout is fresh). |
+| ``chair_oper.op_retry_backoff_s`` / ``plan_chan_op_recover`` | Chair ``_ensure_chan_ops``: exponential backoff; dual SAMODE + ChanServ OP after first miss. |
+| ``chair_commands.commands_require_chan_op`` | Always ``False`` --- ear/monitor ``!status`` / ``!assign`` stay principal-gated, never wait on chair channel +o. |
+
+**Live install verification** (ircJeeves recycle, real SAMODE stick, live cmd-trace heal) is **``require_machine=walrus``**. Unit tips and monitor path overrides do not need live Ergo. Sibling shop-wire mute fallback: FR #9878 / PR covering that tip.
+
 ## MONITORING command access (FR #8827)
 
 The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / â€¦) **to keep the queue moving**. Chair auth: principal kind `monitor` â€” nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.

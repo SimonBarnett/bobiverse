@@ -90,6 +90,8 @@ class _FakeChair:
         self._oper_done = __import__("threading").Event()
         self._chan_op = {}
         self._op_try_at = {}
+        self._op_fail_count = {}
+        self._cs_fail_count = 0
         self._chair_status_at = 0.0
         self._chair_status_last = ""
         self.cfg = cfg

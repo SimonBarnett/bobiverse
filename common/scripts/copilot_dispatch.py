@@ -1239,6 +1239,10 @@ def build_task_body(
     return body
 
 
+# FR #9846: Haiku CCA refill fail-loop / tip-allowlist bypass helpers live in
+# `copilot_haiku_refill` (watch_copilot_haiku_refill.ps1 calls them). Do not
+# reintroduce a raw SKIP_FAILED_LOOP that zeros every tip-allowlist FR.
+
 def should_dispatch(
     row: dict, *, allowance: bool, now: float | None = None, home: Path | None = None,
 ) -> bool:
