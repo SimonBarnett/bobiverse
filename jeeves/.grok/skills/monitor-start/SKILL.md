@@ -22,7 +22,7 @@ description: >
 > 8. **CAST IRON â€” multi-FR batch needs Digest parent (#9652).** â‰¥2 related FRs in one batch: `fr-digest` Digest first;
 >    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
 >    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
-> 9. **CAST IRON --- Jeeves on IRC => webhooks up (#9826).** `Start-Service ircJeeves` / `Start-Jeeves.ps1` => same-turn local report 200 + heal; monitor `webhooks_up_with_chair`.
+> 9. **CAST IRON --- Jeeves on IRC => webhooks up (#9826 / #9836).** `Start-Service ircJeeves` / `Start-Jeeves.ps1` => same-turn local+public report 200 + heal; Stopped intended-up while Ergo up => start chair; monitor `health` / `webhooks_up_with_chair`.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
@@ -33,18 +33,19 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 ## First turn (exact sequence)
 
 1. Read `AGENTS.md` and `.grok\skills\bobiverse-jeeves-monitor\SKILL.md`.
-2. Run every token-free check via `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name>` (or the matching `Test-JeevesMonitor*.ps1`). Prefer scripts over reasoning.
-3. For each **exit 1** finding: de-dup open GitHub issues, then file/comment via `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` (usually `SimonBarnett/bobiverse`).
-4. Self-harvest after findings: `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` then `-Flush`.
-5. Sleep on a schedule (about **5-15 minutes**), then repeat from step 2. Keep the loop going for the session.
+2. **FR #9879 bored-push (before the health loop):** ensure `scripts\Ensure-BoredPushNotify.ps1` (Start-JeevesMonitor already starts it). Start or attach a **monitor tool** on `scripts\watch_bored_push_notify.ps1` (1s inbound-transcript poll) **or** `Get-Content -Wait -Tail 0` on `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log`. On each `READY` / `DONE` / `BORED` line: **dispatch the same turn** (ear-relay `!assign` / `Invoke-JeevesMonitorInterveneAssign` / chair outbox) — do **not** wait for the next health tick. Deduplicate notifier PIDs (Ensure keeps one). A 5-minute scheduler must **not** own assign; health-only.
+3. Run every token-free check via `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name>` (or the matching `Test-JeevesMonitor*.ps1`). Prefer scripts over reasoning.
+4. For each **exit 1** finding: de-dup open GitHub issues, then file/comment via `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` (usually `SimonBarnett/bobiverse`).
+5. Self-harvest after findings: `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` then `-Flush`.
+6. Sleep on a schedule (about **5-15 minutes**) for **health checks only**, then repeat from step 3. Keep the bored-push monitor tool running for the session; never use that sleep as the assign path.
 
 ## Checks (required every cycle)
 
 | Check | Script / name | Why |
 |---|---|---|
-| Health | `health` | ircJeeves / chair home / webhook surface |
+| Health | `health` | ircJeeves / chair home / local+public report; FR #9836 heal starts chair when Stopped+intended-up |
 | Chair progress | `chair_progress` | FR #9900: /health ok must not hide stale NSSM stdout.log / cmd-trace (digest write != AppStdout progress) |
-| Webhooks up with chair | webhooks_up_with_chair | FR #9826 CAST IRON: ircJeeves Running requires local /bob/v1/report HTTP 200; heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
+| Webhooks up with chair | webhooks_up_with_chair | FR #9826/#9836 CAST IRON: intended-up ircJeeves requires local+public /bob/v1/report HTTP 200; start chair / heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
 | Idle seats | `idle_seats` | seats idle while ungated work exists â€” EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |

@@ -1,6 +1,8 @@
 # Bobiverse webhooks (Jeeves / digest host)
 **FR #9826 CAST IRON:** when Jeeves is on IRC (ircJeeves Running / Start-Jeeves.ps1), local http://127.0.0.1:7700/bob/v1/report must return HTTP 200 in the same turn — heal BobCallback (optional W3SVC for the public front door); never Ergo/BobIrcd. Monitor check: webhooks_up_with_chair.
 
+**FR #9836 CAST IRON (chair heal):** when `ircJeeves` is Stopped (StartType=Automatic / intended-up) or public `https://bob.ntsa.uk/bob/v1/report` returns 502/timeout while Ergo is up, health / `jeeves.exe --heal` / `webhooks_up_with_chair` must **same turn** `Start-Service ircJeeves`, restore BobCallback/:7700 + optional W3SVC, and probe **both** local `:7700` and public report before OK. EXIT 1 while chair Running and public report stays 502. Never touch Ergo/`BobIrcd`. Env: `BOB_HEALTH_AUTO` / `BOB_WEBHOOKS_UP_AUTO` (default on).
+
 
 Default public base: `https://bob.ntsa.uk` (FR #5272 / FR #6142 / FR #6166). IRC host stays `irc.ntsa.uk` (TLS 6697); never use the IRC hostname for `/bob/v1/*` HTTP (Hours and all other HTTP examples below use `bob.ntsa.uk`). Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
