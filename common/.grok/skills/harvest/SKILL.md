@@ -507,3 +507,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Probe report with curl -m hard timeout; IWR TimeoutSec can hang indefinitely on stuck /report
 - CCA/Copilot dispatch must call the same Depends-on gate as !bored (depends_gate_reason / held_digest_cca_skip_reason); a MONITORING script deny-list is not durable.
 - FIX tip CI: when build-jeeves fails test_digest_includes_copilot (tasks) or test_fr8775 winrm DAG, fold origin/main that already carries the #9928 tip-CI allowlist before re-pushing the assigned tip.
+- Tip red blocks walrus install; blank JEEVES_MONITOR_NICKS must keep default monitoring; WinRM byte-copy of ~17MB exe hits 10MB deserialize limit --- use UNC Copy-Item for the exe
