@@ -42,6 +42,8 @@ CHECKS = (
     "github_rate_limit",
     "walrus_jeeves_install_ready",
     "mrb_same_machine_starve",
+    "lessons_digest_harvest",
+    "9830_harvest",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -64,6 +66,8 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorFrDigest.ps1",
     "Test-JeevesMonitorGithubRateLimit.ps1",
     "Test-JeevesMonitorWalrusJeevesInstallReady.ps1",
+    "Test-JeevesMonitorLessonsDigestHarvest.ps1",
+    "Test-JeevesMonitor9830Harvest.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )

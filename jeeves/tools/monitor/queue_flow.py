@@ -11,7 +11,9 @@ from pathlib import Path
 from _common import (
     EXIT_FINDING,
     EXIT_OK,
+    fetch_live_report,
     iter_worker_entries,
+    local_idle_contradicted_by_live,
     non_chair_overlay,
     ops_home,
     queue_bucket_rows,
@@ -320,6 +322,7 @@ def check(args):
     # orphan w-mh-* ghosts made idle_seat_count>0 (false true-starve).
     offerable_n = 0
     pending_offers = 0
+    local_stale_nicks: list[str] = []
     try:
         import idle_seats as _idle
 
@@ -329,6 +332,18 @@ def check(args):
         machines = dig.get("machines") if isinstance(dig, dict) else None
         idle_rows = _idle.collect_idle_shop_seats(machines)
         nicks = [str(x.get("nick") or "") for x in idle_rows if x.get("nick")]
+        # FR #9849: strip local idle ghosts contradicted by live /report doing/accepted.
+        live_doc = None
+        with contextlib.suppress(Exception):
+            live_doc = fetch_live_report()
+        ghost_keys = local_idle_contradicted_by_live(nicks, live_doc)
+        if ghost_keys:
+            local_stale_nicks = sorted(ghost_keys)
+            nicks = [n for n in nicks if n.strip().lower() not in ghost_keys]
+            notes.append(
+                f"local_stale: dropped {len(ghost_keys)} idle nick(s) busy on live "
+                f"/bob/v1/report (FR #9849): {','.join(local_stale_nicks)}"
+            )
         if not nicks:
             # No real idle shop seats: ungated count is informational only (not starve).
             offerable_n = 0
@@ -350,7 +365,18 @@ def check(args):
             and not str(r.get("offered_to") or "").strip()
         )
 
-    idle_seat_count = _count_idle_seats(dig if isinstance(dig, dict) else {})
+    # FR #9849: prefer filtered idle nick count when live contradicted local ghosts.
+    if local_stale_nicks:
+        try:
+            idle_seat_count = len(nicks)  # set in try block above
+        except NameError:
+            idle_seat_count = max(
+                0,
+                int(_count_idle_seats(dig if isinstance(dig, dict) else {}))
+                - len(local_stale_nicks),
+            )
+    else:
+        idle_seat_count = _count_idle_seats(dig if isinstance(dig, dict) else {})
     missing_url = [
         r for r in unaccepted if row_task(r) == "MRB" and not row_has_pull_url(r)
     ]
@@ -480,27 +506,28 @@ def check(args):
             )
 
     ok = not findings
-    return (
-        {
-            "ok": ok,
-            "ops_home": str(ops),
-            "queue_path": str(qpath),
-            "unaccepted_count": len(unaccepted),
-            "offerable_count": offerable_n,
-            "ungated_offerable_count": offerable_n,
-            # FR #1652: alias - offerable is computed against idle shop nicks only.
-            "offerable_for_idle_seats": offerable_n,
-            "idle_seat_count": idle_seat_count,
-            "pending_offer_count": pending_offers,
-            "gated_counts": gated_counts,
-            "held_pass_count": held_pass_n,
-            "missing_pull_url_count": len(missing_url),
-            "empty_offer_starve_age_s": int(age_s) if pin_starve else 0,
-            "notes": notes,
-            "findings": findings,
-        },
-        EXIT_OK if ok else EXIT_FINDING,
-    )
+    payload = {
+        "ok": ok,
+        "ops_home": str(ops),
+        "queue_path": str(qpath),
+        "unaccepted_count": len(unaccepted),
+        "offerable_count": offerable_n,
+        "ungated_offerable_count": offerable_n,
+        # FR #1652: alias - offerable is computed against idle shop nicks only.
+        "offerable_for_idle_seats": offerable_n,
+        "idle_seat_count": idle_seat_count,
+        "pending_offer_count": pending_offers,
+        "gated_counts": gated_counts,
+        "held_pass_count": held_pass_n,
+        "missing_pull_url_count": len(missing_url),
+        "empty_offer_starve_age_s": int(age_s) if pin_starve else 0,
+        "notes": notes,
+        "findings": findings,
+    }
+    if local_stale_nicks:
+        payload["local_stale"] = True
+        payload["local_stale_idle_nicks"] = local_stale_nicks
+    return (payload, EXIT_OK if ok else EXIT_FINDING)
 
 
 def main(argv=None) -> int:

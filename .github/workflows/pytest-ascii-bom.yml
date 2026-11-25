@@ -7,8 +7,11 @@
 #   common/scripts/Update-BobFleet.ps1 (stale tips often reintroduce U+2014)
 # Complements pytest-gitclaim.yml so comment-only Unicode cannot merge with main red (#3966).
 # Writers: common/scripts/Write-BobiversePs1AsciiNoBom.ps1 + bobiverse_ps1_ascii.py
+# Body-files: Write-BobiverseUtf8NoBom.ps1 / New-Object Text.UTF8Encoding $false
 # Pre-push: Assert-BobiverseChangedPs1Ascii.ps1
 # FR #9217: required status check on ruleset required-ci-3948 (with conflict-markers).
+# FR #9881 Prefer (A): harden BOM-less writers so tip PRs do not reintroduce U+2014;
+# tip/MRB soft-allows soft-only failure:pytest-ascii-bom when build-jeeves is green.
 name: pytest-ascii-bom
 
 on:
@@ -52,6 +55,9 @@ jobs:
             common/tests/test_mrb3569_hostile_fr3563_stale_pins.py `
             common/tests/test_fr8765_ps1_ascii_helpers.py `
             jeeves/tests/test_fr3975_ci_ascii_bom_gates.py `
+            bob/tests/test_fr9217_pytest_ascii_bom_required.py `
+            bob/tests/test_fr9881_pytest_ascii_bom_tip_policy.py `
+            jeeves/tests/test_fr9881_soft_ascii_bom_tip_proceed.py `
             -q --tb=short
 
       - name: Webhook docs route coverage (FR #8835)

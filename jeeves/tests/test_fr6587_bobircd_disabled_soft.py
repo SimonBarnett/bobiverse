@@ -33,6 +33,9 @@ def test_fr6587_bobircd_stopped_disabled_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "_service_start_type", fake_start)
     monkeypatch.setattr(health, "_port_listening", lambda *a, **k: True)
     monkeypatch.setattr(health, "_scheduled_task_state", lambda *_: "missing")
+    monkeypatch.setattr(health, "probe_local_report", lambda *a, **k: (True, 200, "status=200"))
+    monkeypatch.setattr(health, "probe_public_report", lambda *a, **k: (True, 200, "status=200"))
+    monkeypatch.setenv("BOB_HEALTH_AUTO", "0")
 
     payload, code = health.check(_args(tmp_path))
     assert code == health.EXIT_OK
@@ -59,6 +62,9 @@ def test_fr6587_bobircd_stopped_automatic_is_finding(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "_port_listening", lambda *a, **k: True)
     monkeypatch.setattr(health, "_scheduled_task_state", lambda *_: "missing")
     monkeypatch.setattr(health, "non_chair_overlay", lambda *a, **k: None)
+    monkeypatch.setattr(health, "probe_local_report", lambda *a, **k: (True, 200, "status=200"))
+    monkeypatch.setattr(health, "probe_public_report", lambda *a, **k: (True, 200, "status=200"))
+    monkeypatch.setenv("BOB_HEALTH_AUTO", "0")
 
     payload, code = health.check(_args(tmp_path))
     assert code == health.EXIT_FINDING
@@ -81,6 +87,9 @@ def test_fr6587_ircjeeves_stopped_still_finding(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "_port_listening", lambda *a, **k: True)
     monkeypatch.setattr(health, "_scheduled_task_state", lambda *_: "missing")
     monkeypatch.setattr(health, "non_chair_overlay", lambda *a, **k: None)
+    monkeypatch.setattr(health, "probe_local_report", lambda *a, **k: (False, 0, "refused"))
+    monkeypatch.setattr(health, "probe_public_report", lambda *a, **k: (False, 502, "http=502"))
+    monkeypatch.setenv("BOB_HEALTH_AUTO", "0")
 
     payload, code = health.check(_args(tmp_path))
     assert code == health.EXIT_FINDING
