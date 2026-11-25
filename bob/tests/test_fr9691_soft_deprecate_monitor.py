@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-BW = Path(__file__).resolve().parents[2] / "scripts" / "bob_worker.py"
+BW = Path(__file__).resolve().parents[1] / "scripts" / "bob_worker.py"  # bob/scripts
 
 
 def test_bob_worker_mode_monitor_is_marked_deprecated():
@@ -60,5 +60,6 @@ def test_bob_worker_jeeves_mode_is_alternative():
     # Check that jeeves mode exists
     assert '--mode jeeves' in t
     assert 'FR #9640' in t  # FR that introduced jeeves mode
-    # Check that run_jeeves or similar exists (by checking jeeves in main logic)
-    assert 'args.mode == "jeeves"' in t or 'mode.*jeeves' in t
+    # mode branch uses mode_l == "jeeves" (not args.mode == "jeeves")
+    assert 'mode_l == "jeeves"' in t
+    assert '"jeeves"' in t and '_WORKER_EXE_MODES' in t
