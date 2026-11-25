@@ -50,9 +50,10 @@ Omnibus FRs. Filing the same thing twice because a search was too narrow.
 
 1. File (or reuse) parent first: Title `Digest: <batch>`; labels `feature-request` + `fr-digest` (add `hold` only to park the whole batch).
 2. List every child in the digest body; last-child close closes the digest (#9552).
-3. Each child body starts with plain `Depends-on: #<digest>`.
+3. Each **parked** child body starts with plain `Depends-on: #<digest>`.
 4. Digests stay **useful when unheld** (released drain). Unheld means the batch drains; it does not mean skip the digest.
 5. Same-turn repair: if ≥2 related FRs already landed without a digest, file the digest immediately and wire children.
+6. **Tip-priority siblings (LIST ONLY) — FR #9854:** tip-blocking FIX/MRB that must run while the digest is still held (e.g. tip `build-jeeves` red) go in the digest body under `### Tip-priority siblings (LIST ONLY …)` and must **not** get `Depends-on: #<digest>` until unhold. Use `fr_digest_gate.stamp_digest_depends_on(digest_held=True, tip_priority=True)` → False. Do not let harvest/MONITORING auto-wire Depends-on onto those filings (held-digest gate #9821 would starve the tip merge).
 
 The CAST IRON *rule* FR itself (#9652) is a normal FR (not an `fr-digest` parent). Batch parents use the `Digest: …` title + `fr-digest` label.
 
