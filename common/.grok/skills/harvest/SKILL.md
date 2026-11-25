@@ -518,3 +518,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When merging monitor Invoke-JeevesMonitorCheck.ps1 ValidateSet conflicts, union token lists so tip checks (shop_wire_assign) and main checks (digest_ci_gate, 9830_harvest, lessons_digest_harvest) all remain.
 - Harvest-lesson tips are documentation; they do not require CI --- light triage then gh pr merge --admin --squash (fold CONFLICTING same-SKILL appends onto tip first)
 <!-- harvest-lessons-eof -->
+
+- Two PowerShell statements pasted as one line bind the second token to the first cmdlet. A Cursor seat on this machine's login is two statements: Remove-Item Env:CURSOR_API_KEY, then bob-worker.exe --mode agent --agent cursor. Do not set CURSOR_API_KEY when the seat must spend the machine login.
+- WINDBI cannot start PowerShell. ACTIVATE only accepts {P|r|d|c|L} plus an entity name. xp_cmdshell CreateProcess error 5 and SQL Agent "process could not be created" for NT SERVICE\SQLAgent$instance are the service account. CREATE CREDENTIAL is server-level; msdb has no dbo.sp_add_credential. Grant the proxy to CmdExec subsystem 3 before the job step.
+- Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
+- The same issue number in two repos is not a twin. Close only the repo the operator named.
