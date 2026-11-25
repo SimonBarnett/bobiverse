@@ -69,7 +69,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 |---|---|---|
 | Health (services / chair home / local+public report) | `scripts\Test-JeevesMonitorHealth.ps1` | `tools\monitor\health.py` (FR #9836 heal starts ircJeeves; probe local+public) |
 | Chair progress vs /health (FR #9900) | `scripts\Test-JeevesMonitorChairProgress.ps1` | `tools\monitor\chair_progress.py` (/health ok + stale stdout/cmd-trace) |
-| Webhooks up with chair (FR #9826 / #9836) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (intended-up ircJeeves => local+public /bob/v1/report 200; start chair / heal BobCallback) |
+| Webhooks up with chair (FR #9826 / #9836 / #9864) | `scripts\Test-JeevesMonitorWebhooksUpWithChair.ps1` | `tools\monitor\webhooks_up_with_chair.py` (intended-up ircJeeves => local+public /bob/v1/report 200; start chair / heal BobCallback) |
 | Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
 | Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
@@ -144,6 +144,7 @@ Docs in `docs\`:
 
 - **CAST IRON FR #9826 --- Jeeves on IRC => webhooks up:** after `Start-Service ircJeeves` / `Start-Jeeves.ps1` / join-as-Jeeves, same-turn assert local `http://127.0.0.1:7700/bob/v1/report` HTTP 200 and heal BobCallback (optional W3SVC); never Ergo/`BobIrcd`. Monitor: `webhooks_up_with_chair` / `Test-JeevesMonitorWebhooksUpWithChair.ps1`.
 - **CAST IRON FR #9836 --- chair heal + public report:** when `ircJeeves` is Stopped (intended-up) or public `/bob/v1/report` is 502/timeout while Ergo is up, `tools/monitor/health.py` and `jeeves.exe --heal` start the chair same turn, then probe local `:7700` **and** public report before OK. Running + public 502 must EXIT 1. Never Ergo/`BobIrcd`.
+- **CAST IRON FR #9864 --- report soft-degrade / digest-ok XOR:** GET /bob/v1/report soft-degrades within BOB_REPORT_BUILD_BUDGET_S (never hang on fleet-pools); /bob/v1/digest is fast last-good. health / webhooks_up_with_chair: digest-ok + report-fail => EXIT 1 + fingerprint webhook:digest_ok_report_hang + BobCallback heal.
 - **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
   never touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
   commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows

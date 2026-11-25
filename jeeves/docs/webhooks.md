@@ -3,6 +3,7 @@
 
 **FR #9836 CAST IRON (chair heal):** when `ircJeeves` is Stopped (StartType=Automatic / intended-up) or public `https://bob.ntsa.uk/bob/v1/report` returns 502/timeout while Ergo is up, health / `jeeves.exe --heal` / `webhooks_up_with_chair` must **same turn** `Start-Service ircJeeves`, restore BobCallback/:7700 + optional W3SVC, and probe **both** local `:7700` and public report before OK. EXIT 1 while chair Running and public report stays 502. Never touch Ergo/`BobIrcd`. Env: `BOB_HEALTH_AUTO` / `BOB_WEBHOOKS_UP_AUTO` (default on).
 
+**FR #9864 CAST IRON (report soft-degrade):** GET `/bob/v1/report` must not hang forever on fleet-pools / merge-on-green / blocking fetch. Builder uses `BOB_REPORT_BUILD_BUDGET_S` (default 8s) and returns HTTP 200 with `degraded` / `degraded_parts` when enrichment overruns. GET `/bob/v1/digest` is a **fast last-good / lightweight** alias (IIS rewrite to backend digest, not a client 301 to report). Health / `webhooks_up_with_chair`: digest-ok XOR report-fail => EXIT 1 + fingerprint `webhook:digest_ok_report_hang` + same-turn BobCallback heal.
 
 Default public base: `https://bob.ntsa.uk` (FR #5272 / FR #6142 / FR #6166). IRC host stays `irc.ntsa.uk` (TLS 6697); never use the IRC hostname for `/bob/v1/*` HTTP (Hours and all other HTTP examples below use `bob.ntsa.uk`). Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
@@ -14,8 +15,9 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/bob/v1/report` | Public fleet digest JSON. `/bob/v1/digest` is the **same** webhook and **301**s here. |
-| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. `/bob/v1/digest` 301s here. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
+| GET | `/bob/v1/report` | Public fleet digest JSON (FR #9864: soft-degrade within `BOB_REPORT_BUILD_BUDGET_S`; may include `degraded` / `degraded_parts`). |
+| GET | `/bob/v1/digest` | Fast last-good / lightweight fleet JSON alias (FR #9864). IIS rewrites to backend digest (not a client 301 to report). |
+| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
