@@ -17,6 +17,8 @@ bob-worker and Jeeves/Priority call one shared **AgentIrc.dll**: IRC is up befor
 | S4 | NotBusy | Fire `NotBusy` immediately on busy→not-busy; while still not busy fire `NotBusy` once per minute; stop heartbeat when busy | fake stream + `FakeTimeProvider` tests | No immediate edge fire; or no 60s heartbeat while idle; or heartbeat while Busy |
 | S5 | shared vendor | #9793 and jeeves-mcp#2 Depend-on AgentIRC digest; package path documented | issue Depends-on stamps + Pack/docs path | Each agent re-implements IRC with no shared package |
 | S6 | argv passthrough | Wrapper forwards caller CLI arguments to the wrapped process (AgentIRC host flags stripped) | ProcessStartInfo / argv composition tests | Host swallows or rewrites CLI argv; tray flags never reach the agent |
+| S7 | Send API | Host can PRIVMSG/NOTICE via AgentIrc.Send | unit tests on fake IRC wire | Outbox-only with no programmatic Send |
+| S8 | host join callback | DLL calls host-supplied function for channel list; no hard-coded shop list in DLL | callback stub tests | DLL hard-codes #machine / monitor channels |
 
 ## Shape
 
