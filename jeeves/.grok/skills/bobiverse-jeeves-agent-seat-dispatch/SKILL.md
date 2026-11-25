@@ -44,6 +44,21 @@ Stall = offerable rows + idle eligible seats + no offer for several minutes (or 
 - One assign per seat; wait for ACK before the next. No `!assign` to a seat that has not said `!bored`.
 - A real chair bug behind the stall -> FR, not repeated hand-assigns.
 
+### FR #9461 / #9878 - MONITORING intervene (token-free)
+
+Deterministic idle+offerable intervene (not a standing LLM `!assign` loop):
+
+1. **Prefer ear-relay** `PRIVMSG #bobiverse :!assign ...` via `intervene_assign` / ear outbox while chair
+   `cmd-trace.log` is live (FR #9461).
+2. **When ear mute / cmd-trace stale** (missing or older than `BOB_CMD_TRACE_MUTE_S`, default 120s):
+   dispatch as Jeeves service shop-wire into chair outbox (`BOB_CHAIR_OUTBOX` or `~/.jeeves/outbox.txt`):
+   `PRIVMSG #<machine> :<nick>: TASK owner/repo#N <url>` plus
+   `PRIVMSG #bobiverse :assign: sent ...` (FR #9878). Helper: `Send-JeevesShopAssign.ps1`.
+3. **Live mute incidents** that must write the **walrus** chair outbox: `require_machine=walrus`
+   (pair with #9871/#9872). Durable helper + tip tests may use path override from any host.
+
 ## Stop rules
 
-The monitoring agent never sends `!assign` itself. It recommends the exact line; the ear/operator sends it.
+Do not run standing LLM `!assign` / `!sweep` loops. Token-free intervene (#9461/#9878) and chair
+`push_idle_offers_via_chair_outbox` are the sanctioned bridges; recommend hand `!assign` only when
+those paths are unavailable.

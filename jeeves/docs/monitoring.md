@@ -125,6 +125,15 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
 **FR #9461 (deterministic intervene):** EXIT 1 (idle + offerable) **triggers** ear-relay !assign by default (--intervene, use --no-intervene for report-only). Implementation: `tools/monitor/intervene_assign.py` + `scripts/Invoke-JeevesMonitorInterveneAssign.ps1`. Picks eligible idle shop nicks and MERGEABLE-preferring unaccepted rows, appends UTF-8 no-BOM PRIVMSG #bobiverse :!assign <nick> <repo> <TASK> <n> to the ear outbox (C:\ai\bob\home\outbox.txt or %USERPROFILE%\.bobiverse\outbox.txt, override BOB_EAR_OUTBOX), paces >=3s, skips self-MRB and needs_human (unless --force-needs-human). Never edits queue.json, never touches Ergo, never Start-BobWorker. Optional --truncate-outbox when companion *.pos is at EOF. --intervene-dry-run plans without writing. Sibling chair-side push: FR #9460.
 
+**FR #9878 (ear mute / cmd-trace stale => Jeeves shop-wire):** Prefer ear !assign while chair `cmd-trace.log` is fresh. When cmd-trace is missing or older than `BOB_CMD_TRACE_MUTE_S` (default 120s), or `--shop-wire` is set, MONITORING intervenes as the Jeeves service: append UTF-8 no-BOM shop-wire to the chair outbox (`BOB_CHAIR_OUTBOX` or `%USERPROFILE%\.jeeves\outbox.txt`):
+
+```text
+PRIVMSG #<machine> :<nick>: MRB|FIX|FR owner/repo#N <url>
+PRIVMSG #bobiverse :assign: sent <nick>: TASK owner/repo#N <url>
+```
+
+Helper: `tools/monitor/shop_wire_assign.py` + `scripts/Send-JeevesShopAssign.ps1` + intervene `--prefer-shop-wire-on-mute` (idle_seats default on). Durable tip does **not** need live walrus (path override / fixture). **Live mute incidents** that must write the walrus chair outbox: stamp/honor `require_machine=walrus` (pair with #9871/#9872); do not tip those live ops from redqueen alone.
+
 **FR #8536:** when idle seats exist and `offerable_for_live_seats==0`, the check stays EXIT 0 and sets `healthy_idle_empty_offerable=true` (and `queue_needs_human_only` when every unaccepted row is needs_human). Notes say do not recycle as hung. Digest `queue` also exposes `offerable_count` / `queue_needs_human_only` for TipForm.
 
 ## mrb_same_machine_starve (FR #9478)
