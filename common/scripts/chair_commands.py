@@ -329,6 +329,11 @@ def may(cmd: str, who: Principal) -> bool:
     return who.ops
 
 
+def commands_require_chan_op() -> bool:
+    """FR #9872: command auth is principal-based; never gate on chair channel +o."""
+    return False
+
+
 def denied_line(cmd: str) -> str:
     return {
         "ignore": "ignore: denied (simon or bob-* ops only)",
