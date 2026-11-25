@@ -591,9 +591,89 @@ def clear_held_fr_sticky_offers(doc: dict) -> list[str]:
     return dropped
 
 
+def clear_offers_for_held_digest_children(
+    home: Path | None,
+    doc: dict,
+    digest_repo: str,
+    digest_id: str,
+) -> list[str]:
+    """FR #9832: when an fr-digest gains ``hold``, clear Depends-on child offers now.
+
+    Clears sticky ``offered_*`` on unaccepted children, soft-releases accepted
+    children back to unaccepted, and drops seat holds for those jobs. Returns
+    human labels for logging / fleet notice.
+    """
+    cleared: list[str] = []
+    if not isinstance(doc, dict):
+        return cleared
+    want_repo = _repo_key(digest_repo)
+    raw_id = str(digest_id or "").strip().lstrip("#")
+    try:
+        want_num = int(raw_id) if raw_id else 0
+    except ValueError:
+        return cleared
+    if not want_repo or want_num <= 0:
+        return cleared
+    want = (want_repo, want_num)
+
+    def _depends_on_digest(row: dict) -> bool:
+        return want in _row_depends_on_issue_refs(row)
+
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict) or _canon_task(row) != "FR":
+            continue
+        if not _depends_on_digest(row):
+            continue
+        had = bool(str(row.get("offered_to") or "").strip())
+        clear_sticky_offer_fields(row)
+        if home is not None:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(row.get("repo") or ""),
+                    "FR",
+                    str(row.get("id") or ""),
+                )
+        if had:
+            cleared.append(f"{_row_drop_label(row)} digest_hold_clear_offer")
+
+    kept_acc: list[dict] = []
+    released_rows: list[dict] = []
+    for row in list(doc.get("accepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) != "FR" or not _depends_on_digest(row):
+            kept_acc.append(row)
+            continue
+        if home is not None:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(row.get("repo") or ""),
+                    "FR",
+                    str(row.get("id") or ""),
+                )
+        retry = _row_to_unaccepted_retry(row)
+        clear_sticky_offer_fields(retry)
+        released_rows.append(retry)
+        cleared.append(f"{_row_drop_label(row)} digest_hold_release_accepted")
+    if released_rows:
+        doc["accepted"] = kept_acc
+        doc["unaccepted"] = list(doc.get("unaccepted") or []) + released_rows
+    return cleared
+
 
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
-_DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
+# FR #9831: markdown emphasis around label/colon (match common/scripts/depends_on.py).
+_DEPENDS_ON_LINE_RE = re.compile(
+    r"(?im)^[^\S\n]*"
+    r"(?:\*{0,2}|`{0,2})"
+    r"Depends-on"
+    r"(?:\*{0,2}|`{0,2})"
+    r"[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?"
+    r"[^\S\n]*(.*)$"
+)
 _BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
 _DEPENDS_ISSUE_REF_RE = re.compile(r"(?:#|/issues/)(\d+)\b")
 # FR #9220 / #8807: owner/repo#N (finditer + full-token match).
@@ -5525,6 +5605,8 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             return "removed" if n else "noop"
     updated = False
     found_unaccepted = False
+    # FR #9832: detect newly applied digest hold before labels mutate in place.
+    was_held_digest = False
     for bucket in ("unaccepted", "accepted"):
         for row in doc.get(bucket) or []:
             if not isinstance(row, dict):
@@ -5533,6 +5615,14 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
                 continue
             if bucket == "unaccepted":
                 found_unaccepted = True
+            if claim.task == "FR" and digest_issue_reason(row):
+                labs_prev = {
+                    str(x).strip().lower()
+                    for x in (row.get("labels") or [])
+                    if str(x).strip()
+                }
+                if "hold" in labs_prev or "on-hold" in labs_prev:
+                    was_held_digest = True
             row["labels"] = list(claim.labels)
             row["action"] = claim.action
             row["event"] = claim.event
@@ -5559,6 +5649,37 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             "labels": list(claim.labels),
         }
         if digest_issue_reason(_digest_probe):
+            labs_now = {
+                str(x).strip().lower() for x in (claim.labels or []) if str(x).strip()
+            }
+            now_held = "hold" in labs_now or "on-hold" in labs_now
+            # FR #9832: hold newly applied -> clear child offers/accepted pins now.
+            if (
+                now_held
+                and not was_held_digest
+                and str(claim.action or "").strip().lower() in ("labeled", "edited")
+            ):
+                cleared = clear_offers_for_held_digest_children(
+                    home, doc, claim.repo, claim.id
+                )
+                if cleared:
+                    updated = True
+                    notes = doc.get("stand_down")
+                    if not isinstance(notes, list):
+                        notes = []
+                        doc["stand_down"] = notes
+                    notes.append(
+                        {
+                            "channel": "#bobiverse",
+                            "text": (
+                                f"hold {claim.repo}#{str(claim.id).lstrip('#')}: "
+                                f"cleared {len(cleared)} Depends-on child offer(s) "
+                                "(FR #9832)"
+                            ),
+                        }
+                    )
+                    if len(notes) > 20:
+                        doc["stand_down"] = notes[-20:]
             if (
                 not found_unaccepted
                 and not repo_archived_for_queue(claim.repo)
