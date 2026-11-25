@@ -12,6 +12,8 @@ Built by `gitclaim.summarize_empty_offer` / `format_empty_offer_detail` (shop re
 
 **FR #9460 (N = 30s):** when the digest shows idle/ready shop nicks and the queue still has ungated offerable rows, the chair pushes `offer_to_idle` / `push_idle_offers_via_chair_outbox` within **30 seconds** (`chair_health.IDLE_OFFER_PUSH_S`). That path does **not** wait for `!bored` and does **not** require BobAutoFeed / auto-feed config. After DONE/NACK/GIVEUP, `offer_after_done` still feeds that seat in the same tick, then a fleet idle push covers other idle seats. Ordinary idle+offerable starve must not stamp `needs_human` (ops relay `!assign` remains a backup; sibling FR covers monitor intervene).
 
+**FR #9882 CAST IRON (primary feed path):** Jeeves offers on shop **`worker ready`** and on **`DONE`** in the same tick (`offer_focus_top` / `offer_after_done`). `!bored` is a **fallback only** when those signals were missed — not the primary way seats get work.
+
 ## When only require_machine pins remain
 
 Typical pattern (incident 2026-10-05):

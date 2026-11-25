@@ -303,8 +303,10 @@ def test_discover_prefers_config_then_queue_and_token_repos(tmp_path, monkeypatc
 
 
 def test_iis_rewrite_has_public_digest_rule():
+    # FR #9864: digest rewrites to backend /bob/v1/digest (fast last-good), not Redirect to report.
     txt = (ROOT / "scripts" / "Install-BobWebhooks.ps1").read_text(encoding="utf-8-sig")
     assert 'bob/v1/digest$' in txt and "BobDigestWebhook" in txt
-    assert 'type="Redirect"' in txt and "/bob/v1/report" in txt
+    assert 'type="Rewrite"' in txt and "/bob/v1/digest" in txt
+    assert "9864" in txt
     assert txt.count("BobDigestWebhook") >= 3        # fresh config, rules table, and the existing-config insert
 

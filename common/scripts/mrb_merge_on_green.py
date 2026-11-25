@@ -93,6 +93,9 @@ _SHARED_SUITE_MARKERS = ("test-and-synth", "test_and_synth", "testandsynth")
 # Exact name ``lock`` or any assert-lock marker — seats must never forge that label.
 _HUMAN_GATED_LOCK_MARKERS = ("assert-lock", "assert_lock")
 HUMAN_GATED_LOCK_REASON = "needs-human: add simon-approved-rule-change"
+# FR #9881: soft-only CI names. Alone they must not uniquely BLOCK tip proceed /
+# FIX-CI when build-jeeves (and other hard required checks) are green.
+_SOFT_ALLOW_CI_MARKERS = ("pytest-ascii-bom", "ascii-bom")
 
 # FR #9881 / #9924: non-blocking CI names — alone they must not reset MRB→FIX.
 _SOFT_ALLOW_CI_MARKERS = ("pytest-ascii-bom", "ascii-bom")
@@ -193,6 +196,30 @@ def ci_failure_triggers_mrb_reset(check_state: str | None) -> bool:
     return True
 
 
+def tip_may_proceed_soft_ascii_bom(
+    checks: str,
+    *,
+    build_jeeves_green: bool = True,
+) -> bool:
+    """FR #9881: tip may proceed when only pytest-ascii-bom is red.
+
+    Soft-only rollup ``failure:pytest-ascii-bom`` means every hard failure was
+    the ascii-bom check (build-jeeves and other required suites were not among
+    the hard fails). When ``build_jeeves_green`` is False, refuse. Prefer (A)
+    still hardens Write-BobiverseUtf8NoBom / Write-BobiversePs1AsciiNoBom so the
+    required check goes green; soft proceed must not uniquely park FIX-CI.
+    """
+    if not build_jeeves_green:
+        return False
+    state = _normalize_check_detail(checks)
+    if not state:
+        return False
+    head = state.split(":", 1)[0]
+    if head not in ("failure", "error"):
+        return False
+    return _detail_names_soft_allow(state)
+
+
 def shared_suite_check_name(detail: str = "") -> str:
     """Short shared-suite name from a rollup detail (default test-and-synth)."""
     compact = _normalize_check_detail(detail).replace("_", "-")
@@ -270,6 +297,8 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
       main-side FIX instead (FR #4857).
     * ``human-gated-lock`` — only red check is ``lock`` / ``assert-lock``; only
       SimonBarnett can add ``simon-approved-rule-change`` (seats must not forge it).
+    * ``soft-allow-ascii-bom`` — only red check is ``pytest-ascii-bom`` (FR #9881);
+      tip may proceed when build-jeeves is green; Prefer (A) clears the check.
     """
     state = _normalize_check_detail(detail)
     if not state:
@@ -282,6 +311,9 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
     # FR #4833: human-gated assert-lock (before shared-suite — lock is never seat FIX).
     if _detail_names_human_gated_lock(state):
         return "human-gated-lock"
+    # FR #9881: soft-only ascii-bom must not uniquely enqueue tip FIX-CI.
+    if tip_may_proceed_soft_ascii_bom(state, build_jeeves_green=True):
+        return "soft-allow-ascii-bom"
     # Secondary: named shared suite + main also red.
     if main_red and _detail_names_shared_suite(state):
         return "main-also-red-shared-suite"
@@ -331,6 +363,8 @@ def rollup_check_runs(
     ``failure:test-and-synth`` so enqueue can skip while main is also red.
     FR #4833: when the only hard failure is ``lock`` / ``assert-lock``, annotate
     ``failure:lock`` so enqueue parks needs-human instead of FIX-CI.
+    FR #9881: when the only hard failure is ``pytest-ascii-bom``, annotate
+    ``failure:pytest-ascii-bom`` so tip may proceed (soft) when build-jeeves green.
     FR #5865: when ``ignore_coderabbit`` is True (gate cleared / off / absent),
     CodeRabbit checks are non-blocking so a pending/neutral CR does not leave
     the PR UNSTABLE for merge-on-green.
@@ -580,6 +614,11 @@ def decide_merge_on_green(
     # never park→FIX-CI. Seats cannot clear this check.
     if fix_ci_skip_reason(state) == "human-gated-lock":
         return "skip_hold"
+    # FR #9881: soft-only pytest-ascii-bom with build-jeeves green → tip proceed.
+    # Do not requeue_ci / uniquely BLOCK; Prefer (A) BOM writers clear the check.
+    # Keep waiting on the soft rollup so auto-merge stays armed without FIX park.
+    if tip_may_proceed_soft_ascii_bom(state, build_jeeves_green=True):
+        return "wait"
     # FR #4630: annotated rollups (failure:test-and-synth) still requeue_ci;
     # enqueue_fix_ci may then skip.
     if head in ("failure", "error", "action_required", "timed_out", "cancelled", "canceled"):
