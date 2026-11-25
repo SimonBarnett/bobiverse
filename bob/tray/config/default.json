@@ -4,7 +4,7 @@
                    "mrbGrok":  "grok-4.6",
                    "mrbCursor":  "grok-4.6",
                    "buildGrok":  "build0.1",
-                   "buildGrokFallback":  "grok-4.5",
+                   "buildGrokFallback":  "grok-4.7",
                    "buildCursor":  "composer-2.5",
                    "uatCursor":  "claude-opus-5-thinking-high",
                    "opencodeFree":  "opencode/deepseek-v4.1-flash-free",
@@ -24,6 +24,7 @@
                               "opencode":  "low"
                           },
     "workerModelCostTiers":  {
+
                              },
     "jobRequiredModelTier":  {
                                  "FR":  "min",
@@ -45,24 +46,24 @@
                               "copilot":  "none"
                           },
     "modelFamilies":  {
-                            "cursor":  [
-                                           "^composer-",
-                                           "^claude-",
-                                           "^gpt-",
-                                           "^cursor-",
-                                           "^muse-",
-                                           "^grok-4\\."
-                                       ],
-                            "grok":  [
-                                         "^grok-",
-                                         "^build0\\.1$",
-                                         "(?i)^grok-build-",
-                                         "^build-0\\.1$"
+                          "cursor":  [
+                                         "^composer-",
+                                         "^claude-",
+                                         "^gpt-",
+                                         "^cursor-",
+                                         "^muse-",
+                                         "^grok-4\\."
                                      ],
-                            "none":  [
+                          "grok":  [
+                                       "^grok-",
+                                       "^build0\\.1$",
+                                       "(?i)^grok-build-",
+                                       "^build-0\\.1$"
+                                   ],
+                          "none":  [
 
-                                     ]
-                        },
+                                   ]
+                      },
     "profiles":  {
                      "formprep":  {
                                       "yolo":  false,

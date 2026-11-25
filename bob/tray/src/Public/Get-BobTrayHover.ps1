@@ -68,9 +68,9 @@ function Format-BobTrayQueueIdleCaption {
     if ($null -eq $offerable) { return $null }
     if ($offerable -gt 0) { return $null }
     if ($needsOnly) {
-        return ('queue needs_human-only (unaccepted={0}; healthy idle — do not recycle)' -f $unaccepted)
+        return ('queue needs_human-only (unaccepted={0}; healthy idle â€” do not recycle)' -f $unaccepted)
     }
-    return ('offerable=0 (unaccepted={0}; healthy idle — do not recycle)' -f $unaccepted)
+    return ('offerable=0 (unaccepted={0}; healthy idle â€” do not recycle)' -f $unaccepted)
 }
 
 function Get-ContextWindowTokens {
@@ -79,7 +79,7 @@ function Get-ContextWindowTokens {
         if (-not (Test-Path $p)) { return 500000 }
         $d = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
         $m = $d.models
-        foreach ($name in @('grok-4.6', 'grok-4.5', 'grok-4')) {
+        foreach ($name in @('grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4')) {
             if ($m.$name -and $m.$name.info -and $m.$name.info.context_window) {
                 return [int]$m.$name.info.context_window
             }
@@ -562,7 +562,7 @@ function Format-BobTrayXaiWeeklyRow {
         }
     }
     elseif ($null -eq $fresh) {
-        # FR #7580: digest omitted fresh — do not invent local age stale.
+        # FR #7580: digest omitted fresh â€” do not invent local age stale.
         $fresh = $true
     }
     $err = ''
@@ -797,8 +797,8 @@ function Format-BobTrayHoverXaiShort {
     $tier = Get-BobTrayHoverXaiPoolLabel -SubscriptionTierDisplay $TierLabel
     if ($tier -eq '?' -or -not $tier) { $tier = 'xAI' }
     if ($RunningCount -le 0) {
-        if ($IdleCaption -match 'needs_human') { $short = '{0} idle · needs_human queue' -f $tier }
-        elseif ($IdleCaption) { $short = '{0} idle · offerable=0' -f $tier }
+        if ($IdleCaption -match 'needs_human') { $short = '{0} idle Â· needs_human queue' -f $tier }
+        elseif ($IdleCaption) { $short = '{0} idle Â· offerable=0' -f $tier }
         elseif ($null -eq $RemainingPct -or [string]$RemainingPct -eq '') { $short = '{0} idle' -f $tier }
         else { $short = '{0} idle  {1}%' -f $tier, [int]$RemainingPct }
     }
@@ -843,8 +843,8 @@ function Get-BobWeeklyRemainingRaw {
       Parse Grok CLI weekly remaining from unified.jsonl billing events.
     .NOTES
       FR #427: Grok 1.0.41 removed creditUsagePercent; keep period_end even when
-      remaining_pct is unknown. Legacy ≤1.0.40 still uses creditUsagePercent.
-      prepaidBalance/onDemandUsed/onDemandCap are .val objects on 1.0.41 — we do
+      remaining_pct is unknown. Legacy â‰¤1.0.40 still uses creditUsagePercent.
+      prepaidBalance/onDemandUsed/onDemandCap are .val objects on 1.0.41 â€” we do
       not invent a weekly % from them (out of scope: on-demand-only billing).
     #>
     [CmdletBinding()]
@@ -894,7 +894,7 @@ function Get-BobWeeklyRemainingRaw {
         if ($cfg.currentPeriod -and $cfg.currentPeriod.end) { $periodEnd = [string]$cfg.currentPeriod.end }
         $fetchedAt = [string]$j.ts
 
-        # Legacy Grok ≤1.0.40: scalar creditUsagePercent at config root.
+        # Legacy Grok â‰¤1.0.40: scalar creditUsagePercent at config root.
         $usedRaw = $cfg.creditUsagePercent
         if ($null -ne $usedRaw -and -not [string]::IsNullOrWhiteSpace([string]$usedRaw)) {
             $used = [double]$usedRaw
@@ -921,7 +921,7 @@ function Get-BobWeeklyRemainingRaw {
             if ($null -ne $cfg.PSObject.Properties[$k]) { $has141 = $true; break }
         }
         if (-not $has141 -and -not $periodEnd) {
-            # Old-shaped event missing usage and end → nothing useful.
+            # Old-shaped event missing usage and end â†’ nothing useful.
             return $null
         }
         return [pscustomobject]@{
@@ -999,7 +999,7 @@ function ConvertTo-BobCursorUsageDoc {
     if ($null -eq $remain -and $null -ne $used) {
         $remain = [int][math]::Round(100.0 - [double]$used)
     }
-    # Legacy: usagePercent without used_pct was Sand — do not map to Cursor Models remaining.
+    # Legacy: usagePercent without used_pct was Sand â€” do not map to Cursor Models remaining.
     if ($null -ne $j.overage_gbp -and [string]$j.overage_gbp -ne '') { $overGbp = [double]$j.overage_gbp }
     if ($null -ne $j.overage_usd -and [string]$j.overage_usd -ne '') { $overUsd = [double]$j.overage_usd }
     if ($null -ne $j.on_demand_used_cents -and [string]$j.on_demand_used_cents -ne '') { $cents = [int]$j.on_demand_used_cents }
@@ -1467,7 +1467,7 @@ function Format-BobCursorAccountLabel {
         return ('-{0}{1:N2}' -f [char]0x00A3, [math]::Abs([double]$gbp))
     }
     if ($null -ne $UsedPct -and [double]$UsedPct -gt 100) {
-        # no money figure — fall back only if tip missing
+        # no money figure â€” fall back only if tip missing
         return ('over +{0}%' -f [int][math]::Round([double]$UsedPct - 100.0))
     }
     return 'empty'
@@ -1521,7 +1521,7 @@ function Format-BobResetLabel {
         $dt = ConvertTo-BobUtcDateTime $PeriodEnd
         if (-not $dt) { return $null }
         $fetchedUtc = ConvertTo-BobUtcDateTime $FetchedAt
-        # Polled since reset: fetch landed at/after the reset instant → hide line.
+        # Polled since reset: fetch landed at/after the reset instant â†’ hide line.
         if ($null -ne $fetchedUtc -and $fetchedUtc -ge $dt) { return $null }
         $nowUtc = ConvertTo-BobUtcDateTime $Now
         if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
@@ -1735,7 +1735,7 @@ function Get-BobCopilotFreshness {
     $reset = $null
     try { if ($Pool.reset_at) { $reset = [string]$Pool.reset_at } } catch { }
     try { if (-not $reset -and $Pool.period_end) { $reset = [string]$Pool.period_end } } catch { }
-    # Missing fetched_at stays 'stale' (FR #6148), not 'none' — unless FR #7522 holds.
+    # Missing fetched_at stays 'stale' (FR #6148), not 'none' â€” unless FR #7522 holds.
     if (-not $fa -or [string]::IsNullOrWhiteSpace($fa)) {
         if (Test-BobPoolExhaustedUntilReset -RemainingPct $rem -PeriodEnd $reset -Now $Now) {
             return [pscustomobject]@{ state = 'fresh'; age_s = $null; fresh_until = 0; exhausted_held = $true }
@@ -1897,7 +1897,7 @@ function Format-BobOpencodeWindowLines {
         [switch]$Stale
     )
     $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
-    # FR #7017: free models have no measurable quota — never paint a free row/bar/summary bit
+    # FR #7017: free models have no measurable quota â€” never paint a free row/bar/summary bit
     # (100, null, 0, or stale). Keep Go rolling/weekly/monthly windows only.
     $ids = @('rolling', 'week', 'month')
     $winMap = @{}
@@ -2095,7 +2095,7 @@ function Format-BobOpencodePoolLine {
         }
     }
     # MRB #6175 / CodeRabbit: non-numeric (unknown/n/a) must not throw on [int] cast.
-    # FR #7017: never paint free on the pool line — Go only.
+    # FR #7017: never paint free on the pool line â€” Go only.
     $GoPct = ConvertTo-BobTrayIntOrNull $GoPct
     $goKnown = Test-BobTrayRemainingKnown $GoPct
     $goBit = if ($goKnown) { ('est {0}%' -f [int]$GoPct) } else { 'n/a' }
@@ -3065,7 +3065,7 @@ function Resolve-BobTrayLivePeriod {
 }
 
 function Format-BobTrayWorkerLine {
-    # "{irc nick}: {[kind/start_model[!]] }{work|offered:<work>|idle}[ · progress Xm]" - FR #663 / #7147 / #8155.
+    # "{irc nick}: {[kind/start_model[!]] }{work|offered:<work>|idle}[ Â· progress Xm]" - FR #663 / #7147 / #8155.
     param($Worker)
     if (-not $Worker) { return $null }
     $nick = ([string]$Worker.nick).Trim()
@@ -3085,8 +3085,8 @@ function Format-BobTrayWorkerLine {
                 if ($Worker.PSObject.Properties.Name -contains 'progress_phase') {
                     $phase = ([string]$Worker.progress_phase).Trim()
                 }
-                if ($phase) { $text = ('{0} · progress {1} ({2})' -f $text, $age, $phase) }
-                else { $text = ('{0} · progress {1}' -f $text, $age) }
+                if ($phase) { $text = ('{0} Â· progress {1} ({2})' -f $text, $age, $phase) }
+                else { $text = ('{0} Â· progress {1}' -f $text, $age) }
             }
         }
     }
@@ -3479,7 +3479,7 @@ function Get-BobCursorSpendingGroupCatalog {
     return @(
         [pscustomobject]@{ id = 'grok-chat'; label = 'grok chat'; pcent_source = 'grok-chat' }
         [pscustomobject]@{ id = 'high-cost-models'; label = 'high cost models'; pcent_source = 'high-cost-models' }
-        # Auto model picker → planUsage.autoPercentUsed (Cursor Models / autoBucketModels).
+        # Auto model picker â†’ planUsage.autoPercentUsed (Cursor Models / autoBucketModels).
         # TipForm label FR #448: "Low cost models" (id stays auto for wire/cache compat).
         # Not on-demand. Legacy id low-cost-models still accepted in remain lookups.
         [pscustomobject]@{ id = 'auto'; label = 'Low cost models'; pcent_source = 'cursor-models' }
@@ -3492,8 +3492,8 @@ function Get-BobTrayCursorGroupHelpTooltip {
         '^(grok-chat|grok.chat|sand)$' {
             return @'
 grok chat (Cursor Sand / Grok Bot pool)
-Included: Grok Bot desktop turns (Temporal sand). Fuel for grok-bot only — not MRB/PR builds.
-Source: GetSandUsageStatus.usagePercent (remaining = 100 − used). 0% means exhausted, not unknown.
+Included: Grok Bot desktop turns (Temporal sand). Fuel for grok-bot only â€” not MRB/PR builds.
+Source: GetSandUsageStatus.usagePercent (remaining = 100 âˆ’ used). 0% means exhausted, not unknown.
 '@.Trim()
         }
         '^(high-cost-models|high.cost|other-models)$' {
@@ -3526,7 +3526,7 @@ function Get-BobCursorGroupRemainFromLocalDoc {
     if (-not $LocalCursorDoc) { return $null }
     $want = [string]$GroupId
     if ($want -eq 'low-cost-models' -or $want -eq 'cursor-models') { $want = 'auto' }
-    # FR #445: grok-chat = Sand only — never Cursor remaining_pct / auto / high-cost.
+    # FR #445: grok-chat = Sand only â€” never Cursor remaining_pct / auto / high-cost.
     if ($want -eq 'grok-chat') {
         foreach ($g in @($LocalCursorDoc.cursor_spending_groups)) {
             if (-not $g) { continue }
@@ -3585,7 +3585,7 @@ function Test-BobTrayWorkerNickKey {
 }
 
 function Get-BobTrayWorkersFromNickMap {
-    # Jeeves digest: workers is an object keyed by nick → {state,job|work,ts} (not an array).
+    # Jeeves digest: workers is an object keyed by nick â†’ {state,job|work,ts} (not an array).
     # FR #1547: Jeeves exports activity as `.work`; also accept `.job` / `.working_on`.
     param($WorkersNode, [string]$MachineIdFilter = '')
     $out = @()
@@ -3895,7 +3895,7 @@ function Expand-BobReportDigestView {
         }
     }
 
-    # Top-level workers{nick:{state,job}} — fill machines that lack seat rows (FR #357).
+    # Top-level workers{nick:{state,job}} â€” fill machines that lack seat rows (FR #357).
     if ($Digest.workers) {
         $topSeats = @(Get-BobTrayWorkersFromNickMap -WorkersNode $Digest.workers)
         Add-BobTrayWorkersToMachineMap -WorkersByMachine $workersByMachine -Seats $topSeats
@@ -4006,7 +4006,7 @@ function Get-BobCursorGroupPeriodEndForTray {
     $gid = [string]$GroupId
     if ($OnSeat -and $LocalCursorDoc) {
         if ($gid -eq 'grok-chat') {
-            # FR #448: Sand weekly reset only — never Cursor billingCycleEnd.
+            # FR #448: Sand weekly reset only â€” never Cursor billingCycleEnd.
             if ($LocalCursorDoc.sand_period_end) { return [string]$LocalCursorDoc.sand_period_end }
             return $null
         }
@@ -4125,7 +4125,7 @@ function Get-BobCursorPoolsForTray {
         # FR #445: Write-BobIrcStatus / digest publish must not republish peer pool values.
         [switch]$LocalOnly
     )
-    # Cursor Spending groups are per Cursor account on this host — not xAI seat labels
+    # Cursor Spending groups are per Cursor account on this host â€” not xAI seat labels
     # (Smart Catalogue / Club Madeira / ntsa are Grok Build seats; see issue #151 UAT).
     $cache = Read-BobCursorPoolsCache
     $catalog = @(Get-BobCursorSpendingGroupCatalog)
@@ -4154,7 +4154,7 @@ function Get-BobCursorPoolsForTray {
     foreach ($grp in $catalog) {
         $gid = [string]$grp.id
         $glabel = [string]$grp.label
-        # FR #445: grok-chat is Sand only — never fall back to Cursor auto / high-cost.
+        # FR #445: grok-chat is Sand only â€” never fall back to Cursor auto / high-cost.
         $remain = Get-BobCursorGroupRemainFromLocalDoc -LocalCursorDoc $LocalCursorDoc -GroupId $gid
         if ($null -eq $remain) {
             if ($gid -eq 'grok-chat') {
@@ -4177,7 +4177,7 @@ function Get-BobCursorPoolsForTray {
                 }
             }
         }
-        # 0% is a real value (#179) — only missing/null is n/a.
+        # 0% is a real value (#179) â€” only missing/null is n/a.
         $pctLabel = 'n/a'
         if ($null -ne $remain -and [string]$remain -ne '') { $pctLabel = ('{0}%' -f [int]$remain) }
         # Per-group reset: grok chat = Sand nextReset ONLY (FR #448 weekly). Never Cursor billingCycleEnd.
@@ -4266,7 +4266,7 @@ function Get-BobCursorPoolsForTray {
         }
         foreach ($pool in $pools) {
             if ([string]$pool.group_id -ne $groupId) { continue }
-            # Local/cache already set this bar — digest must not clobber (incl. with n/a path).
+            # Local/cache already set this bar â€” digest must not clobber (incl. with n/a path).
             if ($null -ne $pool.remaining_pct -and [string]$pool.remaining_pct -ne '') { break }
             $pool.remaining_pct = $pct
             $pool.pct_label = ('{0}%' -f $pct)
@@ -4560,7 +4560,7 @@ function Get-BobTrayHover {
         $remainPct = [int]$weeklyBy[$machineId]
         if ($weekFetchedBy.ContainsKey($machineId)) { $weekFetched = [string]$weekFetchedBy[$machineId] }
     }
-    # FR #6997: hover/engine poll is digest-only for Cursor fuel — never start
+    # FR #6997: hover/engine poll is digest-only for Cursor fuel â€” never start
     # Get-CursorAgentUsage.py (unbounded provider I/O stalled engine.alive >120s).
     $cursorWeek = $null
     $cursorRemain = $null
@@ -4913,7 +4913,7 @@ function Get-BobTrayHover {
                         -State ([string]$seat.state))
             }
         }
-        # Moot ear fallback only when no seat workers (FR #357) — label "ear online", not START.
+        # Moot ear fallback only when no seat workers (FR #357) â€” label "ear online", not START.
         if ($rows.Count -eq 0 -and $moot) {
             foreach ($nk in @($moot.nicks)) {
                 $mac = Resolve-BobiverseMachineFromIrcNick $nk
@@ -4943,7 +4943,7 @@ function Get-BobTrayHover {
         if ($weeklyBy.ContainsKey($mid)) { $wPct = $weeklyBy[$mid] }
         $fuelStale = $false
         if ($fuelStaleBy.ContainsKey($mid) -and $fuelStaleBy[$mid]) { $fuelStale = $true }
-        # FR #6100: whole digest ts frozen — treat every tile as stale, not live fuel.
+        # FR #6100: whole digest ts frozen â€” treat every tile as stale, not live fuel.
         try { if ($reportDigest -and $reportDigest.stale) { $fuelStale = $true } } catch { }
         $seatInfo = Get-BobSeatForMachine -MachineId $mid
         $tileEnd = $null
@@ -5142,7 +5142,7 @@ function Get-BobTrayHover {
         $gbp = Get-BobCursorOverageGbp
         if ($null -ne $gbp) { $acctPctLabel = ('-{0}{1:N2}' -f [char]0x00A3, [math]::Abs([double]$gbp)) }
     }
-    # Fleet-shared Cursor Sand (Grok Bot) — MarchHare etc. often have no local token.
+    # Fleet-shared Cursor Sand (Grok Bot) â€” MarchHare etc. often have no local token.
     if (-not $acctPctLabel -or $acctPctLabel -eq 'empty') {
         try {
             $cc = Read-BobCursorAccountCache

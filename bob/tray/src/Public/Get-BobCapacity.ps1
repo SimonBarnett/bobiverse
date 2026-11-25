@@ -142,6 +142,7 @@ function Get-BobGrokCatalogIds {
         catch { }
     }
     if ($ids.Count -eq 0) {
+        [void]$ids.Add('grok-4.7')
         [void]$ids.Add('grok-4.6')
         [void]$ids.Add('grok-4.5')
     }
@@ -169,10 +170,12 @@ function Resolve-BobGrokCliModel {
             $fb = [string]$cfg.models.buildGrokFallback
         }
         if ($fb -and $ids.Contains($fb)) { return $fb }
+        if ($ids.Contains('grok-4.7')) { return 'grok-4.7' }
         if ($ids.Contains('grok-4.5')) { return 'grok-4.5' }
         if ($ids.Contains('grok-4.6')) { return 'grok-4.6' }
         if ($ids.Count -gt 0) { return [string]$ids[$ids.Count - 1] }
     }
+    if ($ids.Contains('grok-4.7')) { return 'grok-4.7' }
     if ($ids.Contains('grok-4.6')) { return 'grok-4.6' }
     if ($ids.Count -gt 0) { return [string]$ids[0] }
     return $Wanted
@@ -253,7 +256,7 @@ function Test-BobGrokAllowAccessTrue {
 function Get-BobGrokAvailability {
     <#
     .SYNOPSIS
-      Explicit Grok Build availability state (FR #430) — separate from remaining_pct.
+      Explicit Grok Build availability state (FR #430) â€” separate from remaining_pct.
     .OUTPUTS
       state: available | exhausted | unknown | auth-failed | stale
       Never invents remaining_pct. Never spends credits / prompts / network beyond local files.
@@ -358,7 +361,7 @@ function Get-BobGrokAvailability {
                 format        = $(if ($Weekly.format) { [string]$Weekly.format } else { $null })
             }
         }
-        # Grok 1.0.41+: null % + current weekly period + local allow_access — verified local seat.
+        # Grok 1.0.41+: null % + current weekly period + local allow_access â€” verified local seat.
         return [pscustomobject]@{
             state         = 'available'
             reason        = $(if ($Weekly.stale) { 'period-rolled-unmeasured' } else { 'verified-local-auth-weekly-period' })
@@ -459,7 +462,7 @@ function Test-BobFuelHasIncluded {
     )
     switch ($Fuel) {
         'cursor-models' {
-            # FR #6214: shared with xAI weekly — either ref can supply remaining.
+            # FR #6214: shared with xAI weekly â€” either ref can supply remaining.
             $p = Get-BobSharedCursorXaiRemainingFromCapacity -Capacity $Capacity -Machine $Machine
             return ($null -ne $p -and $p -gt 0)
         }
@@ -844,7 +847,7 @@ function Select-BobGitWorker {
         return [pscustomobject]@{ wait = $false; machine = [string]$pick.id; fuel = $fuelName }
     }
 
-    # FR #352: idle eligible machine(s) exist but every strike fuel is at 0% →
+    # FR #352: idle eligible machine(s) exist but every strike fuel is at 0% â†’
     # "needs Simon: API key" (not a generic wait / silent hang).
     $idleNoFuel = $false
     foreach ($m in $rows) {
