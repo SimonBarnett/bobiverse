@@ -217,3 +217,34 @@ def test_fr9833_lock_off_admits_9750(home: Path):
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok" and job is not None
     assert job["id"] == "#9750"
+
+def test_assign_row_refuses_when_lock_blocks(tmp_path, monkeypatch):
+    """FR #9833: !assign must refuse lock-blocked rows (same as !bored)."""
+    import bobreport
+    import registered_machines
+
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    registered_machines.save_registered(tmp_path, {"ionos"})
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+    dl.set_build_jeeves(tmp_path, True)
+    rows = [
+        {
+            "task": "FR",
+            "id": "#9750",
+            "repo": "SimonBarnett/bobiverse",
+            "url": "https://github.com/SimonBarnett/bobiverse/issues/9750",
+            "seq": 1,
+            "ts": "2026-01-01T00:00:01Z",
+            "line": "x",
+        }
+    ]
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {"v": 1, "unaccepted": rows, "accepted": []},
+    )
+    # Presence unknown (empty worker_list) must not block assign in tests.
+    st, why = gitclaim.assign_row(
+        tmp_path, "ionos-1", "SimonBarnett/bobiverse", "FR", "9750"
+    )
+    assert st == "refused"
+    assert "build-jeeves" in str(why).lower() or "lock" in str(why).lower()

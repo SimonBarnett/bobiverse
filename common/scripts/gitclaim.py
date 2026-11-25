@@ -18469,6 +18469,15 @@ def assign_row(
             digest_why = digest_issue_reason(cand)
             if digest_why:
                 return "refused", f"row is digest gate (not work): {digest_why}"
+            # FR #9833: !assign obeys build-jeeves dispatch lock (same as !bored / !list).
+            try:
+                import dispatch_lock as _dl
+
+                lock_why = _dl.row_blocked_reason(home, cand)
+                if lock_why:
+                    return "refused", f"build-jeeves lock: {lock_why}"
+            except Exception:
+                pass
             # FR #9455 bob_g1_shared_gate: !assign uses the same helper as offer/stuck.
             live_dep = depends_gate_reason(
                 cand,
