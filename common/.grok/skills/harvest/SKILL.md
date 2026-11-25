@@ -503,3 +503,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PR body: avoid GitHub closing keywords (close/closes/closed/fix/fixed/resolve) immediately before an unrelated #N; they add closingIssuesReferences.
 - Probe report with curl -m hard timeout; IWR TimeoutSec can hang indefinitely on stuck /report
 - CCA/Copilot dispatch must call the same Depends-on gate as !bored (depends_gate_reason / held_digest_cca_skip_reason); a MONITORING script deny-list is not durable.
+- FR #9879: !bored is push from inbound-transcript (1s watch_bored_push_notify); Ensure-BoredPushNotify dedupes PIDs; Start-JeevesMonitor starts it; 5-15m loop must not own assign
