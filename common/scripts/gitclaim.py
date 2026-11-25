@@ -7754,7 +7754,7 @@ def load_accepted(home: Path) -> list[dict]:
 
 
 def _sort_key(row: dict) -> tuple:
-    """FR #3205 fallback / claim_top key: MRB < UAT < FR, then lowest number, then repo.
+    """FR #3205 fallback / claim_top key: MRB < UAT < FIX < FR, then lowest number, then repo.
 
     Prefer ``focus_ignore.offer_sort_key`` / ``ordered_unaccepted`` when a home is available.
     """
@@ -7762,7 +7762,7 @@ def _sort_key(row: dict) -> tuple:
 
     task = str(row.get("task") or "").strip().upper()
     return (
-        _fi._TASK_ORDER.get(task, 3),
+        _fi._TASK_ORDER.get(task, 4),
         _fi.row_offer_number(row),
         str(row.get("repo") or "").lower(),
         str(row.get("id") or ""),
