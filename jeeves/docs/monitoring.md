@@ -119,6 +119,8 @@ UNC installs such as `\\walrus\Jeeves` need `BOBIVERSE_REPO` pointing at a check
 Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` with `$env:BOBIVERSE_REPO` set to a tip checkout (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host). After Sync, `tools\monitor\opencode_seats.py` and `scripts\Test-JeevesMonitorOpencodeSeats.ps1` must be present.
 
 ## empty-offer playbook (FR #2448 / #2446)
+**FR #9882 CAST IRON:** chair offers on shop `worker ready` and on `DONE` same-tick; `!bored` is fallback only (see [empty-offer-operator.md](empty-offer-operator.md)). Sibling FR #9879 covers inbound-transcript push notify for monitor overlay.
+
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
