@@ -86,6 +86,7 @@ Never soft_ok. Complementary to `tip_merge_gate` (#9847): that gate also require
 - One digest issue per target repo for a batch park
 - Digest labels: `fr-digest` and `hold` (Plan parks on hold)
 - Children: `Depends-on: #digest` (and optional intra-batch Depends-on among children)
+- **Tip-priority siblings (LIST ONLY) — FR #9854:** tip-blocking FIX/MRB (e.g. tip `build-jeeves` red) that must merge **while the digest stays held** are listed under `### Tip-priority siblings (LIST ONLY …)` on the digest body and must **not** carry `Depends-on: #<digest>` until unhold. Held-digest gate (#9821) would starve them. Parked lesson children stay under `### Children (Depends-on this digest)` with Depends-on. Helper: `fr_digest_gate.stamp_digest_depends_on(digest_held=True, tip_priority=True) -> False`.
 - Cross-repo children: `Depends-on: owner/repo#digest` (FR #9856 / #9858) — held foreign digests skip the same as same-repo
 - Nested digests: sub-digests may `Depends-on:` a parent digest; operator unholds each held parent (no auto-unhold next-phase cascade)
 - Parallel default: siblings under an unheld digest are offerable together unless a child also Depends-on a sibling

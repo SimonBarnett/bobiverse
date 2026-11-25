@@ -1651,6 +1651,22 @@ def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
 
 
+_WORKER_READY_RE = re.compile(
+    r"(?i)^(?:[\w][\w.-]*\s+)?worker\s+ready\b"
+)
+
+
+def is_worker_ready_line(body: str) -> bool:
+    """FR #9882: shop ``worker ready`` (optionally prefixed with nick) — primary offer cue.
+
+    ``!bored`` remains a fallback when the chair missed ready/DONE.
+    """
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(_WORKER_READY_RE.match(text))
+
+
 def shop_line_resets_bored_clock(body: str) -> bool:
     """FR #5203: ACK/DONE/NACK/GIVEUP mean the seat is not waiting to !bored."""
     text = (body or "").strip()
