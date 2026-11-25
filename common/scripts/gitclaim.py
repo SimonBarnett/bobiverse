@@ -593,7 +593,16 @@ def clear_held_fr_sticky_offers(doc: dict) -> list[str]:
 
 
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
-_DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
+# FR #9831: markdown emphasis around label/colon (match common/scripts/depends_on.py).
+_DEPENDS_ON_LINE_RE = re.compile(
+    r"(?im)^[^\S\n]*"
+    r"(?:\*{0,2}|`{0,2})"
+    r"Depends-on"
+    r"(?:\*{0,2}|`{0,2})"
+    r"[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?"
+    r"[^\S\n]*(.*)$"
+)
 _BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
 _DEPENDS_ISSUE_REF_RE = re.compile(r"(?:#|/issues/)(\d+)\b")
 # FR #9220 / #8807: owner/repo#N (finditer + full-token match).

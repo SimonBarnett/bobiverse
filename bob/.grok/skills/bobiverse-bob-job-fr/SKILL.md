@@ -62,6 +62,12 @@ The live install (<ai root>\bob, --install-root) must stay on main. FR/FIX/MRB s
 Assert-BobiverseJobWorktreePath (FR #8852) / refuse_empty_job_worktree_path / refuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py and Bobiverse-Common.ps1 are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
 
 
+
+
+## Depends-on stamps (FR #9831)
+
+Prefer plain `Depends-on: #N` (no markdown bold/italics). Chair/monitor parsers accept `**Depends-on: #N**` and `**Depends-on:** #N`, but filing should stay plain so stamps stay greppable.
+
 ## Duplicates: find and close them before DONE (t857u)
 
 Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
