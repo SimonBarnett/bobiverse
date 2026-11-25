@@ -184,6 +184,8 @@ def test_digest_includes_copilot(tmp_path, monkeypatch):
         "max_recorded_usage",
         # FR #7178: explicit unread/error; never omit the pool.
         "last_error", "overage_permitted",
+        # FR #9748: nested live Copilot jobs under digest.copilot.tasks.
+        "tasks",
     }
     assert set(obj["copilot"].keys()) <= allowed
     cd.observe_quota(

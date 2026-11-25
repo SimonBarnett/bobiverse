@@ -25,6 +25,8 @@ CLOSURE = frozenset(
         "bobiverse-jeeves-agent-build",
         "bobiverse-jeeves-agent-monitor",
         "bobiverse-build",
+        # install depends_on winrm (fleet PSRemoting precondition).
+        "bobiverse-jeeves-agent-winrm",
     }
 )
 DEPS = (
