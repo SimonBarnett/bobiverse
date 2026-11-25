@@ -211,3 +211,91 @@ def status_line(home: Path) -> str:
     doc = load_lock(home)
     state = "on" if doc.get("on") else "off"
     return f"dispatch-lock {doc.get('mode')}: {state}"
+
+
+def clear_off_list_accepted(
+    home: Path,
+    *,
+    nick: str | None = None,
+    load_queue=None,
+    write_queue=None,
+    queue_path=None,
+) -> int:
+    """FR #9875: under build-jeeves lock, return off-list accepted rows to unaccepted.
+
+    When a tip-allowlisted job is (or was) assigned, nested digest / tray FRs that
+    slipped into ``accepted`` must not keep the seat NAK-busy. Optional ``nick``
+    limits the clear to that seat's accepted rows.
+    """
+    if not is_on(home):
+        return 0
+    try:
+        import gitclaim as gc
+    except Exception:
+        return 0
+    _load = load_queue or gc.load_queue
+    _write = write_queue or gc._write_queue
+    _qpath = queue_path or gc.queue_path
+    doc = _load(home)
+    if not isinstance(doc, dict):
+        return 0
+    accepted = list(doc.get("accepted") or [])
+    if not accepted:
+        return 0
+    nick_l = (nick or "").strip().lower()
+    keep: list[dict] = []
+    moved: list[dict] = []
+    for row in accepted:
+        if not isinstance(row, dict):
+            continue
+        if nick_l:
+            holders = {
+                str(row.get("accepted_by") or "").strip().lower(),
+                str(row.get("nick") or "").strip().lower(),
+                str(row.get("offered_to") or "").strip().lower(),
+            }
+            if nick_l not in holders:
+                keep.append(row)
+                continue
+        if row_blocked_reason(home, row) is None:
+            keep.append(row)
+            continue
+        # Return to unaccepted so tip work can proceed; strip accept stamps.
+        back = dict(row)
+        for k in (
+            "accepted_by",
+            "accepted_ts",
+            "accepted_channel",
+            "nick",
+            "offered_to",
+            "offered_ts",
+            "offered_channel",
+        ):
+            back.pop(k, None)
+        back["requeued_via"] = "dispatch-lock-offlist"
+        moved.append(back)
+    if not moved:
+        return 0
+    unacc = [r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)]
+    # Avoid duplicate unaccepted keys.
+    seen = {
+        (
+            str(r.get("repo") or "").lower(),
+            str(r.get("task") or "").upper(),
+            str(r.get("id") or "").lstrip("#"),
+        )
+        for r in unacc
+    }
+    for row in moved:
+        key = (
+            str(row.get("repo") or "").lower(),
+            str(row.get("task") or "").upper(),
+            str(row.get("id") or "").lstrip("#"),
+        )
+        if key not in seen:
+            unacc.append(row)
+            seen.add(key)
+    doc["accepted"] = keep
+    doc["unaccepted"] = unacc
+    _write(_qpath(home), doc)
+    return len(moved)
