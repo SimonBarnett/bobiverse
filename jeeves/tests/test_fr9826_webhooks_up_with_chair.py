@@ -55,8 +55,10 @@ def test_fr9826_docs_and_agents_cast_iron():
 def test_fr9826_finding_when_chair_up_report_down(monkeypatch):
     monkeypatch.setenv("BOB_WEBHOOKS_UP_AUTO", "0")
     monkeypatch.setattr(wuc, "_service_state", lambda name: "Running" if name == "ircJeeves" else "missing")
+    monkeypatch.setattr(wuc, "_service_start_type", lambda name: "Automatic")
     monkeypatch.setattr(wuc, "_port_listening", lambda *a, **k: False)
     monkeypatch.setattr(wuc, "probe_local_report", lambda *a, **k: (False, 0, "URLError:refused"))
+    monkeypatch.setattr(wuc, "probe_public_report", lambda *a, **k: (True, 200, "status=200"))
     monkeypatch.setattr(
         wuc,
         "resolve_homes",
@@ -72,8 +74,10 @@ def test_fr9826_finding_when_chair_up_report_down(monkeypatch):
 def test_fr9826_ok_when_chair_up_report_200(monkeypatch):
     monkeypatch.setenv("BOB_WEBHOOKS_UP_AUTO", "0")
     monkeypatch.setattr(wuc, "_service_state", lambda name: "Running")
+    monkeypatch.setattr(wuc, "_service_start_type", lambda name: "Automatic")
     monkeypatch.setattr(wuc, "_port_listening", lambda *a, **k: True)
     monkeypatch.setattr(wuc, "probe_local_report", lambda *a, **k: (True, 200, "status=200"))
+    monkeypatch.setattr(wuc, "probe_public_report", lambda *a, **k: (True, 200, "status=200"))
     monkeypatch.setattr(
         wuc,
         "resolve_homes",
@@ -86,10 +90,13 @@ def test_fr9826_ok_when_chair_up_report_200(monkeypatch):
 
 
 def test_fr9826_ok_when_chair_not_running(monkeypatch):
+    """Stopped + not intended-up (Disabled) stays soft-ok; FR #9836 covers Automatic."""
     monkeypatch.setenv("BOB_WEBHOOKS_UP_AUTO", "0")
     monkeypatch.setattr(wuc, "_service_state", lambda name: "Stopped")
+    monkeypatch.setattr(wuc, "_service_start_type", lambda name: "Disabled")
     monkeypatch.setattr(wuc, "_port_listening", lambda *a, **k: False)
     monkeypatch.setattr(wuc, "probe_local_report", lambda *a, **k: (False, 0, "refused"))
+    monkeypatch.setattr(wuc, "probe_public_report", lambda *a, **k: (False, 502, "http=502"))
     monkeypatch.setattr(
         wuc,
         "resolve_homes",
@@ -104,16 +111,18 @@ def test_fr9826_ok_when_chair_not_running(monkeypatch):
 def test_fr9826_heal_then_ok(monkeypatch):
     monkeypatch.setenv("BOB_WEBHOOKS_UP_AUTO", "1")
     monkeypatch.setattr(wuc, "_service_state", lambda name: "Running")
+    monkeypatch.setattr(wuc, "_service_start_type", lambda name: "Automatic")
     monkeypatch.setattr(wuc, "_port_listening", lambda *a, **k: True)
     calls = {"n": 0}
 
     def _probe(*a, **k):
         calls["n"] += 1
-        if calls["n"] == 1:
+        if calls["n"] <= 2:
             return False, 502, "http=502"
         return True, 200, "status=200"
 
     monkeypatch.setattr(wuc, "probe_local_report", _probe)
+    monkeypatch.setattr(wuc, "probe_public_report", _probe)
     monkeypatch.setattr(
         wuc,
         "heal_bobcallback_local",
@@ -132,5 +141,5 @@ def test_fr9826_heal_then_ok(monkeypatch):
     payload, code = wuc.check(SimpleNamespace(dry_run=False))
     assert code == wuc.EXIT_OK
     assert payload["ok"] is True
-    assert payload["heal"].get("actions") == ["schtasks_start"]
+    assert payload["heal"].get("bobcallback", {}).get("actions") == ["schtasks_start"]
     assert calls["n"] >= 2
