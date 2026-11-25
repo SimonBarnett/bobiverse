@@ -8,6 +8,15 @@ Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for 
 - Use label `hold` while gates are open; tool-only PRs use `Refs` / `Toward`, never `Closes`, until install acceptance (FR #9400).
 - If a tracker was already offered, labeling `hold` (or the ops body cues) clears `offered_to` / seat-holds. `!stuck` / `!sweep` also release ghost offers (`released_offers`) for held rows and idle seats past offer timeout with no ACK.
 
+## Bored push notify (FR #9879)
+
+`!bored` (and shop `worker ready` / `DONE`) must reach the MONITORING agent as a **push** from the ear inbound transcript — not via the 5–15 minute health loop.
+
+- **Notifier:** `scripts/watch_bored_push_notify.ps1` polls `inbound-transcript.log` every **1s** (override `BOB_INBOUND_TRANSCRIPT` / `BOB_HOME`). Prints `READY nick=…`, `DONE nick=…`, `BORED nick=… (fallback)` and appends the same lines to `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log`.
+- **Start path:** `Start-JeevesMonitor.ps1` calls `Ensure-BoredPushNotify.ps1` before `bob-worker --mode monitor`. Ensure starts one Hidden notifier and **kills duplicate PIDs** (keeps the oldest).
+- **Agent path:** first turn of `monitor-start` attaches a monitor tool to the notifier stdout or the events log; on each event, dispatch **same turn** (`Invoke-JeevesMonitorInterveneAssign` / ear-relay `!assign` / chair outbox). The scheduled health sleep is **health-only** and must not own assign.
+- **Related:** #9882 (chair should offer on ready/DONE; `!bored` is fallback). Until chair owns that, this overlay keeps latency under ~2s.
+
 ## MONITORING command access (FR #8827)
 
 The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / â€¦) **to keep the queue moving**. Chair auth: principal kind `monitor` â€” nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
