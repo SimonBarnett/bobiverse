@@ -500,3 +500,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After MRB FAIL+FIX tip push (FR #5142), re-review the new head SHA and PASS when the prior finding is fixed; do not FAIL again for the same ascii-bom finding.
 - FR #8781 class: /health ok and last_digest_write do not prove AppStdout progress; expose progress_ok ages on /health and EXIT 1 via chair_progress when logs stale
 - PR body: avoid GitHub closing keywords (close/closes/closed/fix/fixed/resolve) immediately before an unrelated #N; they add closingIssuesReferences.
+- Probe report with curl -m hard timeout; IWR TimeoutSec can hang indefinitely on stuck /report
+
