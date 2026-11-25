@@ -114,6 +114,19 @@ Token-free checks (when landed): `depends_on`, `fr_digest`, `walrus_jeeves_insta
 
 On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md first-turn rule). Do not wait for a human prompt. Skills are under `.grok\skills` only (no top-level `.\skills`). The Start Menu shortcut / `monitor_prompt` tells the agent to run `monitor-start` now.
 
+## Bored push notify (FR #9879)
+
+`!bored` is a **push** event (fallback after `worker ready` / `DONE` — see #9882). Do **not** wait for the 5–15 minute health tick to assign.
+
+| Piece | Role |
+|---|---|
+| `scripts\watch_bored_push_notify.ps1` | 1s poll of `home/inbound-transcript.log`; emits `READY` / `DONE` / `BORED` on stdout + `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log` |
+| `scripts\Ensure-BoredPushNotify.ps1` | Singleton / PID dedupe (saw triple notifiers); Start-JeevesMonitor runs this first |
+| MONITORING agent | monitor tool on the notifier or events log; **same-turn** `!assign` / intervene when a line arrives |
+| Health cycle | token-free checks only — **health-only**; never the assign owner |
+
+Fail-when: idle seats only get work after the next 5m scheduler tick while inbound already showed `!bored` / `worker ready`.
+
 ## Self-harvest loop (t865u)
 
 After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest - do not keep private notes. When the learning is a tested deterministic check or chair behaviour, also file the product FR that lands it in the Jeeves token-less service (CAST IRON point 5).

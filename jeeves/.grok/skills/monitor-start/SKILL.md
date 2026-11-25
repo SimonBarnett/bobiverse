@@ -33,10 +33,11 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 ## First turn (exact sequence)
 
 1. Read `AGENTS.md` and `.grok\skills\bobiverse-jeeves-monitor\SKILL.md`.
-2. Run every token-free check via `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name>` (or the matching `Test-JeevesMonitor*.ps1`). Prefer scripts over reasoning.
-3. For each **exit 1** finding: de-dup open GitHub issues, then file/comment via `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` (usually `SimonBarnett/bobiverse`).
-4. Self-harvest after findings: `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` then `-Flush`.
-5. Sleep on a schedule (about **5-15 minutes**), then repeat from step 2. Keep the loop going for the session.
+2. **FR #9879 bored-push (before the health loop):** ensure `scripts\Ensure-BoredPushNotify.ps1` (Start-JeevesMonitor already starts it). Start or attach a **monitor tool** on `scripts\watch_bored_push_notify.ps1` (1s inbound-transcript poll) **or** `Get-Content -Wait -Tail 0` on `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log`. On each `READY` / `DONE` / `BORED` line: **dispatch the same turn** (ear-relay `!assign` / `Invoke-JeevesMonitorInterveneAssign` / chair outbox) — do **not** wait for the next health tick. Deduplicate notifier PIDs (Ensure keeps one). A 5-minute scheduler must **not** own assign; health-only.
+3. Run every token-free check via `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name>` (or the matching `Test-JeevesMonitor*.ps1`). Prefer scripts over reasoning.
+4. For each **exit 1** finding: de-dup open GitHub issues, then file/comment via `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` (usually `SimonBarnett/bobiverse`).
+5. Self-harvest after findings: `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` then `-Flush`.
+6. Sleep on a schedule (about **5-15 minutes**) for **health checks only**, then repeat from step 3. Keep the bored-push monitor tool running for the session; never use that sleep as the assign path.
 
 ## Checks (required every cycle)
 
