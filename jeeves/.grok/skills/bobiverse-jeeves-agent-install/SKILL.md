@@ -29,6 +29,12 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
 Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe** on walrus from an operator host (typically redqueen):
 
 ```powershell
+# ARM #9847 tip→digest→walrus sequence (required while ARM active; DryRun of this check is OK)
+.\scripts\Invoke-JeevesMonitorCheck.ps1 -Check tip_merge_gate
+# Live install needs verdict OK_FOR_RECEIPT (source=live). Attach JSON to the receipt.
+# GateIssues for this ARM: include SimonBarnett/bobiverse#9830 and #9148
+#   .\scripts\Install-JeevesWalrusWinRm.ps1 -GateIssues 'SimonBarnett/bobiverse#9830,SimonBarnett/bobiverse#9148' ...
+
 # Gate readiness (monitor cycle; does not open WinRM)
 .\scripts\Invoke-JeevesMonitorCheck.ps1 -Check walrus_jeeves_install_ready
 # or: .\scripts\Test-JeevesMonitorWalrusJeevesInstallReady.ps1
@@ -43,6 +49,8 @@ Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe
 .\scripts\Install-JeevesWalrusWinRm.ps1 -SiYes
 .\scripts\Install-JeevesWalrusWinRm.ps1 -StoreCredential   # one-time CredMan write
 ```
+
+**ARM #9847:** while `docs/ARM_JEEVES_PRS_THEN_9830_9148_WALRUS.md` is active, live `-SiYes` / install receipt also requires fresh live `tip_merge_gate` `OK_FOR_RECEIPT`. DryRun of the install script remains allowed and is not acceptance.
 
 **What the script does (live):** CredMan credential -> WinRM session -> refuse if `build-locks.json` has active builds -> backup previous exe/sha/MANIFEST/provenance under `C:\ai\jeeves\_hotpatch_<ts>-jeeves-<sha8>\` -> write `ROLLBACK.ps1` (remote bak path embedded; staged locally then copied) -> stage `new\` -> stop **ircJeeves** only -> swap files under `C:\ai\jeeves\jeeves\` -> hash-check -> start -> probe `http://127.0.0.1:7700/health`. One JSON object on stdout. Never prints secrets.
 

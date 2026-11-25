@@ -1,5 +1,15 @@
 # Jeeves monitoring checks
 
+## CAST IRON sequence — tip PRs → #9830+#9148 → walrus (FR #9847)
+
+While ARM `docs/ARM_JEEVES_PRS_THEN_9830_9148_WALRUS.md` is active:
+
+1. Tip Jeeves PR cohort must merge first.
+2. Then digests `#9830` and `#9148` plus recorded children close (Si unholds; normal offer flow).
+3. Only then rebuild Jeeves + Slab-install walrus.
+
+Check: `tip_merge_gate` / `Test-JeevesMonitorTipMergeGate.ps1`. Verdicts: `NO_INSTALL` (exit 1, expected during steps 1–2) or `OK_FOR_RECEIPT` (exit 0). Never treat `soft_ok` / fixture / dry_run as receipt evidence. Deduplicate expected `NO_INSTALL` comments on the ARM tracker; intake only for `state_unknown` / `cohort_undefined`.
+
 ## Ops / MONITORING rebuild-install trackers (FR #9402 / #9400)
 
 Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for Jeeves MONITORING agent" / "Ops install NOT done" / do-not-`Closes`-while-gates-OPEN) are **ops gate records**, not shop FR work.
