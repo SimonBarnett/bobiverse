@@ -591,6 +591,121 @@ def clear_held_fr_sticky_offers(doc: dict) -> list[str]:
     return dropped
 
 
+def clear_closed_fr_sticky_offers(
+    doc: dict, home: Path | None = None, *, log=None
+) -> list[str]:
+    """FR #9835: clear sticky offered_to / seat-holds on stamped ``state=closed`` FRs.
+
+    Phantom CLOSED (or webhook-stamped) FR rows must not pin a seat as
+    ``busy (offered FR ...)`` / ``busy (held ...)`` within the offer-timeout window
+    and must not refuse ``!assign`` tip MRBs. Drops the unaccepted row (same as
+    ``_purge_closed_fr_unaccepted`` stamped path) and clears matching seat-holds.
+    Returns human drop labels for one-shot announce logging.
+    """
+    dropped: list[str] = []
+    if not isinstance(doc, dict):
+        return dropped
+    keep: list[dict] = []
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) != "FR":
+            keep.append(row)
+            continue
+        if str(row.get("state") or "").strip().lower() != "closed":
+            keep.append(row)
+            continue
+        had_offer = bool(str(row.get("offered_to") or "").strip())
+        repo = str(row.get("repo") or "").strip()
+        ident = str(row.get("id") or "").strip()
+        clear_sticky_offer_fields(row)
+        if home is not None and repo and ident:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(home, repo, "FR", ident)
+                _clear_job_seat_holds_unlocked(home, repo, "PR", ident)
+                _clear_job_seat_holds_unlocked(home, repo, "UAT", ident)
+        label = f"{_row_drop_label(row)} closed_fr_clear_sticky"
+        dropped.append(label)
+        _log_queue_purge(
+            f"INFO git-claim purge closed-fr-sticky {repo}{ident} "
+            f"had_offer={int(had_offer)}",
+            log=log,
+        )
+        # Drop the unaccepted CLOSED phantom so it cannot re-pin.
+    doc["unaccepted"] = keep
+    return dropped
+
+def clear_offers_for_held_digest_children(
+    home: Path | None,
+    doc: dict,
+    digest_repo: str,
+    digest_id: str,
+) -> list[str]:
+    """FR #9832: when an fr-digest gains ``hold``, clear Depends-on child offers now.
+
+    Clears sticky ``offered_*`` on unaccepted children, soft-releases accepted
+    children back to unaccepted, and drops seat holds for those jobs. Returns
+    human labels for logging / fleet notice.
+    """
+    cleared: list[str] = []
+    if not isinstance(doc, dict):
+        return cleared
+    want_repo = _repo_key(digest_repo)
+    raw_id = str(digest_id or "").strip().lstrip("#")
+    try:
+        want_num = int(raw_id) if raw_id else 0
+    except ValueError:
+        return cleared
+    if not want_repo or want_num <= 0:
+        return cleared
+    want = (want_repo, want_num)
+
+    def _depends_on_digest(row: dict) -> bool:
+        return want in _row_depends_on_issue_refs(row)
+
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict) or _canon_task(row) != "FR":
+            continue
+        if not _depends_on_digest(row):
+            continue
+        had = bool(str(row.get("offered_to") or "").strip())
+        clear_sticky_offer_fields(row)
+        if home is not None:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(row.get("repo") or ""),
+                    "FR",
+                    str(row.get("id") or ""),
+                )
+        if had:
+            cleared.append(f"{_row_drop_label(row)} digest_hold_clear_offer")
+
+    kept_acc: list[dict] = []
+    released_rows: list[dict] = []
+    for row in list(doc.get("accepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) != "FR" or not _depends_on_digest(row):
+            kept_acc.append(row)
+            continue
+        if home is not None:
+            with contextlib.suppress(Exception):
+                _clear_job_seat_holds_unlocked(
+                    home,
+                    str(row.get("repo") or ""),
+                    "FR",
+                    str(row.get("id") or ""),
+                )
+        retry = _row_to_unaccepted_retry(row)
+        clear_sticky_offer_fields(retry)
+        released_rows.append(retry)
+        cleared.append(f"{_row_drop_label(row)} digest_hold_release_accepted")
+    if released_rows:
+        doc["accepted"] = kept_acc
+        doc["unaccepted"] = list(doc.get("unaccepted") or []) + released_rows
+    return cleared
+
 # FR #9848: injectable GitHub label remover for tests (callable(repo, num, label) -> bool).
 _FR9848_REMOVE_LABEL = None
 
@@ -5663,6 +5778,7 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
     updated = False
     found_unaccepted = False
     # FR #9848: detect digest hold removal before labels mutate in place.
+    # FR #9832: detect newly applied digest hold before labels mutate in place.
     was_held_digest = False
     for bucket in ("unaccepted", "accepted"):
         for row in doc.get(bucket) or []:
@@ -5710,6 +5826,33 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
                 str(x).strip().lower() for x in (claim.labels or []) if str(x).strip()
             }
             now_held = "hold" in labs_now or "on-hold" in labs_now
+            # FR #9832: hold newly applied -> clear child offers/accepted pins now.
+            if (
+                now_held
+                and not was_held_digest
+                and str(claim.action or "").strip().lower() in ("labeled", "edited")
+            ):
+                cleared = clear_offers_for_held_digest_children(
+                    home, doc, claim.repo, claim.id
+                )
+                if cleared:
+                    updated = True
+                    notes = doc.get("stand_down")
+                    if not isinstance(notes, list):
+                        notes = []
+                        doc["stand_down"] = notes
+                    notes.append(
+                        {
+                            "channel": "#bobiverse",
+                            "text": (
+                                f"hold {claim.repo}#{str(claim.id).lstrip('#')}: "
+                                f"cleared {len(cleared)} Depends-on child offer(s) "
+                                "(FR #9832)"
+                            ),
+                        }
+                    )
+                    if len(notes) > 20:
+                        doc["stand_down"] = notes[-20:]
             # FR #9848: parent digest unhold -> strip hold from ordinary children.
             if (
                 was_held_digest
@@ -9283,14 +9426,19 @@ def _log_queue_purge(msg: str, *, log=None) -> None:
     print(line, flush=True)
 
 
-def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None, log=None) -> int:
-    """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340).
+def _purge_closed_fr_unaccepted(
+    doc: dict, *, issue_open=None, home: Path | None = None, log=None
+) -> int:
+    """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340 / #9835).
 
     Mirrors ``_purge_dead_mrb_unaccepted`` for FR: stamped ``state=closed`` and/or
     live ``issue_open(repo, num) is False`` remove the row before offer.
 
     FR #3188: ``issue_open`` raising / unknown must not purge (see ``_fr_issue_is_closed``).
     Every drop is logged with a reason so a wipe cannot happen silently.
+
+    FR #9835: when ``home`` is set, also clear FR/PR/UAT seat-holds for the dropped
+    id so a residual ``via=offer`` pin cannot busy the seat after the row is gone.
     """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
@@ -9306,6 +9454,11 @@ def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None, log=None) -> int:
                 f"INFO git-claim purge closed-fr {repo}{ident} reason={why}",
                 log=log,
             )
+            if home is not None and repo and ident:
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(home, repo, "FR", ident)
+                    _clear_job_seat_holds_unlocked(home, repo, "PR", ident)
+                    _clear_job_seat_holds_unlocked(home, repo, "UAT", ident)
             continue
         kept.append(row)
     doc["unaccepted"] = kept
@@ -13875,6 +14028,8 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
         return ""
     # FR #9402 / #9406: held FR sticky offered_to must not busy the seat.
     clear_held_fr_sticky_offers(doc)
+    # FR #9835: stamped CLOSED FR sticky offered_to / holds must not busy the seat.
+    clear_closed_fr_sticky_offers(doc, home)
     for row in doc.get("accepted") or []:
         if not isinstance(row, dict):
             continue
@@ -14223,6 +14378,9 @@ def offer_focus_top(
             # FR #9402 / #9406: drop hold-gated FR sticky offers before pick.
             if clear_held_fr_sticky_offers(doc):
                 purged = True
+            # FR #9835: drop stamped CLOSED FR sticky offers/holds before pick.
+            if clear_closed_fr_sticky_offers(doc, home):
+                purged = True
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
             # FR #3188: no live pr_exists fan-out here - stamped/ledger only.
@@ -14233,7 +14391,7 @@ def offer_focus_top(
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
-            purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
+            purged = bool(_purge_closed_fr_unaccepted(doc, home=home)) or purged
             # FR #2361: accepted list is small (busy seats) - live check OK under the shared budget
             # unless FR #3205 precompute says zero GitHub on this !bored.
             if bored_budget > 0:
@@ -14801,7 +14959,7 @@ def offer_top(
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             open_dep_keys_top = open_fr_issue_keys(doc)
-            purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
+            purged = bool(_purge_closed_fr_unaccepted(doc, home=home)) or purged
             # Accepted list is small - live check under the shared budget (FR #2361).
             purged = bool(
                 _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)

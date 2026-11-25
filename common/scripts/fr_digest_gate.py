@@ -2,13 +2,16 @@
 """FR #9821 / BOB-G1 shared gate: held fr-digest blocks Depends-on children.
 
 Chair offer / assign / !bored / !list / digest ``offerable_count`` share
-``gitclaim.depends_gate_reason`` (FR #9455 / #9553). This module is the tip
-marker the token-free ``fr_digest`` monitor looks for (``product_on_tip``),
-plus small helpers for intake Digest filing (default ``hold``).
+``gitclaim.depends_gate_reason`` (FR #9455 / #9553). FR #9838: Copilot /
+``copilot_dispatch.should_dispatch`` uses the same predicate via
+``held_digest_cca_skip_reason`` so CCA Haiku refill cannot burn allowlist on
+held-digest children. This module is the tip marker the token-free
+``fr_digest`` monitor looks for (``product_on_tip``), plus small helpers for
+intake Digest filing (default ``hold``).
 
-Predicate (FR #9821):
+Predicate (FR #9821 / #9838):
 * OPEN Depends-on target with labels ``fr-digest`` (or ``digest`` / Kind stamp)
-  **and** ``hold`` / ``on-hold`` → child is not offerable (``depends-held``).
+  **and** ``hold`` / ``on-hold`` → child is not offerable / not CCA (``depends-held``).
 * Same digest without ``hold`` → soft-allow while OPEN (``ok-fr-digest``).
 * Digests are created with ``hold``; unhold releases children.
 
