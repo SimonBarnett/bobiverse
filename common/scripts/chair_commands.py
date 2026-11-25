@@ -250,16 +250,22 @@ def _csv_env(name: str) -> set:
 
 
 # FR #8827: MONITORING principal — same queue-mutator class as owner/ear.
-# Default nick ``monitoring`` when JEEVES_MONITOR_NICKS is unset; empty env disables nick default.
+# Default nick ``monitoring`` when JEEVES_MONITOR_NICKS is unset or blank.
+# Explicit ``-`` / ``off`` / ``none`` disables nick default (empty string must not
+# wipe the default — CI often exports empty vars; tip-red #9968).
 # Services accounts listed in JEEVES_MONITOR_ACCOUNTS (fail closed when unset).
 _DEFAULT_MONITOR_NICKS = frozenset({"monitoring"})
+_MONITOR_NICKS_OFF = frozenset({"-", "off", "none"})
 
 
 def monitor_nicks() -> set:
     raw = os.environ.get("JEEVES_MONITOR_NICKS")
-    if raw is None:
+    if raw is None or not str(raw).strip():
         return set(_DEFAULT_MONITOR_NICKS)
-    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+    parts = {p.strip().lower() for p in str(raw).split(",") if p.strip()}
+    if parts & _MONITOR_NICKS_OFF:
+        return set()
+    return parts
 
 
 def monitor_accounts() -> set:

@@ -60,6 +60,8 @@ def test_mrb6627_run_heal_surfaces_health_soft_notes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(jeeves_main, "run_monitor_check", fake_monitor)
     monkeypatch.setattr(jeeves_main, "_check_http", lambda: ({}, [], []))
+    # Skip FR #9836 live chair/webhook probe block (would fail on CI hosts; #9968).
+    monkeypatch.setattr(jeeves_main, "monitor_tools_dir", lambda: None)
     # Avoid maintenance spawn / lock side effects on heal exit path.
     monkeypatch.setattr(
         "jeeves_maintenance.try_start_maintenance_agent",
