@@ -45,6 +45,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 |---|---|---|
 | Health | `health` | ircJeeves / chair home / local+public report; FR #9836 heal starts chair when Stopped+intended-up |
 | Chair progress | `chair_progress` | FR #9900: /health ok must not hide stale NSSM stdout.log / cmd-trace (digest write != AppStdout progress) |
+| Cmd-trace stall | `cmd_trace_stall` | FR #9871/#9872: cmd-trace frozen while GIT/stdout fresh; fingerprint + shop-wire prefer; chair +o/ChanServ backoff; live proof `require_machine=walrus` |
 | Webhooks up with chair | webhooks_up_with_chair | FR #9826/#9836 CAST IRON: intended-up ircJeeves requires local+public /bob/v1/report HTTP 200; start chair / heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
 | Idle seats | `idle_seats` | seats idle while ungated work exists â€” EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
