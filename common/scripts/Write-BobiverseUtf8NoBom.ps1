@@ -1,6 +1,10 @@
-# FR #5502: write UTF-8 without BOM for gh --body-file / --comment files.
+# FR #5502 / #9881: write UTF-8 without BOM for gh --body-file / --comment files.
 # WinPS 5.1 Set-Content -Encoding utf8 prefixes EF BB BF; gh pr create then
 # stores U+FEFF as the first character of the PR body (bobiverse#5501).
+# Prefer this helper (or [Text.UTF8Encoding]::new($false) / New-Object
+# System.Text.UTF8Encoding $false) over Set-Content -Encoding utf8.
+# For *.ps1 that must stay BOM-less ASCII (pytest-ascii-bom), use
+# Write-BobiversePs1AsciiNoBom.ps1 / bobiverse_ps1_ascii.py write instead.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
