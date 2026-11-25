@@ -706,19 +706,146 @@ def clear_offers_for_held_digest_children(
         doc["unaccepted"] = list(doc.get("unaccepted") or []) + released_rows
     return cleared
 
+# FR #9848: injectable GitHub label remover for tests (callable(repo, num, label) -> bool).
+_FR9848_REMOVE_LABEL = None
+
+
+def _default_remove_github_issue_label(repo: str, issue_num: int, label: str) -> bool:
+    """Best-effort ``gh api -X DELETE repos/.../issues/N/labels/LABEL`` (FR #9848)."""
+    import shutil
+    import subprocess
+    import urllib.parse
+
+    gh = shutil.which("gh")
+    if not gh:
+        return False
+    lab = urllib.parse.quote(str(label or "").strip(), safe="")
+    if not lab or int(issue_num) <= 0:
+        return False
+    try:
+        r = subprocess.run(
+            [
+                gh,
+                "api",
+                "-X",
+                "DELETE",
+                f"repos/{repo}/issues/{int(issue_num)}/labels/{lab}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def strip_hold_from_digest_children(
+    home: Path | None,
+    doc: dict,
+    digest_repo: str,
+    digest_id: str,
+    *,
+    remove_github_label=None,
+) -> list[str]:
+    """FR #9848: parent digest unhold strips ``hold`` from ordinary Depends-on children.
+
+    Nested digest children keep hold (FR #9860 no auto-unhold). Updates queue labels
+    in place and best-effort removes the GitHub label so the next resync stays clear.
+    """
+    actions: list[str] = []
+    if not isinstance(doc, dict):
+        return actions
+    want_repo = _repo_key(digest_repo)
+    raw_id = str(digest_id or "").strip().lstrip("#")
+    try:
+        want_num = int(raw_id) if raw_id else 0
+    except ValueError:
+        return actions
+    if not want_repo or want_num <= 0:
+        return actions
+    want = (want_repo, want_num)
+
+    try:
+        import fr_digest_gate as _fdg
+    except ImportError:
+        _fdg = None  # type: ignore[assignment]
+
+    remover = remove_github_label
+    if remover is None:
+        remover = _FR9848_REMOVE_LABEL
+    if remover is None:
+        remover = _default_remove_github_issue_label
+
+    def _depends_on_digest(row: dict) -> bool:
+        return want in _row_depends_on_issue_refs(row)
+
+    for bucket in ("unaccepted", "accepted"):
+        for row in list(doc.get(bucket) or []):
+            if not isinstance(row, dict) or _canon_task(row) != "FR":
+                continue
+            if not _depends_on_digest(row):
+                continue
+            if _fdg is not None:
+                if not _fdg.should_strip_child_hold_on_parent_unhold(row):
+                    continue
+                new_labs = _fdg.strip_hold_labels(row.get("labels") or [])
+            else:
+                labs = {
+                    str(x).strip().lower()
+                    for x in (row.get("labels") or [])
+                    if str(x).strip()
+                }
+                if labs & DIGEST_ISSUE_LABELS:
+                    continue
+                if "hold" not in labs and "on-hold" not in labs:
+                    continue
+                new_labs = [
+                    str(x)
+                    for x in (row.get("labels") or [])
+                    if str(x).strip().lower() not in ISSUES_ONLY_HOLD_LABELS
+                ]
+            old_labs = [str(x) for x in (row.get("labels") or [])]
+            old_hold = [
+                x
+                for x in old_labs
+                if str(x).strip().lower() in ISSUES_ONLY_HOLD_LABELS
+            ]
+            if not old_hold:
+                continue
+            row["labels"] = new_labs
+            child_repo = str(row.get("repo") or digest_repo)
+            child_raw = str(row.get("id") or "").strip().lstrip("#")
+            try:
+                child_num = int(child_raw)
+            except ValueError:
+                child_num = 0
+            for lab in old_hold:
+                ok = False
+                if callable(remover) and child_num > 0:
+                    try:
+                        ok = bool(remover(child_repo, child_num, str(lab).strip()))
+                    except Exception:
+                        ok = False
+                actions.append(
+                    f"{_row_drop_label(row)} digest_unhold_strip_{lab}"
+                    f"{'' if ok else '_queued'}"
+                )
+            # Ensure hold no longer gates this row locally.
+            if home is not None:
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home,
+                        child_repo,
+                        "FR",
+                        str(row.get("id") or ""),
+                    )
+    return actions
 
 
 # FR #8754: skip FR offer while vision/index Depends-on backlog IDs still have open issues.
-# FR #9831: markdown emphasis around label/colon (match common/scripts/depends_on.py).
-_DEPENDS_ON_LINE_RE = re.compile(
-    r"(?im)^[^\S\n]*"
-    r"(?:\*{0,2}|`{0,2})"
-    r"Depends-on"
-    r"(?:\*{0,2}|`{0,2})"
-    r"[^\S\n]*:"
-    r"(?:\*{0,2}|`{0,2})?"
-    r"[^\S\n]*(.*)$"
-)
+_DEPENDS_ON_LINE_RE = re.compile(r"(?im)^\s*\*{0,2}Depends-on\*{0,2}\s*:\s*(.+)$")
 _BOB_BACKLOG_ID_RE = re.compile(r"\bBOB-(\d+)\b", re.I)
 _DEPENDS_ISSUE_REF_RE = re.compile(r"(?:#|/issues/)(\d+)\b")
 # FR #9220 / #8807: owner/repo#N (finditer + full-token match).
@@ -5650,6 +5777,7 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
             return "removed" if n else "noop"
     updated = False
     found_unaccepted = False
+    # FR #9848: detect digest hold removal before labels mutate in place.
     # FR #9832: detect newly applied digest hold before labels mutate in place.
     was_held_digest = False
     for bucket in ("unaccepted", "accepted"):
@@ -5720,6 +5848,34 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
                                 f"hold {claim.repo}#{str(claim.id).lstrip('#')}: "
                                 f"cleared {len(cleared)} Depends-on child offer(s) "
                                 "(FR #9832)"
+                            ),
+                        }
+                    )
+                    if len(notes) > 20:
+                        doc["stand_down"] = notes[-20:]
+            # FR #9848: parent digest unhold -> strip hold from ordinary children.
+            if (
+                was_held_digest
+                and not now_held
+                and str(claim.action or "").strip().lower()
+                in ("unlabeled", "edited", "labeled")
+            ):
+                stripped = strip_hold_from_digest_children(
+                    home, doc, claim.repo, claim.id
+                )
+                if stripped:
+                    updated = True
+                    notes = doc.get("stand_down")
+                    if not isinstance(notes, list):
+                        notes = []
+                        doc["stand_down"] = notes
+                    notes.append(
+                        {
+                            "channel": "#bobiverse",
+                            "text": (
+                                f"unhold {claim.repo}#{str(claim.id).lstrip('#')}: "
+                                f"stripped hold from {len(stripped)} Depends-on "
+                                f"child(ren) (FR #9848)"
                             ),
                         }
                     )
@@ -13162,14 +13318,6 @@ def mrb_yields_to_older_fr(
             continue
         if _row_queue_age_key(row) >= cand_age:
             continue
-        # FR #9833: do not yield to rows the build-jeeves dispatch lock would skip.
-        try:
-            import dispatch_lock as _dl
-
-            if _dl.row_blocked_reason(home, row):
-                continue
-        except Exception:
-            pass
         if rt == "FR":
             try:
                 if fr_is_superseded(
@@ -14396,7 +14544,7 @@ def offer_focus_top(
             purged = bool(_purge_dead_fix_unaccepted(doc, pr_exists=None)) or purged
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
-            # FR #2340 / #3188 / #9835: stamped CLOSED only at bulk; clear seat-holds too.
+            # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
             purged = bool(_purge_closed_fr_unaccepted(doc, home=home)) or purged
             # FR #2361: accepted list is small (busy seats) - live check OK under the shared budget
             # unless FR #3205 precompute says zero GitHub on this !bored.
@@ -14505,15 +14653,6 @@ def offer_focus_top(
                     if _drop_unaccepted_row(doc, cand, kind="ignored", reason="repo-ignored"):
                         purged = True
                     return None
-                # FR #9833: build-jeeves dispatch lock (belt-and-braces with sort filter).
-                try:
-                    import dispatch_lock as _dl
-
-                    lock_why = _dl.row_blocked_reason(home, cand)
-                    if lock_why:
-                        return None
-                except Exception:
-                    pass
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
@@ -14974,7 +15113,6 @@ def offer_top(
             purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             open_dep_keys_top = open_fr_issue_keys(doc)
-            # FR #2340 / #9835: stamped CLOSED drop + clear seat-holds when home set.
             purged = bool(_purge_closed_fr_unaccepted(doc, home=home)) or purged
             # Accepted list is small - live check under the shared budget (FR #2361).
             purged = bool(
@@ -18805,15 +18943,6 @@ def assign_row(
             digest_why = digest_issue_reason(cand)
             if digest_why:
                 return "refused", f"row is digest gate (not work): {digest_why}"
-            # FR #9833: !assign obeys build-jeeves dispatch lock (same as !bored / !list).
-            try:
-                import dispatch_lock as _dl
-
-                lock_why = _dl.row_blocked_reason(home, cand)
-                if lock_why:
-                    return "refused", f"build-jeeves lock: {lock_why}"
-            except Exception:
-                pass
             # FR #9455 bob_g1_shared_gate: !assign uses the same helper as offer/stuck.
             live_dep = depends_gate_reason(
                 cand,

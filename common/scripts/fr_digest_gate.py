@@ -14,11 +14,14 @@ Predicate (FR #9821 / #9838):
   **and** ``hold`` / ``on-hold`` → child is not offerable / not CCA (``depends-held``).
 * Same digest without ``hold`` → soft-allow while OPEN (``ok-fr-digest``).
 * Digests are created with ``hold``; unhold releases children.
+
+FR #9848: when the parent digest loses ``hold``, strip ``hold`` / ``on-hold``
+from ordinary Depends-on children (not nested digest children — FR #9860).
 """
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 DIGEST_LABELS = frozenset({"fr-digest", "digest"})
 HOLD_LABELS = frozenset({"hold", "on-hold"})
@@ -104,3 +107,37 @@ def ensure_digest_hold_labels(
 def bob_g1_skip_held_digest() -> str:
     """Stable marker string; ``fr_digest`` monitor greps gitclaim + this module."""
     return "bob_g1_skip_held_digest"
+
+
+def strip_hold_labels(labels: Iterable[str] | None) -> list[str]:
+    """FR #9848: drop ``hold`` / ``on-hold`` from a label list (preserve order)."""
+    out: list[str] = []
+    for raw in labels or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if s.lower() in HOLD_LABELS:
+            continue
+        out.append(s)
+    return out
+
+
+def should_strip_child_hold_on_parent_unhold(row: Mapping[str, Any] | None) -> bool:
+    """True for ordinary FR children; False for nested digests (FR #9860).
+
+    Nested ``fr-digest`` / ``digest`` / ``Kind:`` children keep their own hold
+    until an operator unholds that digest explicitly.
+    """
+    if not isinstance(row, Mapping):
+        return False
+    title = str(row.get("title") or "")
+    body = str(row.get("body") or "")
+    labs = _label_names(row.get("labels"))
+    if labs & DIGEST_LABELS:
+        return False
+    if DIGEST_KIND_RE.search(body):
+        return False
+    if DIGEST_TITLE_RE.match(title) and (labs & HOLD_LABELS):
+        # Title Digest: with hold but missing label still treated as nested gate.
+        return False
+    return bool(labs & HOLD_LABELS)
