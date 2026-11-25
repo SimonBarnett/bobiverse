@@ -17338,6 +17338,108 @@ def _row_to_unaccepted_retry(row: dict) -> dict:
     return out
 
 
+
+def clear_live_mrb_hold_for_ci_red(doc: dict, repo: str, ident: str) -> list[str]:
+    """FR #9924: drop accepted/offered MRB for repo#id; return holder nicks.
+
+    Accepted rows move to ``done`` with ``result=CI-RED`` (seat freed). Unaccepted
+    MRB rows for the same id are removed so CI-red tips are not re-offered as MRB.
+    """
+    repo_c = canonical_queue_repo(repo)
+    want = _norm_row_id(ident)
+    if not repo_c or not want or not isinstance(doc, dict):
+        return []
+    holders: list[str] = []
+    done = doc.setdefault("done", [])
+    kept_acc: list[dict] = []
+    for row in list(doc.get("accepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "MRB":
+            kept_acc.append(row)
+            continue
+        if canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+            kept_acc.append(row)
+            continue
+        if _norm_row_id(str(row.get("id") or "")) != want:
+            kept_acc.append(row)
+            continue
+        who = _accepted_holder_nick(row) or str(
+            row.get("offered_to") or row.get("nick") or ""
+        ).strip()
+        if who:
+            holders.append(who)
+        fin = dict(row)
+        for key in (
+            "nick",
+            "channel",
+            "accepted_ts",
+            "accepted_by",
+            "offered_to",
+            "offered_ts",
+            "offered_channel",
+        ):
+            fin.pop(key, None)
+        fin["result"] = "CI-RED"
+        fin["done_ts"] = _utc_now()
+        fin["note"] = "FR #9924 required CI red; hold cleared for FIX"
+        done.append(fin)
+    doc["accepted"] = kept_acc
+    kept_un: list[dict] = []
+    for row in list(doc.get("unaccepted") or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "MRB":
+            kept_un.append(row)
+            continue
+        if canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+            kept_un.append(row)
+            continue
+        if _norm_row_id(str(row.get("id") or "")) != want:
+            kept_un.append(row)
+            continue
+        who = str(row.get("offered_to") or row.get("nick") or "").strip()
+        if who and who not in holders:
+            holders.append(who)
+        # Drop the unaccepted MRB entirely (do not re-offer while CI red).
+        continue
+    doc["unaccepted"] = kept_un
+    if len(done) > DONE_CAP:
+        doc["done"] = done[-DONE_CAP:]
+    return holders
+
+
+def live_mrb_hold_nicks(doc: dict, repo: str, ident: str) -> list[str]:
+    """Nicks holding accepted or offered MRB for repo#id (FR #9924)."""
+    repo_c = canonical_queue_repo(repo)
+    want = _norm_row_id(ident)
+    out: list[str] = []
+    if not repo_c or not want or not isinstance(doc, dict):
+        return out
+    for bucket in ("accepted", "unaccepted"):
+        for row in doc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "MRB":
+                continue
+            if canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            if _norm_row_id(str(row.get("id") or "")) != want:
+                continue
+            if bucket == "unaccepted" and not str(row.get("offered_to") or "").strip():
+                # Unoffered queued MRB is not a live hold yet.
+                if not str(row.get("nick") or "").strip():
+                    continue
+            who = (
+                _accepted_holder_nick(row)
+                if bucket == "accepted"
+                else str(row.get("offered_to") or row.get("nick") or "").strip()
+            )
+            if who and who not in out:
+                out.append(who)
+    return out
+
+
 def _release_accepted_for_nick_unlocked(doc: dict, nick: str) -> list[dict]:
     """Move accepted rows held by ``nick`` back onto ``unaccepted`` (caller holds lock).
 
@@ -19684,6 +19786,51 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
+            # FR #9924: accepted/offered MRB + required CI red → clear hold + FIX
+            # (same family as DONE MRB FAIL / FR #4718). Soft-only (#9881) skips.
+            try:
+                check_state_hold = _resync_pr_check_state(pr, repo, num, token=token)
+            except Exception:  # noqa: BLE001
+                check_state_hold = ""
+            try:
+                import mrb_merge_on_green as _mog_9924
+
+                trigger_9924 = _mog_9924.ci_failure_triggers_mrb_reset(check_state_hold)
+            except Exception:  # noqa: BLE001
+                trigger_9924 = False
+            if trigger_9924 and head_sha:
+                try:
+                    qpeek = load_queue(_root(home))
+                except Exception:  # noqa: BLE001
+                    qpeek = {}
+                holders_9924 = live_mrb_hold_nicks(qpeek, repo, f"#{num}")
+                if holders_9924:
+                    try:
+                        import mrb_merge_on_green as _mog_9924
+
+                        fix_result = _mog_9924.reset_live_mrb_hold_on_ci_red(
+                            _root(home),
+                            repo=repo,
+                            pr=str(num),
+                            sha=head_sha,
+                            url=str(pr.get("html_url") or ""),
+                            detail=check_state_hold or "failure",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        fix_result = f"error:{type(exc).__name__}"
+                    fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                        fix_result,
+                        fix_added=fix_added,
+                        fix_dup=fix_dup,
+                        fix_skip_main_red=fix_skip_main_red,
+                    )
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync FR #9924 CI-red reset MRB→FIX {repo}#{num} "
+                        f"holders={','.join(holders_9924)} result={fix_result}",
+                        flush=True,
+                    )
+                    continue
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
             # FR #4661: ledger race --- done[] PASS + auto_merge tip still ci-wait.
             if not pass_sha:
