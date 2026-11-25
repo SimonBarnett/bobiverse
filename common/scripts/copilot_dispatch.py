@@ -1276,6 +1276,12 @@ def should_dispatch(
         title=title, body=str(row.get("body") or ""), labels=labels
     ):
         return False
+    # FR #9838 / #9821: same Depends-on gate as chair offer — children of a held
+    # fr-digest (and other hard Depends-on blocks) never CCA / Copilot dispatch.
+    if home is not None and task == "FR":
+        why = held_digest_cca_skip_reason(home, row)
+        if why:
+            return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
     row_eff = dict(row) if isinstance(row, dict) else {}
     with contextlib.suppress(Exception):
@@ -1290,6 +1296,25 @@ def should_dispatch(
         if gitclaim.review_blocked_for_author(row, COPILOT_NICK, live={COPILOT_NICK}):
             return False
     return True
+
+
+def held_digest_cca_skip_reason(home: Path, row: dict) -> str | None:
+    """FR #9838: share ``gitclaim.depends_gate_reason`` with chair #9821.
+
+    Returns the gate reason when CCA must skip (e.g. ``depends-held``), else None.
+    """
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("task") or "").upper() != "FR":
+        return None
+    try:
+        doc = gitclaim.load_queue(home)
+    except Exception:
+        doc = {}
+    try:
+        return gitclaim.depends_gate_reason(row, doc)
+    except Exception:
+        return None
 
 
 def is_high_priority(home: Path, row: dict) -> bool:

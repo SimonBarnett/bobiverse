@@ -128,6 +128,23 @@ if ($syncMon) {
 } else {
     Write-Warning "FR #9007: Sync-BobiverseFromRepo.ps1 not found beside Start-JeevesMonitor or under BobInstallRoot common/scripts|scripts; tools\monitor may stay stale on this host."
 }
+# FR #9879: !bored / worker ready / DONE are push events. Ensure a single
+# inbound-transcript notifier before the agent starts; health loop must not own assign.
+$ensureBored = Join-Path $PSScriptRoot 'Ensure-BoredPushNotify.ps1'
+if (Test-Path -LiteralPath $ensureBored) {
+    try {
+        if ($DryRun) {
+            & $ensureBored -DryRun
+        } else {
+            & $ensureBored
+        }
+    } catch {
+        Write-Warning ("FR #9879 Ensure-BoredPushNotify: {0}" -f $_.Exception.Message)
+    }
+} else {
+    Write-Warning "FR #9879: Ensure-BoredPushNotify.ps1 missing beside Start-JeevesMonitor; !bored may wait on the 5-15m health tick."
+}
+
 $exe = Join-Path $BobInstallRoot 'worker\bob-worker.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
     Write-Error "bob-worker.exe missing at $exe (install/upgrade the bob MSI). Jeeves Monitor uses the same agent launcher as the tray Agent item."

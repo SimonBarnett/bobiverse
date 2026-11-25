@@ -5858,6 +5858,113 @@ def _digest_fleet_pools(doc: dict | None) -> dict:
     return out
 
 
+# FR #9864: GET /bob/v1/report must not block forever on enrichment (fleet-pools /
+# merge-on-green / purge). Soft-degrade partial JSON within a wall budget.
+REPORT_BUILD_BUDGET_ENV = "BOB_REPORT_BUILD_BUDGET_S"
+DEFAULT_REPORT_BUILD_BUDGET_S = 8.0
+_LAST_GOOD_REPORT: dict[str, object] = {"doc": None, "body": None, "at": 0.0}
+_LAST_GOOD_LOCK = threading.Lock()
+
+
+def report_build_budget_s(env: dict[str, str] | None = None) -> float:
+    e = os.environ if env is None else env
+    raw = (e.get(REPORT_BUILD_BUDGET_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.1, float(raw))
+        except ValueError:
+            pass
+    return float(DEFAULT_REPORT_BUILD_BUDGET_S)
+
+
+def clear_last_good_report() -> None:
+    with _LAST_GOOD_LOCK:
+        _LAST_GOOD_REPORT["doc"] = None
+        _LAST_GOOD_REPORT["body"] = None
+        _LAST_GOOD_REPORT["at"] = 0.0
+
+
+def remember_last_good_report(doc: dict | None, body: bytes | None = None) -> None:
+    if not isinstance(doc, dict):
+        return
+    if doc.get("degraded"):
+        return
+    with _LAST_GOOD_LOCK:
+        _LAST_GOOD_REPORT["doc"] = copy.deepcopy(doc)
+        if body is not None:
+            _LAST_GOOD_REPORT["body"] = bytes(body)
+        else:
+            _LAST_GOOD_REPORT["body"] = json.dumps(
+                doc, separators=(",", ":")
+            ).encode("utf-8")
+        _LAST_GOOD_REPORT["at"] = time.time()
+
+
+def last_good_report_doc() -> dict | None:
+    with _LAST_GOOD_LOCK:
+        doc = _LAST_GOOD_REPORT.get("doc")
+        return copy.deepcopy(doc) if isinstance(doc, dict) else None
+
+
+def last_good_report_body() -> bytes | None:
+    with _LAST_GOOD_LOCK:
+        body = _LAST_GOOD_REPORT.get("body")
+        return bytes(body) if isinstance(body, (bytes, bytearray)) else None
+
+
+def _report_fleet_pools_fetch(home: Path, doc: dict | None) -> dict:
+    """FR #9864 hook: default reads digest fleet_pools (no network).
+
+    Tests inject a slow fetch to prove the report builder soft-degrades.
+    """
+    del home  # unused in the default path
+    return _digest_fleet_pools(doc)
+
+
+def _run_report_section(
+    name: str,
+    fn: Callable[[], object],
+    default: object,
+    *,
+    deadline: float | None,
+    degraded_parts: list[str],
+) -> object:
+    """Run ``fn`` under remaining wall budget; on timeout/error return default."""
+    if deadline is not None and time.monotonic() >= deadline:
+        if name not in degraded_parts:
+            degraded_parts.append(name)
+        return default
+    if deadline is None:
+        try:
+            return fn()
+        except Exception:
+            if name not in degraded_parts:
+                degraded_parts.append(name)
+            return default
+    remaining = max(0.01, deadline - time.monotonic())
+    box: dict[str, object] = {}
+
+    def worker() -> None:
+        try:
+            box["v"] = fn()
+        except Exception as exc:  # noqa: BLE001
+            box["e"] = exc
+
+    th = threading.Thread(target=worker, name=f"report-{name}", daemon=True)
+    try:
+        th.start()
+    except RuntimeError:
+        if name not in degraded_parts:
+            degraded_parts.append(name)
+        return default
+    th.join(timeout=remaining)
+    if th.is_alive() or "e" in box or "v" not in box:
+        if name not in degraded_parts:
+            degraded_parts.append(name)
+        return default
+    return box["v"]
+
+
 def _digest_fleet_layout(doc: dict | None) -> dict:
     """FR #7326 public ``fleet``: OpenCode Go and Copilot. No cursor / grok-chat / free."""
     pools = _digest_fleet_pools(doc)
@@ -5954,8 +6061,21 @@ def _digest_job_costs(home: Path) -> dict:
         return {"pr_count": 0, "job_count": 0, "per_pr": []}
 
 
-def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
-    """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
+def build_digest_object(
+    home: Path,
+    briefer_nick: str,
+    now: datetime | None = None,
+    *,
+    budget_s: float | None = None,
+) -> dict:
+    """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels.
+
+    FR #9864: when ``budget_s`` is set (or via ``BOB_REPORT_BUILD_BUDGET_S`` for the
+    HTTP handler), enrichment sections that overrun the wall budget are omitted and
+    the payload is stamped ``degraded`` / ``degraded_parts`` instead of hanging.
+    """
+    deadline = None if budget_s is None else (time.monotonic() + max(0.05, float(budget_s)))
+    degraded_parts: list[str] = []
     doc = load_digest(home)
     roster = list(roster_machine_ids(home))
     machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
@@ -5980,7 +6100,72 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
     channels = chair_channels(home)
     age_s = digest_age_s(doc, now)
     stale = digest_is_stale(doc, now)
-    return {
+    fleet_pools = _run_report_section(
+        "fleet_pools",
+        lambda: _report_fleet_pools_fetch(home, doc),
+        {},
+        deadline=deadline,
+        degraded_parts=degraded_parts,
+    )
+    if not isinstance(fleet_pools, dict):
+        fleet_pools = {}
+    # Paint fleet from the (possibly degraded) pools map so soft-fail stays coherent.
+    fleet_doc = {"fleet_pools": fleet_pools}
+    queue = _run_report_section(
+        "queue",
+        lambda: _public_queue(home),
+        {
+            "unaccepted_count": 0,
+            "needs_human_count": 0,
+            "offerable_count": 0,
+            "queue_needs_human_only": False,
+            "accepted_count": 0,
+            "needs_human_hint": "",
+            "unaccepted": [],
+            "accepted": [],
+        },
+        deadline=deadline,
+        degraded_parts=degraded_parts,
+    )
+    if not isinstance(queue, dict):
+        queue = {}
+    copilot = _run_report_section(
+        "copilot",
+        lambda: _digest_copilot_pool(home, doc),
+        {
+            "state": "unknown",
+            "source": "copilot_internal/user",
+            "remaining": None,
+            "entitlement": None,
+            "reset_at": "",
+            "fetched_at": "",
+            "last_error": "degraded",
+            "tasks": [],
+        },
+        deadline=deadline,
+        degraded_parts=degraded_parts,
+    )
+    if not isinstance(copilot, dict):
+        copilot = {}
+    stuck = _run_report_section(
+        "stuck",
+        lambda: _digest_stuck(home),
+        [],
+        deadline=deadline,
+        degraded_parts=degraded_parts,
+    )
+    if not isinstance(stuck, list):
+        stuck = []
+    job_costs = _run_report_section(
+        "job_costs",
+        lambda: _digest_job_costs(home),
+        {"pr_count": 0, "job_count": 0, "per_pr": []},
+        deadline=deadline,
+        degraded_parts=degraded_parts,
+    )
+    if not isinstance(job_costs, dict):
+        job_costs = {"pr_count": 0, "job_count": 0, "per_pr": []}
+    out = {
         "v": int(doc.get("v") or 1),
         "ts": str(doc.get("ts") or _utc_now_iso()),
         "stale": stale,
@@ -5992,21 +6177,72 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "roster_machine_ids": sorted(roster),
         "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported, now),
-        "queue": _public_queue(home),
+        "queue": queue,
         # FR #9748: live jobs are digest.copilot.tasks (nested), never top-level
         # copilot_tasks and never machines.copilot.
-        "copilot": _digest_copilot_pool(home, doc),
-        "fleet_pools": _digest_fleet_pools(doc),
-        "fleet": _digest_fleet_layout(doc),
+        "copilot": copilot,
+        "fleet_pools": fleet_pools,
+        "fleet": _digest_fleet_layout(fleet_doc),
         "opencode": doc.get("opencode") if isinstance(doc.get("opencode"), dict) else None,
         "intake_outbox": _intake_outbox_public(home),
         # FR #5204 / #5947: live airc *_console nicks (shops + any chair channel).
         "airc_consoles": _airc_consoles_export(doc, exported),
         "airc_console_details": _airc_console_details_export(doc, exported),
         # FR #5510: stuck-job sweep report (silent accepts / untracked / held rules).
-        "stuck": _digest_stuck(home),
+        "stuck": stuck,
         # FR #6387: per-PR measured token totals across FR + MRB + FIX (+ UAT).
-        "job_costs": _digest_job_costs(home),
+        "job_costs": job_costs,
+    }
+    if degraded_parts:
+        out["degraded"] = True
+        out["degraded_parts"] = list(degraded_parts)
+    return out
+
+
+def build_digest_alias_object(home: Path, briefer_nick: str = "") -> dict:
+    """FR #9864: fast /bob/v1/digest path --- last-good or lightweight snapshot.
+
+    Never runs fleet-pools / purge enrichment so digest stays up while report
+    soft-degrades or hangs on upstream.
+    """
+    cached = last_good_report_doc()
+    if isinstance(cached, dict) and cached.get("machines") is not None:
+        out = copy.deepcopy(cached)
+        out["digest_alias"] = True
+        out.pop("degraded", None)
+        out.pop("degraded_parts", None)
+        return out
+    doc = load_digest(home)
+    roster = list(roster_machine_ids(home))
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    exported: dict[str, dict] = {}
+    for mid in roster:
+        raw = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+        exported[mid] = {
+            "id": mid,
+            "nick": nick_for_machine({}, mid),
+            "shop": shop_channel(mid),
+            "online": bool(raw.get("online")),
+            "status": str(raw.get("status") or ("I am offline" if not raw.get("online") else "I am online")),
+            "workers": worker_list_for_export(raw) if raw else [],
+            "running": int(raw.get("running") or 0) if raw else 0,
+            "queued": int(raw.get("queued") or 0) if raw else 0,
+        }
+    briefer = (briefer_nick or str(doc.get("briefer") or "")).strip() or "digest"
+    chair = (os.environ.get(CHAIR_NICK_ENV) or "").strip() or str(
+        doc.get("chairNick") or doc.get("chair_nick") or ""
+    ).strip()
+    return {
+        "v": int(doc.get("v") or 1),
+        "ts": str(doc.get("ts") or _utc_now_iso()),
+        "stale": digest_is_stale(doc),
+        "briefer": briefer,
+        "chairNick": chair or briefer,
+        "machines": exported,
+        "roster_machine_ids": sorted(roster),
+        "fleet_pools": _digest_fleet_pools(doc),
+        "digest_alias": True,
+        "degraded": False,
     }
 
 

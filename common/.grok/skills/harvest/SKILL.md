@@ -46,10 +46,14 @@ depends_on: []
 > 9. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
 >    chair path same turn. Ungated idle+work is never report-only.
 > 10. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
->    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>` (plain grammar).
+>    `Digest: …` parent with label `fr-digest` first; each parked child body starts with `Depends-on: #<digest>` (plain grammar).
 >    Never leave a multi-FR batch free-floating. Digests stay useful when unheld; `hold` parks the whole batch. Same-turn
 >    repair: if ≥2 related FRs already filed without a digest, file the digest immediately and add Depends-on on children.
 >    Last open child close closes the digest (#9552). One issue per issue inside the digest.
+>    **FR #9854 tip-priority (LIST ONLY):** tip-blocking FIX/MRB that must merge while the digest stays held are listed on
+>    the digest under Tip-priority siblings and must **not** carry `Depends-on: #<digest>` until unhold (held-digest gate
+>    #9821 would starve the tip). Never auto-wire Depends-on onto those filings.
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -493,7 +497,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When report returns prefer tip FIX/MRB (#9866); prune NO_IRC+Resume; Restart only if EST=0
 - CCA missing_conclusion must soft-release + forget job + last_infra_error and return infra_retry before quota exhaust; quote reviewed-sha when assign pins it
 - Pack heat System.Collections.Hashtable <path>: find uncaptured helper that returns Hashtable (here Assert-BobiversePlanAgentNotBobWorker); $null= at call site and harden Assert-BobiverseHeatStagePath type checks
-- Keep growing held Digest #9830 with every new Jeeves/IRCD lesson same turn; wire Depends-on #9830; tip-red FIX #9840 is priority for merge gate.
+- Keep growing held Digest #9830 with every new Jeeves/IRCD lesson same turn; parked lessons wire Depends-on #9830. Tip-blocking FIX (class of #9840) is tip-priority LIST ONLY on the digest — no Depends-on while held (FR #9854); held-digest gate would starve the tip merge.
 - Treat assign: refused busy holding FIX as evidence seat is not idle even if /report lags; keep bridging exact idle nicks from fresh report
 - On /report 502 use IRC inbound; if redqueen workers=[] with offerable>0 escalate TipForm #9462 only --- never Start-BobWorker from monitor
 - ircJeeves AppStdout without AppRotateFiles/Bytes/Online grows unbounded; pin rotate on Install and re-assert on Update for Product=jeeves
@@ -502,3 +506,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PR body: avoid GitHub closing keywords (close/closes/closed/fix/fixed/resolve) immediately before an unrelated #N; they add closingIssuesReferences.
 - Probe report with curl -m hard timeout; IWR TimeoutSec can hang indefinitely on stuck /report
 - CCA/Copilot dispatch must call the same Depends-on gate as !bored (depends_gate_reason / held_digest_cca_skip_reason); a MONITORING script deny-list is not durable.
+- FIX tip CI: when build-jeeves fails test_digest_includes_copilot (tasks) or test_fr8775 winrm DAG, fold origin/main that already carries the #9928 tip-CI allowlist before re-pushing the assigned tip.
