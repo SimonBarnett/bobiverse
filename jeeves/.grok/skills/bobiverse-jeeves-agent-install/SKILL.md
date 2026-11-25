@@ -39,6 +39,11 @@ Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe
 .\scripts\Invoke-JeevesMonitorCheck.ps1 -Check walrus_jeeves_install_ready
 # or: .\scripts\Test-JeevesMonitorWalrusJeevesInstallReady.ps1
 
+# FR #9877: digest-level install/receipt also needs children CLOSED (children-only;
+# complementary to tip_merge_gate #9847 when that ARM is active).
+.\scripts\Invoke-JeevesMonitorCheck.ps1 -Check digest_ci_gate
+# or: .\scripts\Test-JeevesMonitorDigestCiGate.ps1
+
 # Plan only (default when -SiYes omitted). Resolves green build-jeeves or -ArtifactDir.
 .\scripts\Install-JeevesWalrusWinRm.ps1
 .\scripts\Install-JeevesWalrusWinRm.ps1 -ArtifactDir D:\path\to\artifact
@@ -157,6 +162,7 @@ the previous build is confirmed healthy again by the same post-check.
 
 - No Si yes for a walrus install: stop at the drafted ask (or omit `-SiYes` so the script stays DryRun).
 - Any step fails before step 5: stop, nothing changed. Any post-check fails: roll back, then report.
+- **CAST IRON FR #9877:** while an fr-digest batch still has open recorded children (`digest_ci_gate` → `BLOCK_DIGEST_CI`), do not treat digest covering CI as ready-to-install and do not issue a batch install receipt for that digest. Child FR merges/CI are fine. Prefer live `ALLOW_DIGEST_CI` on the receipt.
 
 ## Harvested lessons
 

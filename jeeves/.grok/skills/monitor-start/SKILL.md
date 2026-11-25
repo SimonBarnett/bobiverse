@@ -20,9 +20,9 @@ description: >
 > 7. **CAST IRON â€” idle + open work is FAIL (#9644).** `idle_seats` EXIT 1 fingerprint `idle_with_open_work` chair-heals
 >    (`push_idle` / `offer_to_idle`); not report-only. Same-turn bridge still owes #9627.
 > 8. **CAST IRON â€” multi-FR batch needs Digest parent (#9652).** â‰¥2 related FRs in one batch: `fr-digest` Digest first;
-
-> 9. **CAST IRON --- Jeeves on IRC => webhooks up (#9826).** `Start-Service ircJeeves` / `Start-Jeeves.ps1` => same-turn local report 200 + heal; monitor `webhooks_up_with_chair`.
 >    children `Depends-on: #<digest>`; same-turn repair if missing; last-child close closes digest (#9552).
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
+> 9. **CAST IRON --- Jeeves on IRC => webhooks up (#9826 / #9836).** `Start-Service ircJeeves` / `Start-Jeeves.ps1` => same-turn local+public report 200 + heal; Stopped intended-up while Ergo up => start chair; monitor `health` / `webhooks_up_with_chair`.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
@@ -33,18 +33,19 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 ## First turn (exact sequence)
 
 1. Read `AGENTS.md` and `.grok\skills\bobiverse-jeeves-monitor\SKILL.md`.
-2. Run every token-free check via `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name>` (or the matching `Test-JeevesMonitor*.ps1`). Prefer scripts over reasoning.
-3. For each **exit 1** finding: de-dup open GitHub issues, then file/comment via `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` (usually `SimonBarnett/bobiverse`).
-4. Self-harvest after findings: `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` then `-Flush`.
-5. Sleep on a schedule (about **5-15 minutes**), then repeat from step 2. Keep the loop going for the session.
+2. **FR #9879 bored-push (before the health loop):** ensure `scripts\Ensure-BoredPushNotify.ps1` (Start-JeevesMonitor already starts it). Start or attach a **monitor tool** on `scripts\watch_bored_push_notify.ps1` (1s inbound-transcript poll) **or** `Get-Content -Wait -Tail 0` on `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log`. On each `READY` / `DONE` / `BORED` line: **dispatch the same turn** (ear-relay `!assign` / `Invoke-JeevesMonitorInterveneAssign` / chair outbox) — do **not** wait for the next health tick. Deduplicate notifier PIDs (Ensure keeps one). A 5-minute scheduler must **not** own assign; health-only.
+3. Run every token-free check via `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name>` (or the matching `Test-JeevesMonitor*.ps1`). Prefer scripts over reasoning.
+4. For each **exit 1** finding: de-dup open GitHub issues, then file/comment via `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` (usually `SimonBarnett/bobiverse`).
+5. Self-harvest after findings: `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` then `-Flush`.
+6. Sleep on a schedule (about **5-15 minutes**) for **health checks only**, then repeat from step 3. Keep the bored-push monitor tool running for the session; never use that sleep as the assign path.
 
 ## Checks (required every cycle)
 
 | Check | Script / name | Why |
 |---|---|---|
-| Health | `health` | ircJeeves / chair home / webhook surface |
+| Health | `health` | ircJeeves / chair home / local+public report; FR #9836 heal starts chair when Stopped+intended-up |
 | Chair progress | `chair_progress` | FR #9900: /health ok must not hide stale NSSM stdout.log / cmd-trace (digest write != AppStdout progress) |
-| Webhooks up with chair | webhooks_up_with_chair | FR #9826 CAST IRON: ircJeeves Running requires local /bob/v1/report HTTP 200; heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
+| Webhooks up with chair | webhooks_up_with_chair | FR #9826/#9836 CAST IRON: intended-up ircJeeves requires local+public /bob/v1/report HTTP 200; start chair / heal BobCallback / optional W3SVC; never Ergo/BobIrcd |
 | Idle seats | `idle_seats` | seats idle while ungated work exists â€” EXIT 1 fingerprint `idle_with_open_work` + chair heal / ear-relay (FR #9644 / #9461); never `clear_seat_doing` on live busy seats |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
@@ -66,14 +67,22 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Depends-on open | `depends_on` | offered or accepted row whose `Depends-on:` ref is still OPEN (FR #8848 / BOB-D3). Soft-ok when the product skip is not on tip or no Depends-on rows. Distinct from hold and from `fr_digest` (see `bobiverse-jeeves-agent-depends-on`) |
 | FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
 | Tip merge gate | `tip_merge_gate` | FR #9847 CAST IRON: tip PR cohort merged, then digests `#9830`+`#9148` + children closed, before walrus rebuild/install. `NO_INSTALL` (exit 1) expected during steps 1–2 — comment step on one dedup tracker; intake only for `state_unknown` / `cohort_undefined`. `OK_FOR_RECEIPT` required on live receipts. Fixture `JEEVES_MONITOR_TIP_MERGE_GATE_FIXTURE`. Never soft_ok. ARM: `docs/ARM_JEEVES_PRS_THEN_9830_9148_WALRUS.md`. |
+| Digest CI gate | `digest_ci_gate` | FR #9877 CAST IRON: digest-level covering CI / `!build` / install receipt only after all recorded digest children CLOSED. `BLOCK_DIGEST_CI` (exit 1) mid-batch; `ALLOW_DIGEST_CI` (exit 0) when children closed. Children-only (complementary to tip_merge_gate #9847). Fixture `JEEVES_MONITOR_DIGEST_CI_GATE_FIXTURE`. Never soft_ok. |
 | Walrus install gate | `walrus_jeeves_install_ready` | FR #9376 Depends-on / Plan-agent gate issues CLOSED before DryRun / `-SiYes` WinRM hotpatch (`Install-JeevesWalrusWinRm.ps1`). Fixture `JEEVES_WALRUS_INSTALL_GATE_FIXTURE`. Does not open WinRM. |
 | Redqueen bob-tray install | `redqueen_bob_tray_install_ready` | FR #9419 live `bob-tray.exe` vs green `build-bob-tray.yml` / fixture drift before DryRun / `-Install` local hotpatch (`Install-BobTrayRedqueen.ps1`). Fixture `BOB_TRAY_REDQUEEN_INSTALL_FIXTURE`. Does not mutate the tray. |
 | MRB same-machine starve | `mrb_same_machine_starve` | FR #9478 idle same-machine siblings blocked from offerable MRBs with no free cross-machine reviewer (hard #9401 / free= omit). Prefer cross-machine `!assign`; tip soft free-other-machine; install waits on #9475/#9476. |
 | Models PUT forward | `models_put_forward` | FR #9585 Weights Save: public `PUT /bob/v1/models` must reach bobcallback (not IIS HTML 404). Remediation: re-run `Install-BobWebhooks.ps1` on walrus so `BobModelsWebhook` uses `^(GET\|HEAD\|POST\|PUT)$` (FR #9273). Fixture `JEEVES_MODELS_PUT_FORWARD_FIXTURE`. |
 
+| Lessons digest harvest (`9830_harvest`) | `9830_harvest` / `lessons_digest_harvest` | FR #9880 CAST IRON: while an OPEN+held *lessons* fr-digest is active, every cycle that learns a Jeeves/IRCD/ear/webhook lesson must same-turn file a child FR (`Depends-on: #<digest>`) or de-dup-comment. Helper: `Compare-JeevesLessonsDigestFindings.ps1` / fixture `JEEVES_LESSONS_DIGEST_FIXTURE`. Do not hardcode forever #9830 --- detect active held lessons digest or env `JEEVES_LESSONS_DIGEST` (documented current default #9830). |
+
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
 After the script checks, if BOB-D / BOB-G product is on tip, open and follow `.grok/skills/bobiverse-jeeves-agent-depends-on/SKILL.md` then `.grok/skills/bobiverse-jeeves-agent-fr-digest/SKILL.md` (go-gate after Depends-on). Until those ship, skip the two checks (missing check name = soft skip / do not EXIT 2).
+
+
+## CAST IRON lessons digest harvest (FR #9880 / checklist `9830_harvest`)
+
+While the active held *lessons* fr-digest is OPEN+held (detection / `JEEVES_LESSONS_DIGEST` / documented default `#9830`), **never** leave a new Jeeves/IRCD/ear/webhook lesson only in chat. Same turn: file a child FR with `Depends-on: #<digest>` or de-dup-comment an existing child. Run `Invoke-JeevesMonitorCheck.ps1 -Check 9830_harvest` (or `Compare-JeevesLessonsDigestFindings.ps1 -FindingsPath session.json`) each cycle after script checks.
 
 ## Report format (intake)
 

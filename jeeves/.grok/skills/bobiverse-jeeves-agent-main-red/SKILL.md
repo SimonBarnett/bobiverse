@@ -35,6 +35,9 @@ gh run list -R SimonBarnett/bobiverse --workflow build-jeeves.yml --branch main 
    commit to its PR (`gh pr list -R SimonBarnett/bobiverse --search <sha> --state merged`).
 4. De-dup then file exactly one issue (comment if a twin exists) with the run URL as evidence.
    Intake: `Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse`.
+   **FR #9854:** if a held lessons `fr-digest` is in flight, list this tip-red FIX under that digest's
+   Tip-priority siblings (LIST ONLY) and do **not** stamp `Depends-on: #<digest>` while hold remains
+   (`fr_digest_gate.stamp_digest_depends_on(digest_held=True, tip_priority=True)` → False).
 5. Point installs at the last green commit (hand the sha + run id to
    `bobiverse-jeeves-agent-install` / build receipt). Say what that green build contains or lacks
    relative to HEAD (e.g. missing later fixes).

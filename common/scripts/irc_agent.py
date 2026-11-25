@@ -5262,6 +5262,21 @@ class Client:
         if not self._joined_channel(target):
             return False
         now = time.time()
+        # FR #9882 CAST IRON: worker ready is a primary offer cue (same ranking as
+        # !bored). !bored stays as fallback when ready/DONE was missed. DONE already
+        # pushes via offer_after_done (FR #3893 / #9460).
+        if chair and gitclaim.is_worker_ready_line(body):
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
+            try:
+                self._workers().on_bored(src, target)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN workers ready error {type(exc).__name__}")
+            info(f"INFO git-claim worker-ready offer nick={src} (FR #9882)")
+            self._git_bored(src, target, now, chair=True)
+            return True
         if gitclaim.is_bored_command(body):
             try:
                 gitclaim.record_last_bored(self.home, src, now)

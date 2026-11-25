@@ -18,6 +18,15 @@ Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for 
 - Use label `hold` while gates are open; tool-only PRs use `Refs` / `Toward`, never `Closes`, until install acceptance (FR #9400).
 - If a tracker was already offered, labeling `hold` (or the ops body cues) clears `offered_to` / seat-holds. `!stuck` / `!sweep` also release ghost offers (`released_offers`) for held rows and idle seats past offer timeout with no ACK.
 
+## Bored push notify (FR #9879)
+
+`!bored` (and shop `worker ready` / `DONE`) must reach the MONITORING agent as a **push** from the ear inbound transcript — not via the 5–15 minute health loop.
+
+- **Notifier:** `scripts/watch_bored_push_notify.ps1` polls `inbound-transcript.log` every **1s** (override `BOB_INBOUND_TRANSCRIPT` / `BOB_HOME`). Prints `READY nick=…`, `DONE nick=…`, `BORED nick=… (fallback)` and appends the same lines to `%LOCALAPPDATA%\Bobiverse\monitor\bored-push-events.log`.
+- **Start path:** `Start-JeevesMonitor.ps1` calls `Ensure-BoredPushNotify.ps1` before `bob-worker --mode monitor`. Ensure starts one Hidden notifier and **kills duplicate PIDs** (keeps the oldest).
+- **Agent path:** first turn of `monitor-start` attaches a monitor tool to the notifier stdout or the events log; on each event, dispatch **same turn** (`Invoke-JeevesMonitorInterveneAssign` / ear-relay `!assign` / chair outbox). The scheduled health sleep is **health-only** and must not own assign.
+- **Related:** #9882 (chair should offer on ready/DONE; `!bored` is fallback). Until chair owns that, this overlay keeps latency under ~2s.
+
 ## MONITORING command access (FR #8827)
 
 The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / â€¦) **to keep the queue moving**. Chair auth: principal kind `monitor` â€” nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
@@ -71,6 +80,19 @@ Chair note for the three gates (digest go-gate vs hold vs Depends-on CLOSED): [f
 
 `Test-JeevesMonitorFrDigest.ps1` / `tools/monitor/fr_digest.py` exits 1 when an offered or accepted child `Depends-on:` a local queue row that is still a **held digest** (BOB-G1 + BOB-G3 Digest flag: `digest` or `fr-digest` label, or `Kind: digest|fr-digest`, plus `hold`). Removing `hold` (unhold) allows the offer (exit 0). A lone `hold` label is not this check. Title alone never makes a digest. Live runs without `--chair-home` stay soft-ok until `common/scripts/fr_digest_gate.py` exists or `gitclaim.py` contains `bob_g1_skip_held_digest`. Run after `depends_on`. No GitHub token.
 
+## digest_ci_gate (FR #9877)
+
+`Test-JeevesMonitorDigestCiGate.ps1` / `tools/monitor/digest_ci_gate.py` is **token-free** and **never soft_ok**.
+
+**CAST IRON:** digest covering / omnibus CI, tip rebuild + walrus install driven by a digest, unhold→drain completion CI, and ready-to-ship stamps for the **batch** wait until **every recorded child** under that digest is **CLOSED**. Child FRs may still open PRs and run per-child CI. Complementary to `tip_merge_gate` (FR #9847 tip PR cohort + digests); this check is **children-only**.
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `BLOCK_DIGEST_CI` | 1 | Any recorded child open/unknown, empty digests cohort, or empty children list for a digest |
+| `ALLOW_DIGEST_CI` | 0 | Every recorded child CLOSED (digest itself may still be open; #9552 auto-close may lag) |
+
+Fixture: `JEEVES_MONITOR_DIGEST_CI_GATE_FIXTURE` JSON `{issues:{N:{state}}}`. Overrides: `JEEVES_MONITOR_DIGEST_CI_GATE_DIGESTS`, `JEEVES_MONITOR_DIGEST_CI_GATE_CHILDREN` (`9830:9831|9832;9148:8775`), `JEEVES_MONITOR_DIGEST_CI_GATE_REPO`. Expected `BLOCK_DIGEST_CI` mid-batch: comment on the digest / one dedup tracker; intake for `state_unknown` / `cohort_undefined` / `children_undefined`. Chair note: [fr-digest-vs-hold-vs-depends-on.md](fr-digest-vs-hold-vs-depends-on.md) §4.
+
 ## Digest flag (BOB-G3 / FR #9108)
 
 Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR rows with label `digest` or `fr-digest`, or line-anchored `Kind: digest|fr-digest`. Never offered or `!assign`ed as work (stay queued as gate records). `!list` marks `[digest]`. Intake strips those labels from PRs.
@@ -120,6 +142,8 @@ UNC installs such as `\\walrus\Jeeves` need `BOBIVERSE_REPO` pointing at a check
 Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` with `$env:BOBIVERSE_REPO` set to a tip checkout (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host). After Sync, `tools\monitor\opencode_seats.py` and `scripts\Test-JeevesMonitorOpencodeSeats.ps1` must be present.
 
 ## empty-offer playbook (FR #2448 / #2446)
+**FR #9882 CAST IRON:** chair offers on shop `worker ready` and on `DONE` same-tick; `!bored` is fallback only (see [empty-offer-operator.md](empty-offer-operator.md)). Sibling FR #9879 covers inbound-transcript push notify for monitor overlay.
+
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
@@ -135,6 +159,15 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
 **FR #9461 (deterministic intervene):** EXIT 1 (idle + offerable) **triggers** ear-relay !assign by default (--intervene, use --no-intervene for report-only). Implementation: `tools/monitor/intervene_assign.py` + `scripts/Invoke-JeevesMonitorInterveneAssign.ps1`. Picks eligible idle shop nicks and MERGEABLE-preferring unaccepted rows, appends UTF-8 no-BOM PRIVMSG #bobiverse :!assign <nick> <repo> <TASK> <n> to the ear outbox (C:\ai\bob\home\outbox.txt or %USERPROFILE%\.bobiverse\outbox.txt, override BOB_EAR_OUTBOX), paces >=3s, skips self-MRB and needs_human (unless --force-needs-human). Never edits queue.json, never touches Ergo, never Start-BobWorker. Optional --truncate-outbox when companion *.pos is at EOF. --intervene-dry-run plans without writing. Sibling chair-side push: FR #9460.
 
+**FR #9878 (ear mute / cmd-trace stale => Jeeves shop-wire):** Prefer ear !assign while chair `cmd-trace.log` is fresh. When cmd-trace is missing or older than `BOB_CMD_TRACE_MUTE_S` (default 120s), or `--shop-wire` is set, MONITORING intervenes as the Jeeves service: append UTF-8 no-BOM shop-wire to the chair outbox (`BOB_CHAIR_OUTBOX` or `%USERPROFILE%\.jeeves\outbox.txt`):
+
+```text
+PRIVMSG #<machine> :<nick>: MRB|FIX|FR owner/repo#N <url>
+PRIVMSG #bobiverse :assign: sent <nick>: TASK owner/repo#N <url>
+```
+
+Helper: `tools/monitor/shop_wire_assign.py` + `scripts/Send-JeevesShopAssign.ps1` + intervene `--prefer-shop-wire-on-mute` (idle_seats default on). Durable tip does **not** need live walrus (path override / fixture). **Live mute incidents** that must write the walrus chair outbox: stamp/honor `require_machine=walrus` (pair with #9871/#9872); do not tip those live ops from redqueen alone.
+
 **FR #8536:** when idle seats exist and `offerable_for_live_seats==0`, the check stays EXIT 0 and sets `healthy_idle_empty_offerable=true` (and `queue_needs_human_only` when every unaccepted row is needs_human). Notes say do not recycle as hung. Digest `queue` also exposes `offerable_count` / `queue_needs_human_only` for TipForm.
 
 ## mrb_same_machine_starve (FR #9478)
@@ -144,6 +177,8 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 **FR #8866 (non-chair):** when neither home has `queue.json`, the check fetches one live `/bob/v1/report` (same missing-queue rule as `queue_flow` FR #8579). It does not need a local `digest.json`. Idle seats come from the report after dropping `workers_stale` machines. `offerable_for_live_seats` is an estimate (`offerable_estimate=true`): pending offer, needs_human, cooldown, and an explicit `require_machine` matched to an idle seat machine. Unverified gates (not applied): focus, ignore, ledger, review-author, FR/MRB shape, free-fuel, inferred pins. Idle seat plus estimate > 0 is EXIT 1 and names each nick. No live idle seats is EXIT 0. A missing, stale, or incomplete report is EXIT 1 (`local queue missing; live report unavailable/stale/incomplete`) with `idle_seats=[]`.
 
 **FR #9557 (empty/stale local ops home):** a present but empty `queue.json` / empty digest on a non-chair host (typical Admin `~/.jeeves` on redqueen while ACC lives on walrus) must not paint false idle/starve. `local_ops_stale_vs_live_report` compares local buckets to a fresh `/bob/v1/report` (`empty_local_queue` / `missing_local_queue` / `missing_local_digest` / `seat_state_mismatch`). When stale and the live report is usable, idle_seats prefers the live report (`source=live_report_stale_local`, `stale_local_home=<why>`). When stale and the live report is unusable, soft-skip EXIT 0 with `skipped=stale_local_home` (no false starve). Token-free monitors may set `JEEVES_MONITOR_DIGEST_HOME` (UNC/shared chair digest) ahead of seat-local `BOB_DIGEST_HOME`.
+
+**FR #9849 (local idle ghosts vs live busy):** when local digest paints shop seats `idle` (and idle+offerable would EXIT 1 / true-starve) but a fresh live `/bob/v1/report` shows those same nicks as doing/accepted, `idle_seats` and `queue_flow` drop the contradicted nicks, annotate `local_stale` + `local_stale_idle_nicks`, and soft-ok when no real idle seats remain. Remaining real idles still EXIT 1. Prevents !assign storms from stale local paint while the live chair is busy.
 
 - Gated-only queue + idle seats â†’ EXIT 0
 - Idle seats + offerable row â†’ EXIT 1

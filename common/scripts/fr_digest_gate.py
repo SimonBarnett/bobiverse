@@ -2,20 +2,30 @@
 """FR #9821 / BOB-G1 shared gate: held fr-digest blocks Depends-on children.
 
 Chair offer / assign / !bored / !list / digest ``offerable_count`` share
-``gitclaim.depends_gate_reason`` (FR #9455 / #9553). This module is the tip
-marker the token-free ``fr_digest`` monitor looks for (``product_on_tip``),
-plus small helpers for intake Digest filing (default ``hold``).
+``gitclaim.depends_gate_reason`` (FR #9455 / #9553). FR #9838: Copilot /
+``copilot_dispatch.should_dispatch`` uses the same predicate via
+``held_digest_cca_skip_reason`` so CCA Haiku refill cannot burn allowlist on
+held-digest children. This module is the tip marker the token-free
+``fr_digest`` monitor looks for (``product_on_tip``), plus small helpers for
+intake Digest filing (default ``hold``).
 
-Predicate (FR #9821):
+Predicate (FR #9821 / #9838):
 * OPEN Depends-on target with labels ``fr-digest`` (or ``digest`` / Kind stamp)
-  **and** ``hold`` / ``on-hold`` → child is not offerable (``depends-held``).
+  **and** ``hold`` / ``on-hold`` → child is not offerable / not CCA (``depends-held``).
 * Same digest without ``hold`` → soft-allow while OPEN (``ok-fr-digest``).
 * Digests are created with ``hold``; unhold releases children.
+
+FR #9854: tip-priority siblings that must merge while the digest stays held are
+list-only on the digest body — ``stamp_digest_depends_on(..., tip_priority=True)``
+returns False so filings do not stamp ``Depends-on: #<digest>``.
+
+FR #9848: when the parent digest loses ``hold``, strip ``hold`` / ``on-hold``
+from ordinary Depends-on children (not nested digest children — FR #9860).
 """
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 DIGEST_LABELS = frozenset({"fr-digest", "digest"})
 HOLD_LABELS = frozenset({"hold", "on-hold"})
@@ -101,3 +111,57 @@ def ensure_digest_hold_labels(
 def bob_g1_skip_held_digest() -> str:
     """Stable marker string; ``fr_digest`` monitor greps gitclaim + this module."""
     return "bob_g1_skip_held_digest"
+
+
+# Digest body section markers (FR #9854). Tip-priority siblings are listed here
+# without a child-body Depends-on while the digest stays held.
+TIP_PRIORITY_SECTION = "### Tip-priority siblings (LIST ONLY"
+CHILDREN_SECTION = "### Children (Depends-on this digest)"
+
+
+def stamp_digest_depends_on(*, digest_held: bool, tip_priority: bool = False) -> bool:
+    """FR #9854: whether a filing should stamp ``Depends-on: #<digest>``.
+
+    Tip-blocking FIX/MRB that must merge while a lessons digest stays held are
+    **list-only** on the digest body (Tip-priority siblings). Stamping
+    ``Depends-on`` would trip the held-digest gate (#9821) and starve the tip
+    merge. Ordinary parked children still stamp Depends-on. After unhold,
+    tip-priority siblings may take Depends-on like any other child.
+    """
+    if tip_priority and digest_held:
+        return False
+    return True
+
+
+def strip_hold_labels(labels: Iterable[str] | None) -> list[str]:
+    """FR #9848: drop ``hold`` / ``on-hold`` from a label list (preserve order)."""
+    out: list[str] = []
+    for raw in labels or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if s.lower() in HOLD_LABELS:
+            continue
+        out.append(s)
+    return out
+
+
+def should_strip_child_hold_on_parent_unhold(row: Mapping[str, Any] | None) -> bool:
+    """True for ordinary FR children; False for nested digests (FR #9860).
+
+    Nested ``fr-digest`` / ``digest`` / ``Kind:`` children keep their own hold
+    until an operator unholds that digest explicitly.
+    """
+    if not isinstance(row, Mapping):
+        return False
+    title = str(row.get("title") or "")
+    body = str(row.get("body") or "")
+    labs = _label_names(row.get("labels"))
+    if labs & DIGEST_LABELS:
+        return False
+    if DIGEST_KIND_RE.search(body):
+        return False
+    if DIGEST_TITLE_RE.match(title) and (labs & HOLD_LABELS):
+        # Title Digest: with hold but missing label still treated as nested gate.
+        return False
+    return bool(labs & HOLD_LABELS)

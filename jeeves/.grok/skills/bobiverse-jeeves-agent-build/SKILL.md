@@ -126,6 +126,7 @@ Receipt complete, hash re-computed and matching, run green on the exact SHA, and
 - Never publish/promote a release, or send `!build`, without the operator's explicit go for that SHA/version.
 - Never paste tokens or PATs into commands shown in chat; rely on the host's existing gh auth.
 - **Active ARM FR #9847** (`docs/ARM_JEEVES_PRS_THEN_9830_9148_WALRUS.md`): without a fresh live `tip_merge_gate` **`OK_FOR_RECEIPT`** (`source=live`, `observed_at` attached to the receipt), do **not** `!build`, do **not** issue a build/install receipt, and do **not** use the older-green-SHA path above for a walrus rebuild. `NO_INSTALL` during steps 1–2 is expected.
+- **CAST IRON FR #9877** (`digest_ci_gate`): without a fresh live `ALLOW_DIGEST_CI` for the active fr-digest batch (all recorded children CLOSED), do **not** treat digest covering / omnibus CI as the merge/release gate, do **not** send batch `!build` / ready-to-install receipts for that digest, and do **not** stamp the digest done mid-batch. Child FR PRs may still run per-child CI. Complementary to tip_merge_gate (#9847). See `docs/fr-digest-vs-hold-vs-depends-on.md` §4.
 
 ## After a green build-jeeves (walrus)
 
