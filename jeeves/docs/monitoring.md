@@ -10,14 +10,14 @@ Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for 
 
 ## MONITORING command access (FR #8827)
 
-The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / â€¦) **to keep the queue moving**. Chair auth: principal kind `monitor` â€” nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
+The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus` / `!assign` / `!sweep` / `!stuck` / `!resync` / Ã¢â‚¬Â¦) **to keep the queue moving**. Chair auth: principal kind `monitor` Ã¢â‚¬â€ nick `monitoring` by default (`JEEVES_MONITOR_NICKS`) or a services account in `JEEVES_MONITOR_ACCOUNTS`. Same mutator class as owner/ear; unrelated nicks stay denied.
 
 **How the seat authenticates (no secrets here):**
 
 | Path | When | How |
 |---|---|---|
 | **Ear relay** | Monitor host has a live `bob-<machine>` ear (usual) | Append `PRIVMSG #bobiverse :!<cmd>` (or `PRIVMSG Jeeves :!<cmd>`) to the ear outbox. Ear principal already has full mutators. |
-| **Direct** | Dedicated IRC nick for monitor | Nick in `JEEVES_MONITOR_NICKS` (default `monitoring`) and/or account in `JEEVES_MONITOR_ACCOUNTS` on the chair. SASL/services login is configured on the client host â€” never paste passwords into docs or intake. |
+| **Direct** | Dedicated IRC nick for monitor | Nick in `JEEVES_MONITOR_NICKS` (default `monitoring`) and/or account in `JEEVES_MONITOR_ACCOUNTS` on the chair. SASL/services login is configured on the client host Ã¢â‚¬â€ never paste passwords into docs or intake. |
 
 `bob-worker --mode monitor` itself still has no IRC shop seat; relay or a separate IRC client supplies the nick. Playbook (when to `!ignore` vs intake): `.grok/skills/bobiverse-jeeves-monitor/SKILL.md`. Related tray UI: BOB-43 (#8681).
 
@@ -25,8 +25,8 @@ The MONITORING agent may run the full Jeeves command matrix (`!ignore` / `!focus
 
 `Test-JeevesMonitorIntakeAllowlist.ps1` / `tools/monitor/intake_allowlist.py` probes live `POST /bob/v1/intake` with do-not-file titles for known products (including `SimonBarnett/a-search` and `SimonBarnett/trutex`).
 
-- Denial is **only** HTTP **403** with JSON `error=repo_not_allowed` â†’ EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR). FR #9100: both the returned-response and raised-`HTTPError` paths use that rule.
-- Every other non-2xx (Cloudflare `error code: 1010` / HTML WAF 403, empty route-gate 403, 5xx) â†’ probe error, **not** allowlist drift (FR #8861 / #9100). Do **not** Sync for a probe error.
+- Denial is **only** HTTP **403** with JSON `error=repo_not_allowed` Ã¢â€ â€™ EXIT 1 (live ircJeeves allow rule drifted; usually missing Sync/compose after an allow PR). FR #9100: both the returned-response and raised-`HTTPError` paths use that rule.
+- Every other non-2xx (Cloudflare `error code: 1010` / HTML WAF 403, empty route-gate 403, 5xx) Ã¢â€ â€™ probe error, **not** allowlist drift (FR #8861 / #9100). Do **not** Sync for a probe error.
 - Probes send `User-Agent: BobiverseIntakeAllowlist/1.0 (+https://github.com/SimonBarnett/bobiverse)` plus `Content-Type` / `Accept` JSON headers so `bob.ntsa.uk` (Cloudflare) does not bot-block Python-urllib's default UA.
 - Also asserts on-disk `common/scripts/intake.py` exposes `repo_allowed` / SimonBarnett owner gate (FR #3135) when the file is present.
 - Remediation is scoped: Sync/compose guidance only for confirmed denials; probe-error remediation says Do not Sync.
@@ -69,7 +69,7 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 `Test-JeevesMonitorGithubResyncFocus.ps1` / `tools/monitor/github_resync_focus.py` flags when `focus.repos` is non-empty but the offer queue stays empty (`unaccepted=0`) or `discover_repos` misses focus keys.
 
-- Product: `common/scripts/chair_health.py` `discover_repos` **unions** `focus.repos` (short keys like `a-search` â†’ `SimonBarnett/a-search`).
+- Product: `common/scripts/chair_health.py` `discover_repos` **unions** `focus.repos` (short keys like `a-search` Ã¢â€ â€™ `SimonBarnett/a-search`).
 - Ops: write digest-home `resync-repos.txt` with focused full names and run `!resync` (or wait for the 15m cycle after Sync/compose).
 - FR #4725: install and chair start seed/merge `DEFAULT_RESYNC_REPOS` into chair + digest `resync-repos.txt` (includes `SimonBarnett/ce-priority`). Pack copy: `jeeves/defaults/resync-repos.txt`.
 - Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
@@ -91,7 +91,7 @@ Chair `gitclaim.digest_issue_reason` / monitor `is_digest_row`: issues-only FR r
 
 When an online shop has `workers=[]` and `!startworker` gets **no** ACK/NACK, the target ear is down or swallowed a decide exception. FR #9471 makes the owning ear NACK `decide failed` instead of staying silent, and HealEngine storm forces one ReloadEngine + `engine.storm` TipForm alert. Keep `online_zero_workers` firing until workers>0 (FR #9462 / #3180 TipForm Agents only).
 
-**FR #9513 / #9522 engine_stale after merge:** a merged tip that adds `engine.wake` / TipForm TakeWake does **not** heal the live host. If `!startworker` still NACKs `engine.alive stale` without `wake requested` / `wake pending`, the ear tip lags â€” recycle ear + TipForm **Reload engine** (or rebuild tray) and keep polling until workers>0; file a residual if NACK persists after tip is on the host.
+**FR #9513 / #9522 engine_stale after merge:** a merged tip that adds `engine.wake` / TipForm TakeWake does **not** heal the live host. If `!startworker` still NACKs `engine.alive stale` without `wake requested` / `wake pending`, the ear tip lags Ã¢â‚¬â€ recycle ear + TipForm **Reload engine** (or rebuild tray) and keep polling until workers>0; file a residual if NACK persists after tip is on the host.
 
 ## ircbob_ear (FR #9144 / #9496 / #9503)
 
@@ -110,6 +110,8 @@ UNC installs such as `\\walrus\Jeeves` need `BOBIVERSE_REPO` pointing at a check
 Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves` with `$env:BOBIVERSE_REPO` set to a tip checkout (or `-InstallRoot C:\ai\bob\jeeves` on a repo-tree host). After Sync, `tools\monitor\opencode_seats.py` and `scripts\Test-JeevesMonitorOpencodeSeats.ps1` must be present.
 
 ## empty-offer playbook (FR #2448 / #2446)
+**FR #9882 CAST IRON:** chair offers on shop `worker ready` and on `DONE` same-tick; `!bored` is fallback only (see [empty-offer-operator.md](empty-offer-operator.md)). Sibling FR #9879 covers inbound-transcript push notify for monitor overlay.
+
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
@@ -135,9 +137,9 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 
 **FR #9557 (empty/stale local ops home):** a present but empty `queue.json` / empty digest on a non-chair host (typical Admin `~/.jeeves` on redqueen while ACC lives on walrus) must not paint false idle/starve. `local_ops_stale_vs_live_report` compares local buckets to a fresh `/bob/v1/report` (`empty_local_queue` / `missing_local_queue` / `missing_local_digest` / `seat_state_mismatch`). When stale and the live report is usable, idle_seats prefers the live report (`source=live_report_stale_local`, `stale_local_home=<why>`). When stale and the live report is unusable, soft-skip EXIT 0 with `skipped=stale_local_home` (no false starve). Token-free monitors may set `JEEVES_MONITOR_DIGEST_HOME` (UNC/shared chair digest) ahead of seat-local `BOB_DIGEST_HOME`.
 
-- Gated-only queue + idle seats â†’ EXIT 0
-- Idle seats + offerable row â†’ EXIT 1
-- Pin-only empty offer sustained >10m â†’ EXIT 1 (`queue_flow`, FR #2448 / #2446)
+- Gated-only queue + idle seats Ã¢â€ â€™ EXIT 0
+- Idle seats + offerable row Ã¢â€ â€™ EXIT 1
+- Pin-only empty offer sustained >10m Ã¢â€ â€™ EXIT 1 (`queue_flow`, FR #2448 / #2446)
 
 ## auto_feed (FR #8493)
 
