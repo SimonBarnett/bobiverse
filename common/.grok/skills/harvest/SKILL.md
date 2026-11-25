@@ -53,6 +53,7 @@ depends_on: []
 >    **FR #9854 tip-priority (LIST ONLY):** tip-blocking FIX/MRB that must merge while the digest stays held are listed on
 >    the digest under Tip-priority siblings and must **not** carry `Depends-on: #<digest>` until unhold (held-digest gate
 >    #9821 would starve the tip). Never auto-wire Depends-on onto those filings.
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 

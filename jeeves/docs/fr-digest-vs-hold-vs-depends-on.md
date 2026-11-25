@@ -20,6 +20,7 @@ Three different gates. Do not collapse them.
 |---|---|
 | What | One **digest** issue per target repo parks a batch. Labels: `digest`/`fr-digest` and `hold`. Children stamp `Depends-on: #digest` (plus any intra-batch Depends-on). |
 | Release | **Unhold alone** (remove `hold`). Digest may stay OPEN. Close is optional. |
+| Child holds (FR #9848) | Parent unhold **also strips** `hold` / `on-hold` from ordinary Depends-on children (queue + best-effort GitHub label DELETE) and announces on `#bobiverse`. Nested digest children keep their own hold (FR #9860 — no auto-unhold next phase). Fail-when: parent unheld while kids stay individually held with no strip. |
 | Offer path | BOB-G1: depend with `hold` -> skip reason `depends-held` (`bob_g1_skip_held_digest`). Unheld digest -> `ok-fr-digest` while still OPEN (does not trip depends-open). |
 | Shared gate | **FR #9455** `depends_gate_reason` / `bob_g1_shared_gate` — offer, `!assign`, and stuck/report use **one** helper. Digests absent from the local queue still resolve via `issue_fetch` (FR #9418 / #9434). |
 | Plan | VIS-G3: visionary skill parks the digest with those labels; children are not assignable until unhold. |
@@ -48,6 +49,7 @@ Three different gates. Do not collapse them.
 hold label alone                 -> block that FR (issues-only)
 digest/fr-digest (+ optional Kind:) -> never dispatch as work; gate record
 digest/fr-digest + hold          -> block children until unhold (close optional)
+parent unhold (FR #9848)         -> strip hold from ordinary Depends-on kids
 Depends-on ordinary OPEN         -> block until parent CLOSED
 Depends-on unheld digest OPEN    -> offer OK (BOB-G1)
 tip-priority sibling (held)      -> LIST ONLY on digest; no Depends-on (FR #9854)

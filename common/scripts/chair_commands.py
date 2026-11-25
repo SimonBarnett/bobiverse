@@ -108,11 +108,13 @@ COMMANDS: tuple = (
     CommandSpec("unignore", "!unignore {repo}", "resume handling a previously ignored repo (simon/ops)", OPS_ROLES,
                 "!unignore old-sandbox", "Removes the repo from ignored.json; new events are handled again.",
                 ("ignore", "ignored")),
-    CommandSpec("focus", "!focus [strict on|off]|[n|high|medium|low] {repo|owner/repo#N}",
+    CommandSpec("focus", "!focus [strict on|off]|[build-jeeves on|off]|[n|high|medium|low] {repo|owner/repo#N}",
                 "priority-sort !list and assign-on-!bored (simon/ops)", OPS_ROLES, "!focus strict on",
                 "focus.json beside the queue. Items (owner/repo#N) rank ahead of repo focus. Lower number first. "
-                "Bare !focus lists strict flag, items, repos (read is open). !focus strict on|off: when on, "
-                "!list and !bored only use focused work. Repos with GitHub topic priority-customer sort "
+                "Bare !focus lists strict flag, dispatch-lock line, items, repos (read is open). !focus strict on|off: when on, "
+                "!list and !bored only use focused work. FR #9833: !focus build-jeeves on|off writes dispatch-lock.json "
+                "so offers admit only jeeves/+common/ tip MRB/FIX and allowlisted gate FRs (default off). "
+                "Repos with GitHub topic priority-customer sort "
                 "after non-customer work (refreshed on resync). Tag: "
                 "gh repo edit SimonBarnett/<repo> --add-topic priority-customer. "
                 "Explicit !focus / item focus on a customer repo still wins.", ("unfocus", "list")),

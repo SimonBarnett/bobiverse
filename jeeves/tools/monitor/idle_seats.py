@@ -521,6 +521,25 @@ def check(args):
     unaccepted = queue_bucket_rows(queue, "unaccepted")
     machines = dig.get("machines") if isinstance(dig, dict) else None
     idle = collect_idle_shop_seats(machines)
+    # FR #9849: drop local idle ghosts contradicted by live /report busy seats
+    # (accepted>0 / doing). Reuses the single fetch above (FR #9557 / #8866 once).
+    # Keeps real remaining idles; soft-ok when none left.
+    local_stale_nicks: list[str] = []
+    ghost_keys = common.local_idle_contradicted_by_live(
+        [str(x.get("nick") or "") for x in idle if x.get("nick")],
+        live_doc,
+    )
+    if ghost_keys:
+        local_stale_nicks = sorted(ghost_keys)
+        idle = [
+            x
+            for x in idle
+            if str(x.get("nick") or "").strip().lower() not in ghost_keys
+        ]
+        notes.append(
+            f"local_stale: dropped {len(ghost_keys)} idle nick(s) busy on live "
+            f"/bob/v1/report (FR #9849): {','.join(local_stale_nicks)}"
+        )
     pending_offers = sum(1 for r in unaccepted if isinstance(r, dict) and row_offer_pending(r))
     if pending_offers:
         notes.append(
@@ -583,6 +602,9 @@ def check(args):
         "queue_path": str(qpath),
         "findings": findings,
     }
+    if local_stale_nicks:
+        payload["local_stale"] = True
+        payload["local_stale_idle_nicks"] = local_stale_nicks
     if idle and int(offerable or 0) > 0:
         payload["fingerprint"] = IDLE_WITH_OPEN_WORK_FP
         payload["fingerprints"] = [IDLE_WITH_OPEN_WORK_FP]

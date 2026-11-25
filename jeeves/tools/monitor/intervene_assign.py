@@ -161,10 +161,21 @@ def plan_assigns(
         candidates.append(row)
 
     def _sort_key(r: dict) -> tuple:
+        # FR #9850 / #9867: tip DIRTY FIX / tip CLEAN MRB before lesson FRs.
+        tip_rank = 3
+        try:
+            from _common import ensure_script_dir_on_path
+
+            ensure_script_dir_on_path("tip_offer_prefer.py", "gitclaim.py")
+            import tip_offer_prefer as _tip
+
+            tip_rank = int(_tip.tip_prefer_rank(r))
+        except Exception:
+            tip_rank = 3
         task = row_task(r)
         pref = 0 if (task == "MRB" and is_mergeable_preferred(r)) else 1
-        pref2 = 0 if task == "MRB" else 1
-        return (pref, pref2, row_repo(r), row_num(r))
+        pref2 = 0 if task == "MRB" else (1 if task == "FIX" else 2)
+        return (tip_rank, pref, pref2, row_repo(r), row_num(r))
 
     candidates.sort(key=_sort_key)
 
