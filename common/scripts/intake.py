@@ -127,6 +127,8 @@ def is_noop_harvest_lesson(line: str) -> bool:
     return bool(_LESSON_PLACEHOLDER_RE.match(text))
 
 HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
+# FR #9915: stable EOF marker so parallel tip appends share one context line.
+HARVEST_LESSONS_EOF_MARKER = "<!-- harvest-lessons-eof -->"
 # FR #8310: archive beside harvest/SKILL.md so skill-dag stays under 64KiB.
 HARVEST_LESSONS_ARCHIVE = "common/.grok/skills/harvest/lessons.md"
 # FR #3299 / #3317: light triage in the owning repo (useful / generalised / vision);
@@ -1421,30 +1423,79 @@ def harvest_book_text_for_dedupe(
 
 
 def apply_lessons_to_skill_md(
-    existing: str, lessons: list[str], *, covered_md: str = ""
+    existing: str,
+    lessons: list[str],
+    *,
+    covered_md: str = "",
+    tip_anchor: str = "",
 ) -> str:
-    """Append lessons under ``## Harvested lessons (intake)`` (FR #2705).
+    """Append lessons under ``## Harvested lessons (intake)`` (FR #2705 / #9915).
 
     ``covered_md`` may include the harvest ``lessons.md`` archive so bullets
     already moved out of SKILL.md are not re-appended (FR #8310).
+
+    FR #9915: keep a stable ``HARVEST_LESSONS_EOF_MARKER`` at the end of the
+    harvested-lessons section and optionally emit a unique ``tip_anchor`` HTML
+    comment before new bullets. Pair with ``merge=union`` in ``.gitattributes``
+    so sibling harvest-lesson tips that append different bullets do not land
+    CONFLICTING/DIRTY on the shared trailing hunk.
     """
     cleaned = [unescape_harvest_lesson_text(x) for x in (lessons or [])]
     fresh = filter_new_lessons(covered_md or existing, cleaned)
     base = str(existing or "").rstrip() + "\n"
-    bullets = "\n".join(f"- {x}" for x in fresh if str(x).strip())
-    if not bullets:
+    lines: list[str] = []
+    anchor = re.sub(r"[^A-Za-z0-9._-]+", "-", str(tip_anchor or "").strip()).strip("-")
+    if anchor:
+        lines.append(f"<!-- harvest-tip:{anchor} -->")
+    for x in fresh:
+        s = str(x).strip()
+        if s:
+            lines.append(f"- {s}")
+    if not lines:
+        if HARVEST_LESSONS_EOF_MARKER not in base and HARVESTED_LESSONS_HEADING in base:
+            return base.rstrip() + "\n" + HARVEST_LESSONS_EOF_MARKER + "\n"
         return base
+    bullets = "\n".join(lines)
     heading = HARVESTED_LESSONS_HEADING
-    if heading in base:
-        # Append under existing heading (before any later ## if present after it).
-        idx = base.index(heading)
-        after = base[idx + len(heading) :]
-        next_h = re.search(r"\n##\s+", after)
-        if next_h:
-            insert_at = idx + len(heading) + next_h.start()
-            return base[:insert_at].rstrip() + "\n" + bullets + "\n" + base[insert_at:]
-        return base.rstrip() + "\n" + bullets + "\n"
-    return base.rstrip() + "\n\n" + heading + "\n\n" + bullets + "\n"
+    eof = HARVEST_LESSONS_EOF_MARKER
+    if heading not in base:
+        return (
+            base.rstrip()
+            + "\n\n"
+            + heading
+            + "\n\n"
+            + bullets
+            + "\n"
+            + eof
+            + "\n"
+        )
+    if eof in base:
+        idx = base.index(eof)
+        return (
+            base[:idx].rstrip()
+            + "\n"
+            + bullets
+            + "\n"
+            + eof
+            + "\n"
+            + base[idx + len(eof) :].lstrip("\n")
+        )
+    idx = base.index(heading)
+    after = base[idx + len(heading) :]
+    next_h = re.search(r"\n##\s+", after)
+    if next_h:
+        insert_at = idx + len(heading) + next_h.start()
+        return (
+            base[:insert_at].rstrip()
+            + "\n"
+            + bullets
+            + "\n"
+            + eof
+            + "\n"
+            + base[insert_at:]
+        )
+    return base.rstrip() + "\n" + bullets + "\n" + eof + "\n"
+
 
 
 _SKILL_TREE_PATH_RE = re.compile(
@@ -3134,8 +3185,12 @@ def file_submission(
                     rec["queued"] = False
                     _save_record(home, rec)
                     return rec
+                # FR #9915: unique tip_anchor so parallel tips differ before union merge.
                 new_md = apply_lessons_to_skill_md(
-                    existing_md, new_lessons, covered_md=covered_md
+                    existing_md,
+                    new_lessons,
+                    covered_md=covered_md,
+                    tip_anchor=str(branch or rec.get("id") or ""),
                 )
                 # FR #9180: SkillFile companions under .grok/skills join the tip files[].
                 # FR #9303 / SV #198: skills-visionary tips also mirror apps/mcp-catalog.
