@@ -501,3 +501,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - FR #8781 class: /health ok and last_digest_write do not prove AppStdout progress; expose progress_ok ages on /health and EXIT 1 via chair_progress when logs stale
 - PR body: avoid GitHub closing keywords (close/closes/closed/fix/fixed/resolve) immediately before an unrelated #N; they add closingIssuesReferences.
 - Probe report with curl -m hard timeout; IWR TimeoutSec can hang indefinitely on stuck /report
+- When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
