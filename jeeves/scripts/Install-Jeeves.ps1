@@ -139,20 +139,29 @@ if ((Test-Path -LiteralPath $homeMigrate) -and $Python) {
 # FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
 Write-BobiverseMsiInstallLog -Product jeeves -Message ("install-begin service=$ServiceName installRoot=$InstallRoot msiVer=$MsiProductVersion")
 $script:JeevesInstallOk = $false
-$script:InstallChairService = Test-BobiverseIsChairHost
-if (-not $script:InstallChairService) {
+# FR #9945: chair-host probe must not throw into Disable. On probe failure leave ircJeeves untouched.
+$script:InstallChairService = $null
+try {
+    $script:InstallChairService = [bool](Test-BobiverseIsChairHost)
+} catch {
+    Write-Host ("WARN FR #9945 Test-BobiverseIsChairHost failed: {0} - leaving ircJeeves untouched" -f $_.Exception.Message)
+}
+if ($script:InstallChairService -eq $false) {
     Write-Host ("INFO FR #6947 chair host is {0}; this host is {1} - will not create or enable ircJeeves" -f (Get-BobiverseChairHost), (Get-BobiverseThisMachineId))
 }
 try {
 
 # FR #6947: only the chair host creates/enables ircJeeves. Seats disable a leftover, never delete.
-if ($script:InstallChairService) {
+# FR #9945: $null probe (throw) skips both create and Disable.
+if ($script:InstallChairService -eq $true) {
     # Clean prior ircJeeves + remove legacy gh-Jeeves chair (both fight for nick Jeeves)
     Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
     Remove-BobiverseLegacyService -Name 'BobJeeves' -Nssm $Nssm
     Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
-} else {
+} elseif ($script:InstallChairService -eq $false) {
     Disable-BobiverseStrayChairService -Name $ServiceName
+} else {
+    Write-Host "WARN FR #9945 chair-host probe inconclusive; not calling Disable-BobiverseStrayChairService"
 }
 # Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged - issue #2)
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
