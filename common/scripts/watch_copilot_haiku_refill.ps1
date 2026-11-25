@@ -357,7 +357,7 @@ try {
       break
     }
     $resp = Start-HaikuFr $fr
-    if (-not $resp) { Write-Output 'POST failed/rate-limited — stop'; break }
+    if (-not $resp) { Write-Output 'POST failed/rate-limited - stop'; break }
     [void]$knownIssues.Add([int]$fr.n)
     $inflight++
     Start-Sleep -Seconds 5
