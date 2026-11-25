@@ -122,3 +122,7 @@ Empty table with `no fr-digest batches in flight` is valid.
 - Depends-on parse/skip: #8805 / #8807
 - Sibling: `bobiverse-jeeves-agent-depends-on`
 - Live MONITORING loop: `bobiverse-jeeves-monitor`, `monitor-start`
+
+## CAST IRON lessons harvest onto active digest (FR #9880)
+
+Checklist `9830_harvest`: while *this* (or the detected active) held lessons digest is OPEN+held, MONITORING must file new Jeeves/IRCD/ear/webhook lessons as Depends-on children (or de-dup-comment) every cycle --- not chat-only. Prefer active held lessons-digest detection / env over hardcoding a single issue number; `#9830` is the documented current default only. See `monitor-start` and `lessons_digest_harvest.py`.
