@@ -508,3 +508,11 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - CCA/Copilot dispatch must call the same Depends-on gate as !bored (depends_gate_reason / held_digest_cca_skip_reason); a MONITORING script deny-list is not durable.
 - FIX tip CI: when build-jeeves fails test_digest_includes_copilot (tasks) or test_fr8775 winrm DAG, fold origin/main that already carries the #9928 tip-CI allowlist before re-pushing the assigned tip.
 - Tip red blocks walrus install; blank JEEVES_MONITOR_NICKS must keep default monitoring; WinRM byte-copy of ~17MB exe hits 10MB deserialize limit --- use UNC Copy-Item for the exe
+- gh REST 0 remaining: load C:\passwords\gitPAT.txt into GH_TOKEN without printing; wait for core reset then pr create; GraphQL may still have budget
+- After tip allowlist clears, prefer open MERGEABLE non-draft (#9917/#9417/#9918); never offer CONFLICTING or draft as MRB --- FIX-first or skip; walrus truncate+pos=0 shop-wire for live !bored nicks
+- Harvest-lesson tips that append the same SKILL.md trailing hunk: set merge=union in .gitattributes (git add -f under install exclude /*) and insert before <!-- harvest-lessons-eof --> with unique tip_anchor (FR #9915)
+- When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
+- Digest batch filing: capture $r = Report-BobiverseIntakeIssue; use $r.number (or ISSUE_NUMBER= host line), never $Matches on prose URLs (FR #9837).
+- When a dispatch/focus filter drops rows from ordered_unaccepted, also skip those rows inside mrb_yields_to_older_fr (and similar raw-unaccepted walks) or tip MRBs stay empty behind lock-blocked tray FRs.
+- When merging monitor Invoke-JeevesMonitorCheck.ps1 ValidateSet conflicts, union token lists so tip checks (shop_wire_assign) and main checks (digest_ci_gate, 9830_harvest, lessons_digest_harvest) all remain.
+<!-- harvest-lessons-eof -->
