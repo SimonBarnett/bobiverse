@@ -511,7 +511,10 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - gh REST 0 remaining: load C:\passwords\gitPAT.txt into GH_TOKEN without printing; wait for core reset then pr create; GraphQL may still have budget
 - After tip allowlist clears, prefer open MERGEABLE non-draft (#9917/#9417/#9918); never offer CONFLICTING or draft as MRB --- FIX-first or skip; walrus truncate+pos=0 shop-wire for live !bored nicks
 - Harvest-lesson tips that append the same SKILL.md trailing hunk: set merge=union in .gitattributes (git add -f under install exclude /*) and insert before - Harvest-lesson tips are documentation; they do not require CI --- light triage then gh pr merge --admin --squash (fold CONFLICTING same-SKILL appends onto tip first)
-<!-- harvest-lessons-eof --> with unique tip_anchor (FR #9915)
+<!-- harvest-tip:intake-in_1ba0900f1c5f4298 -->
+- OpenCode no-jobs twin of Cursor #10019: file product Clear-ACK (#10038) and gh_auth_missing (#10039) plus monitor fingerprints (#10040/#10041) as Depends-on digest children same turn --- do not leave (owe) rows.
+<!-- harvest-lessons-eof -->
+ with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
 - Digest batch filing: capture $r = Report-BobiverseIntakeIssue; use $r.number (or ISSUE_NUMBER= host line), never $Matches on prose URLs (FR #9837).
 - When a dispatch/focus filter drops rows from ordered_unaccepted, also skip those rows inside mrb_yields_to_older_fr (and similar raw-unaccepted walks) or tip MRBs stay empty behind lock-blocked tray FRs.
