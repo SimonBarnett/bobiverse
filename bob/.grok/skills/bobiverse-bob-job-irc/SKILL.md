@@ -2,6 +2,8 @@
 name: bobiverse-bob-job-irc
 description: >
   Exact IRC wire contract for worker jobs - !bored, Jeeves assign in !focus order, ACK, DONE, NACK/GIVEUP formats, which channel, when to send each, who sends what (the program posts !bored and pong, you write ACK/DONE to the outbox). Use whenever you take, finish or hand back a job.
+depends_on:
+  - harvest
 ---
 
 # bobiverse bob - job wire: ACK, DONE, NACK, GIVEUP, !bored
@@ -9,7 +11,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -66,16 +68,17 @@ ACK <TYPE> <owner/repo>#<N> [short title]
 
 ```text
 DONE FR  <owner/repo>#<N> <pr-url>
-DONE MRB <owner/repo>#<N> PASS|FAIL <pr-url>
+DONE MRB <owner/repo>#<N> PASS|FAIL <pr-url> [cr_findings=<n> confirmed=<n> fp=<n>]
 DONE UAT <owner/repo>#<N> PASS|FAIL [<url>]
 ```
 
 * `TYPE` and `owner/repo#N` = the **assigned** values, even if the work turned into something else.
-* **FR never carries PASS/FAIL** (FR #2419). Wire is `DONE FR owner/repo#N <pr-url>` only. A mistaken `DONE FR ... PASS <url>` is **ignored** by `shop_listen.parse_shop_job_line` (PASS/FAIL stripped; URL kept) so ACC still completes - do not rely on that; emit the FR form without PASS.
-* MRB: exactly one `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
+* **FR never carries PASS/FAIL** (FR #2419). Wire is `DONE FR owner/repo#N <pr-url>` only. FR #6387: the worker appends measured `model=` / `tokens_in=` / `tokens_out=` / `tokens_cached=` (or `tokens=unknown`) after the URL; models must not invent counts. A mistaken `DONE FR ... PASS <url>` is **ignored** by `shop_listen.parse_shop_job_line` (PASS/FAIL stripped; URL kept) so ACC still completes - do not rely on that; emit the FR form without PASS.
+* MRB: exactly one `PASS` or `FAIL` + the PR url. Optional FR #5317 `cr_findings=<n> confirmed=<n> fp=<n>` may follow that url (shop_listen keeps the url). UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
 * **FR / MRB: verify before DONE (t826u)** - FR: the PR body has `Closes <owner>/<repo>#N` and `closingIssuesReferences` lists N; MRB: the originating issue is closed (by the merge, or by you with a comment) or, if not merged yet, linked. Never DONE with an unlinked, still-open issue.
+* **Ready for review (FR #8371)** - the FR PR must be ready for review, never draft, before DONE: `gh pr ready <url>` after `gh pr create` (see `bobiverse-bob-job-fr`).
 * **Duplicates first (t857u)** - before FR DONE the PR body has `Duplicates closed:` (each duplicate FR/issue of what the PR fixes already commented `Duplicate of #N / fixed by PR #M` and closed as not planned; real extra issues get a `Closes <owner>/<repo>#D` line). MRB re-checks it before PASS. See `bobiverse-bob-job-fr` / `bobiverse-bob-job-mrb`.
-* **One line, nothing after the url.** Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment, never on the DONE line.
+* **One line, nothing after the url** except the optional MRB `cr_*` counters (FR #5317). Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment.
 * **FR #108:** capture the URL printed by `gh pr create` into a variable, then write DONE with that exact URL. Do not invent `pull/N` before create returns (see `bobiverse-bob-job-fr`).
 * Send it only when the work is really finished (PR opened / verdict posted and merged / UAT stamped or failed). Send it **after** the evidence is in place, never before.
 * Examples:
@@ -111,9 +114,11 @@ NACK <TYPE> <owner/repo>#<N>
 GIVEUP <TYPE> <owner/repo>#<N>
 ```
 
-Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle. Convention: `NACK` = you decline **before** doing any work (wrong repo,
+Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle. **FR #6857:** a GIVEUP/NACK for a job already in `done[]` is ignored (`already-done`); it does not reopen PASS/FAIL. Emit GIVEUP only for the ACKed id you are handing back. Convention: `NACK` = you decline **before** doing any work (wrong repo,
 no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an ACK (blocked, out of time/tokens, the task is impossible). Put the reason on a separate line or a GitHub comment, then harvest it
 (CAST IRON rule: file it). Never go silent on an ACKed job - a seat that ends is returned to the queue by Jeeves on QUIT, but a NACK/GIVEUP is faster and tells the next worker why.
+
+If the turn ends after ACK and the FR has no pull request, GIVEUP that job. Do not invent a DONE URL. DONE FR needs the real pull URL from gh pr create (FR #108).
 
 **FR #2811:** after a successful shop-listen GIVEUP/NACK, Jeeves may push the seat's next eligible job at once (same `offer_focus_top` gates; no `nothing queued` chatter if empty). The worker holds that assign until `turn_ended` (FR #2802) or the harvest-hold fallback, then injects it — finish CAST IRON harvest in the same turn before the next ACK. The program still posts `!bored` (`reason=free`) when the hold ends and no held assign was flushed.
 
@@ -125,7 +130,7 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 * No chatter while you hold a job and none after DONE: finish the turn. The next job arrives by itself.
 * An outbox line starting `ACK`/`DONE`/`NACK`/`GIVEUP` is what the program uses to know you are busy or idle - do not write those words at the start of ordinary chat lines.
 * Self-MRB or merging your own FR PR is forbidden. If Jeeves assigns MRB on a PR this seat opened: after ACK use GIVEUP MRB owner/repo#N plus a self-MRB reason line (or NACK before any work). Details: bobiverse-bob-job-mrb Self-MRB section.
-* **Machine pin (harvest #1688):** if `require_machine=<mid>` (or `needs-ionos`) pins a host you are not on, ACK then **GIVEUP** with that reason; file intake when the chair offered the pin to the wrong shop. Details: `bobiverse-bob-job-fr` Machine pin.
+* **Machine pin (harvest #1688 / FR #8653):** if `require_machine=<mid>` (or `needs-walrus` / legacy `needs-ionos`) pins a host you are not on, ACK then **GIVEUP** with that reason; file intake when the chair offered the pin to the wrong shop. Details: `bobiverse-bob-job-fr` Machine pin.
 * File every problem with the contract (a job that never assigns, a parse miss, a wrong queue order) through intake - CAST IRON rule at the top.
 
 ## Troubleshooting
@@ -146,8 +151,14 @@ Generalised from 196 harvested lessons that never reached this book (audit for F
 - **`needs-mrb1` is a dead, hallucinated label:** never create, stamp or gate on it; `needs-human` is the only human gate (FR #1526). Older harvest lessons that say "needs-mrb1 => ACK then GIVEUP" are obsolete. If the label turns up, strip it and treat the row as normal work. (74 lessons: harvest #2233, #2196, #2018, #2011, #1852, #1846 +76 more)
 - **Umbrellas, living FRs and loops:** evergreen umbrellas (for example agentic_fomprep#3/#7/#8/#9/#11/#20) and living architecture FRs (Refs-only, for example #1993) are not implement jobs. ACK then GIVEUP with a reason, or DONE the covering URL, and never `Closes` a living FR. Child FRs wait while the parent foundation PR is open; a parent with open child PRs gets an issue-comment matrix, not another PR. On a re-offer loop, do not file a new CRITICAL every cycle: comment once on the existing drain/needs_human issue. (70 lessons: harvest #2304, #2294, #2238, #2191, #2188, #1844 +116 more, 17 held intake rows)
 - **Live multi-machine IRC privilege matrices:** acceptance that needs ops/+h/not-op (or similar) proof on several fleet boxes is `needs-human`. ACK then GIVEUP with `reason=needs_human`; leave an issue comment checklist for the human; never invent remote results. (Class of #4016; MOVED from harvest tip #4062.)
-- **Host-pinned work:** when acceptance needs a specific host (ionos chair recycle/deploy/callback/NSSM or release pack+install smoke; CE-PRIORITY-DEV1 for WP0 or Priority live proof), ACK then GIVEUP from any other host with `reason=require_machine=<host>`. File intake only when the chair offered the row without the pin, and comment on the existing offer-gap issue instead of filing a twin. `win-mpre8vi4u6u` IS the ionos fleet host (DIGEST_ID_FOLD): never GIVEUP there only because the hostname is not literally `ionos`. (52 lessons: harvest #2320, #2313, #2311, #2282, #2212, #2171 +41 more, 8 held intake rows)
-- **Harvest FAIL-supersede DONE PASS (FR #4800):** when light triage closes a `harvest-lesson` tip unmerged (FAIL-supersede / not-useful / Duplicate / MOVED), wire is `DONE MRB … PASS <url>`. `DONE FAIL` makes Jeeves enqueue FIX (FR #4718); chair skips FIX for closed harvest disposition tips as a backstop.
+- **Host-pinned work (FR #8653):** when acceptance needs a specific host (walrus chair recycle/deploy/callback/NSSM or release pack+install smoke; CE-PRIORITY-DEV1 for WP0 or Priority live proof), ACK then GIVEUP from any other host with `reason=require_machine=<host>`. File intake only when the chair offered the row without the pin, and comment on the existing offer-gap issue instead of filing a twin. Chair-host `require_machine` cues and `!pin ionos` fold to `walrus` before offer; do not retarget `DIGEST_ID_FOLD` `ionos`->`win-mpre8vi4u6u` (that alias is the renamed box id, not the live chair). Never GIVEUP on `walrus` only because a legacy cue still says `ionos`. (52 lessons: harvest #2320, #2313, #2311, #2282, #2212, #2171 +41 more, 8 held intake rows; updated by PR #8658 / tip #8659 MOVED)
+- **Harvest FAIL-supersede DONE PASS (FR #4800 / #5720):** when light triage closes a `harvest-lesson` tip unmerged (FAIL-supersede / not-useful / Duplicate / MOVED), wire is `DONE MRB … PASS <url>`. `DONE FAIL` makes Jeeves enqueue FIX (FR #4718); chair skips mrb-fail FIX **and** conflict-FIX for closed harvest disposition tips as a backstop.
 - **FIX after MRB FAIL (FR #5142):** when the offer is `FIX` for a FAIL board (or a companion `fix(mrb-N)` PR), push the fix commit onto the assigned original tip so that PR carries the change, then close the companion as duplicate. Do not DONE only the companion while the assigned head is unchanged.
 - **FIX CI after MRB PASS (FR #4585):** when Jeeves parks a PASSed+auto-merge PR with a red required check, it offers `FIX owner/repo#N` (one per shared failure signature). ACK then fix CI on that tip or on main when the break is shared; push; DONE with the PR URL. Never re-open MRB while the head SHA is unchanged.
 - **Re-ACK after DONE (FR #4642):** Jeeves ignores a later ACK of a job this seat already DONE, and logs duplicate-after-done, unless an offer was stamped after that DONE. On !bored, a hold for a job already in that seat DONE ledger is cleared instead of NAK busy. The worker puts its last DONE line back on the outbox when the busy NAK names that same job.
+
+## Job worktree env + PowerShell 5.1 (FR #6341)
+
+* Use $env:BOB_JOB_WORKTREE_BASE (always set by bob-worker) and $env:BOB_JOB_WORKTREE when present for the exact job checkout. Do not probe C:\ai\worktrees vs D:\ai\worktrees by hand.
+* Live seat identity is in <worker>\.bobiverse-seat (rewritten at seat start with nick/pid). Prefer $env:BOB_NICK for the wire nick.
+* Shell is Windows PowerShell 5.1: Get-ChildItem -Depth N, never -MaxDepth.

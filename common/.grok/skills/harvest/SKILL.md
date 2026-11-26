@@ -6,6 +6,7 @@ description: >
   report a gap/bug/FR, or /harvest. Also covers reporting back with no
   GitHub account via POST /bob/v1/intake.
 github: https://github.com/SimonBarnett/bobiverse
+depends_on: []
 ---
 
 # Harvest (honesty box) --- bobiverse
@@ -13,7 +14,7 @@ github: https://github.com/SimonBarnett/bobiverse
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    Prefer `.\common\scripts\Report-BobiverseIntakeIssue.ps1` when present (FR #4297); else `.\scripts\Report-BobiverseIntakeIssue.ps1`.
 >    `.\common\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
@@ -24,6 +25,15 @@ github: https://github.com/SimonBarnett/bobiverse
 >    `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\common\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+> 5. Prefer **deterministic** fixes (Python/PowerShell under `tools\monitor\`, `jeeves/checks/`, `common/scripts`, chair helpers).
+>    When a fix is tested, file an FR that lands it in the **Jeeves token-less service** so the learning becomes chair
+>    behaviour without an LLM. Skills are the interim playbook; the durable home is the deterministic product
+>    (`jeeves.exe` / monitor checks / gitclaim). Same turn: skill harvest **and** product FR when the path is clear.
+> 6. **FR #9180 — owe a skill PR for bobiverse books:** a new `-Lesson` / `-SkillFile` for `harvest`, `bobiverse-*`,
+>    or `bobiverse-jeeves-*` must open or update a `lesson(<book>):` / `harvest/…` PR that patches the owning
+>    `.grok/skills/<book>/SKILL.md` (same-turn via `Ensure-BobiverseHarvestSkillPr` when `gh` is authenticated).
+>    Intake `kind: harvest|skill` receipt-only / twin-cite without that SKILL.md tip is fail-closed — builds, Sync,
+>    and MSI only ship what is on `main`. Cite the covering PR URL when a twin already exists (FR #3824/#1812).
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -38,9 +48,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
 
-- Gap, bug or wish → issue (`FR:` for features). When the operator has no
+- Gap, bug or wish ├ö├Ñ├å issue (`FR:` for features). When the operator has no
   GitHub account, POST `kind: issue` | `fr` to `/bob/v1/intake`.
-- New or fixed playbook → branch + PR (never `main`).
+- New or fixed playbook ├ö├Ñ├å branch + PR (never `main`).
 - Empty harvest only when nothing is new and nothing is broken.
 
 **Home:** `https://github.com/SimonBarnett/bobiverse`. Frontmatter `github:`
@@ -64,11 +74,12 @@ lessons here --- route those to their owning repos.
 **FR #4970 (customer vs general Priority):** a lesson that is true only for one
 customer or project goes in that customer's `SimonBarnett/*` repo tagged GitHub
 topic `priority-customer` (look the topic up; do not hard-code the names). Test:
-"would this be true for every Priority customer?" Yes -> `SimonBarnett/agentic_fomprep`.
+"would this be true for every Priority customer?" Yes -> `SimonBarnett/priority-mcp`
+(GitHub alias of the former `SimonBarnett/agentic_fomprep` name; FR #7121).
 No -> the customer repo. Example: Rees Machinery Priority instance / forms / data
--> `SimonBarnett/rees`, **not** `agentic_fomprep` harvest-agent-skills and **not**
+-> `SimonBarnett/rees`, **not** `priority-mcp` harvest-agent-skills and **not**
 bobiverse `harvest`. Generic Priority form-prep (true for any customer) still goes
-to `SimonBarnett/agentic_fomprep`. Shared lookup: `common/scripts/priority_customer.py`
+to `SimonBarnett/priority-mcp`. Shared lookup: `common/scripts/priority_customer.py`
 (same topic file as FR #4969).
 
 ## Report route (strict order)
@@ -88,20 +99,20 @@ flowchart TD
 
 *Caption: prefer `gh`; fall back to the Bob webhook intake; if offline, queue locally and retry.*
 
-1. **`gh` available and authenticated** → branch + PR against
+1. **`gh` available and authenticated** ├ö├Ñ├å branch + PR against
    `SimonBarnett/bobiverse` (skills) or an issue (`harvest:` / `FR:`). If the PR
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
-2. **No `gh`, or not authenticated** → POST to the Bob webhook intake
-   `https://irc.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
+2. **No `gh`, or not authenticated** ├ö├Ñ├å POST to the Bob webhook intake
+   `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
-3. **Offline / intake unreachable** → write the JSON payload to a local
+3. **Offline / intake unreachable** ├ö├Ñ├å write the JSON payload to a local
    `harvest-outbox/` (or `report-outbox/` / `install-outbox/`) folder and retry
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-### Open skill / harvest receipts → consolidate then PR (FR #1682 / FR #1684)
+### Open skill / harvest receipts ├ö├Ñ├å consolidate then PR (FR #1682 / FR #1684)
 
 Intake `kind: skill|harvest` creates `label:skill` issues. The chair **offers** them as FR promote jobs (not product code FRs; they still do not block repo UAT). Do **not** GIVEUP. Without a promote PR the lessons never reach MRB merge.
 
@@ -109,10 +120,10 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
 2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes …` / `Duplicates closed: …`.
+3. Open **one** `harvest/├ö├ç┬¬` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes ├ö├ç┬¬` / `Duplicates closed: ├ö├ç┬¬`.
 4. Leave merge to hostile **MRB**. Never push `main`.
 
-Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
+Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts ├ö├Ñ├å promote PR**.
 
 ### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
 
@@ -129,7 +140,7 @@ requirement. Never commit secrets.
 curl:
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -H "Content-Type: application/json" \
   -d @harvest.json
 ```
@@ -170,7 +181,7 @@ PowerShell:
 # (Summary drift / DONE retries must not mint a second tip). Intake claims state=filing early,
 # settles filing/open_lesson_twin, and links open seat+lesson twins instead of opening #3823.
 # or:
-Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
+Invoke-RestMethod -Method Post -Uri 'https://bob.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
 ```
 
@@ -185,7 +196,7 @@ HTTP 403 `repo_not_allowed`, payloads are **DROPPED** into
 `report-outbox/dropped/` (or the matching outbox `dropped/`) so Flush stays
 clean. Transient errors stay KEPT for retry. New Plan products under
 `SimonBarnett/*` need **no** per-repo allowlist edit --- after an allow-*rule*
-change merges, **ionos** must Sync/compose ircJeeves so live intake picks it up
+change merges, **walrus** must Sync/compose ircJeeves so live intake picks it up (ionos deprecated)
 (FR #3117 / #3122). Queue suppress/prioritise with `!ignore` / `!focus`.
 
 Prefer `gh` and repo scripts over free-form reasoning.
@@ -228,115 +239,145 @@ routes to bobiverse via the split rule.
   appropriate `kind`.
 
 ## Harvested lessons (intake)
-- FR #4780: MRB/review of a harvest-lesson (or skills-only) tip must not open another lesson tip (honesty-box is the review); skip reviewing/harvesting/closing-lessons meta; 24h dedup open+closed harvest-lesson PRs (Test-HarvestLessonReviewLoop / Test-HarvestRecentLessonDedup).
-- FR #4953: before filing, twin-check open and recently closed harvest-lesson PRs in the target repo by title stem and distinctive lesson tokens (any seat). Match -> skip lesson_already_covered / open_lesson_twin and cite the existing PR. Do not collapse HTTP vendor-secrets /selftest into the MSSQL connect gate. FR #4357 / #4917 skips still apply to a-search harvest-agent-skills.
-- FR #4297: dirty install ff-block leaves flat Invoke-BobiverseHarvest.ps1 lagging tip; Sync tip-overlays harvest+intake via Sync-BobiverseHarvestScriptsFromOrigin (class of FR #2581); prefer common\scripts when present; ComposeOnly/service restart refreshes flat copies.
-- FR #4357: PASS of a harvest-lesson / docs/mrb MRB (re-offer + merge origin/main / re-arm / DONE PASS process cues) skips filing another tip (SKIPPED harvest lesson-MRB PASS loop) --- stops a-search tip flood after light-triage PASS.
-- FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (SKIPPED; linked to that PR). Product -Repo -> harvest-agent-skills without ExistingPrUrl stays intentional (FR #3189); do not redirect product playbooks to bobiverse harvest.
-- Owner-missing harvest holds titled `harvest: hold for …` are SKIP_FR even with empty labels (FR #3658 / #3317 carve-out from #1682); `gh_filer.ensure_labels` creates `owner-missing` before issue create so unlabeled retry cannot re-offer the hold.
 
-- When Clear-BobiverseJobWorktrees removes 0 under low disk: file intake or GIVEUP / use a roomy drive - never hand-delete wt-bob-main/wt-airc/operator trees; write .bobiverse-seat so -Force skips live owners
-- GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
-- Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
-- When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
-- On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
-- GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
-- FR #3824 / #4953: one harvest per lesson --- skip/link when an open harvest-lesson PR (any seat) already covers the lesson text or title stem; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
-- FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
-- FR #4308: FAIL-supersede skip also matches thinner tip + durable lesson already on main (a-search#1980/#2283 tip-loop class; not contiguous thin harvest tip)
-- FR #4484: FAIL-supersede skip also matches restates main and admit main already has (a-search#3470 class; those phrases are not already-on-main / second-copy / job-mrb)
-- FR #3959 / #3957: FAIL-supersede skip also matches durable home is bobiverse-bob-job-mrb and do not park … under harvest/SKILL.md (words between); CAST IRON already on main is a thin-twin cue (tip #3958 class)
-- Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
-- Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
-- When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
-- BOM-less Install-*.ps1 / intake.py must stay pure ASCII in comments too (arrow/emdash/ellipsis); v0.1.31 tip went red after #3907/#3914/#3960 landed those chars --- replace with -> / - / ... before merge.
-- WinPS 5.1 Fetch/pack downloads: set ProgressPreference SilentlyContinue; prefer curl.exe --max-time over Invoke-WebRequest and tar/ZipFile over Expand-Archive; give nssm a non-nssm.cc mirror (archive.org) when primary 503s
-- MSI Install-Bob must Start-Service ircBob (bounded WaitForStatus) before TipForm launch and pass -SkipServiceRestart / BOBIVERSE_NO_SERVICE_RESTART=1 so Start-BobFleetTray does not Restart-BobTrayService during the CA; Invoke-BobTrayServiceControl skips START_PENDING/STOP_PENDING.
-- When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
-- Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
-- Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
-- needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
-- Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
-- !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe --- use same max_lost threshold for focus as queue (#4408)
-- FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
-- BOM-less ASCII gates for Install-Airc*.ps1 / Ensure-BobTrayRunning.ps1 / intake.py must run in CI on every PR (pytest-ascii-bom.yml); comment-only Unicode merges red main when only pytest-gitclaim runs
-- A fixed character window on a harvest digest bullet fails when an earlier clause grows. Measure the needle offset and widen the pin; do not rewrite the skill bullet when the phrases are still in the same sentence.
-- When resync builds MRB rows from open pulls, skip a pull whose auto_merge object is set and whose head.sha matches the merge-on-green ledger pass_sha. Add that pull to the skipped-open set so the keep loop prunes a row already queued. A different head SHA or auto_merge null must still become an MRB.
-- Every bobiverse skill CAST IRON block must name Report-BobiverseIntakeIssue.ps1, the intake webhook, and -Repo SimonBarnett/bobiverse. A shortened harvest paragraph fails test_cast_iron_rule_is_in_every_skill_and_every_agents_file.
-- Jeeves worker_list state=offered is the chair's own pending offer. Lost-ACK reconcile may promote only seat-reported work (workers working_on or worker_list doing/running/busy). A LOST_ACK_RESTART row with no seat-reported work is re-offered on !bored or !assign, not NAK busy.
-- Harvest-lesson MRB light triage: positive re-offer 0-behind playbook is not a twin of FAIL-supersede bad-re-offer tips; fold once when behind, leave SQUASH
-- Harvest-lesson meta tips that only restate keep-both/arm --auto FAIL-supersede: close citing bobiverse-bob-job-mrb (FR 3317); leave parent product tip open; gh pr close has no --reason flag
-- Missing-DONE rematch: sibling self-MRB GIVEUP leaves tip for another seat; if ahead_by>0 fold once then PASS leave existing MERGE/SQUASH
-- a-search Re-offered FR-N harvest meta tips: FAIL-supersede citing bobiverse-bob-job-mrb + merged product/docs PRs; do not fold CONFLICTING anecdote tips
-- FR re-offer when open covering PR Closes the issue: verify closingIssuesReferences + run acceptance pins on tip head, comment on issue, DONE with covering PR URL only
-- Jeeves pr_hold_reason: match On hold:/HOLD: body stamps and title cues, not free prose do-not-merge in harvest-lesson tips; enqueue_open_github_item must return skipped separately from duplicate.
-- Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
-- When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
-- FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
-- Hard-unpin bobiverse ionos affinity via _REQUIRE_MACHINE_ISSUE_UNPINS (wins stamp+cues); never re-add #4340 to ISSUE_PINS.
-- After gitclaim tip heals land, add a Build-Jeeves PYZ embed assert (FR #4608 markers) so frozen jeeves.exe cannot ship without MRB exact-seat; rebuild ionos separately
-- When pytest-gitclaim previously-red pins fail on a tip and the same two failures reproduce on origin/main, PASS the tip (tip tests green), file one intake for the main pin debt, and do not FAIL the product FR for unrelated pack/monitor pins
-- fr1518 gated-empty fixtures for bobiverse must use a dedicated require_machine body pin (not a raw stamp); queue_flow._gate_bucket must call row_require_machine so buckets match offer gates after FR #4512
-- harvest-lesson MRB on common/.grok/skills/harvest/SKILL.md: when origin/main also appended a Harvested-lessons bullet, resolve CONFLICTING with keep-both then PASS @ head SHA
-- Re-offered onefile seat-cap double-count after FR #4458 merged: Prefer ExistingPrUrl #4461; close twin issue; file install-behind if live box still shows cap.
-- When intake reports live FR #4458 onefile cap double-count but tip already has #4461: close the lag FR citing PR #4461 and Sync/recompose the install (tray/worker restart only) --- never re-open or re-implement the cap dedupe
-- issues closed must stamp ACC state=closed and move closed ACC to done on seat depart; DONE status=missing still calls offer_after_done (one-open-job stays inside the helper)
-- enqueue_fix_ci must refuse cancelled-only rollups and shared-suite (test-and-synth) failures when main is also red --- bulk cancel / helper breakage must not flood per-tip FIX.
-- A merge-on-green 405 or DIRTY head must leave the retry list for that SHA and queue one conflict-fix job; do not keep the row pending or the sweep will PUT-merge forever.
-- A GIVEUP whose reason contains self-mrb does not increment giveup_count or stamp needs_human. The seat is added to author_seats so only that seat is blocked; a fresh seat is still offered the MRB.
-- When enqueue_from_done races !resync, fall back to done[] PASS + auto_merge tip as pass_sha for ci-wait; never re-offer that MRB to the same DONE nick.
-- bobiverse resync: an open fix(mrb-N) stays skipped only while parent N is in the open-PR set. When the parent is merged or closed, enqueue the fix as an ordinary MRB so author exclusion still applies. Mark the still-open-parent skip in skipped_open_pulls or a stray MRB row survives.
-- jeeves: when a FIX pull merges or closes, drop unaccepted FIX and finish accepted FIX (idle digest seat) so the seat is not stuck NAK busy; resync/purge_dead also prune FIX absent from open-pull set
-- resync_from_github must not read mergeable/mergeable_state from GET /pulls?state=open (those keys are absent); enrich each list PR missing mergeable* via GET /pulls/N before the DIRTY FIX branch (FR #4683 / #4679)
-- Harvest-lesson tips that insert prose inside a mermaid flowchart are FAIL: close the tip, land the bullet under Harvested MRB discipline (or the correct section) in one fix PR, then DONE FAIL.
-- After merge-on-green parks ci_failed, tip advance + re-fail needs refresh_ci_failed_tips / handle_check_run_event --- do not wait for !resync; keep pass_sha in _coerce_row
-- needs_human after GIVEUP: accept issue_comment webhooks; repo-owner comment after giveup_ts clears stamp (not seat GIVEUP/ACK/DONE/MRB-board bodies).
-- merge-on-green requeue_sha: if the newest MRB PASS board already names the live head, retarget the pending row to that SHA and do not re-queue MRB. A DIRTY head then uses the conflict FIX path; a head with no PASS board still re-queues MRB.
-- When the newest MRB board is FAIL at the live head and no mrb-N-fix PR is open, queue FIX for that pull. Do not re-offer the MRB to the seat that posted the FAIL.
-- Seed SimonBarnett/ce-priority in DEFAULT_RESYNC_REPOS and merge it into chair and digest resync-repos.txt on Install and ChairJobs start. A hot-add on ionos alone does not survive a wipe.
-- After DONE/NACK/GIVEUP, treat a replayed ACK for that job key as stale: do not reopen _ack_open and do not forward it to IRC; clear the finished mark only on fresh inject of that key.
-- Cursor submit-verify: never stop on receipt ack_open; use turn_open or prompt probe, and poll turn_running for BOB_WORKER_SUBMIT_VERIFY_GIVEUP_GRACE_S before GIVEUP so a landed paste is not reported as failed.
-- A docs/mrb tip that only pins skill text may PASS while the product PR is still open when Refs (not Closes) name that PR and the hostile test does not require the product code on main.
-- ce-priority Day Works require_machine auto-pin must not match bare dayworks or WP3 in a title. Harvest-lesson MRB rows re-infer and clear sticky stamps so online seats can !assign them.
-- FR #3991: Build-AircNetworkInstaller --uac-admin; Pack stages INSTALLDIR airc-network-installer.exe and dist airc-network-installer-<ver>.exe+.sha256; Assert requires those assets; MSI prop AIRC_PROFILE; service Airc; never -p on argv (getpass + net use); SkipAircNetworkInstallerExe with SkipMsi for stage tests
-- When Pack -SkipMsi disables Ergo embed (FR #4477), airc FR #4216 tests must assert config/ergo.password is absent on the stage and pin the Pack wantEmbedErgo=false gate; keep real MSI embed asserts separate
-- GetSandUsageStatus.usagePercent is 0-100 percentage points: never rescale values <=1 as a 0-1 fraction (0.99% used must stay ~1% used); share _parse_pct_points / ConvertTo-BobCursorSpendingPctPoints.
-- Invoke-AircRemote SelfTest happy-path DONE wait must Add-Content the jsonl rows in-process before Wait-AircRemoteReplies. A Start-Job writer under a full pytest run can miss TimeoutSec=10.
-- FR #4830: Invoke-BobiverseHarvest for SimonBarnett/ce-priority maps to dayworks-launcher even with -Book harvest; never invent common/.grok/skills/harvest
-- Jeeves MRB author_seat: stamp from the DONE FR whose result is this PR URL (fr_implementer_seat_from_doc pr_id=); never from a Refs FR that produced a different PR
-- Synthetic FIX ids (#main/#main-red) must match ID_RE and survive _coerce_row, or enqueue_main_red writes then vanishes on load_queue.
-- After agent 402 usage balance exhausted, keep out-of-fuel held until BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S and grok pct above BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT (or turn_ended); never clear on soft available with pct at or below the floor.
-- SeatDisk: walk ~/.cursor/chats/<project>/<guid>/ like FR #4226 sessions, and drop ~/.grok/bin/*.old on reclaim when C: is under MinFreeGB.
-- Intake harvest de-dupe: an abbreviated restatement of an on-main bullet (shared lead-in + env-name stems like MIN_HOLD_S for BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S) is lesson_already_covered --- never open a second tip (FR #4865 / tip #4863).
-- When SeatDisk FreeGB stays under MinFreeGB after FR #4864, hardlink-dedupe identical ~/.grok/bin/agent.exe+grok.exe and reclaim nested .cursor/chats with KeepCursorHoursLow (default 6).
-- Grok and Cursor both ACK on receipt (FR #4115): submit-verify stop must be turn_open|probe for any kind with a probe_fn, never ack_open alone; log (probe) vs (stop/ACK).
-- FR #4899: soft out-of-fuel hold clear is kind-scoped (grok needs grok tokens/session key; cursor needs Cursor); machine Cursor pool must not clear a grok soft hold unless real kind-switch FR #3997
-- Jeeves FR: when gitclaim.ID_RE widens to synthetic #main/#main-red, widen shop_listen _VERB_RE the same turn or DONE is silent and seats nak-busy until BUSY_STALE_S then requeue green main
-- After enqueue_fix need_pr includes merge state (#4907), any assign_fix fake_fetch must set mergeable+mergeable_state (or fake_pr) or pytest will call live GitHub and fail offline.
-- FR #4925: never gh pr checkout a foreign --repo from C:\ai\bob; use %TEMP% worktree. Assert-BobiverseForeignPrCheckout.ps1 must be ASCII-only (WinPS 5.1 UTF-8-without-BOM mangled em-dash and broke the refuse path).
-- Jeeves FR: after FIX push, synchronize must pop done[] MRB and clear mrb_done before enqueue; DONE FIX must call the same ensure so re-MRB does not wait for !resync
-- FR #4934: Ergo NickServ success is Account created / You're now logged in (and 900); match those (not only Atheme is now registered) or console.nickserv-ok never lands and the next start/upgrade mints a new GUID.
-- airc console: write console.nickserv-ok on Ergo Account created / You are now logged in (and 900/903), clear password-minted in the same step, keep marker under --home; installers must not overwrite or re-mint while nickserv-ok exists.
-- TipForm/Status: after account unification omit Cursor spending-group section (grok chat / high cost / Low cost); keep Grok accounts only (FR #4938)
+The bullet archive is `lessons.md` beside this file (FR #8310). skill-dag refuses a skill body over 65536 bytes, so do not paste the archive back into this SKILL.md. New intake bullets still append under this heading until the file nears 60KiB, then move them into `lessons.md`.
 
-- FR #4955: pull_request labeled on a lesson(book): harvest tip backfills the MRB row when opened missed the queue; lesson( title is enough on opened (no wait for harvest-lesson); product titles do not invent MRB from a stray label.
-- When GitHub list ETags 304 on open issues, still fetch open pulls (or force-refresh the other list); log unchanged= so repos=0 is not mistaken for discover empty; !resync must skip If-None-Match
-- Customer/product harvest (euroflo class) defaults to .grok/skills/harvest-agent-skills even when the priority-customer topic cache is empty; never invent common/.grok/skills/harvest on a non-bobiverse repo.
-- bob-ear: BOB_IRC_RECV_TIMEOUT_S + IDLE_PING_S + IDLE_DEAD_S client PING keepalive; half-open ESTABLISHED sockets must idle-dead reconnect (FR #4980), not stay deaf while ircBob Running
-- Jeeves resync: fix(mrb-N) targeting main/master while parent is open must queue as MRB (else FIX-linked parent + skip-fix deadlock); stacked non-default base still skips; among main-base twins keep lowest PR number only
-- !build LiveStateTouched: busy chair may purge >5 closed/done queue rows during a long suite; default max_lost=15 (FR #5042) while empty/majority wipe still aborts.
-- FR #5052: classify catch { } — timer/webhook/heartbeat must Invoke-BobMustReportFailure; Dispose/Parse/ToInt/Hide stay BEST_EFFORT
-- From-source airc beside NSSM must use child-owned --log-file; Start-Process RedirectStandard pipes die when the parent shell exits and kill info() after NAMES.
-- When asserting IRC flood sleep, drain FloodTokenBucket first; a full bucket returns wait=0 on the first take.
-- Vendor Sync-BobTrayFromAgenticBuild wipes OutDir; every Watch-dotsourced tray helper (StartWorker, RecycleSeat) must be in ownedTools or a re-sync deletes it.
-- Give-up/NACK exclusions are exact-seat only; a recycled nick on the same machine must not inherit a dead predecessor giveup_seats on auto-offer. needs_human stays global.
-- When handle_privmsg gains a new _maybe_* dispatch, bind that Client method on FakeChair in test_chair_commands_020 or every fall-through command raises AttributeError.
-
-## Harvest digest (lessons audit 2026-10-06)
-
-Generalised from 81 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
-
-- **Legacy harvest-as-FR twins (before FR #2705):** when a closed or duplicate harvest/skill receipt is offered as work, ACK, confirm the lesson is already on main or in an open promote/lesson PR, DONE with that covering PR URL, and close the receipt as `Duplicate of #N / fixed by PR #M`. Never open a second promote PR and never re-harvest the twin playbook itself. Since FR #2705, lessons land as `lesson(<book>)` PRs, so these receipts should no longer reach seats. (71 lessons: harvest #2275, #2242, #2239, #2235, #2232, #2229 +95 more, 5 held intake rows)
-- **Skill and harvest rows offered as FR:** a promote assign means consolidating by book into one skills PR with `Closes` (never GIVEUP or SKIP_FR it). A harvest-of-harvest or receipt-only row is not work: ACK, then DONE or GIVEUP citing the covering PR. Invoke-BobiverseHarvest skips GIVEUP-of-skill, twin-DONE-only, FAIL-supersede process-routing, thin already-covered FAIL-supersede twin loops, and tip-loop meta / Thin FAIL-supersede already-on-main restates for any -Book (FR #936 / #2237 / #2970 / #2991 / #4231); default `-Book harvest` yields to the owning product book and intake returns `lesson_already_covered` when that skill already has the bullet (FR #3004); intake skips or re-routes those lessons so they never open a second `lesson(harvest)` tip. (8 lessons: harvest #1835, #1698, #1530, #927, #948, #937 +1 more, 1 held intake row)
-- **Intake and Flush:** WinPS clients POST UTF-8 bytes and read optional response properties through PSObject.Properties. Permanent 400s are dropped, not retried. Intake 502.3 on irc.ntsa.uk means the chair listener is down (an ionos-only heal): queue offline and Flush later. FR #3135 allows any `SimonBarnett/*`; use `!ignore` / `!focus` for queue behaviour (archived SimonBarnett repos are intake-allowed again under the owner gate). Drain held outboxes with `drain --dry-run` first. Receipts never drop Lessons (FR #2705). (2 lessons: harvest #919, #904, #721; FR #3135)
-- FR #4419: flat scripts\Invoke-BobiverseHarvest.ps1 can lag common\scripts after dirty-ff; Sync-BobiverseHarvestScriptsFromOrigin Match requires Protect-HarvestBodyClosesKeywords; seats prefer common\scripts path or Sync -ComposeOnly / service restart so Protect runs (Closes #N/#M poison class of a-search #3376/#3386)
+Do not land a second copy of a harvest-lesson MRB playbook in this book. Those playbooks belong in `bobiverse-bob-job-mrb`.
+- CAST IRON point 5 (Jeeves MONITORING): prefer deterministic fixes; when tested, FR them into the Jeeves token-less service (tools/monitor, jeeves/checks, common/scripts, chair helpers) so learnings become chair behaviour without an LLM. Skills are interim; durable home is the deterministic product. Same turn: skill harvest and product FR when the path is clear (PR #8851).
+- skill-dag index preference: over-cap seat copy yields to a later root at or under SKILL_RESOLVE_CAP_BYTES; an under-cap seat copy still wins (FR #7076 / #8323).
+- Any per-seat click state must persist the launch model next to the kind and every restart path must read it; a saved model that cannot start must refuse and report, never fall through to the free default.
+- When IRC _ssl_recv starts polling settimeout, run test_fr8120_ear_ssl_send_serialize.py and test_fr4980_ear_idle_keepalive.py with the new registration test before PASS.
+- Orphan fix(mrb-N) tips with an explicit non-main base (merged fr-* tip) must be skipped by resync and retargeted or recreated; CLEAN checks do not mean the PR can land on main
+- A tray digest-pools WriteAllText that fails with not enough space on the disk must skip crash intake and the hook-failure spool. Disk full is not a product defect.
+- all-gave-up must ignore the seat that currently holds the row. ACK clears that seat from giveup_seats so a busy NACK or offer timeout is not an abandonment.
+- A shipped-script import gate must import only names that end in .py. copy_by_path_scripts also copies PowerShell, and those names are not Python modules.
+- When PRIORITY prepare-form is priority_not_installed, the reply must name the example allowlist copy and CredMan credentialTarget, and the doc must say Session 0 uses prepare-form rather than WINRUN.
+- A 24h harvest-lesson dedup covers a new playbook only when that PR contains the lesson sentence or a phrase of at least 40 characters of it. A short shared token is not a cover.
+- no_terminal_reply_does_not_block must read only that seat own offer_outcomes. A later no-terminal-reply must not lift another seat permanent give-up such as self-mrb. Legacy rows use the row giveup_reason only when that seat is the sole giveup_seats entry.
+- An FR seat must run gh pr ready before DONE. A draft pull request is not reviewable and strands the MRB. FIX seats do not open a new pull request.
+- A GitHub issue whose title starts with stall: is a detector receipt. issue_skip_fr_reason returns stall_receipt so it is never an offerable FR and never picks up needs_human. The stall detector itself stays.
+- An open non-draft product PR with no MRB or FIX queue row is stranded. The token-free check uses an injected pull list, the same way as the stale-base check.
+- When an intake FR asks to move HTTP webhooks off irc.ntsa.uk, check bob_public_base.DEFAULT_PUBLIC_BASE and closed FR 5272 before opening a second implement PR.
+- When accepted jobs look unassigned, paint working_on from the accepted row on ACK and demote LOST_ACK_RESTART only when the seat still has no real working_on.
+- A reset before airc.exe sends TLS bytes is a local block of that process. Classify it, print the allow rule, and do not disable Defender.
+- A per-agent-kind submit-verify change must keep the Cursor/Grok GIVEUP wire bare (VISION S3); annotate probe=/kind= only for the headless kind.
+- When an MRB worktree is linked to the install-root git or sits at the wrong SHA, recreate it from the clone store only if the seat pid is dead. A live seat keeps head-mismatch with want= and have=.
+- When a later FR marks a give-up reason infra-soft, update the older test that expected giveup_count to increment. Do not put the reason back on the job-burn path.
+- The tray engine hover step must query Win32_Process by Name=grok.exe and use a short digest GET. A full process list plus a 15s HTTP cap spends the 45s budget and files a deterministic timeout.
+- A Python CLI that wraps a PowerShell Read-Host prompt must not use capture_output. That pipes stdin shut. Inherit stdin and pipe only stdout.
+- Digest online does not imply WinRM: marchhare may show bob ear online with workers=[] while TCP 5985 from flamingo fails --- start seats locally/tray/airc; do not assume UpdateFleet CredMan reaches every shop host (FR #8429).
+- Update-BobFleet Get-UpdateFleetPSCredential must [void] CredFree (and TrimEnd NUL on the unicode blob); an unvoided bool makes $cred an Object[] that cannot bind to [PSCredential] (FR #8531).
+- Prefer tray run/startworker/req-*.json (unix-int ts/expires + optional agent) over WinRM Start-Process/CreateProcess for seats; detached WinRM launches die (console-closed / 0xC000013A) or stall without run dirs. ISO expires must still parse or write res-*.json reason=bad-expires (FR #8517).
+- Skills-sync on the shared install must hold run/skills-sync.lock. If checkout hits index.lock, drop a stale lock and retry. A killed seat must not leave index.lock for the next start.
+- airc.exe --connect-selftest must call probe_connection with a default socket connector. A required connector makes the install health step raise TypeError before any classification.
+- A BOM-less PowerShell file must stay ASCII. An em dash (e2 80 94) fails the WinPS 5.1 parse gate. After that gate is clear, fix the next ParseFile error the same test reports.
+- For SimonBarnett/bobiverse, infer_require_machine ignores a needs-walrus/needs-ionos title prefix. Pin with a needs-walrus label (legacy needs-ionos) or a body line require_machine: walrus (legacy require_machine: ionos until pin-retarget FR #8653).
+- A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
+- A same-process file lock that unlinks on holder==getpid busy-spins on Windows when the holder's handle blocks unlink; cross-process seats still need the dead-pid steal plus a sleep and a deadline.
+- Write gh --body-file with a UTF-8 no-BOM writer and reject C0 bytes other than tab, LF, and CR; double-quoted PowerShell turns backslash-b, backslash-t, and backslash-a into real controls.
+- While a seat is in out-of-fuel hold, digest worker_list must paint state=out_of_fuel and keep updated fresh; idle_quiet_offerable must skip that seat.
+- After pointer refresh, confirm skill-dag MCP drop with Toolhelp PID liveness twice; never treat a flaky empty PowerShell cmdline sample as a transport drop
+- An identity-only digest merge must not append model to cleared. Cursor CLI account reads only authInfo.email; a key override is a pid-bound marker with no key value.
+- opencode_turn_stop_reason returns finished when the outbox already has DONE or NACK. The wrapper must not GIVEUP that case, and must not write stop-closed into opencode-out-of-fuel.log.
+- An offer-timeout must not hand the same row straight back to that nick while another live idle seat exists. Record offer_last_timeout_seat and push the other seat first.
+- A batch recycleseat must stop every named seat before starting replacements. A restore launch is net-zero and must not be refused by the agent cap.
+- When digest-fuel-stall fires, abandon the hung _fuel_worker reference and start a new publish; reporting alone does not unfreeze heartbeats.
+- After FR #8310, hostile harvest pins for archived tips must read lessons.md; SKILL.md only keeps the active placement rule and recent bullets.
+- Never sync PowerShell.Stop() on the tray poll thread after WaitOne timeout; fire-and-forget Stop/Dispose so step-timeout logs and startworker ticks continue.
+- Update-BobFleet Get-UpdateFleetPSCredential must [void] CredFree (and TrimEnd NUL); unvoided bool makes Object[] that cannot bind to [PSCredential] (FR #8531)
+- When idle seats see offerable=0 (often needs_human-only), surface healthy_idle_empty_offerable / TipForm caption so ops do not recycle free DeepSeek seats as hung.
+- On OpenCode Free usage limit for a free model, pause free and switch to opencodePaid when Go remains (no shop GIVEUP); accept cli-stderr Free usage pauses for free models so free reading is not stuck at 100.
+- OpenCode flamingo: launch with BOB_WORKER_INJECT_PASTE=0 (keys); never PASTE=1 (stray v breaks submit-verify). Docs/log pin in #8560; worker force-keys is #8558/#8561.
+- OpenCode Start-Process must not combine -NoNewWindow with RedirectStandardOutput/Error: that hangs after the build banner (empty stdout) and can leave no last-exit; redirects alone create no window
+- OpenCode mid-job silent death: CreateProcess needs CREATE_BREAKAWAY_FROM_JOB with CREATE_NEW_CONSOLE; tray watchdog on seat-count drop writes synthetic last-exit external-kill + GIVEUP without restart (FR #3180).
+- Stale linked-worktree index.lock blocks OpenCode git mid-job: fix = worker-side preflight (unlink job gitdir index.lock before inject) plus external_directory allow for the resolved gitdir; note external_directory allow is read-only, so agent-side Remove-Item of the lock may still need edit permission - preflight is the reliable path
+- When InstallRoot is a drive root, Split-Path -Parent is empty: resolve BobInstallRoot via C:\ai\bob fallback or require -BobInstallRoot; pass -BobInstallRoot from Start Menu shortcut on MSI layout.
+- Remote OpenCode stuck/quota is invisible to local digest seats_stuck_doing; probe /bob/v1/report with User-Agent for kind=opencode on flamingo (report-only, no clear_seat_doing).
+- MRB health soft-pass overlays: always init overlay=None before findings branches; tip tests must cover the findings-empty happy path or UnboundLocalError ships.
+- After a parents[N] class fix, rg the whole monitor package for leftover parents[N] siblings and extend the source pin list in the same FR family.
+- OpenCode: recycle when digest doing age or true log/turn progress freezes beyond BOB_WORKER_OPENCODE_FROZEN_PROGRESS_S; week.limited alone must not set out_of_fuel (blocks FR #4180 recycle).
+- !recycleseat --force overrides busy only when worker.updated is stale or accepted_silent/LOST_ACK is stamped; fresh busy still NACK (FR #8602).
+- When monitor IndexError on UNC shallow parents[N] is already fixed on main (#8580), twin-close the later intake and point DONE at the covering PR; note live share still needs fleet update.
+- After an ops hung-seat wipe leaves a machine running=0, !startworker (or tray Start Agents) is required; Ensure-BobWorkerSeats will not auto-heal (FR #3180). Monitor restore on flamingo used !startworker agent flamingo x2 (FR #8609 / ops on #8602).
+- If a self-review-deadlock stall names this seat in idle and waiting tips are this seat's PRs: GIVEUP (FR #6203/#8264); author may fold CONFLICTING tips for the next MRB; never self-MRB PASS.
+- When the ear writes a command to its own outbox, decide it in the drain. Do not wait for an IRC echo of the ear nick.
+- When a commands doc states a numeric cap, pin the sentence to the code constant in a test. Substring checks like default 4 also match default 48.
+- Explicit OpenCode with no start model: free known 0 + go unknown is not dual-pool exhausted; start as fuel-unknown and honour opencode_windows for Go.
+- needs_human stays global except one post-cooldown auto-offer when giveup_reason is agent-cli-nonzero-exit and the nick is not in giveup_seats.
+- Infra-soft give-up reasons must not black out auto-offer. Persist the raw needs_human bit separately from the offer gate so heal can still see a false stamp.
+- A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
+- Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
+- BOB-09 About Show logs: bottom button on AboutForm + PS fallback opens watch_bob_tray.log via notepad (same path as Open log)
+- BOB-08 About rename: menu label Acknowledge->About on BobTray.cs and Watch-BobTray.ps1; keep Acknowledge() attention clear; pin mock home.html
+- BOB-11 Status keep pool dialog: when Item(Status)/ShowStatus/StatusForm already on main, DONE with covering PR URL (#7521) and close the twin --- do not re-implement
+- When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
+- Intake allowlist monitor: send an explicit User-Agent through Cloudflare; only JSON error=repo_not_allowed is allowlist drift, not bare HTTP 403 1010.
+- When renaming a tray submenu label, update MenuItems.Add for --dump-menu in the same change; source pins can pass while the compiled dump-menu pin fails.
+- Recycleseat queue TTL must outlast a lagged tray tick (300s). Read the last numeric value from Launch output; do not cast the last pipeline object when the tray logs on the success stream.
+- BOB-57 S1 needs a verified plan.ntsa.uk MSI URL from VIS-08 before any downloads card; homepage or guessed /plan.msi is not acceptance.
+- require_machine offer gate: peel cold-digest <machine>-<pid> nicks, gate why-empty on row_require_machine re-infer, and stamp require_machine from honor-path GIVEUP so the next !bored skips wrong shops.
+- BOB-03 combos must not reuse models-catalog.json: BOB-01 Weights rows and BOB-02 PUT own that file; ship allow-list as models-valid-combos.json; validation is GET /bob/v1/models catalog + Weights form dropdowns (no POST /bob/v1/models/validate; FR #9053)
+- !build UX: put BUILD_USAGE_LINES in builds_catalog (leaf), re-export from bobiverse_build; local-first catalog before HTTP; optional recipe= on BUILD v1 only for non-default yml paths.
+- A DIRTY product FIX folds origin/main in the job worktree, keeps both sides of a docs conflict, pins the review finding in the existing test, and pushes the same PR head.
+- Weights S1 is a modeless grid with columns Agent, CLI, Model, Context, Effort. Dump those headers with --dump-weights-columns before the tray UI starts.
+- Seed models-valid-combos from a shipped seed on BobCallback start: create if missing, append missing models, never rewrite a malformed store.
+- Workers > Cursor menu image is assets/menu-favicons/cursor.com.ico. Log worker-favicon with that path. Do not reuse the fuel badge.
+- BOB-54 Priority menu icon: pin PRI-07 priority.ico at vendor/priority/ next to PriorityAgent.exe (same path as BOB-50 StartPriorityExe); MSI priority\ layout is BOB-55 scope
+- A fresh Install-BobWebhooks.ps1 must write the same canonical web.config the second run would upsert, or site-kit CI fails with second install changed web.config bytes.
+- When neither home has queue.json, idle_seats uses one live /bob/v1/report estimate. A local queue never fetches. Unverified gates stay named and are not applied.
+- About Plan and Priority versions come from slice VERSION files or BOBIVERSE_PLAN_VERSION and BOBIVERSE_PRIORITY_VERSION, and fall back to the bob version so the fields are never blank.
+- A skill pin that forbids CR must normalize the checkout to LF before the assertion. autocrlf makes a clean LF blob look like CRLF on windows-latest.
+- Do not cap an MRB PASS verdict with a character window. Require the verdict after the board heading in the same comment.
+- Engine steps that call Win32_Process must pass a timeout or skip the scan. An unbounded CIM query is what files engine step timeoutSec=45.
+- When a PowerShell here-string is double-quoted, empty variables erase dollar names before commit. Write tray .ps1 with a single-quoted here-string or a file tool, then parse the file with the PowerShell language parser before push.
+- A PS 5.1 module import error pointing at ForEach-Object in the psm1 is often a Private script whose param names were stripped; restore names from the call sites before treating the failure as unrelated CI noise.
+- Zero live seats stay on the empty-online fill. Under-cap fill must return 0 when live is 0 so the two paths do not both fire.
+- A Threading.Timer that WaitForExit longer than its period stacks powershell children. Single-flight the pid and cap the wait at 15s.
+- MarchHare idle oscillates seat-to-seat; keep #8890 comments without new filings
+- A grok worker_spawn connect blip is not a bob CLI bug. Skip that intake signature. Keep filing other exit 1 failures.
+- After mrb_merge_gate exit 2, do not run gh pr merge --auto. A later exit 0 can still merge a phase-gated PR.
+- Unsigned exit 0xffffffff with only pager info/debug or TUI chrome is an external kill. Keep cli-failure when stderr contains failed, fatal, exception, or an error level.
+- When stall alerts are non-empty, call Get-BobStallFrIntake and log stall-fr with repo SimonBarnett/bobiverse.
+- Agents Jeeves reads BOB_JEEVES_FUEL_FILE or run/jeeves-fuel.json and quits without starting when remaining_pct is 0 or less.
+- FR #9114: MRB on-hold uses the live linked FR hold label. Stale PR HOLD comments after the FR is unlabeled are not on-hold (#8748).
+- When skill-dag MCP initialize closes and only skill-dag-core is bundled, run skill_dag_mcp.py --once from the seat mcp.json. Do not read SKILL.md from another job worktree.
+- FR assign with open Closes PR: DONE covering URL; do not open a twin tip (#9100/#9107)
+- FIX on CLI-exit classifier DIRTY tip: keep _stderr_is_seat_prompt_echo with grok_worker_spawn_connect_failure and unsigned_exit_stderr_is_noise; silent ORs prompt-echo and noise
+- gh_auth_blocks: Failed to log in / re-authenticate wins over Active account true even on exit 0; never invent GH_TOKEN
+- BOB-HOVER-XAI: Get-BobTrayHoverXaiPoolLabel maps SuperGrok to xAI never SG; hover remainPct uses digest xai_weekly remaining_pct including stale so it matches Format-BobTrayXaiWeeklyRow
+- Do not kill MH bare opencode.exe fuel-stats children even when seat idle (#9016)
+- When an MRB PR carries label hold, GIVEUP reason=on-hold and do not merge.
+- Invoke-JeevesMonitorCheck: missing .py soft-skips exit 0 with skipped JSON so sparse/lagging installs do not EXIT:2 on ValidateSet-widened names; promote local J:\ hotfix via PR.
+- BOB-D1 Depends-on parser is S1 park-only: dedicated-line match with [^\S\n] (not \s), first-seen dedupe, relative #N via optional repo kwarg; do not reuse FR #8754 gitclaim backlog-token helpers for (repo, number) tuples.
+- BOB-37 S1: Agents>Jeeves dry-run prints cwd J: and StartWorker/Start-BobTrayWorkerExe use WorkingDirectory J:\ (drive mapped to ai\jeeves).
+- FIX re-offer of a folded MERGEABLE/CLEAN PR: re-query mergeable once, DONE the same URL, do not merge and do not fold again
+- FR #9053: retire POST /bob/v1/models/validate with early JSON 404 before POST_ROUTES gate; Weights validation is GET catalog dropdowns + PUT save only
+- FR #9034: TipForm Exit must dispose tray UI only --- never sc stop ircBob; ear recycle is Restart-BobEar / Restart -SkipServiceRestart
+- Never block out-of-fuel worker-remove on MessageBoxW. Session 0 hangs leave digest zombies.
+- OpenCode gh_auth_missing on a named shop is require_machine ops: GIVEUP from other hosts; operator runs gh auth login there; do not invent GH_TOKEN or read hosts.yml.
+- Empty-online fill: when grok weekly remaining is known 0 and an OpenCode free leaf resolves, write agent=opencode slot=free; unknown grok or free=0 keeps auto.
+- FR #9025: fuel-exhausted recycle while process still running is expected fuel quit --- skip seat-stopped-making-progress intake; leave hang recycles filing
+- A DIRTY tray-dialog FIX must keep both sides of the bob-tray.exe Srcs list (BobModelsClient.cs from main and PlanMcpConfig.cs from the PR) and compile before push.
+- Steady OK cycle: no intake when seats busy, pools fresh, held_prs=0.
+- FR #8811: wire row_fr_depends_blocked_reason beside every FR hold offer/purge/reconcile site (bob_d7_wire_hold); Depends-on OPEN skips offer but keeps the row
+- Jeeves MSI before skill-dag left J:\scripts without skill_dag_mcp.py; tip allowlist needs InstallRoot .git --- pack Assert-BobiverseStageHasSkillDagMcp + Ensure-BobiverseSkillDagScripts + Write-BobiverseInstallSkillDagMcp on Install/Sync even when skipStaleCompose.
+- Ghost TipForm clicks with Clear toolbars=0: Clear-BobOrphanNotifyIcons -HealLadder (session explorer recycle + re-sweep) and MenuClosed Visible rebind before relaunching Watch.
+- TipForm park poll must never Wait-Job update-hover or Write-BobIrcStatus on STA: step-skip + trayHoverTimer snapshot + Update-Hover -FromSnapshot; trayDigestTimer posts for TipForm too.
+- FR #9180: bobiverse book harvest with real Lessons owes a lesson(book) PR patching .grok/skills/<book>/SKILL.md same-turn when gh is authenticated; receipt-without-skill-PR is fail-closed; -SkillFile lands at skill_book_path not harvest/<name>
+- Twin fix already merged: keep main's primitive as source of truth, wrap the branch API, and satisfy both pinned test files before push.
+- trayDigestTimer Action runspace has no parent BobBridge: Import-Module src\BobBridge.psd1 when Get-ThisMachineId or Write-BobIrcStatus is missing; dotting Get-BobIrc alone is not enough (FR #9198).
+- Drain must recreate empty outbox.txt after atomic move.
+- WinPS 5.1: never assign $pid/$PID in tray helpers (read-only automatic); use $trayPid/$killPid; pin source forbids $pid = in Stop-BobTrayProcessesProtectingSeats (MRB #9206).
+- Flamingo idle+offerable monitor intakes: re-check live /report offer_outcomes before coding; disk NACK cooldown looks like idle starve but is FR #6240 ops, twin of #9073/#9103 / PR #8871.
+- FR docstring drift after route retire: rewrite bobcallback and models_catalog together; keep /bob/v1/models/validate substring for pin tests via handler comment or retired wording.
+- FR #9217: ruleset required-ci-3948 requires pytest-ascii-bom with conflict-markers; job name must stay pytest-ascii-bom.
+- FR #9220: Depends-on offer gate indexes open FRs by owner/repo#N; relative #N resolves against the FR repo (no cross-repo bare-number false skip).
+- FR #9121: bobcallback /bob/v1/digest and /digest are 301 to /bob/v1/report; docstring must not claim same JSON body
+- FR #9229: after hold/on-hold are issues-only (#9082), fr9080 requeue hold-skip tests must use do-not-merge/wip on PR snapshots (not hold).
+- FR #9104: under local intake RateLimiter deny, bobcallback acks check_run/check_suite with 204 rate deferred (no retry storm); push/PR/issues stay 429; monitor github_rate_limit EXIT 1 under floor 500
+- TipForm menu vanishes on AppFocusChange when bob-status/tip TOPMOST steals focus --- Cancel AppFocusChange on MenuClosing, gate Status while menu open, Opening Hide-BobTrayCard + close bob-status.
+- FR #9209: OpenCode launch wrapper mirrors capture-file growth with Console.Out.Write+Flush live; end with opencode-capture-done marker, never dump full $outStr again
+- ensure_mrb_requeued_after_head_move must take issue_lookup and call linked_issue_hold_reason; prefetch outside the queue lock (FR #9243).
+- workers_last_good orphans: delete_worker/worker-remove must clear last-good + workers_stale; TTL BOB_DIGEST_LAST_GOOD_MAX_S; monitor workers_last_good_orphan.
+- Never Path.read_bytes() the whole outbox in take_outbox_records --- seek to .pos offset and cap the read (OUTBOX_READ_MAX_BYTES) or the ear OOMs (FR #9239).
+- After Install-BobWebhooks writes IIS rewrite to :7700, GET Backend/bob/v1/report (WARN; -RequireBackend to fail; -SkipBackendProbe in unit _run helpers) so a mid-deploy dead BobCallback is visible instead of a silent public 502.

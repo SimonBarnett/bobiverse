@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -24,12 +24,13 @@ description: >
 |---|---|
 | `!recycle` / `!recycle <this machine>` typed in a channel | Jeeves (the chair) authorizes and routes it (`RECYCLE v1 <machine>` wire / fleet route); the ear announces the departure, restarts the tray and `ircBob`. Bare `!recycle` and `!recycle all` are fleet-wide: chair-routed only (the ear no longer acts on bare `!recycle` itself) |
 | `!recycle dry-run [machine\|all]` | Chair prints the plan; nothing is sent to seats |
+| **FR #6389 recycle wire drop** | When a bob-* ear sees a `RECYCLE …` body but does not restart, look in ear `logs\stdout.log` (or the service log) for `INFO recycle wire dropped reason=<reason> machine=… from=… chair=…`. Reasons: `is_chair`, `not_fleet_bob`, `no_local_machine`, `machine_mismatch`, `not_recycle_wire`, `chair_missing`, `chair_mismatch`. Chair nick compare is case-insensitive (`chairNick: "Jeeves"` matches sender `jeeves`). Success lines: `INFO recycle announcing restart` then `INFO recycle wire accepted`. |
 | FR #5059 `!recycleseat <nick> [machine]` | Shop or `#bobiverse`: ops (+o/+h), bob-* ear, Jeeves or owner. Ear queues `run\\recycleseat\\req-*.json`; elevated tray stop+verify then start. Stop fail / PID still alive => no new seat + intake report |
 | Shop wire in `#<machine>`: `!bored`, `ACK`, `DONE`, `NACK`, `GIVEUP` | Worker <-> Jeeves job assignment (workers JOIN the shop only) |
 | `home\outbox.txt` lines `PRIVMSG <target> :<text>` | Sent verbatim (UTF-8, NO BOM, newline-terminated; only complete lines are consumed, offset in `outbox.txt.pos`). Identical send interface on every machine (FR #2174). This is how you "type as the ear" |
-| `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted) |
+| `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted). **FR #5539:** the ear never splits an over-long console PRIVMSG (overflow fragments would run as a second command). The whole line is dropped; use a shorter command or DCC PUT |
 | Incoming channel/PM PRIVMSG | FR #2174: always appended (scrubbed) to `home\inbound-transcript.log` as `UTC channel nick text` — listen without `BOB_IRC_DEBUG` |
-| Incoming `*_console` Query `out`/`err`/`DONE` PMs | FR #1546: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (skips digest for those lines) |
+| Incoming `*_console` Query `out`/`err`/`DONE` / `UPDATE <status>` PMs | FR #1546 / #5763: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (any UPDATE status tokens such as accepted, current, release-lookup-failed, …; skips digest for those lines) |
 | FR #4796 driver pacing for `*_console` outbox | `Invoke-AircRemote -OutboxPaceMs` / `-PostBurstCoolMs`; ear `CONSOLE_OUTBOX_FLOOD_S` (env `BOB_CONSOLE_OUTBOX_FLOOD_S`); console token-bucket is FR #4790 |
 | Raw shop-op outbox `MODE +/-o|v|h <nick>` / `KICK` / `NAMES` (own shop only) | Ear sends raw IRC via `shop_ops` (FR #4069: `+h` half-op allowed with `+o`/`+v`) |
 | `FILE v1 ...` | File transfer handshake via `filexfer.py` (accept/refuse over the outbox) |

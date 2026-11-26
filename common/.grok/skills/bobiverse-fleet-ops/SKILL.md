@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -25,17 +25,18 @@ Shared by jeeves, bob and airc. Product specifics are in `bobiverse-jeeves*`, `b
 Never assume `C:\ai`. The root is the `<drive>:\ai` on a **fixed** disk (Win32_LogicalDisk DriveType 3; removable/network/CD ignored): the one already holding `bob`/`jeeves`/`airc`/`ergo`, else the one the services point at, else `<SystemDrive>:\ai` (created only by an installer). Override: env `BOB_AI_ROOT` (MSI: `AIROOT=D:\ai`). Check it with `. <install>\scripts\Bobiverse-Common.ps1; Get-BobiverseAiRoot` (read-only). Verify the REAL tree a service runs from with `nssm get ircBob AppDirectory` / the registry before hotpatching - a clone of the repo elsewhere is not the install.
 ## Update paths and precedence (t781u/t782u)
 
-Per service start: (1) repo fast-forward of the install work tree (sparse `<product>/` + `common/`, ff-only on `main`, local edits/commits/branches untouched, never blocks the start), flat runtime recomposed; `BOBIVERSE_REPO` = explicit external clone instead; (2) then the MSI release self-update, only when a release is newer than the VERSION now installed. `BOBIVERSE_NO_UPDATE=1` disables both; `BOB_AUTOUPDATE=0` only the release check. Look at `git -C <install> status -sb` and `Sync-BobiverseFromRepo.ps1 -Product <p> -DryRun` (read-only) before assuming what a box runs. Details: README "The install dir is a git work tree". Linked FR worktrees share `.git/info/exclude` (`/*`); new files outside un-ignored trees need **`git add -f`** (FR #132 / `bobiverse-bob-job-fr`).
+Per service start: (1) repo fast-forward of the install work tree (sparse `<product>/` + `common/`, ff-only on `main`, local edits/commits/branches untouched, never blocks the start), flat runtime recomposed; `BOBIVERSE_REPO` = explicit external clone instead; (2) then the MSI release self-update, only when a release is newer than the VERSION now installed.
+**FR #7008:** when `Sync-BobiverseWorkTree` ff-only fails after the in-tree park attempt, overlay `common/scripts/Bobiverse-Common.ps1` from `origin/<branch>` (`Sync-BobiverseScriptTipFromOrigin`), re-dot, re-run park helpers, retry ff-only once; never log parked file bodies. First landing of that Common still needs MSI or another write of the new file; later dirty-ff catch-up does not. `BOBIVERSE_NO_UPDATE=1` disables both; `BOB_AUTOUPDATE=0` only the release check. Look at `git -C <install> status -sb` and `Sync-BobiverseFromRepo.ps1 -Product <p> -DryRun` (read-only) before assuming what a box runs. Details: README "The install dir is a git work tree". Linked FR worktrees share `.git/info/exclude` (`/*`); new files outside un-ignored trees need **`git add -f`** (FR #132 / `bobiverse-bob-job-fr`). `BOBIVERSE_NO_UPDATE=1` disables both; `BOB_AUTOUPDATE=0` only the release check. Look at `git -C <install> status -sb` and `Sync-BobiverseFromRepo.ps1 -Product <p> -DryRun` (read-only) before assuming what a box runs. Details: README "The install dir is a git work tree". Linked FR worktrees share `.git/info/exclude` (`/*`); new files outside un-ignored trees need **`git add -f`** (FR #132 / `bobiverse-bob-job-fr`).
 **ARP VERSION truth (FR #1565 / harvest #1589):** after MSI, Windows ARP `DisplayVersion` is the installed VERSION truth. `Sync-BobiverseFromRepo` must heal `<InstallRoot>\VERSION` to match ARP and must **not** let a newer git/clone `VERSION` stamp clobber the MSI identity on start-up sync. Unit tests use `-ArpVersionOverride none` (or the script's equivalent) so live ARP does not poison CI. Merged PR #1577 + docs #1587.
 ## Fleet model (what talks to what)
 
-- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box.
+- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box — **walrus** (machine id `walrus`). **ionos is deprecated** as the Ergo/chair host.
   NEVER edit `ircd.yaml`, never restart `BobIrcd` as part of a fix for something else.
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
-  digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
+  digest, webhooks — also on **walrus**. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
   `#bobiverse` + `#<machine>`. **Airc** console (service `Airc`, nick `<machine>_console`): remote shell over PRIVMSG.
-- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://irc.ntsa.uk/bob/v1/digest` is 404.
-  Public URL `https://irc.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
+- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://bob.ntsa.uk/bob/v1/digest` is 404.
+  Public URL `https://bob.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
 - **BobAutoFocus retired (FR #3190):** do not re-enable the interim scheduled task that ran `<ai root>\ops\auto-focus.py` every 2 minutes and appended per-item `!focus` lines. Jeeves MSI post-upgrade restarts only `BobCallback` / `BobAutoFeed`, then calls `Unregister-BobAutoFocus.ps1` for leftovers. Repo-level `!focus <Owner/repo>` is the only focus path. `jeeves/tools/monitor/auto_focus.py` is a read-only MONITORING health check, not that ops spammer.
 - **Digest** (`digest.json` + `registered-machines.json` roster + `chair-outbox.txt`) lives in the digest home
   (`BOB_DIGEST_HOME`, default `~\.bobiverse`). Roster = ChanServ-registered `#<machine>` shop channels, mirrored every ~2 min.
@@ -56,7 +57,7 @@ Get-Content <InstallRoot>\VERSION                                   # installed 
 Get-Content <InstallRoot>\logs\stdout.log -Tail 60                  # service log (stderr.log beside it)
 Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook receiver (jeeves box)
 (Invoke-WebRequest http://127.0.0.1:7700/bob/v1/report -UseBasicParsing).StatusCode      # 200 = receiver up
-(Invoke-WebRequest https://irc.ntsa.uk/bob/v1/report -UseBasicParsing).StatusCode        # 200 = public path up
+(Invoke-WebRequest https://bob.ntsa.uk/bob/v1/report -UseBasicParsing).StatusCode        # 200 = public path up
 ```
 
 - IRC connection: stdout shows `joined #bobiverse,... as <nick>`; `chair-status oper=ok chanserv-list=ok op-in=...`.
@@ -132,7 +133,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | `PropertyNotFoundException` / StrictMode `.Count` on `Sort-Object`/`Where-Object` | Pipeline of one item is a **scalar**, not an array | Wrap with `@(...)` before `.Count` / index ops (FR #1664 / PR #1672 / harvest #1689). Leave separate FreeGB capacity FRs open when they are distinct from the StrictMode bug |
 | Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
 | Self-update Apply hung / 0-byte MSI / mutex stuck | `Get-Asset` stalled on GitHub download without timeout | FR #1545: IWR TimeoutSec + curl `--max-time` fallback; throw → `download-failed` + mutex release (PR #1561). Check `...\update\<product>\update.log` |
-| `Update-BobiverseService -Mode Check` -> `no-matching-asset` | GitHub release tag lacks `<product>-<ver>.msi` (+ `.sha256`) | Pack `-Product all` (or that product), `gh release upload` both files, then `Assert-BobiverseReleaseAssets.ps1 -Tag <tag>` (FR #2354) |
+| `Update-BobiverseService -Mode Check` -> `no-matching-asset` | GitHub release tag lacks `<product>-<ver>.msi` (+ `.sha256`), or the list fallback used a 3-part-only MSI regex and skipped a 4-part tag | Pack `-Product all`, `gh release upload` both files, `Assert-BobiverseReleaseAssets.ps1 -Tag <tag>` (FR #2354). List picker and Check share the 3- or 4-part MSI regex (FR #5412 / #5429). |
 | Wrapper splat behaves oddly / wrong args | Script used automatic `$args` for splatting | Rename to an explicit array (e.g. `$launchArgs`) before `@splat` (PR #1588) |
 | InstallRoot `VERSION` jumps after sync / disagrees with ARP | Sync copied a newer clone `VERSION` over the MSI stamp | ARP `DisplayVersion` wins; Sync heals InstallRoot to ARP and skips clone clobber (FR #1565 / #1589 / PR #1577) |
 | Quiet MSI **1603** / `Assert-BobiverseInstallVersion` after RunInstall (FR #2948) | Install tree is a sparse work tree; `Copy-BobiverseVersion` resolved `src\VERSION` → stale `common\VERSION` when `RepoRoot==InstallRoot` and overwrote the MSI-laid `VERSION` | Forward `-MsiProductVersion` into `Copy-BobiverseVersion` (MSI wins); same-tree keep laid `VERSION` when it differs from git common. Product #2950. Do **not** park this playbook under `harvest` (MRB #2963 FAIL). |
@@ -150,10 +151,11 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | UI MSI **1603** / ircBob left **Stopped** / seats gone after failed upgrade (FR #2564) | UI msiexec without `/l*v`; RunInstall removed the service then failed; no rollback start | Always `msiexec /i ... /l*v "%ProgramData%\Bobiverse\logs\msi-<product>-....log"`; read `install-*.log` / `recover-*.log` under the same folder; prefer self-update (`Restart-Service`) over parallel UI msiexec while Apply holds the mutex. Pack schedules RollbackRecover -> `Recover-BobiverseService`; Install scripts assert MSI ProductVersion vs VERSION and best-effort Start-Service on catch |
 | Self-update Apply aborts at **robocopy >=8** / tag **blocked-loop-guard** / service left Stopped (FR #2563) | Backup threw on locked `.pytest_cache` / `peers.json`; MaxAttempts burned; no operator escape | Backup excludes volatile paths, retries once, logs failing paths; backup-only fails -> `backup-failed` **without** MaxAttempts burn + `Ensure-ServiceRunning`; `-ForceCheck` clears the tag (PR #2565). Prefer Restart-Service Apply over parallel UI msiexec |
 | `gh` / git / harvest: **remote name could not be resolved** for `github.com` / `api.github.com` / `irc.ntsa.uk` (FR #4345) | Default NIC DNS (e.g. LAN-only `192.168.x.x`) fails while public resolvers still answer; temporary `hosts` pins paper over it | `common\scripts\Assert-BobiverseDns.ps1` (probe + JSON). Elevated Admin shell: `-RepairDnsServers` appends `8.8.8.8`/`1.1.1.1` after the existing first hop (`needsElevation=true` at Medium IL); then `-ClearStaleHostsPins`. Prefer reliable resolvers fleet-wide; avoid permanent hosts pins |
+| Flamingo Grok seats + chair both hit GitHub rate limit; identical `reset` across MH/flamingo (FR #9104) | Fleet shares one SimonBarnett **user OAuth** 5 000/hr bucket; `check_run` storms + concurrent seat `gh` burn it | Product: bobcallback returns **204** `rate deferred` for `check_run`/`check_suite` under local intake rate (push/PR stay 429). Monitor: `Test-JeevesMonitorGithubRateLimit.ps1` EXIT1 when core remaining &lt; 500 + `machine`. Seat: backoff non-essential `gh` (see `gh-cli-windows`). Ops: per-machine PAT / App token — never commit tokens; do not raise `seat_target` |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
-- Honor `require_machine` pins literally: a DEV1/ionos operation must be assigned to that capable seat, never to a convenient but incapable worker. Hard pins beat `any`; do not derive a pin from an ambiguous title.
+- Honor `require_machine` pins literally: a DEV1/walrus (chair/Ergo host; ionos deprecated) operation must be assigned to that capable seat, never to a convenient but incapable worker. Hard pins beat `any`; do not derive a pin from an ambiguous title.
 - On live Windows hosts, restart only the affected BobCallback task or `ircJeeves` service. Never restart BobIrcd/Ergo as a shortcut, and preserve queue/outbox evidence while recovering a callback or worker.
 - For upgrades and resync, verify the installed VERSION, clean/main worktree, fetch result, service/task state, and endpoint health; record an ALERT when fetch/ff/worktree state is stale.
 - After MSI, treat ARP `DisplayVersion` as VERSION truth for Sync heal; never let a newer repo/clone VERSION overwrite the MSI stamp (FR #1565 / harvest #1589).
@@ -176,7 +178,19 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 
 ## Harvested lessons (intake)
 
-- bobiverse #4340: even when hard-unpinned from require_machine=ionos, flamingo must GIVEUP needs_human for live C:\ai\jeeves install hotpatch; leave OPEN for ionos ops
+- bobiverse #4340: even when hard-unpinned from require_machine=walrus (legacy pin text may still say ionos), flamingo must GIVEUP needs_human for live C:\ai\jeeves install hotpatch; leave OPEN for walrus/chair-host ops
 - When SeatDisk FreeGB stays under MinFreeGB after reclaim, check install git branch: ff-only-on-main means a leftover fr-* branch leaves flat scripts pre-#4883; hotpatch from origin/main:common/scripts/Clear-BobiverseSeatDisk.ps1 then -Reclaim before filing capacity.
 - FR #5154: if user Temp still dominates the CRITICAL report, SeatDisk third-pass uses KeepTempHoursLow on known leftover dir names (pip-build/pytest) --- never vscode/Outlook trees and never a hand-delete of C:\ai\* (FR #2727).
 - Write reload to run/tray-cmd.txt so elevated bob-tray.exe KillEngineTree+StartEngine; never taskkill the High-integrity engine from a Medium shell
+- HOTPATCH overlays commit and hotpatched= only; never overwrite VERSION built= from BUILD.json.
+- PowerShell $t and $T are one variable; hotpatch verify must use distinct names. HSwap overlay must prune files removed from the pack (sdk\priority-web-sdk).
+- Tray C# heading changes need CI Build-BobDialogs.ps1 on windows-latest; source-only merge leaves live tools\bob-tray.exe stale --- assert UTF-16LE xAI weekly in the PE and upload sha256 provenance for Slab hotpatch
+- Heading-bound README pins must skip ATX detection inside fenced code; a # PowerShell comment is not a markdown heading.
+- A 2470 behind-count ALERT test must dirty a non-allowlist path; park-all-dirty makes ff succeed and drops the ALERT.
+- MRB tray CI: Stage-BobTrayHotpatchArtifact must ship src/tools/assets with per-file SHA-256; new BOM-less ps1 scripts must stay ASCII (no ellipsis)
+- SYSTEM git sync (FR #7301 / PR #7306): pass -c safe.directory=<that install path> (never a star glob); on ff-only diverge write logs/sync-diverged.json for that HEAD and skip fetch/ff until HEAD changes; never force-reset local work. (moved from harvest tip #7307)
+- Self-update Check must gate on BUILD.json commit vs release SHA (compare ahead/identical only); never replace a newer hotpatch; log skipped-hotpatch-newer with both SHAs
+- airc FORM-PREPARE menu = FORMPREP; Session-0 path FORMPREPDRCT2; ENAME is the form name; type resolve reads T$EXEC only so older hosts without EXECPREPLOCK.UPD still work
+- When a tip script change must reach frozen bob-ear.exe without rebuild, add the module to FROZEN_SCRIPT_OVERLAY with a tip marker; leave it out of EAR_RUNTIME_DISK_SCRIPTS so provenance does not block hotpatch (FR #8613).
+- One-account fleet = one 5k/hr OAuth bucket; under local webhook rate deny ack check_run/check_suite with 204 (rate deferred) not 429; monitor core.remaining vs BACKOFF_FLOOR with machine id; separate budgets are ops PATs/App tokens never committed.
+- FR #8861 reopen: when intake_allowlist reports repo_not_allowed, first prove default-UA is CF 1010 vs JSON; if main already has the probe UA (#8875) and live allows with UA, DONE the covering PR and refresh the local monitor copy --- do not Sync/compose chase a false drift

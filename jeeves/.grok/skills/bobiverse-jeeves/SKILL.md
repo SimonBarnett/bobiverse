@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves
 description: >
-  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, GitHub resync), install/upgrade/hotpatch. Use in <ai root>\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
+  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, ticket-closure wake, GitHub resync), install/upgrade/hotpatch. Use in <ai root>\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
 ---
 
 # bobiverse-jeeves
@@ -14,7 +14,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -39,7 +39,7 @@ deterministic and token-less except the optional GitHub token used for filing is
 | Digest home (`digest.json`, `registered-machines.json`, `chair-outbox.txt`, `webhook-queue`) | `BOB_DIGEST_HOME` = `~\.bobiverse` |
 | Ergo (IRC server, separate service `BobIrcd`) | `<ai root>\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
 | Webhook receiver | task `BobCallback` (SYSTEM) `python scripts\bobcallback.py --home <digest home> --bind 127.0.0.1 --port 7700` |
-| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450) -> 127.0.0.1:7700 |
+| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450), `/builds`, `/models` (FR #8835) -> 127.0.0.1:7700 |
 | Ports | 6697 TLS (public), 6667 plaintext loopback, 7700 bobcallback loopback |
 | Logs | `<ai root>\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
 | Chair-home files | `cmd-trace.log` (time/nick/command/reply), `webhook-health.json`, `resync-token-source.log`, `operators.txt`, `identity.json` (DPAPI) |
@@ -58,17 +58,21 @@ stay the digest roster (`machines`); `#wonderland` is never a machine id. Privil
 `ircd.yaml`. GIT announces remain `#bobiverse`-only; shop behaviour unchanged. Details:
 `jeeves/docs/channel-privileges-and-workers.md`.
 
-**Living architecture FR (harvest #1989 / FR #1993):** approved ionos chair plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: ionos` (and `needs-ionos` when stamped). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
+**Ergo / chair host:** **walrus** (machine id `walrus`). **ionos is deprecated** — Sync/compose, `Restart-Service ircJeeves`, BobIrcd, and chair-only ops run on walrus.
+
+**Living architecture FR (harvest #1989 / FR #1993):** approved chair-host plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: walrus` (and `needs-walrus` when stamped; legacy `needs-ionos` / `require_machine: ionos` mean the same chair host until the pin-retarget FR lands). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
 
 ## Chair background jobs (inside ircJeeves, no extra task)
 
 1. **Webhook health probe, every 30 min** (`chair_health.probe_cycle`): for BOTH `http://127.0.0.1:7700` and
-   `https://irc.ntsa.uk` it checks `GET /bob/v1/report` (200), `GET /bob/v1/jira` (200), `GET /bob/v1/intake/<id>` (404 counts
-   as up) and a synthetic `POST /bob/v1/git` ping (zen `jeeves-health-probe`, answered 204 with no queue entry and no
-   announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
+   `https://bob.ntsa.uk` (defaults; FR #5272 / FR #6142; IRC host stays `irc.ntsa.uk`; overrides:
+   `JEEVES_PROBE_LOCAL`, `JEEVES_PROBE_PUBLIC`, `BOB_PUBLIC_BASE`) it checks `GET /bob/v1/report` (200),
+   `GET /bob/v1/jira` (200), `GET /bob/v1/intake/<id>` (404 counts as up) and a synthetic `POST /bob/v1/git` ping
+   (zen `jeeves-health-probe`, answered 204 with no queue entry and no announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
    `webhook-health.json`; `#bobiverse` is told ONLY on up<->down transitions (`WEBHOOK DOWN ...` / `WEBHOOK RECOVERED ...`)
    through `chair-outbox.txt`.
-2. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
+2. **Ticket closure wake** (FR #6391 / #6400 / #6405): event-first from GIT webhooks; poll backup every `TICKET_CLOSURE_S` default 900s (`JEEVES_TICKET_CLOSURE_S`) with per-repo `poll_cursors` + page pagination; no-token WARN + `ticket_closure_token_source`; HTTPS wake with backoff. State: `monitor-ticket-closure.json`. Startup log + `!status` `ticket_closure:` line. Docs: `jeeves/docs/wake-grok-bot-bob.md`.
+3. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
    `github_api_budget` (ETag/304 conditional GETs, hourly call budget, backoff floor). Authenticated with the existing
    Jeeves token from `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only
    the token SOURCE is written once per process to `resync-token-source.log`. **Webhooks update the queue with zero REST** (including `issues`/`pull_request` `labeled`/`unlabeled` label mutations — FR #3275);
@@ -79,7 +83,7 @@ stay the digest roster (`machines`); `#wonderland` is never a machine id. Privil
    allowed owners. `!resync` runs it now; `!status` shows `github_resync:`, `webhooks:`, and `github-api:` remaining.
    **Open-PR MRB vs stale `mrb_done` (FR #1585 / harvest #1613):** premature `mrb_done` must not purge an MRB whose GitHub pull is still **open**. `mrb_already_done(..., pr_exists=)` treats open `pr_exists` as winning (keep/requeue the MRB); resync clears stale `mrb_done` stamps the same way it heals stale `fr_done`. Merged PR #1606.
 
-**Offer order (FR #3205):** within focus priority, hand out **MRB then UAT then FR**, **lowest issue/PR number** first (not queue `seq` / arrival order). Same-priority repos interleave by kind then number (repo name is the final tie-break — not focus timestamp). A seat that cannot take waiting MRB/UAT rows still gets the next eligible FR (never `nothing queued` while one exists). `rebuild_offer_precompute` (resync / after offer stamp) writes `offer-precompute.json`; when its fingerprint matches the queue, `!bored` uses **zero** live GitHub calls (FR #3188 budget of 1 remains when precompute is stale).
+**Offer order (FR #3205 / #7204):** GitHub label `priority/critical` is offered **first** (oldest `ts`, then lowest number), skipping ineligible seats without blocking the rest. Then, within focus priority, hand out **MRB then UAT then FR**, **lowest issue/PR number** first (not queue `seq` / arrival order). Label changes on webhook/resync update queued rows so the next `!bored` sees the new order. Same-priority repos interleave by kind then number (repo name is the final tie-break — not focus timestamp). A seat that cannot take waiting MRB/UAT rows still gets the next eligible FR (never `nothing queued` while one exists). `rebuild_offer_precompute` (resync / after offer stamp) writes `offer-precompute.json`; when its fingerprint matches the queue, `!bored` uses **zero** live GitHub calls. Production `BORED_GITHUB_CALL_BUDGET = 0` (FR #3212 / MRB #3207): stale precompute still uses that constant (also zero) — local-state only; unknown rows stay offerable and are never purged for budget exhaustion. Tests that need a live GET must opt in with `monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", N)`.
 
 ## Services and identity
 
@@ -98,12 +102,13 @@ See `bobiverse-fleet-ops`. Jeeves specifics: the installer also registers task `
 `Bobiverse` (Restart ircJeeves, Services, Logs, Skill books, Agent guide, Jeeves command reference - all with the systray icon).
 Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Service ircJeeves` ONLY.
 **FR #3190:** do not re-enable retired task `BobAutoFocus` (ops `auto-focus.py` per-item `!focus` spam). Post-upgrade restarts `BobCallback` / `BobAutoFeed` only and runs `Unregister-BobAutoFocus.ps1`. Use repo-level `!focus <Owner/repo>`.
-**FR #4969:** repos with GitHub topic `priority-customer` sort after non-customer work (`!list` / `!bored`). Tag with `gh repo edit SimonBarnett/<repo> --add-topic priority-customer`. Jeeves refreshes the topic set once per resync (persisted beside the queue). Explicit `!focus` still wins.
+**FR #4969 / #7391:** repos with GitHub topic `priority-customer` sort after non-customer work (`!list` / `!bored`). Tag with `gh repo edit SimonBarnett/<repo> --add-topic priority-customer`. Jeeves refreshes the topic set once per resync (persisted under chair `BOB_HOME` / `.jeeves`, not `BOB_DIGEST_HOME`; write failure logs path and sets digest `health.priority_customer_topics`). Explicit `!focus` still wins.
 
-## Cutover checklist (Ergo host)
+## Cutover checklist (Ergo host = walrus)
 
 1. Remove SCM `BobJeeves`. 2. Ensure `config\ergo.password`. 3. `Complete-BobiverseServiceLogon.ps1 -Product jeeves` when the password is available.
 4. `Restart-Service ircJeeves`. 5. Expect `joined #bobiverse,#... as Jeeves` and `chair-status ... op-in=` all channels.
+Do this on **walrus** (not ionos).
 
 ## Do not
 
@@ -116,5 +121,20 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 
 ## Harvested lessons (intake)
 
+- **FR #8835:** every `/bob/v1/*` BobCallback route (plus local health/digest and outbound stall/wake) needs a home Webhooks & API card, a `docs/webhooks/*.html` page, and a hub index row. Registry `common/scripts/bob_webhook_docs.py`; inventory `bob_route_inventory.py`; CI `test_fr8835_webhook_docs_route_coverage.py`. Coming ops use `DocEntry.status="coming"`. Publish HTML with static copy of `jeeves/www/irc-ntsa/**` excluding `web.config`, `*.bak`, and `_backup-*` --- never re-run `Install-BobWebhooks.ps1` for content-only (#8803).
+- **FR #8887:** Install-BobWebhooks backups go under `-BackupRoot\_backup-www-<leaf>` (Install-Jeeves passes install root). Shipped web.config denies `.bak` / `_backup-` / `.bak/`. Never leave publish backups inside the IIS web root.
+
+- **FR #7334 / #7338:** when an offerable MRB stays `no_eligible_reviewer` for >5 minutes, `chair_health` stall-heal calls `maybe_recycle_stuck_no_eligible_reviewer` to `!recycleseat` the idle author with the fewest commits (counts from GitHub via `author_commit_counts`), posts one `#bobiverse` notice, and restarts `no_eligible_since` so the next scan does not recycle another author. Busy seats are never recycled; a fresh nick is not an author.
+
+- FR #6407 / MRB #6410: when retiring a require_machine target, grep all dedicated-body fixture pins (fr1518/fr4610-class) in the same change; retired mid no longer gates and CI goes red
 - Jeeves complete_job_by_ref: match DONE on repo+id+task only; never fall back to repo+id alone or a drain-retry DONE FIX will mark the FR #4929 requeued MRB done
 - When requeue_reopened_issue puts an FR back in unaccepted, also clear ledger fr_done in the same locked step (pass home); keep the hold when there is no reopen and an open Closes-PR still covers the issue. (context: FR #4695 / tip #4697)
+
+- FR #5510: stuck-job sweep every 10 min — classify open/queue work, release silent/dead-holder accepts (30m), enqueue untracked offerable, digest stuck + !stuck; never touch needs_human/require_machine/self-MRB; no merge/close.
+- **FR #6395:** Jeeves freeze CI mirrors build-bob-worker: Build-Jeeves.ps1 -SourceCommit overwrites jeeves_build_meta stub then restores; artifact MANIFEST.json carries source SHA/hash/size/run id for Slab hash-check install (moved from wrong-book tip #6398; product PR #6397).
+- Jeeves --chair must exit on the wrong host and on 433; never sit on Jeeves_l; Install-Jeeves must not create ircJeeves off walrus. (FR #6947)
+- Public Jeeves UI on bob.ntsa.uk uses /jeeves-prefixed URLs (not site-root /assets or /api/login); GET /jeeves is login, GET /jeeves/ is settings after session cookie Path=/jeeves. bobcallback must forward upstream Set-Cookie + Content-Type when proxying the rest to :7701 (FR #7274 / PR #7277; moved from wrong-book harvest tip #7278).
+
+- FR #7338: author_commit_counts counts a GitHub commit once per seat nick even when author and committer are the same; ignore names that are not seat nicks (parse_seat_nick). Do not park under harvest/SKILL.md (moved from tip #7340; product #7339).
+- FR #7377 / #7382: fleet Copilot/OpenCode fetch is a dedicated fixed-rate 60s timer (`_maybe_tick_fleet_pools`) outside chair `busy`, poked by `fleet-pool-watch` so a long outbox drain cannot starve it; fixed-delay `next=now+60` behind resync/merge-on-green stretches gaps past tray 120s stale. Do not park under harvest/SKILL.md (moved from tip #7380).
+- **FR #8017:** Pre-ACK NACK with worktree-create-failed (and class:suffix forms) must stamp deterministic_nack_until on the unaccepted row so offer_focus_top skips that seat until GIVEUP_COOLDOWN_S; do not bump giveup_count. Sibling seats stay eligible. Product home is gitclaim/shop_listen (PR #8034). Do not park under harvest/SKILL.md (moved from tip #8039).

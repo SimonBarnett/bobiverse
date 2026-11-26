@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-plan
 description: >
-  How to start a bob PLAN agent: tray Plan click, bob-worker.exe --mode plan, CWD <ai root>\bob\plan, always-new agent rule, automatic grok->cursor->key-prompt selection, plan skills, logs, troubleshooting.
+  How to start a bob PLAN agent: tray Plan click, bob-worker.exe --mode plan, CWD <ai root>\bob\plan, always-new agent rule, automatic Grok -> Cursor -> OpenCode -> key-prompt selection, plan skills, logs, troubleshooting.
 ---
 
 # bobiverse bob - plan agent
@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary -Kind harvest -Title "short title" -Body "what / where / evidence / fix"`
 >    (FR #3318: Plan process -> skills-visionary; never park Plan lessons under bobiverse harvest. **Harvest how-to-plan only** - process, pitfalls, repo-setup steps; never the plan itself: requirements, designs, product decisions and FR/issue lists stay in `work\plan-*` and the product repo's vision/FR docs, never a skill book; test case bobiverse#3097. Bob fleet tooling lessons (bob-worker/tray) -> `-Repo SimonBarnett/bobiverse`).
@@ -33,7 +33,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 
 * **ALWAYS a NEW agent** (t765u): never resume, continue or attach to an older plan agent; new session id, its own single window, no `--resume`/`--continue`/`-r`/`-c`, never an existing window or process. A second click is a second, independent plan.
   The folder `<ai root>\bob\plan` is shared, so the agent is told to put each plan's output in its OWN new subfolder `<ai root>\bob\plan\work\plan-<yyyyMMdd-HHmmss>` and never to touch earlier ones.
-* **Agent selection is the same automatic token rule as the worker** (FR #3997): Grok (local weekly > 0 or unknown read) -> Cursor (high or low pool > 0) -> a hidden-input prompt IN THE SAME WINDOW for a session `XAI_API_KEY`
+* **Agent selection is the same automatic token rule as the worker** (FR #3997 / #6120): Grok (local weekly > 0 or unknown read) -> Cursor (high or low pool > 0) -> OpenCode (free or Go fuel > 0) -> a hidden-input prompt IN THE SAME WINDOW for a session `XAI_API_KEY`
   (memory only, never saved/printed). See `bobiverse-bob-worker`.
 * Cursor (`agent.cmd`) runs with `--plan --model auto --workspace <ai root>\bob\plan`; Grok (`agent.exe`) with `--no-auto-update --no-alt-screen --cwd <ai root>\bob\plan --permission-mode plan --session-id <new-uuid>` (FR #2699: same no-auto-update prefix as agent/monitor/maintenance so Plan cannot self-update mid-session).
 * **ONE window** (t771u): the exe's console window hosts the plan agent (the agent inherits it - no second console, no watcher window). The exe stays alive exactly as long as the agent: closing the window or killing the
@@ -52,3 +52,5 @@ harvest, harvest-agent-skills), `docs\templates\vision.md`, `tools\` (vision-pac
 * Plan CAST IRON still shows `-Repo SimonBarnett/bobiverse` examples (FR #3667 / twin of #3506): install `plan\` is stale vs tip. Heal with `Sync-BobiverseFromRepo -Product bob` / `Sync-BobiverseAgentFolders` (preserves `plan\work`). Sync emits `WARN FR #3667` when dest AGENTS is still pre-#3510. Do not re-land #3510 source text.
 
 File every problem you find: CAST IRON rule at the top.
+
+- **FR #7524:** isolated CI is `.github/workflows/build-bob-plan.yml` (pytest + PSScriptAnalyzer + SKILL front matter + `bob-plan` artifact). Do not park under `harvest/SKILL.md` (MRB #7542).

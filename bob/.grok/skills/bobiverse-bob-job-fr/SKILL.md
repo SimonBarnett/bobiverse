@@ -2,6 +2,8 @@
 name: bobiverse-bob-job-fr
 description: >
   The single skill for FR jobs - process diagram from Jeeves assign through ACK, tests-first implementation and evidence to the one PR and the DONE line; steps, evidence required, who owns what (implementer opens the PR and never merges; the originating agent owns MRB and UAT).
+depends_on:
+  - bobiverse-bob-job-irc
 ---
 
 # bobiverse bob - FR job (implement)
@@ -9,7 +11,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -30,7 +32,7 @@ flowchart TD
   D --> E["Tests FIRST: add failing tests for the acceptance criteria"]
   E --> F["Implement the smallest change; run existing + new tests"]
   F -->|red| F
-  F -->|green| G["Self-review: diff, docs/usage text, encoding UTF-8 no BOM, no secrets"]
+  F -->|green| G["Self-review: diff, docs/usage text, UTF-8 no BOM, no C0 controls, no secrets"]
   G --> H["Open ONE PR: body has Closes owner/repo#N for the originating issue + evidence"]
   H --> V["Verify the link: gh pr view --json closingIssuesReferences lists issue N"]
   V -->|"missing / wrong base branch"| H
@@ -42,7 +44,7 @@ flowchart TD
 ## Steps
 
 1. **ACK** the assign line (exact id). 2. Read the issue, linked FRs and the vision/README so you serve the intent, not just the letter. 3. Work in a temporary worktree/branch, never on `main`.
-4. **Tests first**: new tests that fail for the right reason, then the implementation. 5. Run the whole suite (not just yours). 6. Update docs/usage/skills your change makes stale.
+4. **Tests first**: new tests that fail for the right reason, then the implementation. 5. **Targeted tests only (FR #8157):** run touched modules + new `test_fr<N>_*` via `python common/scripts/select_tests.py --changed` or `python common/scripts/run_job_pytest.py --changed` (or explicit paths). Never `pytest jeeves/tests` / `common/tests` / bare `pytest` in-job --- that hits the OpenCode 600 s tool timeout; CI runs the full suite on the PR. 6. Update docs/usage/skills your change makes stale.
 7. Open exactly **one** PR against the repo's default branch, title referencing the FR, body containing the line **`Closes <owner>/<repo>#N`** (the full form, the originating issue - not just `#N`, not only in a comment) plus the evidence block below. A PR that targets a non-default branch does not auto-close the issue: say so in the body so the MRB closes it by hand.
 8. **Verify the link before DONE**: `gh pr view <pr> --repo <owner>/<repo> --json body,baseRefName,closingIssuesReferences` must list issue N in `closingIssuesReferences` (or, for a non-default base, the body must carry the `Closes` line and say it needs a manual close). Fix the body and re-check if not. 9. Send **DONE** (PR url last, nothing after it). 10. Stop.
 
@@ -51,12 +53,13 @@ flowchart TD
 
 The live install (<ai root>\bob, --install-root) must stay on main. FR/FIX/MRB seats **must not** git checkout / switch / commit / merge / rebase in that checkout. Always:
 
-1. git -C <install> worktree add -b fr-N <job-wt> origin/main — **FR #4988:** `<job-wt>` = `Get-BobiverseJobWorktreePath -Repo owner/name -Job fr-N` (default `<data drive>\ai\worktrees\<repo>\fr-N`; override `BOB_JOB_WORKTREE_BASE` / `BOB_BRIDGE_HOME\worktrees`; never a drive root)
-2. Write .bobiverse-seat immediately, then git sparse-checkout disable **once**
-3. Commit/push from the job worktree only
+1. Dot `common\scripts\Bobiverse-Common.ps1` (repo tree) or `<install>\scripts\Bobiverse-Common.ps1` (composed flat) --- never `common\Bobiverse-Common.ps1`. `$wt` = `Get-BobiverseJobWorktreePath -Repo owner/name -Job fr-N` (default `<data drive>\ai\worktrees\<repo>\fr-N`; override `BOB_JOB_WORKTREE_BASE` / `BOB_BRIDGE_HOME\worktrees`; never a drive root). **FR #8852:** `Assert-BobiverseJobWorktreePath -Path $wt -InstallRoot <install>` before `git worktree add` --- refuse empty/relative/`origin/main` / under-install paths.
+2. `git -C <install> worktree add -b fr-N $wt origin/main`
+3. Write .bobiverse-seat immediately, then git sparse-checkout disable **once**
+4. Commit/push from the job worktree only
 
 
-rrefuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
+Assert-BobiverseJobWorktreePath (FR #8852) / refuse_empty_job_worktree_path / refuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py and Bobiverse-Common.ps1 are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
 
 
 ## Duplicates: find and close them before DONE (t857u)
@@ -88,11 +91,16 @@ Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude
 * **CAST IRON (FR #4029 / MRB #4035):** run `git sparse-checkout disable` **once** right after `worktree add` (and after writing `.bobiverse-seat`). Do **not** re-run it on an already-full FR tree --- a second disable can detach `.git` and wipe uncommitted work. If the tree is destroyed mid-job: recreate from `origin/main`, restore from session compaction if needed, and file intake.
 * **FR #3641 — write `.bobiverse-seat` immediately after `worktree add`:** before any edit, write `{"nick":"<seat>","pid":$PID,"issue":N,"repo":"owner/repo"}` (UTF-8) at the job tree root. Soft-cap (`MaxExtraJobTrees=0`) and sibling Clear runs skip a **fresh** marker even when the recorded pid is dead; live pid always protects; `-Force` may reclaim only markers older than `-StaleSeatHours` (default 48h) with a dead pid. Mid-FR trees without a marker can vanish (class of #3639 / #3641).
 * New untracked files under paths still masked by exclude are skipped by plain `git add` - use **`git add -f`** (or `git check-ignore -v` to confirm).
-* Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`; paths outside those still need `-f`.
+* Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`, and **`/.github/`** (FR #7432 workflows). Paths outside those still need `-f`.
+* **FR #7432:** after install sync refreshes `.git/info/exclude`, plain `git add .github/workflows/*.yml` works in linked job worktrees. If an old install exclude still masks `.github`, run Start/sync (Write-BobiverseInstallGitExclude) or use `git add -f` once.
 
 * **FR #963 / pytest ``repo_layout``:** canonical helper is ``common/scripts/repo_layout.py``. Prefer ``git sparse-checkout disable`` in the temp tree. If you keep a partial sparse set, always include ``common/scripts`` (and root ``conftest.py`` / ``pytest.ini`` when running from repo root). Service ``*/tests/conftest.py`` also puts ``common/scripts`` on ``sys.path``, so ``python -m pytest jeeves/tests/...`` works without ``PYTHONPATH=common/tests``.
 
-## Job worktree cleanup (FR #877 / FR #2727 / FR #3641)
+## Job worktree cleanup (FR #877 / FR #2727 / FR #3641 / FR #8023)
+
+* **FR #8023 fetch-before-add:** before `git worktree add`, `git -C <install> fetch origin main` (or the PR head for FIX/MRB). If fetch fails, stop and GIVEUP / NACK `worktree-create-failed:fetch`. New FR/UAT branches base only on `origin/main` after a successful fetch --- never a stale local `main`/`HEAD` fallback.
+* **FR #8023 low disk:** if free space on the job-worktree base volume is below MinFreeGB (default 2 / `BOB_JOB_WORKTREE_MIN_FREE_GB`), NACK `worktree-create-failed:disk` or GIVEUP and file a disk intake. Run `Clear-BobiverseJobWorktrees.ps1`; never hand-delete trees (FR #2727). Dirty, unpushed, or unknown trees are kept and reported --- never deleted.
+
 
 * **StrictMode `.Count`:** wrap `Sort-Object`/`Where-Object` results with `@()` before `.Count` (FR #1664 / Clear-BobiverseJobWorktrees). FreeGB capacity shortfalls are separate FRs - do not close them as duplicates of the StrictMode fix (harvest #1689).
 Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` until `git worktree add` fails with **No space left on device**.
@@ -116,7 +124,7 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * **FR #5154 (TEMP third pass):** when FreeGB is still under MinFreeGB after FR #4883, SeatDisk reclaims known user-%TEMP% leftovers with KeepTempHoursLow (default 6) plus pip/pytest dir names. Never wipe vscode/Outlook/NVIDIA TEMP trees or invent a `C:\ai\*` delete list (FR #2727). Prefer D: job trees; expand C: only if CRITICAL remaining consumers are live session/bin.
 * If FreeGB is still under 2 **after** JobWorktrees **and** SeatDisk: **file an intake issue** for disk capacity and continue with a tree on a roomy drive, or **GIVEUP** — do not invent a delete list.
 * Manual remove **only on your own job tree** (the `-KeepPath` / current FR tree you created this seat): `git -C <install> worktree remove --force <your-own-job-wt>; git -C <install> worktree prune`. Never a guessed list of sibling `C:\ai\*` dirs.
-* **FR #4197:** Clear must not abort when one registered worktree path or .git is missing (git worktree remove NativeCommandError under StrictMode). Warn, rmdir leftovers, git worktree prune, and continue reclaiming the rest.
+* **FR #4197 / FR #8023:** Clear must not abort when one registered worktree path or .git is missing. Warn, keep unverifiable dirs (missing .git), prune metadata, and continue reclaiming the rest. Only `safe` (clean+published) trees are removed; no `--force` / Remove-Item fallback on failed `git worktree remove`.
 * **a-search CDK trees (FR #3717):** before your own `git worktree remove`, `cmd /c rmdir /s /q <wt>\cdk.out*` (and prefer Clear). Deep `cdk.out` / Lambda asset hashes hit Windows **Filename too long**; git deregisters then leaves the directory; `Remove-Item -Recurse` fails the same way — `cmd rmdir /s /q` clears leftovers. Clear does this pre-rmdir automatically.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 
@@ -148,11 +156,46 @@ Add-Content -LiteralPath $outbox -Value "PRIVMSG #shop :DONE FR owner/repo#N $ur
 
 On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body` argv splits). If a bad DONE already went out, append a corrected `DONE` line with the real URL immediately.
 
+**FR #5502 / gh body BOM:** WinPS `Set-Content -Encoding utf8` writes a UTF-8 BOM. `gh pr create --body-file` then stores U+FEFF as the first character of the PR body (seen on #5501). Write the file with `Write-BobiverseUtf8NoBom.ps1` (or `[IO.File]::WriteAllText(..., [Text.UTF8Encoding]::new($false))`), never `Set-Content -Encoding utf8`:
+
+```powershell
+& ..\scripts\Write-BobiverseUtf8NoBom.ps1 -Path $pr -Value $prBody
+$url = (gh pr create --repo owner/name --base main --head fr-N --title '...' --body-file $pr 2>&1 |
+  Select-String -Pattern 'https://github.com/\S+/pull/\d+').Matches.Value |
+  Select-Object -First 1
+```
+
+**FR #8478 / gh body control chars:** Do not build the PR body in a double-quoted PowerShell string, a here-string that expands, or any writer that turns the two-character sequences backslash-b, backslash-t, and backslash-a into real bytes. Those become backspace (0x08), tab (0x09), and bell (0x07). `gh pr create --body-file` stores them and the rendered body loses letters (seen on #8473: `ob/tests`, `ext`, `^Gssert`). Before create or `gh pr edit --body-file`, read the file as bytes and reject any byte below 0x20 except tab (0x09), LF (0x0A), and CR (0x0D). Write the file with the same UTF-8 no-BOM writer as FR #5502.
+
 **FR #791 / gh issue close:** `gh issue close N --body-file` is an **unknown flag** on current `gh` - it does not accept `--body-file`. Close with a comment via `-c` / `--comment` only, e.g. `gh issue close <dup> --repo <owner>/<repo> --reason "not planned" --comment "Duplicate of #N / fixed by PR #M"`. Use `--body-file` for `gh pr create` / `gh pr edit` / `gh issue create`, never for `gh issue close`.
+
+## Set the PR ready for review before DONE (FR #8371)
+
+The PR you open must be ready for review, never left as a draft. After `gh pr create`, mark it ready before DONE:
+
+```powershell
+gh pr ready <url>   # or just: gh pr ready   (from the worktree; uses the current branch)
+```
+
+A draft PR is not reviewable and strands the MRB. Verify `gh pr view <pr> --json isDraft` reports `false` before DONE.
+
+## Targeted in-job tests (FR #8157)
+
+OpenCode (and other seats) must **not** run full trees such as `python -m pytest jeeves/tests -q` or `python -m pytest common/tests -q` inside a job --- those hit the ~600 s shell tool timeout and burn the job budget. CI already runs the full suites on the PR.
+
+**Do this instead:**
+
+1. Prefer `python common/scripts/run_job_pytest.py --changed` (selects via git diff vs `origin/main`, then runs pytest).
+2. Or print paths with `python common/scripts/select_tests.py --changed` and pass them to `python -m pytest -q <paths>`.
+3. Or pass explicit paths: `python -m pytest -q bob/tests/test_fr8157_*.py path/to/touched_test.py`.
+
+`run_job_pytest.py` **blocks** bare / full-suite argv quickly (exit 2 + WARN) instead of waiting 600 s. Escape hatch: `--allow-full-suite` (CI / explicit only).
+
+This guidance is shared for every seat kind (Grok / OpenCode / Cursor / Claude) via this skill and `bob_worker.rules_text`.
 
 ## Evidence required (in the PR body)
 
-* The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the full-suite result (`N passed`). * How you verified it for real (command + short output) and **what you could not test live**.
+* The line `Closes <owner>/<repo>#N` for the originating issue. * The body file has no byte below 0x20 except tab, LF, and CR (FR #8478). * What changed and why (one paragraph) and the files touched. * The new tests (names) and the **targeted** pytest result (`N passed` via select_tests / explicit paths; FR #8157 --- do not claim a full-suite run). * How you verified it for real (command + short output) and **what you could not test live**.
 * Assumptions and risks. * Links: the FR, related issues. No secrets, tokens, private hosts or credential files in the body, the diff or the logs.
 
 ## Who owns what
@@ -170,19 +213,21 @@ On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body`
 
 * **Never stamp `needs-mrb1`/`mrb1` (harvest #1717 / FR #1526):** CAST IRON. Do not open that label, do not apply it, do not wait on it. `needs-human` is the only human gate. Operator deleted the label; leftover references in old docs are stale.
 * **Every FR PR body contains `Closes <owner>/<repo>#N`** and you verified it (step 8) before DONE. * One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
+* **Set the PR ready for review before DONE (FR #8371):** `gh pr ready <url>` after `gh pr create`; never DONE with a draft PR. A draft PR is not reviewable and strands the MRB.
 * Do not rebuild/release/bump the version unless the FR says so.
 * **WinPS UTF-8 skill edits (FR #3935):** WinPS 5.1: never Get-Content -Raw (or Set-Content -Encoding utf8) round-trip of UTF-8 SKILL.md / docs; em-dashes (U+2014) mojibake. Edit with Python open(..., encoding="utf-8") / Path.write_text(..., encoding="utf-8"); prefer ASCII --- in new prose when possible (FR #3935).
 * CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.
 
 ## Machine pin / ionos-only FRs (FR #587 / #852 / #1550)
 
-Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and title/body cues. After FR #852 / #1550 / #1559 (PR #1574), cues include:
+Chair stamps `require_machine` from labels (`needs-ionos`, `needs-marchhare`, `machine:ionos`, `machine:marchhare`) and title/body cues. After FR #852 / #1550 / #1559 (PR #1574), cues include:
 
 * **recycle/recompose (irc)Jeeves** and **prune queue.json**
 * Title: **ircJeeves↔StartPending**, **idle seats↔ungated offerable**
 * Body (ops context only): `Invoke-JeevesMonitorCheck` near idle_seats/StartPending/offerable/no shop OFFER
 
 * **FR #5030 redqueen (a-search ops):** dedicated body `require_machine: redqueen`; title/soft cues for a-hasresults-monitor / Register-HasresultsMonitorService, redeploy live workers|walrus near a-search, FilterLogEvents near a-search/provider-*-live/a-sqlsearch/walrus. Bare host-name "redqueen" alone does not pin. Meta "without/missing require_machine=redqueen" offer-gap titles do not self-pin (FR #4422-class). Do not soft-pin redeploy+live-workers without an a-search window (MRB #5033). Hard-pin a-search#5221. Non-redqueen seats ACK then GIVEUP require_machine=redqueen and file offer-gap intake when unpinned.
+* **FR #6229 marchhare (live MarchHare E2E):** hard-pin bobiverse#6144 -> marchhare; label `needs-marchhare` / `machine:marchhare` or dedicated body `require_machine: marchhare`. Bobiverse soft text never pins (FR #4512). Offer-gap meta about #6144 must not self-pin. Non-marchhare seats ACK then GIVEUP require_machine=marchhare.
 
 Chair lives on ionos (folds to win-mpre*). Non-matching seats must **GIVEUP** (or never receive the offer once the live chair has the gates).
 
@@ -217,6 +262,10 @@ Older open FRs that **restate a defect already fixed** on main (e.g. closed-PR-a
 
 Never open a second PR that re-lands the same gates.
 
+## Release-blocker already-green (FR #7832)
+
+Do not close a `release-blocker` as already green from a seat-environment pass. A machine Grok sign-in the builder does not have is not green. Rerun the named test with `GROK_AUTH_PATH` and `BOB_GROK_AUTH_PATH` removed (`common/scripts/release_blocker_close.py`, marker `BOB_BUILDER_ENV=1`), or cite a build CI run of that test. The close comment must contain `builder-env`, the pytest command or an Actions run link, and the ref SHA. Names only. No secret values. Without that citation, or when the builder run failed, leave the issue open.
+
 ## DONE FR must not re-offer while implement PR is open (FR #2617 / MRB #2621)
 
 After `DONE FR owner/repo#N https://github.com/…/pull/M`, chair `resync_from_github` must **keep** that DONE row in `done[]` while pull `M` is still open (or the PR repo was not fetched). Stripping premature-DONE for still-open issues (FR #1150) without this keep broke `fr_superseded_by_done_pr` and re-offered the FR to a sibling seat (~1 min after DONE; live #2612 / #2615). When the Closes PR is gone unmerged, FR #2389 still re-queues the open issue as FR.
@@ -225,6 +274,7 @@ After `DONE FR owner/repo#N https://github.com/…/pull/M`, chair `resync_from_g
 
 Generalised from 73 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
 
+- **FIX after MRB FAIL (invented values):** when MRB FAIL cites invented acceptance (e.g. qty 1000), push the correction onto the **assigned PR tip**; close any standalone fix PR as superseded. Do not leave a second open fix tip. (hrsmith session / MRB light-triage MOVED from SimonBarnett/hrsmith#7)
 - **Re-offered or already-covered FR:** if an open or merged PR already `Closes` the FR (yours or another seat's), ACK, verify the Closes link and the claimed tests, and DONE with that PR URL every time it is re-offered. Never open a second implement PR. If the covering PR lacks `Closes #N`, edit its body (the FR seat never merges). For a CLOSED-unmerged fix, rebase it onto main as a successor PR. Repeated re-offers are a chair supersede gap: comment on the existing gap issue rather than filing a new one. (63 lessons: harvest #2210, #2206, #2201, #2190, #2064, #2193 +81 more, 4 held intake rows)
 - When an FR names a skill book in another repo, land only the assigned repo in the one PR and file the other book through intake in the same turn. Do not open a second implement PR from the FR seat.
 - **Greenfield product FRs:** ship the VISION and a foundation with a testable gate (for example DNS ownership) first, then file child FRs. Children wait for the foundation PR. Never store customer keys in project infrastructure (device-only), never log secrets, and make no live vendor calls in a foundation PR. (5 lessons: harvest #1179, #1168, #1155, #1152, #1133)

@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves-commands
 description: >
-  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, repo onboard / give-up clear (FR #5134), ping, or Jeeves permissions.
+  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep / !stuck (FR #5510), !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, repo onboard / give-up clear (FR #5134), ping, or Jeeves permissions.
 
 ---
 
@@ -9,13 +9,13 @@ description: >
 
 ## Keep the flow of work to the workers going
 
-**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service (not the chair, not a worker). Jeeves itself files stall issues (FR #5164: self-review deadlock, all-gave-up, sticky auto-pin, resync fail, stale ACK, !bored latency) with a stable fingerprint, twin comment, and rate cap. Keep-it-running is a light 2-hourly check of that path. Never `!assign` / `!focus`; never touch Ergo/BobIrcd; no secrets.
+**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service (not the chair, not a worker). Jeeves itself files stall issues (FR #5164: self-review deadlock, all-gave-up, sticky auto-pin, resync fail, stale ACK, !bored latency) with a stable fingerprint, twin comment, and rate cap. Keep-it-running is a light 2-hourly check of that path. **FR #8827:** may run Jeeves commands to **keep the queue moving**; never touch Ergo/BobIrcd; never merge/UAT/VERSION; no secrets.
 
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -33,16 +33,18 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!help [cmd]` | anyone | role-aware list / one-command detail (PM reply; 30 s per-nick limit) |
 | `!list [all\|repo\|fr\|mrb\|uat]`, `!filter ...` | anyone | queue by PM (`!filter` = alias of `!list`; 30 s per-nick limit); strict focus hides unfocused items ("queue empty") |
 | `!status` | anyone | version, uptime, queue counts, roster, `github_resync:`, `webhooks:` |
+| `!stuck` | anyone | FR #5510: list stuck/held jobs from the stuck-job sweep (silent accepts, untracked, hold rules) |
 | `!resync` | owner, ears | refresh roster from ChanServ + run the authenticated GitHub FR/MRB resync now; purges ignored repos |
 | `!sweep [#chan]` | owner, ears | re-plan +h/+o grants in a channel |
 | `!ignore <repo>`, `!unignore <repo>`, `!ignored` | owner/ears (ignored: anyone) | suppress/resume a repo for the whole chair |
 | `!focus [strict on\|off]\|[n\|high\|medium\|low] <repo\|owner/repo#N>`, `!unfocus <repo\|owner/repo#N\|all>` | owner, ears, allowlist (`JEEVES_FOCUS_MUTATORS`) | priority-sort `!list` and assign-on-`!bored`. Prefer **repo-level** `!focus high owner/repo` (FR #1520); item `owner/repo#N` is skipped when that repo is already focused, and `!resync` prunes leftover items |
-| `!assign <worker-nick> <repo> <FR\|MRB\|UAT> <num>` | owner, ears | make Jeeves post the normal assign line to one idle seat (seats only obey Jeeves); the seat's ACK accepts it. Rules: seat not busy, no self-MRB/UAT (seat ledger), row queued + unaccepted (or **accepted only under a departed nick** — FR #3400 releases with `prior ACK void` then offers), not needs-human/cooldown/given-up/machine-pinned; refuse a nick **absent** from a non-empty shop `worker_list` (`not in the shop channel`). Never steal from a live accepted holder. UAT is per repo: `UAT 0` = the repo-level UAT, queued only when every issue is closed and every PR merged. Reply by PM |
+| `!assign <worker-nick> <repo> <FR\|MRB\|UAT> <num>` | owner, ears | make Jeeves post the normal assign line to one idle seat (seats only obey Jeeves); the seat's ACK accepts it. Rules: seat not busy, no self-MRB/UAT (seat ledger), row queued + unaccepted (or **accepted only under a departed nick** --- FR #3400 releases with `prior ACK void` then offers), not cooldown/given-up/machine-pinned. **FR #7186 / #7224:** presence is #{machine} JOIN/NAMES/PART/QUIT/NICK (not `!bored`); `!bored` only marks idle wanting work. `!assign` sends NAMES and **waits for 366** (short bound) so membership is applied before a presence refuse; it does not block the IRC reader. Snapshot `members_at=` on a true refuse. **FR #6211:** ordinary `!assign` honors the automatic MRB CodeRabbit current-head hold (refuse `coderabbit_hold` with age/rem; no `offered_to`). **FR #4336:** `needs_human` FR/MRB may still be handed out via `!assign` (auto-offer stays blocked; FIX `needs_human` refused). Never steal from a live accepted holder. UAT is per repo: `UAT 0` = the repo-level UAT, queued only when every issue is closed and every PR merged. Reply by PM |
 | `!cleargiveup owner/repo#N [seat]` | owner, ears | FR #5135: clear queue giveup stamps + seat-ledger giveup key (or one seat); PM summary |
+| `!pin owner/repo#N <machine>` / `!unpin owner/repo#N` | owner, ears | FR #6407 / #6592: stamp or clear `require_machine` on the live queue row (operator pin survives re-infer / `!resync`) |
 | `!recycle [machine\|all\|dry-run [machine\|all]]` | owner, ears | route a seat recycle (bare/all = fleet; 120 s cooldown). `dry-run` only prints the plan. `!recycle jeeves` restarts `ircJeeves` only |
-| `!build <owner/repo>[,...] <version> [ref]` / dry-run/status/cancel | owner, ears | FR #4006/#4025 deterministic BUILD from `.bobiverse/build.yml` (no agent) |
+| `!build` / `!build <n> [version] [ref]` / help/status/cancel/dry-run/preflight/tests-only | owner, ears | FR #4006/#4025/#8490/#8770 numbered catalog BUILD (local-first + GET `/bob/v1/builds`); auto next-patch version; export+install/fleet |
 | `!installtest <owner/repo> <version> [tag]` / dry-run | owner, ears | FR #4026 WP3 INSTALL-TEST: msiexec + post-checks; release-blocker on fail |
-| `!register / !unregister (FR #4008 / #5161) <machine>` | +o/+h in #bobiverse | ChanServ REGISTER/UNREGISTER `#<machine>`; dry-run/confirm; core refuse; airc -> #wonderland; unregister tombstones the shop so a lagging ChanServ LIST cannot re-add or rejoin |
+| `!register / !unregister (FR #4008 / #5161 / #5274) <machine>` | +o/+h in #bobiverse | ChanServ REGISTER/UNREGISTER `#<machine>`; !register ACK + `REGISTERED v1` only after ChanServ confirms (else ERR/timeout); dry-run/confirm; core refuse; airc -> #wonderland; unregister tombstones the shop so a lagging ChanServ LIST cannot re-add or rejoin |
 | `ping` / `ping <glob>` | anyone | bare word (no `!`), channel or PM -> `pong` |
 | `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893 / #4089:** after GIVEUP/NACK/DONE **ok only** (never DONE status=missing), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, sticky offer_timeout_s); one open job per seat (no push while accepted/pending offer; seat-holds.json; **FR #4260:** re-offer to another nick or DONE/NACK/GIVEUP by any seat clears all holds for that job key); log `done-offer` / `giveup-offer` / `done-offer skipped`; send nothing on the channel when empty (no `nothing queued`). **FR #4181:** after `GIVEUP … out-of-fuel`, mark `seat-out-of-fuel.json` and **skip** giveup-offer / refuse offers until a fresh `!bored` clears the mark; other GIVEUP reasons keep the FR #2811 giveup-offer path (product PR #4190) |
 
@@ -50,6 +52,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 
 - **owner** = a verified NickServ account in `JEEVES_OWNER_ACCOUNT`/`BOB_OP_ACCOUNTS` (the nick alone is never enough).
 - **ear** = nick `bob-<roster machine>` (case-insensitive), refused if logged in to a different non-bob account.
+- **monitor** (FR #8827) = nick in `JEEVES_MONITOR_NICKS` (default `monitoring`) or account in `JEEVES_MONITOR_ACCOUNTS` — same queue mutators as owner/ear (keep the queue moving).
 - **allowlist** = `JEEVES_FOCUS_MUTATORS` / `JEEVES_FOCUS_MUTATOR_ACCOUNTS`, focus/unfocus only.
 - Denials reply like gh-Jeeves (`focus: denied (owner account required)`, `ignore: denied (simon or bob-* ops only)`); `!sweep` denial is a one-line reply.
 
@@ -72,9 +75,9 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 - **!unregister (FR #4008 / #4040 / #5161):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland; dry-run/confirm plan lists `*_console` nicks seen in `#<mid>` (or `none seen`). Unregister is final locally: the roster tombstones the shop and ignores a lagging ChanServ LIST (no re-add, no JOIN) until LIST confirms the channel is gone.
 - **FR #4181 out-of-fuel giveup-offer:** after `GIVEUP … out-of-fuel`, chair marks `seat-out-of-fuel.json`, skips giveup-offer, and refuses offers until a fresh `!bored` clears the mark; other GIVEUP reasons keep FR #2811 giveup-offer (do not park this under `harvest/SKILL.md`).
 
-## !build (FR #4006 / skill FR #4038)
+## !build (FR #4006 / #8490 / #8770 / skill FR #4038)
 
-Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2). Full playbook (classification, announce lines, when to re-run): skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
+Ops-only. Bare `!build` lists the numbered catalog (digest-home first, else chair home, else GET `/bob/v1/builds`). `!build n [version] [ref]` builds that entry's `yml` path, exports to `output`, reinstalls on `install` (machine or `fleet`). Blank version → next patch of latest `vX.Y.Z` tag. `!build help` prints the two usage lines; bare `!build status` lists running builds; bare cancel frees all (FR #6715). Explicit `<version>` must be numeric `x.y.z` or `x.y.z.w` (#4186). `dep` docs only; old owner/repo form refused. Chair is token-less decide + announce; suite/pack/export/install run on the recipe machine (WP2). Full playbook: skill `bobiverse-build` / `docs/bobiverse-build.md`.
 
 ## Repo onboard + give-up clear (FR #5134)
 
@@ -83,7 +86,7 @@ Full operator playbook: skill `bobiverse-jeeves-repos` (`jeeves/.grok/skills/bob
 - **Discovery file Jeeves reads:** `%USERPROFILE%\.jeeves\resync-repos.txt` (chair `--home` / `BOB_HOME`) via `configured_repos`, plus env `JEEVES_RESYNC_REPOS`, plus union of digest-home `focus.repos` (FR #3146). A twin is seeded at `%USERPROFILE%\.bobiverse\resync-repos.txt` but is not what discovery reads when homes differ.
 - **Onboard:** append `owner/repo` to the chair-home list (and/or `!focus low|medium|high owner/repo`), then `!resync`. Expected reply: `resync: roster refresh requested; GitHub FR/MRB re-sync queued; ...`. Example: `!focus low SimonBarnett/priority-branding` -> `focus: ... priority=9 (low)`.
 
-- **FR #5163 MRB reviewer deadlock:** when every idle seat is ineligible for every waiting MRB (author or give-up), Jeeves clears cross give-ups for idle non-authors or queues one tray `recycleseat` (kind `mrb-reviewer-deadlock`), deduped/~180s. No manual `!cleargiveup` / recycle required for that stall.
+- **FR #5163 / #5268 MRB reviewer deadlock:** when every idle seat is ineligible for every waiting MRB, Jeeves may clear cross give-ups (idle non-authors) or queue one tray `recycleseat` (kind `mrb-reviewer-deadlock`), deduped/~180s. Cross-giveup clear requires two or more idle seats. A sole idle seat that GIVEUP'd the only waiting MRB is not healed (give-up sticks; FR #2811 / #628). No manual `!cleargiveup` for a true multi-seat stall.
 - **Give-up re-assign:** `GIVEUP_COOLDOWN_S=600`; clear **both** digest-home `queue.json` stamps (`giveup_seats`, `cooldown_until`, `giveup_ts`, `giveup_count`, `needs_human`) **and** `seat-ledger.json` `giveup["owner/repo#n"]` (lower-case key). `!resync` does **not** clear them. Then `!assign <seat> owner/repo FR|MRB|UAT|FIX N`. Back up both files first; never restart Jeeves during `!build`. Gap: recommend `!cleargiveup` (not implemented yet).
 
 `!help` already lists `!focus` and `!resync` for authorised principals.
@@ -92,3 +95,4 @@ Full operator playbook: skill `bobiverse-jeeves-repos` (`jeeves/.grok/skills/bob
 
 Ops-only. `!installtest <owner/repo> <version> [tag]`, `!installtest dry-run ....` Requires `install_test` in `.bobiverse/build.yml`. Chair is token-less decide + announce; msiexec/post-check run on the recipe `install_test.machine`. Failures become release-blocker issues (WP2 filer).
 
+- FR #5510: stuck-job sweep every 10 min — classify open/queue work, release silent/dead-holder accepts (30m), enqueue untracked offerable, digest stuck + !stuck; never touch needs_human/require_machine/self-MRB; no merge/close.

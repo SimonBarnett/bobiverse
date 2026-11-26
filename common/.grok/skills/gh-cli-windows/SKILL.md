@@ -11,7 +11,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -80,6 +80,21 @@ If it keeps happening: file intake with `gh` verbose request ids; keep this skil
 - `(Test-Path a) -or (Test-Path b)` — never `Test-Path a -or b`.
 - Avoid Python f-strings inside `powershell python -c`; write a temp `.py` instead.
 - `git push` stderr `remote:` lines often trip NativeCommandError; verify with tracking/`gh`.
+
+## Shared GitHub OAuth budget (FR #9104)
+
+One SimonBarnett **user OAuth** token (keyring / `gh auth`) is a **single 5000/hr core bucket** across every machine that uses it (MarchHare, flamingo, RQ, monitor). `gh api rate_limit` on two boxes shows the **same** `reset` and a shared falling `remaining`.
+
+**Seat playbook when `API rate limit exceeded` / secondary rate limit:**
+
+1. Check budget: `gh api rate_limit --jq .resources.core` (this call does not burn core quota).
+2. If `remaining` under 500 (`github_api_budget.BACKOFF_FLOOR`): pause non-essential `gh` (search / broad list / resync fan-out); exponential backoff on 403/429; surface TipForm/digest-style signal `gh_rate_limited` instead of spinning.
+3. Prefer git (`git fetch` + `git show`) over `gh api` for contents / PR patches when REST is starved.
+4. Monitor: `Test-JeevesMonitorGithubRateLimit.ps1` (EXIT 1 when remaining under floor, JSON includes `machine`).
+
+**Separate budgets (ops only):** per-machine fine-grained PAT or GitHub App installation token for worker seats; chair keeps its own app/token. Never print, commit, or paste tokens into skills, filings, or logs. Do not raise `seat_target` to compensate for a shared bucket.
+
+Chair webhook side: under local intake rate limit, `check_run` / `check_suite` return **204** (`reason=rate deferred`) so GitHub does not retry-storm; push/PR/issues still **429**.
 
 ## Verify
 

@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -22,10 +22,19 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 
 ## Architecture
 
-`ircBob` runs `Start-Bob.ps1` -> prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#wonderland,#<machine> --host <irc host>` (FR #3834). Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
+`ircBob` runs `Start-Bob.ps1` -> prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear; **FR #7233** always the installed exe when present, never file-mtime vs `bobreport.py`; log `sha256=` / MANIFEST source / VERSION; python only if the exe is missing or `BOB_EAR_PYTHON=1`) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#wonderland,#<machine> --host <irc host>` (FR #3834). Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback. Frozen ears still load install `bobreport.py` via `prefer_install_scripts_path` (FR #6237).
+
+**CI artifacts (FR #7179 / harvest #7185):** `build-bob-ear.yml` and `build-bob-tray.yml` build the checked-out tip on `push` to `main` and on PRs that touch ear/tray sources (path filters, same shape as `build-bob-worker.yml`). Do not hard-pin `behavior_source_sha` in the workflow; provenance records `source_commit` / `workflow_commit`. Include `common/scripts/gitclaim.py` in ear path filters (`irc_agent` imports it). Deploy-pool-monitor hashes are a deploy note, not a CI gate.
+
+**OpenCode Go as SYSTEM (FR #7177 / harvest #7191):** under LocalSystem, resolve the Go key from `BOB_OPENCODE_GO_API_KEY` and `<InstallRoot>\config\opencode-keys` using `BOB_INSTALL_ROOT` or frozen `scripts\bob-ear.exe` parent when env is unset. Empty recognised usage is kind `empty` (failure). Unknown / no-key windows use null `fetched_at`. Preserve NSSM `BOB_OPENCODE_GO_API_KEY` across Install-Bob recreate (never echo). An unreadable `*.apikey` is `key_unreadable`, not `missing_key`.
 (NSSM). The ear is the box's presence on IRC: it keeps the shop channel, reports status to the digest, executes `!recycle`
 for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **TipForm tray** is an interactive companion
 (not a service, not a `BobFleet-*` task). Digest POSTs need no secret (roster-gated by Jeeves).
+
+**Digest URL (FR #6142):** canonical GET+docs default is `https://bob.ntsa.uk/bob/v1/report`
+(`bob/tray/config/bobiverse.json` `reportUrl`; `Get-BobDigestUrl` / tray helpers). IRC `--host` stays
+`irc.ntsa.uk`. POST selectors (`Get-BobDigestReportUrl`) use config/env only --- they do not invent a live host.
+Assert: `Assert-BobDigestWebhookLocal.ps1 -ExpectedReportUrl https://bob.ntsa.uk/bob/v1/report` (+ optional `-CheckPublic` GET).
 
 | Piece | Where |
 |---|---|
@@ -36,10 +45,28 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | Config | `config\ergo.password` (server PASS; FR #3904 also resolves sibling `airc`/`jeeves` config and seeds a local copy), `home\nickserv.password` (SASL; upgrade migrates from prior BobHome / `.bobiverse` and fails MSI 1603 if missing), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon). NSSM AppStdout/AppStderr -> `logs\stdout.log` / `stderr.log` (FR #3904). |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray`. Autostart/shortcuts/ONLOGON default **`-ForceNew -SkipTidy`** (FR #1636 / harvest #1663): replace the prior tray only; leave seats/Grok Bot running. |
 | TipForm **Restart** | Menu label **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray; **this** path still tidies seats). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
-| Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
+| Agents / Plan | Tray **Agents** lists Automatic, Grok, Cursor, and OpenCode. **Plan** stays one click. Each start runs `worker\bob-worker.exe` (per-user run-copy) as a NEW agent, never resumed. Automatic is Grok -> Cursor -> OpenCode -> key dialog. An explicit row passes `--agent` and refuses instead of substituting. The menu is `bob-tray.exe` (`BobTray.cs`). Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 
 - **MSI Install-Bob tray (FR #3987 / PR #3993):** during RunInstall, Start-Service ircBob (WaitForStatus 60s soft-fail) runs **before** live TipForm launch; Install-Bob sets `BOBIVERSE_NO_SERVICE_RESTART=1` and interactive `Start-BobTray -SkipServiceRestart` so `Restart-BobTrayService` cannot race the CA. `Invoke-BobTrayServiceControl` skips `START_PENDING`/`STOP_PENDING`. Persistent Startup/HKCU shortcuts may still restart ircBob on logon (intentional).
+- **Invoke-Grok temp (FR #7840):** delete the `bob-grok-<guid>` stdout directory in `finally`, including when the process start throws. On the next call, prune empty `bob-grok-<32 hex>` directories older than one hour. Leave `bob-grok-session` and any directory that still has files. Do not park this under harvest/SKILL.md (moved from tip #7862).
+
+## Digest fuel publish (FR #6141..#6150 / FR-010)
+
+Ear-owned fleet fuel merges POST to `https://bob.ntsa.uk/bob/v1/report` via `bobreport.publish_local_peer_fuel` (fingerprint change or heartbeat). TipForm/Status **paint only** (Watch-BobTray does not POST fuel unless capture / `-PostDigestWebhook`).
+
+- **Host:** digest GET/docs default `https://bob.ntsa.uk/bob/v1/report` (FR #6142). IRC `--host` stays `irc.ntsa.uk`.
+- **FR #7365:** log `xai_attempt=ok` only after applying a live weekly reading; stamp `fetched_at` to the fetch clock and write the peer in the same publish. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7368).
+- **OpenCode ids (FR #7366 / #7402):** Jeeves `fleet_pools` owns OpenCode Go / Copilot. Ear merge strips `opencode-free` / `opencode-go` from `machines.<id>.pcent`. Tests must assert those keys absent, not still `== 100`. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7406).
+- **FR #7017:** OpenCode free is catalogue availability, not a quota. Never paint the free row, bar, or summary bit on hover / TipForm / Status (100, null, 0, or stale). Keep Go rolling / weekly / monthly. Do not change fuel detection or `free_model_ids` (dispatch may still use free models).
+- **Copilot (FR #7178 / FR #7371):** Jeeves fleet `GET /copilot_internal/user`. Premium `remaining=0` and `overage_permitted=false` is used-up (exhausted / 0% left) even when GitHub sets `unlimited=true` and `percent_remaining=100`. Genuine unlimited keeps `overage_permitted=true`. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7375).
+- **Copilot freshness (FR #6317):** do not treat a genuine unlimited pool as exhausted-until-reset. Age it by fetched_at. Used-up quota (remaining 0 and overage_permitted false) still holds until reset. Do not park this playbook under harvest/SKILL.md (moved from tip #7847).
+- **Logos:** Bobiverse-owned badges under `bob/tray/assets/fuel-logos/` (`Get-BobTrayFuelLogoImage` / Status `FuelLogo`); text fallback `Cu` / `xAI` / `OC` / `Gh` when an asset is missing (FR #6149). See that folder `LICENSE.md`.
+- **cursor_known:** when a merge payload includes `cursor_known` (mirrors `weekly_known` on peers that set it), false clears Cursor label/pcent/pools (FR #6144). The Python ear `build_peer_fuel_merge_payload` path does not yet emit the flag; chair clearing applies when the flag is present.
+- **python (FR #7020 / #7022 / #7035):** ear writes `<home>/run/python-status.json` on SYSTEM resolve miss; `publish_local_peer_fuel` attaches `python=missing` or a source tag into the merge payload (never a filesystem path). Successful resolve calls `bobreport.note_python_resolved` so a later fuel merge does not keep stale `python=missing`.
+- Park anti-omnibus: `bob/docs/fr/digest-ear-publish/` (Refs to impl issues; docs PRs must not `Closes` sibling impl FRs).
+
+Refs SimonBarnett/bobiverse#6141 #6142 #6143 #6144 #6145 #6146 #6147 #6148 #6149 (impl). This skill section is FR #6150.
 
 ## Listen and send (FR #2174)
 
@@ -71,10 +98,11 @@ Common failure chain:
 3. Digest `worker_list` lags ACC (orphan doing/offered).
 
 Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
-FR #4136 / #4142: `Watch-BobTray` writes `engine.alive` after each startworker queue tick; `HealEngine` restarts when that stamp is stale (>120s) even if the process is still alive; ear NACKs `engine_stale` when `tray.alive` is fresh but `engine.alive` is not. Needs rebuilt `bob-tray.exe` + tip ear.
+FR #4136 / #4142 / #7508: `Watch-BobTray` writes `engine.alive` after each startworker queue tick; `HealEngine` restarts when that stamp is stale (>120s) even if the process is still alive; ear NACKs `engine_stale` when `tray.alive` is fresh but `engine.alive` is not. **FR #7508:** leftover stamps older than `engineStartedUtc` become stale after `ColdStartGraceSeconds` (60) so HealEngine retries; `StartEngine` logs every launch attempt; `Reload` ignores pre-start `tray-status.json` and tips `Bob: engine down` (never frozen pools). Needs rebuilt `bob-tray.exe` + tip ear. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7516).
 
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
+- **FR #9178:** after explorer recycle, stale `iconRect` can park tip/menu off-screen (`tip show ok` but invisible). Drop iconRect outside WorkingArea (`cursor-stale-icon`); TipOnScreenCheck + TipRelocateCursor; MenuForceShowAtCursor; Write-BobTrayUiDiag on MouseDown / MenuOpened / after-tip-show.
 - Stale `working_on` after DONE with empty queue `accepted` can trip `seats_stuck_doing` (harvest #1712) — false busy; next digest POST clears it.
 - `Sync-BobTrayStatusWorkersFromDigest` — report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
 - Call sync **before** `Update-Hover` on each poll; keep a **non-UI** timer (~10s, `SynchronizingObject=$null`) so worker lines keep moving while hover is stuck.
@@ -89,5 +117,16 @@ Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepte
 - Self-REGISTER the shop with ChanServ (Jeeves `!register` only); mint a fresh NickServ GUID for a registered `bob-*` account.
 - Double-start the ear when `ircBob` is Running; kill broad `powershell.exe`/`python.exe`; stamp UAT; invent an Ergo PASS.
 
+- tray: FR #7508 EngineAliveStamp leftover must become stale after ColdStartGraceSeconds (60); StartEngine must log engine-launch miss/fail; Reload must ignore snap mtime before engineStartedUtc and tip Bob: engine down. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7516).
 - tray: FR #4142 headless engine UI-thread spin --- skip TipForm/Update-Hover UI and NotifyIcon flash/pulse when BOB_TRAY_ENGINE=1; poll re-entrancy Stop/Start + tick-slow logs (>2s); Write-BobIrcStatus on ThreadPool digest timer; engine.alive watchdog (#4136) remains the band-aid for hung ticks
 - tray: FR #5032 trayDigestTimer Action must re-dot BobTrayDialogs (and load Write-BobIrcStatus via Get-BobIrc/Common) each tick like trayWorkerSyncTimer, or the engine-mode digest heartbeat never runs and peer weekly freezes; post_digest_out_of_fuel must include weekly=0 and log failures so a seat 402 paints 0% on peers; paint peer fuel older than the heartbeat window (or missing lastSeen) as [stale], never as a confident live %.
+- tray: FR #9198 trayDigestTimer Action runspace has no parent BobBridge — Import-Module BobBridge.psd1 when Get-ThisMachineId or Write-BobIrcStatus is missing (same pattern as trayHoverTimer). Dotting Get-BobIrc alone defines Write-BobIrcStatus but not Get-ThisMachineId; bare Get-ThisMachineId then CommandNotFound -> runtime_failure intake at trayDigestTimer.Write-BobIrcStatus. Soft-fail Get-ThisMachineId inside Write-BobIrcStatus as defense in depth.
+- tray: FR #5688 Write-BobIrcStatus digest `running`/`jobs`/`repo` count only fleet-backed live grok (`fleetSeat` via bob-worker parent chain). Ignore user-hosted grok (e.g. PriorityAgent.exe) so empty lanes do not publish cwd as repo.
+- tray: when retargeting Copilot/agent-start format, update Watch-BobTray unknown placeholder + refresh-unknown detection to fuel_state=unknown (empty reason alone collides with FR #6301 empty-reason contract). Do not park this playbook under `harvest/SKILL.md` (move/fold here).
+- TipForm: Non-empty SettingSpec.choices on a non-bool setting render a select; a value outside the list is an extra selected option; bools stay checkboxes; do not invent SCHEMA choices for paths URLs or seconds. Do not park this playbook under harvest/SKILL.md (move/fold here).
+- Tray FR #7300: footer SHA lives in Watch-BobTray AND BobDialogsCommon.DeployedSourceShortSha; changing only Python/Watch leaves Status/About on root MANIFEST (exe/scripts dual). Prefer tools/MANIFEST for both. Do not park under harvest/SKILL.md (moved from tip #7314; product tip #7311).
+- WinPS 5.1 under pwsh 7 (FR #7315 / PR #7318): never inherit pwsh 7 PSModulePath into powershell.exe; use winps51.env_for_powershell_exe (pin C:\Windows\System32\WindowsPowerShell\v1.0\Modules) or Get-FileHash is CommandNotFound. Do not park under harvest/SKILL.md (moved from tip #7319).
+- Tray FR #7299: Format-BobTrayStaleToken is exactly [stale] in red (248,81,73). Format-BobTrayXaiWeeklyRow must treat missing fetched_at as stale (last % + [stale], never default fresh=true); machine UsageRow needs HeadingColor. Do not park under harvest/SKILL.md (moved from tip #7310; product tip #7305).
+- Tray FR #6285 / #7498: a stale xAI weekly row keeps the last percent in the heading and sets bar_pct null so the bar stays empty. A fresh row still fills the bar. Do not park under harvest/SKILL.md (moved from tip #7845).
+- Tray FR #7378: paint only the [stale] token red (`Add-BobTrayUsageRow` / BobStatus `DrawHeadingWithStaleToken`); never whole-heading `HeadingColor`/`r.Red` or OpenCode rows stay uncoloured. Do not park under harvest/SKILL.md (moved from tip #7388).
+- FR #7366 / #7402: after fleet OpenCode is stripped from machine rows, tests must assert `opencode-free` absent (never still equal to 100). Do not park under harvest/SKILL.md (moved from tip #7406).

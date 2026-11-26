@@ -1,0 +1,306 @@
+---
+name: bob-setup-opencode
+description: >
+  Install or repair OpenCode on a Bob Fleet Windows seat, put opencode.exe on
+  PATH, configure the opencode-go provider key from the session env/secret store,
+  bring up fuel ids opencode-free and opencode-go, or when Bob must start an
+  OpenCode worker seat without Simon pasting secrets. Use when winget install
+  fails, opencode is not recognized, auth is missing, or /setup-bob-opencode.
+github: https://github.com/SimonBarnett/bobiverse
+---
+
+# Setup Bob OpenCode (Windows seat)
+
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+
+
+Home: `SimonBarnett/bobiverse` `bob/.grok/skills/bob-setup-opencode`. Honesty box:
+using this skill obliges a harvest PR/issue back here (see `harvest-agent-skills`).
+Fuel ids: `opencode-free`, `opencode-go`.
+
+## Why OpenCode
+
+Low-cost CLI coding agent for routine FR/fix PRs, docs PRs and harvest work when
+Cursor Models / Grok seats are thin or capped. Hostile MRB prefers a stronger
+seat (Grok first, then Cursor). Chair gate (FR #6134 / #7888): free or unknown
+`start_model` skips MRB/UAT; a paid launched OpenCode Go / pro `start_model` may
+take MRB even when the configured model is free. The worker NACKs from the
+launched model, not the configured hello id. CodeRabbit stays advisory, never required.
+
+## CAST IRON — never put API keys in code, tests, logs, argv, IRC or docs
+
+Keys live only in `%USERPROFILE%\.local\share\opencode\auth.json` (written by
+`/connect` or `opencode auth login`) and the User env / secret store. Restrict
+ACL to the seat user. Never read a key into agent context or paste it into chat.
+
+## Install (winget)
+
+```powershell
+# 1) Install / update OpenCode CLI
+winget install -e --id SST.opencode
+# Verified MarchHare: 1.19.5 lands opencode.exe on PATH via
+# %LOCALAPPDATA%\Microsoft\WinGet\Links\opencode.exe
+
+# 2) Verify
+opencode --version
+opencode models opencode-go
+```
+
+If winget is blocked, download the portable Windows binary from opencode.ai, place
+it under `%LOCALAPPDATA%\Programs\opencode\opencode.exe`, and add that folder to
+the User PATH.
+
+## Auth (session env / secret store only)
+
+### 1) Check seat first
+
+```powershell
+Test-Path "$env:USERPROFILE\.local\share\opencode\auth.json"
+# Provider id should be "opencode-go"
+```
+
+If `auth.json` exists and the provider key is populated, skip create — go to
+smoke.
+
+### 2) Authenticate without exposing the key
+
+1. Box browser → `https://opencode.ai` sign-in / API key page.
+2. Use `request_user_form` for typed steps; captcha / passkey / device approval →
+   `request_box_help`. Host fills; Bob never sees values.
+3. Create/copy the provider key for `opencode-go`.
+4. Build or copy the **complete** `auth.json` body for provider `opencode-go`
+   (a bare key is not a valid auth document). Write **only** that JSON body to box
+   `/workspace/secrets/opencode-auth-<machine>.json`, mode `600`. Report **path +
+   byte length only** — never the key, never the token in Task reports, screenshots
+   captions, or chat. Alternatively, run `opencode auth login` on the seat to
+   create the file before restricting its ACL.
+5. CopyFromBox to an allowed local-exec path, then move to
+   `%USERPROFILE%\.local\share\opencode\auth.json`. Reset inherited or stale
+   explicit ACEs, then restrict ACL to the seat user and verify it succeeded:
+
+```powershell
+$authDir = Join-Path $env:USERPROFILE '.local\share\opencode'
+New-Item -ItemType Directory -Force -Path $authDir | Out-Null
+# Move the box-landed file into place; do NOT Read it into agent context.
+$authFile = Join-Path $authDir 'auth.json'
+icacls $authFile /reset
+if ($LASTEXITCODE -ne 0) { throw "failed to reset auth.json ACL" }
+icacls $authFile /inheritance:r /grant:r "$($env:USERNAME):(R)"
+if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
+```
+
+Delete the box secret file after a successful seat install.
+
+## Smoke (headless)
+
+Re-apply the ACL on the existing `auth.json` before the smoke test so every
+install path restricts access:
+
+```powershell
+$authFile = Join-Path $env:USERPROFILE '.local\share\opencode\auth.json'
+icacls $authFile /reset
+if ($LASTEXITCODE -ne 0) { throw "failed to reset auth.json ACL" }
+icacls $authFile /inheritance:r /grant:r "$($env:USERNAME):(R)"
+if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
+```
+
+```powershell
+# Free model (no account) — the worker discovers the live free model id from
+# `opencode models` output under the opencode/ or opencode-go/ provider.
+opencode run -m opencode/beam-free "Reply with pong only"
+
+# Go model (subscription)
+opencode run -m opencode-go/glm-5.3 "Reply with pong only"
+```
+
+Verified MarchHare: `glm-5.3`, `glm-5.3-flash`, `kimi-k2.7-code`, `longcat-2.0`
+all reply `pong`. `opencode models opencode-go` lists ~30 models. There is no
+`kimi-k2.6` in the Go catalog. The worker picks the first fallback model that
+has positive per-model fuel; it will not fall back to another capped model.
+
+## Fleet wire-up
+
+1. Fuel ids `opencode-free` and `opencode-go` on the digest webhook. Remaining %
+   is estimated from local `opencode stats` cost vs the per-model monthly caps
+   (e.g. glm-5.3 $15, kimi-k2.7-code $60); `n/a` when unknown, like other pools.
+   Only the 7-day and 30-day windows are read from `opencode stats`.
+2. Worker loop: join `#{machine}`; post `!bored` after `turn_ended` or the
+    harvest-hold fallback (not immediately after a terminal frame). Idle
+    announcements start after 120 seconds and repeat every 180 seconds. Jeeves
+    frames are `ACK`, `DONE`, `NACK` and `GIVEUP`; terminal frames are `DONE`,
+    `NACK` and `GIVEUP`. The program posts `!bored`; the model must never post it.
+3. Out-of-fuel: the worker refuses offers when the current model's cap is hit.
+   It then picks the first Go model in fallback order with positive remaining fuel
+   (using per-model readings from the digest), then the first free model discovered
+   from live `opencode models` output, else goes idle. Paused models (see below)
+   are skipped.
+4. Rolling 5-hour cap is enforced at run time by the OpenCode wrapper. If an
+   `opencode run` hits HTTP 429 / rate or rolling-limit text, or produces no output
+   before the watchdog timeout, the wrapper kills the run's process tree, logs to
+   `opencode-out-of-fuel.log`, and records a pause for that model until the window
+   resets (using a `Retry-After` / reset time from the output if present, otherwise
+   a conservative 1-hour default). Pauses are persisted in
+   `%LOCALAPPDATA%\Bobiverse\worker\state\opencode-pauses.json` and expire
+   automatically.
+
+
+## Model / plan notes
+
+| Plan | Models | Typical flag |
+|------|--------|--------------|
+| Free (no account) | `beam-free`, `iceman-contributor-free` (discovered from `opencode models`) | `opencode run -m <provider>/<model> ...` using the exact ID returned by `opencode models` |
+| Go ($10/mo) | `glm-5.3`, `glm-5.3-flash`, `glm-5.2`, `kimi-k3`, `kimi-k2.7-code`, `longcat-2.0`, `deepseek-v4.1-flash`, `qwen3.8-flash` | `opencode run -m opencode-go/<model> ...` |
+
+Go limits are per-model dollar allowances with rolling caps: 50% per week and
+100% per month are read from `opencode stats`; the 5-hour rolling cap is enforced
+at run time by the wrapper. `opencode stats` shows local cost only; there is no
+public remaining-quota API.
+
+
+
+## Windows worker readiness (FR #6240)
+
+OpenCode seats on Windows must use **PowerShell-native** discovery, a **consented
+job worktree**, and **supported gh auth** --- never Unix `grep`/`head`, never
+credential-store hunting, never bypassing `external_directory` denials.
+
+### 1) Native shell / file search
+
+Do **not** run `grep -Rni` / `head`. Use one of:
+
+```powershell
+# Preferred Assert (pathlib search; do not run the .py as a CLI):
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -WorktreePath <job-wt> -SkipWorktree -SkipGhAuth -SkipGit -SkipPrLookup  # preferred; module is imported, not a CLI
+
+# Or PowerShell:
+Get-ChildItem -Path . -Recurse -Include *.py,*.cs,*.ps1,*.md -File -ErrorAction SilentlyContinue |
+  Select-String -Pattern 'opencode' -SimpleMatch |
+  Select-Object -First 50 Path, LineNumber, Line
+```
+
+### 2) Worktree context / consent
+
+- Create the job tree with `Get-BobiverseJobWorktreePath` + `git worktree add` (FR #4843 / #4988).
+- Prefer launching OpenCode with **CWD = assigned worktree** so tools are not
+  `external_directory` relative to `<ai root>\bob\worker`.
+- If OpenCode requests `external_directory` for that worktree, use the supported
+  approval flow for a **narrow** grant. If the user rejects the tool call, **stop**
+  --- do not retry via another tool, do not widen scope, do not disable denials.
+- Validate with `git -C <worktree> status` / `branch` only after consent or when CWD is the worktree.
+
+### 3) GitHub CLI auth preflight (no secret reads)
+
+```powershell
+gh auth status
+# If it says run gh auth login: STOP and escalate. Supported remedy only:
+#   gh auth login
+# CAST IRON: never Get-Content ~/.config/gh/hosts.yml, never search
+# D:\ai\agentic_irc or profile dirs for tokens, never invent GH_TOKEN.
+```
+
+### Readiness assert
+
+```powershell
+# From a seat whose CWD is the assigned worktree:
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -WorktreePath <job-wt>
+
+# Fixture / offline:
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -SkipGhAuth -SkipGit -SkipPrLookup -Permission rejected
+```
+
+Exit codes: 1 native search, 2 worktree consent/cwd/git status-branch, 3 gh auth or scoped PR lookup, 4 unexpected.
+Non-zero means **blocked** --- never claim DONE/completed for queued work until
+re-run exits 0 with evidence.
+
+## Global OpenCode instructions (FR #6376)
+
+OpenCode reads `%USERPROFILE%\.config\opencode\AGENTS.md` at the start of every
+run, so rules put there apply to every OpenCode seat on the box. On MarchHare the
+seat used this file as an interim finish-step fix for #6370 (merged in PR #6374).
+Keep the Bob rules in a **managed section** so other operator instructions in the
+same file are preserved. The three rules are:
+
+1. Open the PR with `gh pr create --body "..."` (inline body). Do **not** write a
+   PR body file, and never one under `%TEMP%`.
+2. Never write to `%TEMP%` or any path outside the job worktree. Keep all scratch
+   files inside the job worktree (and do not commit them).
+3. Do not create base checkouts or extra git worktrees. To compare against the
+   base, prefer `git diff origin/main...HEAD` / `git log` in the job worktree. If
+   you must stash, use a named stash (`git stash push -m bob-fr-6370-compare`) and
+   pop **only** that entry --- never a bare `git stash pop` (it can apply an
+   unrelated older stash when the worktree was already clean).
+
+Create the managed section once per seat after install. Removing **only that
+section** undoes the Bob rules; do not delete the whole `AGENTS.md` if it holds
+other operator text. The file does **not** widen any permission (it only
+restricts writes). Once a rebuilt `bob-worker.exe` with the #6370 finish steps is
+running on the box, the managed section is optional and may be removed.
+
+## Fleet smoke checklist (FR #6160 / FR-OC-FLEET)
+
+Run on each box after install/repair. The script **never** reads `auth.json` body
+(path + byte length + ACL only).
+
+```powershell
+# Fast PATH + auth ACL + dry-run (no live model call):
+.\scripts\Assert-BobOpencodeFleetSmoke.ps1 -SkipPong
+
+# Full smoke including opencode run pong (needs network + auth):
+.\scripts\Assert-BobOpencodeFleetSmoke.ps1
+```
+
+Exit codes: 1 opencode missing, 2 auth missing/unrestricted ACL, 3 pong fail, 4 dry-run/worker, 5 unexpected (see Assert-BobOpencodeFleetSmoke.ps1 header). Non-zero when opencode is missing, auth is absent/unrestricted, pong fails, or bob-worker --dry-run cannot see opencode_cmd. Opt-outs: `-SkipPong`,
+`-SkipDryRun`, `-SkipAuth`. Optional `-RequireOpencodeDecision` only asserts a dry-run
+that already selected OpenCode. It does not change selection and must not be used
+with a faked empty Grok reading.
+
+## One explicit OpenCode seat
+
+Automatic selection stays Grok, then Cursor, then OpenCode. To start OpenCode while Grok still has fuel, rebuild `bob-worker.exe` from this tree, keep `scripts\opencode_fuel.py` on the install (pack union of `common\scripts`), then either:
+
+- tray **Agents → OpenCode** (the row shows the real reason and stays disabled when the command or fuel is missing), or
+- `& <ai root>\bob\worker\bob-worker.exe --mode agent --agent opencode --install-root <ai root>\bob --machine-id <machine>`
+
+A tray request file may also set `"agent":"opencode"` beside `"mode":"agent"`. The worker starts OpenCode only when `opencode.exe` resolves and fuel is really usable (`free` or `go` above 0). Go-only fuel also needs `%USERPROFILE%\.local\share\opencode\auth.json` to exist. The file body is never read. If that check fails the process exits without starting Grok or Cursor. Do not copy Git or `gh` tokens into `auth.json`.
+
+Ops roll call (machine ids only, no secrets): `bob/docs/opencode-fleet-enabled.md`.
+Trial metrics template lives in that same doc.
+
+## Troubleshoot
+
+| Symptom | Fix |
+|---------|-----|
+| `opencode : The term 'opencode' is not recognized` | WinGet install incomplete or Links folder not on PATH; use full path or add `%LOCALAPPDATA%\Microsoft\WinGet\Links` to User PATH |
+| Auth errors / 401 | Re-run `opencode auth login`; verify `auth.json` provider id is `opencode-go` |
+| Model 429 / cap hit | Wrapper kills the hung run, records a pause for that model in `opencode-pauses.json`, and the seat falls back to the next Go model or free model on its next start |
+| `grep` / `head` not recognized | Use Get-ChildItem + Select-String or Assert-BobOpencodeWorkerReadiness (FR #6240); never assume Unix tools |
+| `external_directory` auto-reject / user rejected tool | Relaunch with CWD=job worktree or request narrow consent; never bypass (FR #6240) |
+| `gh auth login` required / gh not authenticated | Run supported `gh auth login`; never read hosts.yml or hunt tokens (FR #6240) |
+| npm route fails on old Node | Use winget route only |
+
+## Do not
+
+- Put API keys in SKILL.md, IRC, PRs, Task reports, chat, argv, or git.
+- Ask Simon to paste a key when box browser + form/handoff can create/store it.
+- Prefer Grok/Cursor for hostile MRB; OpenCode may take MRB only with a paid start_model (FR #7888).
+- Stamp UAT from OpenCode.
+
+## Related
+
+- `harvest-agent-skills`
+- Bob digest webhook fuel
+- `opencode_fuel.py` (shared cap/fallback logic)
+
+## Inject path (FR #6158)
+
+OpenCode seats default to batched KEY_EVENT when `BOB_WORKER_INJECT_PASTE` is unset (clipboard paste into the ReadLine wrapper is unreliable). Set `BOB_WORKER_INJECT_PASTE=1` to opt into paste. Needs a rebuilt `bob-worker.exe` and a **new** tray Agent seat after Sync.
