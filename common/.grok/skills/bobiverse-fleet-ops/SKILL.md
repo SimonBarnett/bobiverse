@@ -197,3 +197,6 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - One-account fleet = one 5k/hr OAuth bucket; under local webhook rate deny ack check_run/check_suite with 204 (rate deferred) not 429; monitor core.remaining vs BACKOFF_FLOOR with machine id; separate budgets are ops PATs/App tokens never committed.
 - FR #8861 reopen: when intake_allowlist reports repo_not_allowed, first prove default-UA is CF 1010 vs JSON; if main already has the probe UA (#8875) and live allows with UA, DONE the covering PR and refresh the local monitor copy --- do not Sync/compose chase a false drift
 - Tip tray hotpatch on a remote shop: Install-BobTrayHotpatch can fail when BobTrayLifecycle uses try/catch as a hashtable value (WinPS 5.1); fix parse before ForceNew; interactive TipForm start may still need the console (schtasks /IT 267011); living host FRs use Refs not Closes.
+<!-- harvest-tip:intake-in_64d865bc6b044096 -->
+- Tray Plan/Priority links need tip bob-tray.exe (Agents>Plan/Priority) plus vendor\plan\PlanAgent.exe (skills-visionary plan-v* release, sha verified) and vendor\priority\PriorityAgent.exe; ForceNew Start-BobTray -SkipServiceRestart; --dump-menu takes an output path
+<!-- harvest-lessons-eof -->
