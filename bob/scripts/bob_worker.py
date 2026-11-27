@@ -22995,6 +22995,23 @@ def main(argv: Optional[list] = None) -> int:
         except ValueError:
             args.startup_grace_s = 60.0
     log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
+    # FR #10050: seat marker before the shipped-scripts hash walk.
+    try:
+        stamp = _state_root() / "starting"
+        stamp.mkdir(parents=True, exist_ok=True)
+        name = "seat-%d.json" % os.getpid()
+        (stamp / name).write_text(
+            json.dumps({
+                "pid": os.getpid(),
+                "mode": args.mode,
+                "agent": getattr(args, "agent", "") or "",
+                "phase": "before-shipped-scripts",
+            }),
+            encoding="utf-8",
+        )
+        log("worker: seat marker %s phase=before-shipped-scripts" % name)
+    except Exception as e:
+        log("worker: seat marker failed %s" % type(e).__name__)
     # FR #2522 / Simon: ONLY mode=agent is capped. Plan + maintenance (+ monitor) start freely on top of 2 workers.
     if args.mode in CAPPED_MODES:
         refusal = worker_cap_refusal(snapshot_procs(), os.getpid(), for_mode=args.mode)
