@@ -28,6 +28,11 @@ if (-not $SourceDir) {
     $SourceDir = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\dialogs'   # alias -> bob\tray\dialogs in the split repo
     if (-not (Test-Path -LiteralPath $SourceDir)) { $SourceDir = Join-Path $RepoRoot 'dialogs' }
 }
+# Sparse CI does not checkout common\VERSION, so the split-repo alias does not run.
+$splitDialogs = Join-Path $RepoRoot 'bob\tray\dialogs'
+if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'BobDialogsCommon.cs')) -and (Test-Path -LiteralPath (Join-Path $splitDialogs 'BobDialogsCommon.cs'))) {
+    $SourceDir = $splitDialogs
+}
 if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'BobDialogsCommon.cs'))) { throw "missing dialog sources in $SourceDir" }
 
 $csc = $null
@@ -41,6 +46,8 @@ if (-not $csc) { throw 'csc.exe (.NET Framework 4) not found' }
 # Icon / logo: the systray icon is the exe icon; the ntsa badge is embedded so the About window needs no file read.
 $assets = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets'
 if (-not (Test-Path -LiteralPath $assets)) { $assets = Join-Path $RepoRoot 'assets' }
+$splitAssets = Join-Path $RepoRoot 'bob\tray\assets'
+if (-not (Test-Path -LiteralPath $assets) -and (Test-Path -LiteralPath $splitAssets)) { $assets = $splitAssets }
 $ico = Join-Path $assets 'bob-systray.ico'
 $logo = Join-Path $assets 'ntsa-gut-logo.png'
 $manifest = Join-Path $SourceDir 'bob-dialogs.manifest'
