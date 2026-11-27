@@ -29,6 +29,8 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
 | PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
+| GET | `/bob/v1/gitcust` | Priority customer and task catalog (`customers`, `tasks` with kind `sc`\|`so`\|`wbs`, free-text title, path). FR #9982. |
+| POST | `/bob/v1/gitcust` | Register a customer and/or task subfolder. 202. Secret-free JSON. FR #9982. Scanner (FR #9983) walks customer roots and SC/SO/WBS task folders; title comes from `title.txt` or the folder name and is never empty. Periodic catch-up `GITCUST_UPDATE_S` defaults to 3600 (minimum 60) and calls the same scanner (FR #9984). POST on create stays primary. |
 | GET | `/bob/v1/ask/health` | Ask webhook liveness: `{"ok":true,"service":"ask"}` (FR #10032 / digest #10031). Open. |
 | POST | `/bob/v1/ask` | Accept an ask envelope (`sc`, `correlation_id`, optional `text`). Fail closed unless `sc` is in `BOB_ASK_ALLOWLIST` (FR #10033): missing or empty allowlist returns 403 `not_allowed`. Success **202** echoes `correlation_id` and does not echo `sc`. Secret-shaped JSON keys return 400 `secret_field`. Do not log the body. Other verbs **405**. |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
@@ -280,6 +282,8 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 ## Front-page HTML docs (FR #6453 / FR #8835)
 
 **FR #9776 !build:** `.bobiverse/build-webhooks.yml` (catalog seed `common/defaults/builds-catalog.example.json`, install `flamingo`) packs the site kit via `Pack-BobWebhooksSiteKit.ps1`. The artifact is `MANIFEST.json`. The recipe does not list `jeeves-*.msi` or `ergo.exe`.
+
+**FR #9778 pack:** `Pack-BobiverseRelease.ps1 -Product jeeves` (release, without `-SkipMsi`) copies `www` from `-WebhooksArtifactDir` or `BOB_WEBHOOKS_ARTIFACT_DIR` and requires `MANIFEST.json` there. It fails when that input is missing. `build-jeeves-msi.yml` builds the site kit and passes `-WebhooksArtifactDir`. `-SkipMsi` tests may still stage `jeeves\www`.
 
 Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
 
