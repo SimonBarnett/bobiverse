@@ -41,7 +41,7 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "Get-FileHash -Algorithm SHA256" in text
     assert "sparse-checkout:" in text
     assert "bob/tray" in text
-    assert "-Targets tray,about" in text
+    assert '-Targets "tray,about"' in text
     assert "bob-tray.exe" in text
     assert "bob-about.exe" in text
     assert "bob-status.exe" not in text
