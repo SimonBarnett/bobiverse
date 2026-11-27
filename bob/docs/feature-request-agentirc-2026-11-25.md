@@ -5,7 +5,7 @@
 
 ## Ultimate objective
 
-bob-worker and Jeeves/Priority call one shared **AgentIrc.dll**: IRC is up before the CLI starts, matching traffic reaches the CLI only via stdin, argv is passed through, and NotBusy fires immediately when not busy then once per minute while still not busy.
+bob-worker and Jeeves/Priority call one shared **AgentIrc.dll**: IRC is up (via **WSS** to `wss://wsirc.ntsa.uk/` on **443**) before the CLI starts, matching traffic reaches the CLI only via stdin, argv is passed through, and NotBusy fires immediately when not busy then once per minute while still not busy.
 
 ## Success
 
@@ -19,6 +19,8 @@ bob-worker and Jeeves/Priority call one shared **AgentIrc.dll**: IRC is up befor
 | S6 | argv passthrough | Wrapper forwards caller CLI arguments to the wrapped process (AgentIRC host flags stripped) | ProcessStartInfo / argv composition tests | Host swallows or rewrites CLI argv; tray flags never reach the agent |
 | S7 | Send API | Host can PRIVMSG/NOTICE via AgentIrc.Send | unit tests on fake IRC wire | Outbox-only with no programmatic Send |
 | S8 | host join callback | DLL calls host-supplied function for channel list; no hard-coded shop list in DLL | callback stub tests | DLL hard-codes #machine / monitor channels |
+| S9 | WSS connect | Default transport is ClientWebSocket to `wss://wsirc.ntsa.uk/` on 443 | `dotnet test` fake WS + URI assert | Primary path is SslStream:6697 only |
+| S10 | IRC-over-WS framing | CAP/NICK/JOIN/PRIVMSG as IRC lines in WS text frames | unit codec + fake server | Binary-only or non-IRC framing |
 
 ## Shape
 
@@ -33,38 +35,39 @@ Primary: service
 - C# / .NET 8 (`net8.0`) **class library** → `AgentIrc.dll`
 - Package path: `bob/dotnet/AgentIrc` (vendored from bobiverse)
 - Consumers call the DLL: bob-worker-net (#9793), JeevesAgent / PriorityAgent (jeeves-mcp#2)
-- Modern `SslStream` IRC TLS
-- Airc Framework 4 / no-SDK floor does **not** apply
+- **Primary transport:** `ClientWebSocket` → `wss://wsirc.ntsa.uk/` (443); IRC lines in WebSocket **text** frames (bridges to `irc.ntsa.uk`)
+- Airc Framework 4 / no-SDK floor does **not** apply; firewall class matches airc outbound 80/443/993
 
 ## Architecture
 
-Caller loads **AgentIrc.dll**, asks it to JOIN IRC, loads `listen.txt`, starts the CLI (argv passthrough), and writes matching lines to CLI stdin. Markers on CLI stdout/stderr drive Busy/NotBusy; **NotBusy** fires immediately on busy→not-busy and once per minute while still not busy.
+Caller loads **AgentIrc.dll**, asks it to JOIN IRC over WSS, loads `listen.txt`, starts the CLI (argv passthrough), and writes matching lines to CLI stdin. Markers on CLI stdout/stderr drive Busy/NotBusy; **NotBusy** fires immediately on busy→not-busy and once per minute while still not busy.
 
 Caption: Worker/Jeeves call AgentIrc.dll for IRC and stdin.
 
 ```mermaid
 flowchart LR
   Host[bob-worker or JeevesAgent] --> Dll[AgentIrc.dll]
-  Dll --> IRC[IRC TLS JOIN]
+  Dll -->|WSS 443| Gw[wsirc.ntsa.uk]
+  Gw --> IRC[irc.ntsa.uk JOIN]
   Dll --> Listen[listen.txt match]
   Listen --> Stdin[CLI stdin]
   CLI[CLI process] --> Markers[stdout stderr markers]
   Markers --> Edge[NotBusy]
 ```
 
-Caption: Start order is IRC then CLI via the DLL.
+Caption: Start order is WSS IRC then CLI via the DLL.
 
 ```mermaid
 sequenceDiagram
   participant Host as worker or jeeves
   participant Dll as AgentIrc.dll
-  participant Net as irc.ntsa.uk
+  participant Ws as wsirc.ntsa.uk
   participant Cli as CLI
   Host->>Dll: StartIrc / Join
-  Dll->>Net: PASS NICK JOIN
+  Dll->>Ws: WSS CAP NICK JOIN
   Host->>Dll: StartCli argv passthrough
   Dll->>Cli: start process
-  Net-->>Dll: PRIVMSG
+  Ws-->>Dll: PRIVMSG text frames
   Dll->>Cli: write stdin
   Cli-->>Dll: busy then not-busy markers
   Dll-->>Host: NotBusy
