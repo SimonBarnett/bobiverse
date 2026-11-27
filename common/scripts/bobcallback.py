@@ -124,13 +124,14 @@ GIT_EVENTS = frozenset(
         "issue_comment",
         "check_run",
         "check_suite",
+        "workflow_run",
     }
 )
-# Subscribed but not applied (CI state comes from check_run + resync).
-GIT_IGNORED_EVENTS = frozenset({"workflow_run"})
+# FR #10007: workflow_run is applied (was ignored). Keep the set for unknown events.
+GIT_IGNORED_EVENTS = frozenset()
 # FR #9104: under local intake rate limit, ack noisy CI storms with 204 (no GitHub retry)
 # instead of 429. push / issues / PR keep 429 so GitHub backs off those.
-GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite"})
+GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite", "workflow_run"})
 GIT_ERROR_REASONS = frozenset(
     {
         "missing signature",
