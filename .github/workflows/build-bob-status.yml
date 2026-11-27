@@ -1,0 +1,90 @@
+# Isolated bob-status.exe build (FR #9764).
+# Not a release, MSI, or tray restart. Build-BobDialogs.ps1 -Targets status owns csc.exe.
+name: build-bob-status
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-status.yml
+      - bob/tray/dialogs/**
+      - bob/tray/assets/**
+      - bob/scripts/Build-BobDialogs.ps1
+      - bob/tests/test_fr9764_status_build_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-bob-status.yml
+      - bob/tray/dialogs/**
+      - bob/tray/assets/**
+      - bob/scripts/Build-BobDialogs.ps1
+      - bob/tests/test_fr9764_status_build_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-status:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            bob/tray/dialogs
+            bob/tray/assets
+            bob/scripts/Build-BobDialogs.ps1
+            common/scripts/Bobiverse-Common.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Build bob-status.exe
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "bob-status-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $out -Targets status
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobDialogs.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "bob-status.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing bob-status.exe" }
+          if (Test-Path (Join-Path $out "bob-tray.exe")) { throw "status target also built bob-tray.exe" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $needle = [System.Text.Encoding]::Unicode.GetBytes("xAI weekly")
+          $bad = [System.Text.Encoding]::Unicode.GetBytes("Cursor / xAI weekly")
+          function Find-Bytes([byte[]]$hay, [byte[]]$need) {
+            for ($i = 0; $i -le $hay.Length - $need.Length; $i++) {
+              $ok = $true
+              for ($j = 0; $j -lt $need.Length; $j++) {
+                if ($hay[$i + $j] -ne $need[$j]) { $ok = $false; break }
+              }
+              if ($ok) { return $true }
+            }
+            return $false
+          }
+          if (-not (Find-Bytes $bytes $needle)) { throw "bob-status.exe missing UTF-16LE heading 'xAI weekly' (FR #9764)" }
+          if (Find-Bytes $bytes $bad) { throw "bob-status.exe still embeds stale heading 'Cursor / xAI weekly' (FR #9764)" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $stage = Join-Path $env:RUNNER_TEMP "bob-status-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-status.exe")
+          Set-Content -Encoding ascii (Join-Path $stage "bob-status.exe.sha256") "$hash  bob-status.exe"
+          $manifest = [ordered]@{
+            source_commit = $env:WORKFLOW_COMMIT
+            exe_name = "bob-status.exe"
+            exe_sha256 = $hash
+            fr = "9764"
+          }
+          ($manifest | ConvertTo-Json) | Set-Content -Encoding utf8 (Join-Path $stage "MANIFEST.json")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-status
+          path: ${{ runner.temp }}/bob-status-artifact
+          if-no-files-found: error
