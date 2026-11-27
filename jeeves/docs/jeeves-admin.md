@@ -25,6 +25,8 @@ IRCd: **BobIrcd** → live root `<ai root>\ergo` (MSI stages `ergo\` then Instal
 Quiet MSI as LocalSystem must **not** bake `C:\Users\Default\.jeeves` into NSSM.
 
 Home migration (`bob_home.migrate_legacy`) copies legacy `~\.agentic-irc-*` into `~\.jeeves` / `~\.bobiverse` once. Live `*.pos` files are skipped with other process state, but **outbox cursors are sealed** (FR #68): after copying `chair-outbox.txt` / `outbox.txt`, the migrator restores `*.pos` from the old home when present, otherwise writes pos = file size so the chair does not replay thousands of old GIT lines and starve `SAMODE` / ChanServ LIST. The outbox drain also caps lines per tick and runs ChanServ/+o before drain.
+**FR #9872 (+o / ChanServ retry):** after restart, chair retries SAMODE and ChanServ OP with exponential backoff (dual path after the first miss) and escalates chanserv-sync timeout backoff; it never stops retrying. Command replies are not gated on holding +o (ear/monitor principals). Live SAMODE stick / install proof: ``require_machine=walrus``. Pair with FR #9871 cmd-trace stall monitor.
+
 
 ## Operator commands (IRC)
 

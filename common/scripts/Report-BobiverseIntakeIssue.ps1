@@ -250,6 +250,45 @@ function Get-IntakeResponseProp {
     return $prop.Value
 }
 
+function Resolve-IntakeIssueNumber {
+    # FR #9837: validated positive [int] issue number, or $null. Never use -match/$Matches.
+    param(
+        $Response,
+        [Parameter(Mandatory)][string]$RepoName,
+        [bool]$Queued = $false
+    )
+    if ($Queued) { return $null }
+    $rawNum = Get-IntakeResponseProp -Response $Response -Name 'number' -Default $null
+    $rawUrl = Get-IntakeResponseProp -Response $Response -Name 'url' -Default $null
+    $num = $null
+    if ($null -ne $rawNum -and "$rawNum" -ne '') {
+        $s = ("$rawNum").Trim()
+        $nm = [regex]::Match($s, '^[0-9]+$')
+        if ($nm.Success) {
+            $n = [int]$s
+            if ($n -gt 0) { $num = $n }
+        }
+    }
+    $urlNum = $null
+    $urlText = if ($null -eq $rawUrl) { '' } else { ("$rawUrl").Trim() }
+    if ($urlText -ne '') {
+        $escaped = [regex]::Escape($RepoName)
+        $pat = ('(?i)^https://github\.com/{0}/issues/([0-9]+)/?$' -f $escaped)
+        $m = [regex]::Match($urlText, $pat)
+        if ($m.Success) {
+            $u = [int]$m.Groups[1].Value
+            if ($u -gt 0) { $urlNum = $u }
+        }
+    }
+    if ($null -ne $num -and $null -ne $urlNum) {
+        if ($num -eq $urlNum) { return $num }
+        return $null
+    }
+    if ($null -ne $num -and $urlText -eq '') { return $num }
+    if ($null -eq $num -and $null -ne $urlNum) { return $urlNum }
+    return $null
+}
+
 if ($script:BobiverseCrashOptOutSkip) {
     return [pscustomobject]@{
         ok                     = $true
@@ -265,6 +304,8 @@ if ($script:BobiverseCrashOptOutSkip) {
         error                  = $null
         intake_error           = $null
         http_status            = $null
+        number                 = $null
+        action                 = $null
     }
 }
 
@@ -284,6 +325,8 @@ if ($DryRun) {
         error                  = $null
         intake_error           = $null
         http_status            = $null
+        number                 = $null
+        action                 = $null
     }
 }
 
@@ -293,17 +336,36 @@ $bodyBytes = [Text.Encoding]::UTF8.GetBytes($bodyJson)
 try {
     $resp = Invoke-RestMethod -Method Post -Uri $IntakeUrl -Headers $headers `
         -Body $bodyBytes -TimeoutSec $TimeoutSec
+    $queuedFlag = [bool](Get-IntakeResponseProp -Response $resp -Name 'queued' -Default $false)
+    $issueUrl = Get-IntakeResponseProp -Response $resp -Name 'url' -Default $null
+    $intakeId = Get-IntakeResponseProp -Response $resp -Name 'intake_id' -Default $null
+    $issueNumber = Resolve-IntakeIssueNumber -Response $resp -RepoName $Repo -Queued $queuedFlag
+    $issueAction = Get-IntakeResponseProp -Response $resp -Name 'action' -Default $null
+    if ($null -ne $issueAction) { $issueAction = [string]$issueAction }
+    # FR #9837: host-stream lines for process callers; do not Write-Output (keeps single pipeline object).
+    if ($null -ne $issueNumber) {
+        $urlForHost = if ($null -eq $issueUrl) { '' } else { ("$issueUrl").Trim() }
+        if ($urlForHost -ne '') {
+            Write-Host ("ISSUE_URL={0}" -f $urlForHost)
+        }
+        Write-Host ("ISSUE_NUMBER={0}" -f $issueNumber)
+    }
+    else {
+        Write-Host ("ISSUE_PENDING intake_id={0} queued={1}" -f $intakeId, $queuedFlag)
+    }
     return [pscustomobject]@{
         ok              = $true
         queued_local    = $false
-        intake_id       = (Get-IntakeResponseProp -Response $resp -Name 'intake_id' -Default $null)
-        url             = (Get-IntakeResponseProp -Response $resp -Name 'url' -Default $null)
-        queued          = [bool](Get-IntakeResponseProp -Response $resp -Name 'queued' -Default $false)
+        intake_id       = $intakeId
+        url             = $issueUrl
+        queued          = $queuedFlag
         idempotency_key = $payload.idempotency_key
         outbox          = @()
         error           = $null
         intake_error    = $null
         http_status     = 202
+        number          = $issueNumber
+        action          = $issueAction
     }
 }
 catch {
@@ -328,5 +390,7 @@ catch {
         error           = $msg
         intake_error    = $info.IntakeError
         http_status     = $info.Status
+        number          = $null
+        action          = $null
     }
 }

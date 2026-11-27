@@ -544,6 +544,12 @@ def accept_job_by_ref(
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except OSError:
                 return "error", None
+            # FR #9875: tip/build-lock on + tip-allowlisted ACK clears off-list ACC on seat.
+            with contextlib.suppress(Exception):
+                import dispatch_lock as _dl
+
+                if _dl.is_on(home) and _dl.row_blocked_reason(home, job) is None:
+                    _dl.clear_off_list_accepted(home, nick=nick)
             return "ok", job
     except (TimeoutError, OSError):
         return "error", None

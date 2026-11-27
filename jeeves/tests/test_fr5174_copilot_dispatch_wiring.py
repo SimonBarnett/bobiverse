@@ -1,9 +1,9 @@
-"""FR #5174: Copilot dispatch must not mark jobs taken without a real task.
+﻿"""FR #5174: Copilot dispatch must not mark jobs taken without a real task.
 
 Defects from hotpatch of #5173:
 1. Pool read must use a wired fetch (not raise forever).
-2. Unknown pool → no dispatch (fail closed); unlimited+remaining 0 still OK.
-3. No POST / send failure → job stays unaccepted; no hand-off announce.
+2. Unknown pool â†’ no dispatch (fail closed); unlimited+remaining 0 is phantom (FR #9986).
+3. No POST / send failure â†’ job stays unaccepted; no hand-off announce.
 4. Machine-pinned rows (require_machine) skipped for Copilot.
 5. Webhook ensure logs ok/created/repaired/error per repo.
 6. Live ChairJobs.tick passes fetch_user + post into copilot_dispatch.tick.
@@ -32,6 +32,22 @@ UNLIMITED = {
             "percent_remaining": 100.0,
             "unlimited": True,
             "overage_permitted": True,
+        }
+    },
+}
+
+# FR #9986: dispatch tests need finite remaining>0 (phantom unlimited+0 is not fuel).
+HAS_FUEL = {
+    "copilot_plan": "business",
+    "quota_reset_date_utc": "2026-11-01T00:00:00.000Z",
+    "quota_snapshots": {
+        "premium_interactions": {
+            "credits_used": 10,
+            "entitlement": 300,
+            "remaining": 50,
+            "percent_remaining": 50.0,
+            "unlimited": False,
+            "overage_permitted": False,
         }
     },
 }
@@ -66,15 +82,21 @@ def test_unknown_pool_no_dispatch(tmp_path):
     assert cd.load_allowance(tmp_path).get("state") == "unknown"
     assert cd.has_allowance(tmp_path) is False
     assert cd.allowance_from_pool({"state": "unknown"}) is False
-    # Unlimited business plan with remaining 0 still available
+    # FR #9986: unlimited + remaining 0 + percent 100 is phantom â€” no CCA fuel
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=400.0)
-    assert cd.has_allowance(tmp_path) is True
-    assert cd.allowance_from_pool(cd.parse_user_quota(UNLIMITED)) is True
+    assert cd.has_allowance(tmp_path) is False
+    assert cd.allowance_from_pool(cd.parse_user_quota(UNLIMITED)) is False
+    assert cd.allowance_from_pool(
+        {"unlimited": True, "remaining": 0, "percent_remaining": 100, "state": "ok"}
+    ) is False
+    # Finite remaining still unlocks; unlimited with remaining omitted still unlocks
+    assert cd.allowance_from_pool({"remaining": 5, "state": "ok"}) is True
+    assert cd.allowance_from_pool({"unlimited": True, "remaining": None, "state": "ok"}) is True
 
 
 def test_send_failure_leaves_job_and_no_handoff(tmp_path):
     _focus_high(tmp_path)
-    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: HAS_FUEL, now=1.0)
     _queue(tmp_path, [_row(num=5058)])
     announced: list[str] = []
 
@@ -105,7 +127,7 @@ def test_send_failure_leaves_job_and_no_handoff(tmp_path):
 
 def test_pinned_job_skipped(tmp_path):
     _focus_high(tmp_path)
-    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: HAS_FUEL, now=1.0)
     pinned = _row(num=5221, require_machine="redqueen")
     assert cd.should_dispatch(pinned, allowance=True) is False
     _queue(tmp_path, [pinned])
@@ -115,7 +137,7 @@ def test_pinned_job_skipped(tmp_path):
         posts.append((path, body))
         return {"status": 201, "id": "task-1", "html_url": "https://example/tasks/1"}
 
-    out = cd.tick(tmp_path, post=post, fetch_user=lambda: UNLIMITED, now=2.0)
+    out = cd.tick(tmp_path, post=post, fetch_user=lambda: HAS_FUEL, now=2.0)
     assert out.get("dispatched") == 0
     assert posts == []
     assert any(r.get("id") == "#5221" for r in gitclaim.load_unaccepted(tmp_path))
@@ -190,7 +212,7 @@ def test_chair_tick_passes_fetch_and_post(tmp_path, monkeypatch):
 
     def fake_gh(method, url, body=None):
         if "copilot_internal/user" in url:
-            return UNLIMITED, 200
+            return HAS_FUEL, 200
         if "/tasks" in str(url) and str(method).upper() == "POST":
             return {"id": "t1", "html_url": "https://example/t1"}, 201
         return {}, 200
@@ -216,7 +238,7 @@ def test_chair_tick_passes_fetch_and_post(tmp_path, monkeypatch):
 
 def test_successful_post_then_dispatch(tmp_path):
     _focus_high(tmp_path)
-    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: HAS_FUEL, now=1.0)
     _queue(tmp_path, [_row(num=16)])
     announced: list[str] = []
 
@@ -287,7 +309,7 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
 
     def fake_gh(method, url, body=None):
         if "copilot_internal/user" in url:
-            return UNLIMITED, 200
+            return HAS_FUEL, 200
         if str(method).upper() == "POST" and "/tasks" in str(url):
             posts.append(str(url))
             task_id = f"task-{len(posts)}"
@@ -318,3 +340,4 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
     assert {row["id"] for row in remaining} == {
         "#237", "#5139", "#5170", "#5221", "#39", "#33", "#1", "#2"
     }
+

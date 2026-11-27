@@ -312,8 +312,11 @@ def observe_quota(
         doc["attempted_epoch"] = now_f
         doc.pop("last_error", None)
         _write_observation(home, doc)
-        # FR #9733: sticky exhausted_until must not outlive a fresher ok observation.
-        if doc.get("state") == "ok" or bool(doc.get("unlimited")):
+        # FR #9733: sticky exhaust must not outlive a fresher observation that
+        # shows real remaining>0. FR #9986: premium unlimited / percent=100 with
+        # remaining=0 is a phantom — do NOT clear coding-agent tasks_exhausted.
+        rem_ok = _num(doc.get("remaining"))
+        if rem_ok is not None and rem_ok > 0:
             _clear_sticky_allowance_exhaust_on_ok(home)
         return doc
 
@@ -453,21 +456,32 @@ def _reset_passed(doc: dict) -> bool:
 
 
 def allowance_from_pool(doc: dict) -> bool:
+    """Whether CCA/seat dispatch may spend Copilot fuel.
+
+    FR #9986 (phantom tokens): GitHub business ``premium_interactions`` often
+    reports ``unlimited=true``, ``remaining=0``, ``percent_remaining=100`` while
+    coding-agent quota is empty. Dispatch must not treat that as fuel.
+    """
     if not isinstance(doc, dict):
         return False
     if doc.get("tasks_exhausted") and not _reset_passed(doc):
         return False
-    if doc.get("unlimited"):
-        return True
     if str(doc.get("state") or "") == "unknown":
         return False  # FR #5174: fail closed (do not steal IRC jobs)
     rem = _num(doc.get("remaining"))
-    pct = _num(doc.get("percent_remaining"))
+    # Known-zero remaining is never dispatch fuel (even with unlimited/percent phantoms).
+    if rem is not None and rem <= 0:
+        return False
     if rem is not None and rem > 0:
         return True
-    if pct is not None and pct > 0:
+    # True unlimited plans omit a finite remaining; allow those.
+    if doc.get("unlimited") and rem is None:
         return True
-    if rem == 0 or str(doc.get("state") or "") == "exhausted":
+    pct = _num(doc.get("percent_remaining"))
+    # Percent alone only when remaining is unknown (not when remaining==0).
+    if rem is None and pct is not None and pct > 0:
+        return True
+    if str(doc.get("state") or "") == "exhausted":
         return False
     if doc.get("exhausted") and rem is None:
         return False
@@ -1239,6 +1253,10 @@ def build_task_body(
     return body
 
 
+# FR #9846: Haiku CCA refill fail-loop / tip-allowlist bypass helpers live in
+# `copilot_haiku_refill` (watch_copilot_haiku_refill.ps1 calls them). Do not
+# reintroduce a raw SKIP_FAILED_LOOP that zeros every tip-allowlist FR.
+
 def should_dispatch(
     row: dict, *, allowance: bool, now: float | None = None, home: Path | None = None,
 ) -> bool:
@@ -1272,6 +1290,12 @@ def should_dispatch(
         title=title, body=str(row.get("body") or ""), labels=labels
     ):
         return False
+    # FR #9838 / #9821: same Depends-on gate as chair offer — children of a held
+    # fr-digest (and other hard Depends-on blocks) never CCA / Copilot dispatch.
+    if home is not None and task == "FR":
+        why = held_digest_cca_skip_reason(home, row)
+        if why:
+            return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
     row_eff = dict(row) if isinstance(row, dict) else {}
     with contextlib.suppress(Exception):
@@ -1286,6 +1310,25 @@ def should_dispatch(
         if gitclaim.review_blocked_for_author(row, COPILOT_NICK, live={COPILOT_NICK}):
             return False
     return True
+
+
+def held_digest_cca_skip_reason(home: Path, row: dict) -> str | None:
+    """FR #9838: share ``gitclaim.depends_gate_reason`` with chair #9821.
+
+    Returns the gate reason when CCA must skip (e.g. ``depends-held``), else None.
+    """
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("task") or "").upper() != "FR":
+        return None
+    try:
+        doc = gitclaim.load_queue(home)
+    except Exception:
+        doc = {}
+    try:
+        return gitclaim.depends_gate_reason(row, doc)
+    except Exception:
+        return None
 
 
 def is_high_priority(home: Path, row: dict) -> bool:

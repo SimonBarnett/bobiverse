@@ -1689,16 +1689,21 @@ def run_stuck_sweep(
             actions["orphan_holds"] = n_orphan
             if n_orphan and log:
                 log(f"stuck-sweep orphan-seat-holds cleared={n_orphan} (FR #9558)")
-        # FR #9783: clear stale via=offer holds past offer timeout (pin may
-        # already be gone; SEAT_HOLD_MAX_S otherwise leaves busy held for 1h).
+        # FR #9783 / FR #9855: clear stale via=offer holds past offer timeout,
+        # and post-merge / CLOSED ghost holds while digest paints idle
+        # (SEAT_HOLD_MAX_S otherwise leaves busy held for 1h).
         with contextlib_suppress():
             n_sticky = int(
-                gitclaim.release_stale_via_offer_holds(home, now=now_f) or 0
+                gitclaim.release_stale_via_offer_holds(
+                    home, now=now_f, idle=idle_set
+                )
+                or 0
             )
             actions["sticky_holds"] = n_sticky
             if n_sticky and log:
                 log(
-                    f"stuck-sweep sticky-via-offer-holds cleared={n_sticky} (FR #9783)"
+                    f"stuck-sweep sticky-via-offer-holds cleared={n_sticky} "
+                    f"(FR #9783/#9855)"
                 )
         # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
         # accepted_holder_gone release can re-dispatch them.

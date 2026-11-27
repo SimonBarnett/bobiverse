@@ -55,10 +55,20 @@ def test_monitor_account_env_classifies():
     assert who.ops is True
 
 
-def test_empty_monitor_nicks_env_disables_default():
+def test_empty_monitor_nicks_env_keeps_default():
+    """Blank JEEVES_MONITOR_NICKS keeps default nick (CI empty export; #9968)."""
     import os
 
     os.environ["JEEVES_MONITOR_NICKS"] = ""
+    who = cc.classify("monitoring")
+    assert who.kind == "monitor"
+    assert who.ops is True
+
+
+def test_off_monitor_nicks_env_disables_default():
+    import os
+
+    os.environ["JEEVES_MONITOR_NICKS"] = "off"
     who = cc.classify("monitoring")
     assert who.kind == "none"
     assert who.ops is False
