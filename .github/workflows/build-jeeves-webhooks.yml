@@ -53,6 +53,7 @@ jobs:
           persist-credentials: false
           # FR #9774: site-kit roots only. Do not list jeeves/** (chair, IRCD, monitor).
           sparse-checkout: |
+            .github/workflows/build-jeeves-webhooks.yml
             jeeves/www
             jeeves/assets
             jeeves/scripts/Install-BobWebhooks.ps1
