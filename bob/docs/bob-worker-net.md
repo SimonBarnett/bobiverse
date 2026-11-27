@@ -29,7 +29,11 @@ Phase 0 scaffold (digest **#9794**) plus FR-E IrcSeat JOIN gate (digest **#9796*
 * `bob-worker-net.exe --help` - short usage; exits 0.
 * `bob-worker-net.exe --self-test-irc` - hermetic mock contract (FR #9804): JOIN required before `StartAgentGate` opens; Ergo path candidates; never needs live Ergo.
 * `bob-worker-net.exe --selftest-spawn` - FR #9806: assert_fresh cases + spinner Stop + inherit-console `cmd /c exit 0` smoke; exits **0** on pass.
-* Any other argv - stderr note that remaining CLI/fuel land in later FRs; exits **64**.
+* `--mode` `agent|plan|monitor|maintenance|jeeves`, `--install-root`, `--machine-id`, `--agent` `grok|cursor|opencode`, `--echo` (FR #9801). Same names the tray passes to `bob-worker.exe`. The published file stays **`bob-worker-net.exe`** until cutover.
+* `--list-agents` prints one JSON object and exits **0**. It does not read fuel. Shape: `agents` (rows with `id`, `label`, `available`, `installed`, `fuel_state`, `reason`), `refresh` false, `stub` true.
+* `--dry-run` prints one JSON object and exits **0**: `mode`, `agent`, `install_root`, `machine_id`, `echo`, `started` false, `stub` true. It starts nothing.
+* Unknown mode, unknown agent, or unknown flag: stderr `bob-worker-net: unknown ...` and exit **64**.
+* A known `--mode` without `--dry-run` or `--list-agents` parses, then exits **64** because the seat loop is a later phase.
 
 Crash hook: `AppDomain.UnhandledException` writes a short line to stderr and, when `BOB_WORKER_RUN_DIR` is set, to `bob-worker-net-crash.txt` under that directory.
 
@@ -61,4 +65,4 @@ Parity with Python `bob_worker.assert_fresh` / `default_spawn` (t765u / t771u):
 
 ## Out of scope
 
-FR-B #9801 CLI parity, FR-C #9802 full StartupProgress spinner UX, FR-H..J inject/Cursor/OpenCode spawn, fuel wiring, MSI, retiring PyInstaller worker.
+FR-C #9802 full StartupProgress spinner UX, FR-H..J inject/Cursor/OpenCode spawn, fuel wiring, MSI, retiring PyInstaller worker. CLI argv stubs are FR #9801.
