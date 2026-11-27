@@ -307,7 +307,8 @@ if (-not $script:InstallChairService) {
     $useJeevesExe = $false
 } else {
 if ($useJeevesExe) {
-    $appParams = "--chair --http 127.0.0.1:7700 --home `"$ChairHome`" --digest-home `"$digestHome`""
+    # FR #10096: chair does not bind :7700. Service BobWebhooks owns the listener.
+    $appParams = "--chair-only --home `"$ChairHome`" --digest-home `"$digestHome`""
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, $jeevesExe))
     # FR #2475: refuse missing exe; keep previous Application on failure
     $setApp = Set-BobiverseNssmApplicationSafe -Nssm $Nssm -ServiceName $ServiceName -NewApplication $jeevesExe -AppDirectory $InstallRoot
@@ -318,8 +319,8 @@ if ($useJeevesExe) {
         [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
         Write-Host "INFO ircJeeves Application=jeeves.exe (FR #2301 WP3 cutover; FR #2475 safe set)"
         # FR #2524: refuse empty mode params (NSSM Restart would bare-loop jeeves.exe).
-        if (-not $appParams -or $appParams -notmatch '(?i)--chair' -or $appParams -notmatch '(?i)--http') {
-            throw "Install-Jeeves: AppParameters must include --chair --http ... (FR #2524); got '$appParams'"
+        if (-not $appParams -or $appParams -notmatch '(?i)--chair-only') {
+            throw "Install-Jeeves: AppParameters must include --chair-only (FR #10096); got '$appParams'"
         }
     }
 }
@@ -414,7 +415,20 @@ if (Test-Path -LiteralPath $operPy) {
 if (-not $script:InstallChairService) {
     Write-Host 'INFO FR #6947 skip BobCallback task on non-chair host'
 } elseif ($useJeevesExe) {
-    Write-Host 'INFO skipping Python BobCallback task (jeeves.exe owns :7700; FR #2301 WP3)'
+    # FR #10096: IIS proxies /bob/v1/* to 127.0.0.1:7700. That listener is BobWebhooks, not ircJeeves.
+    $whName = 'BobWebhooks'
+    $sup = Join-Path $InstallRoot 'scripts\Start-BobCallbackSupervised.ps1'
+    if (-not (Test-Path -LiteralPath $sup)) { $sup = Join-Path $PSScriptRoot 'Start-BobCallbackSupervised.ps1' }
+    $whParams = "-NoProfile -ExecutionPolicy Bypass -File `"$sup`" -DigestHome `"$digestHome`" -Port 7700"
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $whName, 'powershell.exe'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'Application', 'powershell.exe'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'AppDirectory', (Split-Path -Parent $sup)))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'AppParameters', $whParams))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'DisplayName', 'bobiverse webhooks'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'Start', 'SERVICE_AUTO_START'))
+    Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $whName -RestartDelayMs 2000
+    Write-Host 'INFO FR #10096 service BobWebhooks owns 127.0.0.1:7700; ircJeeves is --chair-only'
+    Write-Host 'INFO skipping Python BobCallback scheduled task (BobWebhooks owns :7700; FR #10096)'
     try {
         $existingCb = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
         if ($existingCb) {

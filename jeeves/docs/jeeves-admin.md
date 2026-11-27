@@ -3,6 +3,8 @@
 **Chair / Ergo host:** resolve from config — `BOB_CHAIR_MACHINE` (see `bob_recycle.CHAIR_ENV`) or `JEEVES_CHAIR_HOST` (default `walrus` via `jeeves_chair_host`). **Do not hard-code a forever hostname in code or filings.** Legacy `needs-walrus` / `needs-ionos` / `require_machine: walrus|ionos` are aliases that fold onto that configured host (FR #8653 / #9680). **ionos is deprecated** as a live Ergo box.
 
 Chair on the Ergo box: service **ircJeeves**, nick **Jeeves**, tree `<ai root>\jeeves`.
+
+**FR #10096:** webhooks are service **BobWebhooks** (`Start-BobCallbackSupervised.ps1` on `127.0.0.1:7700`). IIS on bob.ntsa.uk proxies `/bob/v1/*` to that port, so it proxies to **BobWebhooks**. **ircJeeves** runs `jeeves.exe --chair-only` and does not bind :7700. Stopping or restarting **ircJeeves** leaves **BobWebhooks** up. Stopping **BobWebhooks** does not drop the chair IRC session. This split applies after the next `Install-Jeeves.ps1` on the chair host. It is not a live cutover by itself.
 IRCd: **BobIrcd** → live root `<ai root>\ergo` (MSI stages `ergo\` then Install-BobIrcd).
 
 ## Checklist
