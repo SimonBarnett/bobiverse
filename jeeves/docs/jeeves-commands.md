@@ -91,14 +91,14 @@ A **principal** is derived per message from the nick plus the services account t
 | **owner** | services account `JEEVES_OWNER_ACCOUNT` (default `simon`), or an account in `BOB_OP_ACCOUNTS` / `op-accounts.txt`. Nick `simon` with no account (unverified) is **not** the owner. |
 | **ear** | nick `bob-<machine>` (any case, e.g. the live `Bob-win-mpre8vi4u6u`) of a machine in the ChanServ roster - the same trust root that earns the ear its `+o` / `+h`. A `bob-x_` fallback nick, an unregistered machine, or a look-alike logged in to a different account is refused. |
 | **monitor** (FR #8827) | nick in `JEEVES_MONITOR_NICKS` (default `monitoring` when unset; empty string disables) **or** services account in `JEEVES_MONITOR_ACCOUNTS` (fail closed when unset). Same queue-mutator class as owner/ear for keep-the-queue-moving interventions. Unknown nicks stay denied. |
-| **allowlist** | nick in `JEEVES_FOCUS_MUTATORS` or account in `JEEVES_FOCUS_MUTATOR_ACCOUNTS` (additive, default empty) - `!focus` / `!unfocus` only. |
+| **allowlist** | nick in `JEEVES_FOCUS_MUTATORS` or account in `JEEVES_FOCUS_MUTATOR_ACCOUNTS` (additive, default empty) - `!focus` / `!unfocus` / `!copilot` write. |
 | anyone else | read-only commands |
 
 | Command | owner | ear (`bob-<machine>`) | monitor | allowlist | anyone |
 |---|---|---|---|---|---|
-| `!help` `!list` `!filter` `!status` `!stuck` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes | yes |
+| `!help` `!list` `!filter` `!status` `!stuck` `!ignored` `ping`, `!focus` / `!focus strict` (read), `!copilot` (read) | yes | yes | yes | yes | yes |
 | `!ignore` `!unignore` | yes | yes | yes | no | no |
-| `!focus ..` `!unfocus ..` (write) | yes | yes | yes | yes | no |
+| `!focus ..` `!unfocus ..` (write), `!copilot on\|off` | yes | yes | yes | yes | no |
 | `!resync` `!sweep` `!recycle` `!assign` `!cleargiveup` `!pin` `!unpin` | yes | yes | yes | no | no |
 
 ### MONITORING agent auth (FR #8827) â€” no secrets in this doc

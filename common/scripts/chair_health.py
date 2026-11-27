@@ -1148,6 +1148,12 @@ class ChairJobs:
                 raise RuntimeError(f"Copilot tracking GET failed ({code})")
             return data
 
+        # FR #10063: !copilot off blocks a new handoff. Quota observe above still runs.
+        import focus_ignore as _fi
+
+        if not _fi.copilot_handoff_allowed(self.home):
+            self.log("INFO copilot-dispatch skipped: off")
+            return
         # FR #5174: queue.json / unaccepted live under digest_home (BOB_DIGEST_HOME),
         # not chair home (BOB_HOME / ~/.jeeves). Allowance + jobs cache share that path.
         out = copilot_dispatch.tick(
