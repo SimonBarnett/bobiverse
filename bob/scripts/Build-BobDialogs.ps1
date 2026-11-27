@@ -16,7 +16,8 @@ param(
     [string]$RepoRoot = '',
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$SourceDir = '',
-    [string]$SourceCommit = ''   # FR #6924: optional; else WORKFLOW_COMMIT / git HEAD
+    [string]$SourceCommit = '',   # FR #6924: optional; else WORKFLOW_COMMIT / git HEAD
+    [string]$Targets = 'all'      # FR #9763: tray, about, status, all (comma or space separated)
 )
 $ErrorActionPreference = 'Stop'
 $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
@@ -26,6 +27,11 @@ if (-not $RepoRoot) { $RepoRoot = Get-BobiverseRepoRoot -ScriptDir $PSScriptRoot
 if (-not $SourceDir) {
     $SourceDir = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\dialogs'   # alias -> bob\tray\dialogs in the split repo
     if (-not (Test-Path -LiteralPath $SourceDir)) { $SourceDir = Join-Path $RepoRoot 'dialogs' }
+}
+# Sparse CI does not checkout common\VERSION, so the split-repo alias does not run.
+$splitDialogs = Join-Path $RepoRoot 'bob\tray\dialogs'
+if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'BobDialogsCommon.cs')) -and (Test-Path -LiteralPath (Join-Path $splitDialogs 'BobDialogsCommon.cs'))) {
+    $SourceDir = $splitDialogs
 }
 if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'BobDialogsCommon.cs'))) { throw "missing dialog sources in $SourceDir" }
 
@@ -40,18 +46,33 @@ if (-not $csc) { throw 'csc.exe (.NET Framework 4) not found' }
 # Icon / logo: the systray icon is the exe icon; the ntsa badge is embedded so the About window needs no file read.
 $assets = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets'
 if (-not (Test-Path -LiteralPath $assets)) { $assets = Join-Path $RepoRoot 'assets' }
+$splitAssets = Join-Path $RepoRoot 'bob\tray\assets'
+if (-not (Test-Path -LiteralPath $assets) -and (Test-Path -LiteralPath $splitAssets)) { $assets = $splitAssets }
 $ico = Join-Path $assets 'bob-systray.ico'
 $logo = Join-Path $assets 'ntsa-gut-logo.png'
 $manifest = Join-Path $SourceDir 'bob-dialogs.manifest'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $built = @()
+$want = @{}
+foreach ($tok in ($Targets -split '[,\s]+')) {
+    $tok = $tok.Trim().ToLowerInvariant()
+    if ($tok) { $want[$tok] = $true }
+}
+if ($want.Count -eq 0 -or $want.ContainsKey('all')) {
+    $want = @{ tray = $true; about = $true; status = $true }
+}
+foreach ($name in @($want.Keys)) {
+    if ($name -notin @('tray', 'about', 'status', 'all')) { throw "unknown -Targets token '$name' (tray, about, status, all)" }
+}
+$targetOf = @{ 'bob-about.exe' = 'about'; 'bob-status.exe' = 'status'; 'bob-tray.exe' = 'tray' }
 foreach ($d in @(
         @{ Exe = 'bob-about.exe';  Srcs = @('BobAbout.cs');  Main = 'BobDialogs.AboutProgram';  Refs = @('System.ServiceProcess.dll') },
         @{ Exe = 'bob-status.exe'; Srcs = @('OpencodePaint.cs', 'BobStatus.cs'); Main = 'BobDialogs.StatusProgram'; Refs = @() },
         # FR #8682 JeevesJMcp + main BOB-37/39/plan/opencode helpers
         @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'OpencodePaint.cs', 'BobStatus.cs', 'BobModelsClient.cs', 'WeightsForm.cs', 'GrokNoTokenGate.cs', 'JeevesModelsWebhook.cs', 'JeevesNoTokenGate.cs', 'JeevesJMcp.cs', 'JeevesLazyDag.cs', 'PlanMcpConfig.cs', 'PlanModelsWebhook.cs', 'OpencodeFreeThenPaid.cs', 'OpenCodePaidExhaustedGate.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll', 'System.Management.dll') })) {
 
+    if (-not $want[$targetOf[$d.Exe]]) { continue }
     $out = Join-Path $OutDir $d.Exe
     $tmp = $out + '.new'
     $argv = @('/nologo', '/target:winexe', '/optimize+', '/debug-', '/platform:anycpu', "/out:$tmp",

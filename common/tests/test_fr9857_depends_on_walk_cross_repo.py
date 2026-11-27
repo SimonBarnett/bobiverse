@@ -140,9 +140,9 @@ def test_fr9857_fail_when_foreign_open_ignored(home: Path):
     _queue(home, [child])
     doc = gitclaim._load_queue_unlocked(home)
     open_keys = gitclaim.open_fr_issue_keys(doc)
-    # Token-free path (no checker): foreign not in local queue => no block (known limit).
+    # FR #10059: no checker and the parent is not a local open key is unknown.
     why_blind = gitclaim.walk_depends_on_offer_reason(child, doc, open_keys=open_keys)
-    assert why_blind is None
+    assert why_blind == gitclaim.DEPENDS_UNRESOLVED_REASON
     # Offer path with checker: must not offer early.
 
     def issue_open(repo: str, num: str) -> bool:

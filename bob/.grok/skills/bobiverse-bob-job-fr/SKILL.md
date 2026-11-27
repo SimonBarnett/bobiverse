@@ -62,6 +62,12 @@ The live install (<ai root>\bob, --install-root) must stay on main. FR/FIX/MRB s
 Assert-BobiverseJobWorktreePath (FR #8852) / refuse_empty_job_worktree_path / refuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py and Bobiverse-Common.ps1 are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
 
 
+
+
+## Depends-on stamps (FR #9831)
+
+Prefer plain `Depends-on: #N` (no markdown bold/italics). Chair/monitor parsers accept `**Depends-on: #N**` and `**Depends-on:** #N`, but filing should stay plain so stamps stay greppable.
+
 ## Duplicates: find and close them before DONE (t857u)
 
 Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
@@ -182,6 +188,10 @@ gh pr ready <url>   # or just: gh pr ready   (from the worktree; uses the curren
 ```
 
 A draft PR is not reviewable and strands the MRB. Verify `gh pr view <pr> --json isDraft` reports `false` before DONE.
+
+## CI only when closing a digest (FR #10056)
+
+A child FR, a child FIX, and an MRB of a child do not run the package suite and do not start GitHub Actions. Do not run `gh run watch`, `gh pr checks --watch`, or `gh workflow run`. Do not push an empty commit to retrigger CI. Local evidence is the diff and the one new test file. One CI run belongs to the pull request that closes the digest, after its children are done. FR #3948 still applies at MRB: do not poll CI.
 
 ## Targeted in-job tests (FR #8157)
 

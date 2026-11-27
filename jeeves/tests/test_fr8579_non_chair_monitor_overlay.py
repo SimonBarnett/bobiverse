@@ -91,6 +91,12 @@ def test_health_ok_path_no_unbound_overlay(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "_service_state", lambda name: "running")
     monkeypatch.setattr(health, "_service_start_type", lambda name: "Automatic")
     monkeypatch.setattr(health, "_bobcallback_ok", lambda: ("listen:7700", True))
+    # FR #9836/#9864 probes must not hit live network on unit CI (#9968).
+    ok = (True, 200, "200")
+    monkeypatch.setattr(health, "probe_local_report", lambda *a, **k: ok)
+    monkeypatch.setattr(health, "probe_public_report", lambda *a, **k: ok)
+    monkeypatch.setattr(health, "probe_local_digest", lambda *a, **k: ok)
+    monkeypatch.setattr(health, "probe_public_digest", lambda *a, **k: ok)
 
     payload, code = health.check(_args(chair, digest))
     assert code == common.EXIT_OK

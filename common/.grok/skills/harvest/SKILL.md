@@ -46,10 +46,14 @@ depends_on: []
 > 9. **CAST IRON — idle + open FRs/PRs = FAIL (#9644).** Idle seats with dispatchable open FRs/PRs: intervene + FR the
 >    chair path same turn. Ungated idle+work is never report-only.
 > 10. **CAST IRON — multi-FR batch needs Digest parent (#9652).** Filing ≥2 related FRs in one turn/batch requires a
->    `Digest: …` parent with label `fr-digest` first; each child body starts with `Depends-on: #<digest>` (plain grammar).
+>    `Digest: …` parent with label `fr-digest` first; each parked child body starts with `Depends-on: #<digest>` (plain grammar).
 >    Never leave a multi-FR batch free-floating. Digests stay useful when unheld; `hold` parks the whole batch. Same-turn
 >    repair: if ≥2 related FRs already filed without a digest, file the digest immediately and add Depends-on on children.
 >    Last open child close closes the digest (#9552). One issue per issue inside the digest.
+>    **FR #9854 tip-priority (LIST ONLY):** tip-blocking FIX/MRB that must merge while the digest stays held are listed on
+>    the digest under Tip-priority siblings and must **not** carry `Depends-on: #<digest>` until unhold (held-digest gate
+>    #9821 would starve the tip). Never auto-wire Depends-on onto those filings.
+>    read `$r.number` from the reporter object (or `ISSUE_NUMBER=` line); see fr-filing skill for Digest receipt procedure
 
 **Script path (FR #4297):** dirty install worktrees can block Sync ff-only, so flat `scripts\Invoke-BobiverseHarvest.ps1` may lag tip after merges (class of FR #2581 updater tip overlay). Prefer `<ai root>\bob\common\scripts\` for harvest/intake; after a tip merge, Sync `-ComposeOnly` or a product service restart runs `Sync-BobiverseHarvestScriptsFromOrigin` so flat copies catch up without a clean ff.
 
@@ -493,7 +497,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When report returns prefer tip FIX/MRB (#9866); prune NO_IRC+Resume; Restart only if EST=0
 - CCA missing_conclusion must soft-release + forget job + last_infra_error and return infra_retry before quota exhaust; quote reviewed-sha when assign pins it
 - Pack heat System.Collections.Hashtable <path>: find uncaptured helper that returns Hashtable (here Assert-BobiversePlanAgentNotBobWorker); $null= at call site and harden Assert-BobiverseHeatStagePath type checks
-- Keep growing held Digest #9830 with every new Jeeves/IRCD lesson same turn; wire Depends-on #9830; tip-red FIX #9840 is priority for merge gate.
+- Keep growing held Digest #9830 with every new Jeeves/IRCD lesson same turn; parked lessons wire Depends-on #9830. Tip-blocking FIX (class of #9840) is tip-priority LIST ONLY on the digest — no Depends-on while held (FR #9854); held-digest gate would starve the tip merge.
 - Treat assign: refused busy holding FIX as evidence seat is not idle even if /report lags; keep bridging exact idle nicks from fresh report
 - On /report 502 use IRC inbound; if redqueen workers=[] with offerable>0 escalate TipForm #9462 only --- never Start-BobWorker from monitor
 - ircJeeves AppStdout without AppRotateFiles/Bytes/Online grows unbounded; pin rotate on Install and re-assert on Update for Product=jeeves
@@ -502,3 +506,32 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PR body: avoid GitHub closing keywords (close/closes/closed/fix/fixed/resolve) immediately before an unrelated #N; they add closingIssuesReferences.
 - Probe report with curl -m hard timeout; IWR TimeoutSec can hang indefinitely on stuck /report
 - CCA/Copilot dispatch must call the same Depends-on gate as !bored (depends_gate_reason / held_digest_cca_skip_reason); a MONITORING script deny-list is not durable.
+- FIX tip CI: when build-jeeves fails test_digest_includes_copilot (tasks) or test_fr8775 winrm DAG, fold origin/main that already carries the #9928 tip-CI allowlist before re-pushing the assigned tip.
+- Tip red blocks walrus install; blank JEEVES_MONITOR_NICKS must keep default monitoring; WinRM byte-copy of ~17MB exe hits 10MB deserialize limit --- use UNC Copy-Item for the exe
+- gh REST 0 remaining: load C:\passwords\gitPAT.txt into GH_TOKEN without printing; wait for core reset then pr create; GraphQL may still have budget
+- After tip allowlist clears, prefer open MERGEABLE non-draft (#9917/#9417/#9918); never offer CONFLICTING or draft as MRB --- FIX-first or skip; walrus truncate+pos=0 shop-wire for live !bored nicks
+- Harvest-lesson tips that append the same SKILL.md trailing hunk: set merge=union in .gitattributes (git add -f under install exclude /*) and insert before - Harvest-lesson tips are documentation; they do not require CI --- light triage then gh pr merge --admin --squash (fold CONFLICTING same-SKILL appends onto tip first)
+<!-- harvest-tip:intake-in_1ba0900f1c5f4298 -->
+- OpenCode no-jobs twin of Cursor #10019: file product Clear-ACK (#10038) and gh_auth_missing (#10039) plus monitor fingerprints (#10040/#10041) as Depends-on digest children same turn --- do not leave (owe) rows.
+<!-- harvest-tip:intake-in_657cab73ea2f41cb -->
+- When chair GH 429s: compare New-BobGitWebhook subscribed events vs bobcallback.GIT_EVENTS allow-list before adding more polls; dropped workflow_run forces REST. File anti-omnibus FR-W0 accept-events first, then kill poll cadences.
+<!-- harvest-tip:intake-in_789cef4c2f0a4929 -->
+- When folding a CONFLICTING FIX tip, keep a single allowlist entry if both sides added the same field with different comments; push onto the existing PR branch and do not open a second pull request.
+<!-- harvest-tip:intake-in_99a865ea9aed4c13 -->
+- A WinRM Invoke-Command Start-Process is inside the WinRM job and dies when the session ends. A durable extra seat needs a detached start. BOB_WORKER_MAX above 2 is not a bypass and a silent death is not a logged cap refusal.
+<!-- harvest-tip:intake-in_fbe27d53477c4614 -->
+- When a FIX CI log is unavailable because gh is rate-limited, do not push a blind main fold. NACK after recording which step failed and which targeted pytest already passed.
+<!-- harvest-lessons-eof -->
+ with unique tip_anchor (FR #9915)
+- When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
+- Digest batch filing: capture $r = Report-BobiverseIntakeIssue; use $r.number (or ISSUE_NUMBER= host line), never $Matches on prose URLs (FR #9837).
+- When a dispatch/focus filter drops rows from ordered_unaccepted, also skip those rows inside mrb_yields_to_older_fr (and similar raw-unaccepted walks) or tip MRBs stay empty behind lock-blocked tray FRs.
+- When merging monitor Invoke-JeevesMonitorCheck.ps1 ValidateSet conflicts, union token lists so tip checks (shop_wire_assign) and main checks (digest_ci_gate, 9830_harvest, lessons_digest_harvest) all remain.
+- Harvest-lesson tips are documentation; they do not require CI --- light triage then gh pr merge --admin --squash (fold CONFLICTING same-SKILL appends onto tip first)
+<!-- harvest-lessons-eof -->
+
+- Two PowerShell statements pasted as one line bind the second token to the first cmdlet. A Cursor seat on this machine's login is two statements: Remove-Item Env:CURSOR_API_KEY, then bob-worker.exe --mode agent --agent cursor. Do not set CURSOR_API_KEY when the seat must spend the machine login.
+- WINDBI cannot start PowerShell. ACTIVATE only accepts {P|r|d|c|L} plus an entity name. xp_cmdshell CreateProcess error 5 and SQL Agent "process could not be created" for NT SERVICE\SQLAgent$instance are the service account. CREATE CREDENTIAL is server-level; msdb has no dbo.sp_add_credential. Grant the proxy to CmdExec subsystem 3 before the job step.
+- Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
+- The same issue number in two repos is not a twin. Close only the repo the operator named.
+- When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.

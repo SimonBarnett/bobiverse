@@ -42,9 +42,11 @@ if (-not (Test-Path -LiteralPath $PhysicalPath)) {
     New-Item -ItemType Directory -Force -Path $PhysicalPath | Out-Null
 }
 
+# FR #9864: digest rewrites to backend /bob/v1/digest (fast last-good), not a
+# client Redirect to /report, so digest-ok XOR report-hang is observable.
 $rules = @(
     @{ Name = 'BobReportWebhook'; Match = '^bob/v1/report$'; Url = "$Backend/bob/v1/report" },
-    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = '/bob/v1/report'; Redirect = $true },
+    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = "$Backend/bob/v1/digest" },
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
@@ -66,7 +68,7 @@ $rewriteXml = @"
         </rule>
         <rule name="BobDigestWebhook" stopProcessing="true">
           <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
+          <action type="Rewrite" url="$Backend/bob/v1/digest" />
         </rule>
         <rule name="BobGitWebhook" stopProcessing="true">
           <match url="^bob/v1/git$" ignoreCase="true" />
@@ -323,10 +325,11 @@ function Get-BobOwnedRuleXml {
 "@
         }
         'BobDigestWebhook' {
+            # FR #9864: rewrite to backend digest (fast last-good), not Redirect to report.
             return @"
         <rule name="BobDigestWebhook" stopProcessing="true">
           <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Redirect" url="/bob/v1/report" redirectType="Permanent" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/digest" />
         </rule>
 "@
         }

@@ -3,7 +3,7 @@
 
 EXIT 1 when an offered or accepted child still Depends-on a queue row that
 carries both labels ``fr-digest`` and ``hold`` (chair missed BOB-G1). Distinct
-from the plain depends_on OPEN check. No GitHub token: a depend that is not in
+from the plain depends_on OPEN check. FR #9831: bold/italic Depends-on stamps parse. No GitHub token: a depend that is not in
 the local queue is unknown and does not alarm.
 
 Soft-ok (exit 0):
@@ -30,7 +30,15 @@ from _common import (
     run_check,
 )
 
-_DEPENDS_LINE = re.compile(r"(?im)^\s*Depends-on:\s*(.+)$")
+_DEPENDS_LINE = re.compile(
+    r"(?im)^[^\S\n]*"
+    r"(?:\*{0,2}|`{0,2})"
+    r"Depends-on"
+    r"(?:\*{0,2}|`{0,2})"
+    r"[^\S\n]*:"
+    r"(?:\*{0,2}|`{0,2})?"
+    r"[^\S\n]*(.*)$"
+)
 _REF = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)|#(\d+)")
 _NONE = re.compile(r"^\(?none\)?$|^-$", re.I)
 
@@ -86,8 +94,8 @@ def _key(repo: str, number: int | None) -> str:
 def parse_depends(body: str, default_repo: str) -> list[tuple[str, int]]:
     refs: list[tuple[str, int]] = []
     for line in _DEPENDS_LINE.findall(body or ""):
-        text = line.strip()
-        if _NONE.match(text):
+        text = line.strip().strip("`*")
+        if not text or _NONE.match(text):
             continue
         for match in _REF.finditer(text):
             if match.group(1):

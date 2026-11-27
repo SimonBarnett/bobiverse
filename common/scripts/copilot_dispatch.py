@@ -312,8 +312,11 @@ def observe_quota(
         doc["attempted_epoch"] = now_f
         doc.pop("last_error", None)
         _write_observation(home, doc)
-        # FR #9733: sticky exhausted_until must not outlive a fresher ok observation.
-        if doc.get("state") == "ok" or bool(doc.get("unlimited")):
+        # FR #9733: sticky exhaust must not outlive a fresher observation that
+        # shows real remaining>0. FR #9986: premium unlimited / percent=100 with
+        # remaining=0 is a phantom — do NOT clear coding-agent tasks_exhausted.
+        rem_ok = _num(doc.get("remaining"))
+        if rem_ok is not None and rem_ok > 0:
             _clear_sticky_allowance_exhaust_on_ok(home)
         return doc
 
@@ -453,21 +456,32 @@ def _reset_passed(doc: dict) -> bool:
 
 
 def allowance_from_pool(doc: dict) -> bool:
+    """Whether CCA/seat dispatch may spend Copilot fuel.
+
+    FR #9986 (phantom tokens): GitHub business ``premium_interactions`` often
+    reports ``unlimited=true``, ``remaining=0``, ``percent_remaining=100`` while
+    coding-agent quota is empty. Dispatch must not treat that as fuel.
+    """
     if not isinstance(doc, dict):
         return False
     if doc.get("tasks_exhausted") and not _reset_passed(doc):
         return False
-    if doc.get("unlimited"):
-        return True
     if str(doc.get("state") or "") == "unknown":
         return False  # FR #5174: fail closed (do not steal IRC jobs)
     rem = _num(doc.get("remaining"))
-    pct = _num(doc.get("percent_remaining"))
+    # Known-zero remaining is never dispatch fuel (even with unlimited/percent phantoms).
+    if rem is not None and rem <= 0:
+        return False
     if rem is not None and rem > 0:
         return True
-    if pct is not None and pct > 0:
+    # True unlimited plans omit a finite remaining; allow those.
+    if doc.get("unlimited") and rem is None:
         return True
-    if rem == 0 or str(doc.get("state") or "") == "exhausted":
+    pct = _num(doc.get("percent_remaining"))
+    # Percent alone only when remaining is unknown (not when remaining==0).
+    if rem is None and pct is not None and pct > 0:
+        return True
+    if str(doc.get("state") or "") == "exhausted":
         return False
     if doc.get("exhausted") and rem is None:
         return False
@@ -1132,11 +1146,21 @@ def record_api_result(
             set_allowance(home, exhausted=False)
 
 
-def weights_copilot_model(home: Path | str | None) -> str:
-    """Weights Copilot agent ``model`` from ``models-catalog.json`` (FR #9749).
+def copilot_agent_for_kind(kind: str | None) -> str:
+    """FR #9996: MRB and FIX use Copilot-MRB; FR uses Copilot-PR."""
+    k = str(kind or "").strip().upper()
+    if k in ("MRB", "FIX"):
+        return "Copilot-MRB"
+    if k == "FR":
+        return "Copilot-PR"
+    return "Copilot"
 
-    Empty string when home missing, catalog unavailable, or Copilot row blank
-    (omit key on task POST → GitHub Auto).
+
+def weights_copilot_model(home: Path | str | None, kind: str | None = None) -> str:
+    """Weights Copilot agent ``model`` from ``models-catalog.json`` (FR #9749 / #9996).
+
+    Kind selects Copilot-MRB or Copilot-PR. Empty string when home missing,
+    catalog unavailable, or the row model is blank (omit key on task POST).
     """
     if home is None:
         return ""
@@ -1148,24 +1172,41 @@ def weights_copilot_model(home: Path | str | None) -> str:
         rows = mc.load_catalog_file(home)
     except Exception:  # noqa: BLE001
         return ""
+    want = copilot_agent_for_kind(kind) if kind else "Copilot"
+    seen = False
+    model = ""
+    legacy = ""
+    pr_model = ""
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if str(row.get("agent") or "").strip() != "Copilot":
-            continue
-        return str(row.get("model") or "").strip()
-    return ""
+        agent = str(row.get("agent") or "").strip()
+        text = str(row.get("model") or "").strip()
+        if agent == want:
+            seen = True
+            model = text
+        elif agent == "Copilot":
+            legacy = text
+        elif agent == "Copilot-PR":
+            pr_model = text
+    # A present kind row wins, including a blank model. Untyped reads use the
+    # Copilot row, then Copilot-PR (FR #9995) when that row was renamed.
+    if seen:
+        return model
+    if not kind:
+        return legacy or pr_model
+    return legacy
 
 
-def resolve_copilot_model(*, home: Path | None = None) -> str:
-    """CCA ``model`` for ``agents/.../tasks`` (FR #9738 / #9749).
+def resolve_copilot_model(*, home: Path | None = None, kind: str | None = None) -> str:
+    """CCA ``model`` for ``agents/.../tasks`` (FR #9738 / #9749 / #9996).
 
-    When ``home`` is set, Weights Copilot row is the locked source (FR #9749):
+    When ``home`` is set, the kind row is the locked source:
     non-empty → include; empty → omit (do not fall through to env/allowance).
-    Without ``home``, env ``BOB_COPILOT_MODEL`` then allowance ``model``.
+    Without ``home``, env ``BOB_COPILOT_MODEL``.
     """
     if home is not None:
-        return weights_copilot_model(home)
+        return weights_copilot_model(home, kind)
     raw = (os.environ.get("BOB_COPILOT_MODEL") or "").strip()
     if raw:
         return raw
@@ -1230,7 +1271,7 @@ def build_task_body(
             f"Closes {repo}{ident if ident.startswith('#') else '#' + ident}."
         )
     body: dict[str, str] = {"prompt": "\n".join(prompt_lines)}
-    model_s = resolve_copilot_model(home=home) if model is None else str(model or "").strip()
+    model_s = resolve_copilot_model(home=home, kind=task) if model is None else str(model or "").strip()
     if model_s:
         body["model"] = model_s
     br = resolve_copilot_base_ref(home=home) if base_ref is None else str(base_ref or "").strip()
@@ -1238,6 +1279,10 @@ def build_task_body(
         body["base_ref"] = br
     return body
 
+
+# FR #9846: Haiku CCA refill fail-loop / tip-allowlist bypass helpers live in
+# `copilot_haiku_refill` (watch_copilot_haiku_refill.ps1 calls them). Do not
+# reintroduce a raw SKIP_FAILED_LOOP that zeros every tip-allowlist FR.
 
 def should_dispatch(
     row: dict, *, allowance: bool, now: float | None = None, home: Path | None = None,
@@ -1272,6 +1317,12 @@ def should_dispatch(
         title=title, body=str(row.get("body") or ""), labels=labels
     ):
         return False
+    # FR #9838 / #9821: same Depends-on gate as chair offer — children of a held
+    # fr-digest (and other hard Depends-on blocks) never CCA / Copilot dispatch.
+    if home is not None and task == "FR":
+        why = held_digest_cca_skip_reason(home, row)
+        if why:
+            return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
     row_eff = dict(row) if isinstance(row, dict) else {}
     with contextlib.suppress(Exception):
@@ -1286,6 +1337,25 @@ def should_dispatch(
         if gitclaim.review_blocked_for_author(row, COPILOT_NICK, live={COPILOT_NICK}):
             return False
     return True
+
+
+def held_digest_cca_skip_reason(home: Path, row: dict) -> str | None:
+    """FR #9838: share ``gitclaim.depends_gate_reason`` with chair #9821.
+
+    Returns the gate reason when CCA must skip (e.g. ``depends-held``), else None.
+    """
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("task") or "").upper() != "FR":
+        return None
+    try:
+        doc = gitclaim.load_queue(home)
+    except Exception:
+        doc = {}
+    try:
+        return gitclaim.depends_gate_reason(row, doc)
+    except Exception:
+        return None
 
 
 def is_high_priority(home: Path, row: dict) -> bool:
@@ -1496,8 +1566,8 @@ def dispatch_row(
     if st not in ("ok", "duplicate"):
         return {"status": "accept-failed", "accept": st}
     doc = _load_jobs(home)
-    # FR #9749: persist Weights Copilot model on the job for digest/tray (#9748).
-    model = resolve_copilot_model(home=home)
+    # FR #9996: persist the kind row (MRB/FIX → Copilot-MRB, FR → Copilot-PR).
+    model = resolve_copilot_model(home=home, kind=task)
     job_row = {
         "repo": repo,
         "task": task,

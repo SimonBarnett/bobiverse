@@ -1520,6 +1520,8 @@ class Client:
         self._oper_done = threading.Event()
         self._chan_op: dict[str, bool] = {}
         self._op_try_at: dict[str, float] = {}
+        self._op_fail_count: dict[str, int] = {}  # FR #9872 backoff
+        self._cs_fail_count: int = 0  # FR #9872 chanserv-sync backoff
         self._chair_status_at = 0.0
         self._chair_status_last = ""
         self._digest_asm = bobreport.DigestWhisperAssembler()
@@ -1948,6 +1950,8 @@ class Client:
         self._oper_done.clear()
         self._chan_op = {}
         self._op_try_at = {}
+        self._op_fail_count = {}
+        self._cs_fail_count = 0
         self._cs_list_status = "unknown"
         self._cs_collector = None
         eng = getattr(self, "_privs_engine", None)
@@ -2015,6 +2019,7 @@ class Client:
                     else:
                         # mode drift: Jeeves lost ops - retry immediately (not after the 45 s back-off)
                         self._op_try_at.pop(chan.lower(), None)
+                        self._op_fail_count.pop(chan.lower(), None)
                         info(f"WARN chair -{mode} in {chan}: Jeeves lost ops, re-applying")
         elif cmd in ("PART", "KICK"):
             pass
@@ -2139,29 +2144,38 @@ class Client:
             self._expire_pending_names_assign()
 
     def _ensure_chan_ops(self) -> None:
-        """Chair must hold +o in #bobiverse and every machine channel (SAMODE as oper; else ChanServ OP)."""
+        """Chair must hold +o in #bobiverse and every machine channel (SAMODE as oper; else ChanServ OP).
+
+        FR #9872: exponential backoff between retries; dual SAMODE+ChanServ after the
+        first miss so a stuck SAMODE does not mute forever. Command auth stays
+        principal-based (chair_commands.commands_require_chan_op is False).
+        """
         if not getattr(self.args, "chair", False) or not self.joined.is_set():
             return
         now = time.time()
         for ch in list(self.channels):
             key = ch.lower()
             if self._chan_op.get(key):
+                self._op_fail_count.pop(key, None)
                 continue
-            if now - self._op_try_at.get(key, 0.0) < 45.0:
+            attempt = int(self._op_fail_count.get(key, 0))
+            backoff = chair_oper.op_retry_backoff_s(attempt)
+            if now - self._op_try_at.get(key, 0.0) < backoff:
                 continue
             self._op_try_at[key] = now
+            actions = chair_oper.plan_chan_op_recover(
+                oper_ok=self._oper_state == "ok",
+                channel=ch,
+                nick=self.live_nick,
+                attempt=attempt,
+            )
             try:
-                if self._oper_state == "ok":
-                    self.send(f"SAMODE {ch} +o {self.live_nick}")
-                    info(f"INFO chair not +o in {ch}: SAMODE {ch} +o {self.live_nick} (oper samode)")
-                else:
-                    self.send(f"PRIVMSG ChanServ :OP {ch}")
-                    info(
-                        f"WARN chair not +o in {ch} and not oper (oper={self._oper_state}); "
-                        "asked ChanServ OP (works only with founder/AMODE)"
-                    )
+                for act in actions:
+                    self.send(act["line"])
+                    info(act["log"])
             except OSError:
                 return
+            self._op_fail_count[key] = attempt + 1
         self._chair_log_status()
 
     def _chair_status_line(self) -> str:
@@ -2209,7 +2223,11 @@ class Client:
         now = time.time()
         if self._cs_collector is not None:
             if now - self._cs_sent_at > 30.0:  # no End marker: outage / lost reply
-                info("INFO chanserv-sync timeout; keeping last good roster")
+                self._cs_fail_count = int(getattr(self, "_cs_fail_count", 0)) + 1
+                info(
+                    f"INFO chanserv-sync timeout; keeping last good roster "
+                    f"(fail_count={self._cs_fail_count}; FR #9872 backoff)"
+                )
                 self._cs_collector = None
                 self._cs_fail_at = now
             return
@@ -2217,8 +2235,10 @@ class Client:
         due = self._cs_force or registered_machines.refresh_due(digest, self._cs_ttl_s(), now)
         if not due:
             return
-        if not self._cs_force and now - self._cs_fail_at < 30.0:
-            return  # back off after a failed attempt
+        # FR #9872: escalate backoff after timeout / empty result; never stop retrying.
+        cs_backoff = chair_oper.cs_sync_retry_backoff_s(int(getattr(self, "_cs_fail_count", 0)))
+        if not self._cs_force and now - self._cs_fail_at < cs_backoff:
+            return
         self._cs_force = False
         self._cs_collector = registered_machines.ChanServListCollector()
         self._cs_sent_at = now
@@ -2410,10 +2430,15 @@ class Client:
         digest = self._digest_home()
         res = registered_machines.sync_from_chanserv(digest, channels)
         if res is None:
-            info("INFO chanserv-sync empty/unusable result; keeping last roster")
+            self._cs_fail_count = int(getattr(self, "_cs_fail_count", 0)) + 1
+            info(
+                f"INFO chanserv-sync empty/unusable result; keeping last roster "
+                f"(fail_count={self._cs_fail_count})"
+            )
             self._cs_fail_at = time.time()
             return
         added, removed = res
+        self._cs_fail_count = 0
         info(f"INFO chanserv-sync ok machines={len(registered_machines.load_registered(digest))} "
              f"+{sorted(added)} -{sorted(removed)}")
         desired = registered_machines.load_registered_channels(digest)
@@ -4996,19 +5021,28 @@ class Client:
         return "wait"
 
     def _assign_row_named(self, wnick, repo, task, ident, *, names_refresh=None):
+        import github_api_budget as gab
+
+        paused = not gab.GithubApiBudget(self.home).allow("assign")
         return gitclaim.assign_row(
             self.home,
             wnick,
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(
+            pr_exists=None
+            if paused
+            else gitclaim.github_pr_exists_checker(
                 home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
             ),
-            is_pull=gitclaim.github_is_pull_checker(
+            is_pull=None
+            if paused
+            else gitclaim.github_is_pull_checker(
                 home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
             ),
-            issue_open=gitclaim.github_issue_open_checker(
+            issue_open=None
+            if paused
+            else gitclaim.github_issue_open_checker(
                 home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
             ),
             names_refresh=names_refresh,
@@ -5262,6 +5296,21 @@ class Client:
         if not self._joined_channel(target):
             return False
         now = time.time()
+        # FR #9882 CAST IRON: worker ready is a primary offer cue (same ranking as
+        # !bored). !bored stays as fallback when ready/DONE was missed. DONE already
+        # pushes via offer_after_done (FR #3893 / #9460).
+        if chair and gitclaim.is_worker_ready_line(body):
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
+            try:
+                self._workers().on_bored(src, target)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN workers ready error {type(exc).__name__}")
+            info(f"INFO git-claim worker-ready offer nick={src} (FR #9882)")
+            self._git_bored(src, target, now, chair=True)
+            return True
         if gitclaim.is_bored_command(body):
             try:
                 gitclaim.record_last_bored(self.home, src, now)

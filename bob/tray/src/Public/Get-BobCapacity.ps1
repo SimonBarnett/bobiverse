@@ -142,6 +142,7 @@ function Get-BobGrokCatalogIds {
         catch { }
     }
     if ($ids.Count -eq 0) {
+        [void]$ids.Add('grok-4.7')
         [void]$ids.Add('grok-4.6')
         [void]$ids.Add('grok-4.5')
     }
@@ -169,8 +170,10 @@ function Resolve-BobGrokCliModel {
             $fb = [string]$cfg.models.buildGrokFallback
         }
         if ($fb -and $ids.Contains($fb)) { return $fb }
+        if ($ids.Contains('grok-4.7')) { return 'grok-4.7' }
         if ($ids.Contains('grok-4.5')) { return 'grok-4.5' }
-        if ($ids.Contains('grok-4.6')) { return 'grok-4.6' }
+        if ($ids.Contains('grok-4.7')) { return 'grok-4.7' }
+    if ($ids.Contains('grok-4.6')) { return 'grok-4.6' }
         if ($ids.Count -gt 0) { return [string]$ids[$ids.Count - 1] }
     }
     if ($ids.Contains('grok-4.6')) { return 'grok-4.6' }

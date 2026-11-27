@@ -29,9 +29,20 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
 Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe** on walrus from an operator host (typically redqueen):
 
 ```powershell
+# ARM #9847 tip→digest→walrus sequence (required while ARM active; DryRun of this check is OK)
+.\scripts\Invoke-JeevesMonitorCheck.ps1 -Check tip_merge_gate
+# Live install needs verdict OK_FOR_RECEIPT (source=live). Attach JSON to the receipt.
+# GateIssues for this ARM: include SimonBarnett/bobiverse#9830 and #9148
+#   .\scripts\Install-JeevesWalrusWinRm.ps1 -GateIssues 'SimonBarnett/bobiverse#9830,SimonBarnett/bobiverse#9148' ...
+
 # Gate readiness (monitor cycle; does not open WinRM)
 .\scripts\Invoke-JeevesMonitorCheck.ps1 -Check walrus_jeeves_install_ready
 # or: .\scripts\Test-JeevesMonitorWalrusJeevesInstallReady.ps1
+
+# FR #9877: digest-level install/receipt also needs children CLOSED (children-only;
+# complementary to tip_merge_gate #9847 when that ARM is active).
+.\scripts\Invoke-JeevesMonitorCheck.ps1 -Check digest_ci_gate
+# or: .\scripts\Test-JeevesMonitorDigestCiGate.ps1
 
 # Plan only (default when -SiYes omitted). Resolves green build-jeeves or -ArtifactDir.
 .\scripts\Install-JeevesWalrusWinRm.ps1
@@ -43,6 +54,8 @@ Prefer the token-free script over hand-rolled WinRM when installing **jeeves.exe
 .\scripts\Install-JeevesWalrusWinRm.ps1 -SiYes
 .\scripts\Install-JeevesWalrusWinRm.ps1 -StoreCredential   # one-time CredMan write
 ```
+
+**ARM #9847:** while `docs/ARM_JEEVES_PRS_THEN_9830_9148_WALRUS.md` is active, live `-SiYes` / install receipt also requires fresh live `tip_merge_gate` `OK_FOR_RECEIPT`. DryRun of the install script remains allowed and is not acceptance.
 
 **What the script does (live):** CredMan credential -> WinRM session -> refuse if `build-locks.json` has active builds -> backup previous exe/sha/MANIFEST/provenance under `C:\ai\jeeves\_hotpatch_<ts>-jeeves-<sha8>\` -> write `ROLLBACK.ps1` (remote bak path embedded; staged locally then copied) -> stage `new\` -> stop **ircJeeves** only -> swap files under `C:\ai\jeeves\jeeves\` -> hash-check -> start -> probe `http://127.0.0.1:7700/health`. One JSON object on stdout. Never prints secrets.
 
@@ -149,6 +162,7 @@ the previous build is confirmed healthy again by the same post-check.
 
 - No Si yes for a walrus install: stop at the drafted ask (or omit `-SiYes` so the script stays DryRun).
 - Any step fails before step 5: stop, nothing changed. Any post-check fails: roll back, then report.
+- **CAST IRON FR #9877:** while an fr-digest batch still has open recorded children (`digest_ci_gate` → `BLOCK_DIGEST_CI`), do not treat digest covering CI as ready-to-install and do not issue a batch install receipt for that digest. Child FR merges/CI are fine. Prefer live `ALLOW_DIGEST_CI` on the receipt.
 
 ## Harvested lessons
 

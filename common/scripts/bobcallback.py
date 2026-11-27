@@ -2,10 +2,10 @@
 """Digest callback: report/git/intake/jira/hours/models; public GET digest (#174, #149).
 
 Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /jeeves**
-login HTML (FR #6815). Local bobcallback answers `/bob/v1/digest` and `/digest` with
-**301** `Location: /bob/v1/report` (same webhook; no duplicate JSON handler). Those
-aliases are not published through the bob.ntsa.uk IIS rewrite today
-(GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
+login HTML (FR #6815). FR #9864: `/bob/v1/digest` and `/digest` serve a **fast last-good /
+lightweight** JSON alias (HTTP 200) so digest can stay up while full report enrichment
+soft-degrades; IIS rewrites digest to the backend (not a client 301 to report).
+GET **/bob/v1/models**
 returns fleet agent Weights rows (BOB-01 / FR #8707 / #8820) plus a ``clis`` catalogue
 whose model/context/effort options come from digest-home ``models-valid-combos.json``
 (missing/malformed combo file yields empty model maps, not an error). POST ``/bob/v1/models/refresh`` rebuilds clis from CLI listings (FR #8820). FR #9053 retired ``POST /bob/v1/models/validate``: the route returns JSON 404
@@ -80,19 +80,23 @@ DEFAULT_LOW_MEM_MAX_DEFER = 4
 # intake for these was the #9297/#9298 storm after FR #7618 / #9236 self-probe tests.
 UNIT_TEST_LISTENER_PORTS = frozenset({9})
 ALLOW_TEST_INTAKE_ENV = "BOB_CALLBACK_ALLOW_TEST_INTAKE"
-# Public readers (IIS / browsers / UAT): use reportUrl. /bob/v1/digest is the same webhook and 301s here.
+# Public readers (IIS / browsers / UAT): prefer reportUrl. FR #9864: /bob/v1/digest is a
+# fast last-good alias (not a 301) so digest-ok XOR report-hang is observable.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
     "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
-    "front-door GET is /bob/v1/report|/jeeves (/bob/v1/digest 301s to /bob/v1/report); "
+    "front-door GET is /bob/v1/report|/bob/v1/digest|/jeeves "
+    "(digest=fast last-good; report=full soft-degrade FR #9864); "
     "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; POST /bob/v1/models/refresh; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
-# GET/HEAD/POST on these paths 301 to REPORT_PATH (same webhook; no duplicate handler).
-DIGEST_REDIRECT_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS})
+# Legacy empty set kept for callers; digest no longer 301s (FR #9864).
+DIGEST_REDIRECT_PATHS = frozenset()
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({REPORT_PATH})
+# FR #9864: fast alias paths (last-good / lightweight; no enrichment hang).
+DIGEST_ALIAS_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS})
 POST_ROUTES = frozenset(
     {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_REFRESH_PATH}
 )
@@ -120,13 +124,14 @@ GIT_EVENTS = frozenset(
         "issue_comment",
         "check_run",
         "check_suite",
+        "workflow_run",
     }
 )
-# Subscribed but not applied (CI state comes from check_run + resync).
-GIT_IGNORED_EVENTS = frozenset({"workflow_run"})
+# FR #10007: workflow_run is applied (was ignored). Keep the set for unknown events.
+GIT_IGNORED_EVENTS = frozenset()
 # FR #9104: under local intake rate limit, ack noisy CI storms with 204 (no GitHub retry)
 # instead of 429. push / issues / PR keep 429 so GitHub backs off those.
-GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite"})
+GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite", "workflow_run"})
 GIT_ERROR_REASONS = frozenset(
     {
         "missing signature",
@@ -280,9 +285,40 @@ def _announce(home: Path, text: str) -> bool:
 
 
 def handle_digest_get(home: Path, briefer_nick: str = "") -> tuple[int, bytes]:
-    """Public readable digest (#174). No secret; nothing in digest is secure."""
+    """Public readable report (#174 / FR #9864). Soft-degrade within build budget."""
     briefer = (briefer_nick or "").strip() or "digest"
-    doc = bobreport.build_digest_object(home, briefer)
+    budget = bobreport.report_build_budget_s()
+    try:
+        doc = bobreport.build_digest_object(home, briefer, budget_s=budget)
+    except Exception as exc:  # noqa: BLE001 - never hang the listener
+        print(f"WARN report build failed err={type(exc).__name__}", flush=True)
+        cached = bobreport.last_good_report_doc()
+        if isinstance(cached, dict):
+            doc = dict(cached)
+            doc["degraded"] = True
+            parts = list(doc.get("degraded_parts") or [])
+            if "build" not in parts:
+                parts.append("build")
+            doc["degraded_parts"] = parts
+        else:
+            doc = {
+                "v": 1,
+                "ts": "",
+                "briefer": briefer,
+                "machines": {},
+                "degraded": True,
+                "degraded_parts": ["build"],
+            }
+    body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    if not doc.get("degraded"):
+        bobreport.remember_last_good_report(doc, body)
+    return 200, body
+
+
+def handle_digest_alias_get(home: Path, briefer_nick: str = "") -> tuple[int, bytes]:
+    """FR #9864: fast /bob/v1/digest --- last-good / lightweight, no enrichment hang."""
+    briefer = (briefer_nick or "").strip() or "digest"
+    doc = bobreport.build_digest_alias_object(home, briefer)
     body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
     return 200, body
 
@@ -1027,6 +1063,13 @@ def handle_request(
     stash_response_headers([])
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    # FR #10080: public Bob skill MCP. Does not touch /bob/v1/*.
+    if route == "/mcp":
+        import bob_mcp
+
+        code, payload = bob_mcp.handle_mcp(verb, body)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
     # FR #6815 / #7274: public /jeeves* on bob.ntsa.uk (IIS rewrite to this process).
     if route == JEEVES_LOGIN_PATH or route.startswith(JEEVES_LOGIN_PATH + "/"):
         import jeeves_settings_http as _jhttp
@@ -1078,11 +1121,16 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
-    # /bob/v1/digest and /digest are the same webhook as /bob/v1/report — permanent redirect.
+    # FR #9864: /bob/v1/digest and /digest are a fast last-good alias (not a 301).
     if route in DIGEST_REDIRECT_PATHS:
         stash_response_headers([("Location", REPORT_PATH)])
         return 301, b""
-    # GET/HEAD fleet digest JSON (canonical path).
+    if verb in ("GET", "HEAD") and route in DIGEST_ALIAS_GET_PATHS:
+        code, payload = handle_digest_alias_get(home, briefer_nick)
+        if verb == "HEAD":
+            return code, b""
+        return code, payload
+    # GET/HEAD fleet digest JSON (canonical /bob/v1/report path; soft-degrade budget).
     if verb in ("GET", "HEAD") and route in DIGEST_GET_PATHS:
         code, payload = handle_digest_get(home, briefer_nick)
         if verb == "HEAD":

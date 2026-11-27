@@ -54,6 +54,9 @@ CONFLICT_KEY = "conflict_blocked"
 CONFLICT_FIX_KEY = "conflict_fix"
 # FR #4718: FIX for an open PR whose newest MRB board is FAIL at the live head.
 MRB_FAIL_FIX_KEY = "mrb_fail_fix"
+# FR #9924: FIX when required CI goes red while an accepted/offered MRB hold is live
+# (same queue outcome as DONE MRB FAIL / FR #4718, without waiting for a FAIL board).
+CI_RED_MRB_FIX_KEY = "ci_red_mrb_fix"
 # FR #4800: harvest light-triage dispositions (FAIL-supersede / CLOSED / MOVED).
 # These tips close unmerged and must DONE PASS; chair must not enqueue FIX.
 HARVEST_FAIL_DISPOSITION_RE = re.compile(
@@ -90,6 +93,12 @@ _SHARED_SUITE_MARKERS = ("test-and-synth", "test_and_synth", "testandsynth")
 # Exact name ``lock`` or any assert-lock marker — seats must never forge that label.
 _HUMAN_GATED_LOCK_MARKERS = ("assert-lock", "assert_lock")
 HUMAN_GATED_LOCK_REASON = "needs-human: add simon-approved-rule-change"
+# FR #9881: soft-only CI names. Alone they must not uniquely BLOCK tip proceed /
+# FIX-CI when build-jeeves (and other hard required checks) are green.
+_SOFT_ALLOW_CI_MARKERS = ("pytest-ascii-bom", "ascii-bom")
+
+# FR #9881 / #9924: non-blocking CI names — alone they must not reset MRB→FIX.
+_SOFT_ALLOW_CI_MARKERS = ("pytest-ascii-bom", "ascii-bom")
 
 
 def _utc() -> str:
@@ -138,6 +147,77 @@ def _detail_names_human_gated_lock(detail: str) -> bool:
     if name == "lock":
         return True
     return any(m.replace("_", "-") in compact for m in _HUMAN_GATED_LOCK_MARKERS)
+
+
+
+def _detail_names_soft_allow(detail: str) -> bool:
+    """True when detail names a soft-allowed check (FR #9881 / #9924)."""
+    compact = _normalize_check_detail(detail).replace("_", "-").replace("|", ":")
+    if not compact:
+        return False
+    name = compact
+    for prefix in ("completed/", "failure:", "error:"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+    name = name.split(":", 1)[-1] if ":" in name else name
+    if name in _SOFT_ALLOW_CI_MARKERS:
+        return True
+    return any(m.replace("_", "-") in compact for m in _SOFT_ALLOW_CI_MARKERS)
+
+
+def ci_failure_triggers_mrb_reset(check_state: str | None) -> bool:
+    """FR #9924: True when required CI red should reset a live MRB hold to FIX.
+
+    Soft-only failures (``failure:pytest-ascii-bom`` / #9881) and human-gated
+    ``failure:lock`` (#4833) do not trigger the reset.
+    """
+    raw = str(check_state or "").strip().lower()
+    if not raw:
+        return False
+    state = raw.replace(" ", "")
+    if state.startswith("completed/"):
+        state = state.split("/", 1)[-1]
+    head = state.split(":", 1)[0] if state else ""
+    if head not in (
+        "failure",
+        "error",
+        "action_required",
+        "timed_out",
+        "cancelled",
+        "canceled",
+    ):
+        return False
+    if ":" in state:
+        tag = state.split(":", 1)[1]
+        if tag in _SOFT_ALLOW_CI_MARKERS or tag in ("soft", "lock"):
+            return False
+        if any(m.replace("_", "-") in tag for m in _SOFT_ALLOW_CI_MARKERS):
+            return False
+    return True
+
+
+def tip_may_proceed_soft_ascii_bom(
+    checks: str,
+    *,
+    build_jeeves_green: bool = True,
+) -> bool:
+    """FR #9881: tip may proceed when only pytest-ascii-bom is red.
+
+    Soft-only rollup ``failure:pytest-ascii-bom`` means every hard failure was
+    the ascii-bom check (build-jeeves and other required suites were not among
+    the hard fails). When ``build_jeeves_green`` is False, refuse. Prefer (A)
+    still hardens Write-BobiverseUtf8NoBom / Write-BobiversePs1AsciiNoBom so the
+    required check goes green; soft proceed must not uniquely park FIX-CI.
+    """
+    if not build_jeeves_green:
+        return False
+    state = _normalize_check_detail(checks)
+    if not state:
+        return False
+    head = state.split(":", 1)[0]
+    if head not in ("failure", "error"):
+        return False
+    return _detail_names_soft_allow(state)
 
 
 def shared_suite_check_name(detail: str = "") -> str:
@@ -217,6 +297,8 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
       main-side FIX instead (FR #4857).
     * ``human-gated-lock`` — only red check is ``lock`` / ``assert-lock``; only
       SimonBarnett can add ``simon-approved-rule-change`` (seats must not forge it).
+    * ``soft-allow-ascii-bom`` — only red check is ``pytest-ascii-bom`` (FR #9881);
+      tip may proceed when build-jeeves is green; Prefer (A) clears the check.
     """
     state = _normalize_check_detail(detail)
     if not state:
@@ -229,6 +311,9 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
     # FR #4833: human-gated assert-lock (before shared-suite — lock is never seat FIX).
     if _detail_names_human_gated_lock(state):
         return "human-gated-lock"
+    # FR #9881: soft-only ascii-bom must not uniquely enqueue tip FIX-CI.
+    if tip_may_proceed_soft_ascii_bom(state, build_jeeves_green=True):
+        return "soft-allow-ascii-bom"
     # Secondary: named shared suite + main also red.
     if main_red and _detail_names_shared_suite(state):
         return "main-also-red-shared-suite"
@@ -278,6 +363,8 @@ def rollup_check_runs(
     ``failure:test-and-synth`` so enqueue can skip while main is also red.
     FR #4833: when the only hard failure is ``lock`` / ``assert-lock``, annotate
     ``failure:lock`` so enqueue parks needs-human instead of FIX-CI.
+    FR #9881: when the only hard failure is ``pytest-ascii-bom``, annotate
+    ``failure:pytest-ascii-bom`` so tip may proceed (soft) when build-jeeves green.
     FR #5865: when ``ignore_coderabbit`` is True (gate cleared / off / absent),
     CodeRabbit checks are non-blocking so a pending/neutral CR does not leave
     the PR UNSTABLE for merge-on-green.
@@ -321,6 +408,8 @@ def rollup_check_runs(
         names = [n for n in hard if n and n not in _FAIL_CONCLUSIONS]
         if names and all(_detail_names_human_gated_lock(n) for n in names):
             return "failure:lock"
+        if names and all(_detail_names_soft_allow(n) for n in names):
+            return "failure:pytest-ascii-bom"
         if names and all(_detail_names_shared_suite(n) for n in names):
             return "failure:test-and-synth"
         return "failure"
@@ -525,6 +614,11 @@ def decide_merge_on_green(
     # never park→FIX-CI. Seats cannot clear this check.
     if fix_ci_skip_reason(state) == "human-gated-lock":
         return "skip_hold"
+    # FR #9881: soft-only pytest-ascii-bom with build-jeeves green → tip proceed.
+    # Do not requeue_ci / uniquely BLOCK; Prefer (A) BOM writers clear the check.
+    # Keep waiting on the soft rollup so auto-merge stays armed without FIX park.
+    if tip_may_proceed_soft_ascii_bom(state, build_jeeves_green=True):
+        return "wait"
     # FR #4630: annotated rollups (failure:test-and-synth) still requeue_ci;
     # enqueue_fix_ci may then skip.
     if head in ("failure", "error", "action_required", "timed_out", "cancelled", "canceled"):
@@ -1713,6 +1807,168 @@ def enqueue_mrb_fail_fix(
     return "skipped"
 
 
+
+def enqueue_ci_red_mrb_fix(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    url: str = "",
+    nick: str = "",
+    detail: str = "",
+    pr_state: dict[str, Any] | None = None,
+) -> str:
+    """Queue one FIX when required CI goes red under a live MRB hold (FR #9924).
+
+    Same SHA returns ``duplicate``. Soft-only failures return ``skipped``.
+    """
+    if not ci_failure_triggers_mrb_reset(detail or "failure"):
+        return "skipped"
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    tip = _norm_sha(sha)
+    if not repo_c or not num or not tip:
+        return "skipped"
+    state = pr_state
+    if state is None:
+        try:
+            state = fetch_pr_state(repo_c, num)
+        except Exception:  # noqa: BLE001
+            state = None
+    if pr_state_merged_or_closed(state if isinstance(state, dict) else None):
+        return "skipped"
+    sig = f"ci-red-mrb|{repo_c}|{num}|{tip}"
+    doc = load_ledger(home)
+    offered = doc.get(CI_RED_MRB_FIX_KEY)
+    if not isinstance(offered, dict):
+        offered = {}
+        doc[CI_RED_MRB_FIX_KEY] = offered
+    prev = offered.get(sig)
+    if isinstance(prev, dict) and shas_match(str(prev.get("pass_sha") or ""), tip):
+        return "duplicate"
+    pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    who = (gitclaim.canonical_worker_nick(nick) or str(nick or "")).strip()
+    check_bit = str(detail or "failure").strip() or "failure"
+    title = f"FIX CI-red under MRB hold ({num}@{tip[:12]})"
+    body = (
+        f"FR #9924: required CI went red ({check_bit}) while an accepted/offered "
+        f"MRB hold was live at head SHA {tip}. Reset that MRB hold and fix CI on "
+        f"this branch (same queue path as DONE MRB FAIL / FR #4718). "
+        f"Signature {sig}."
+    )
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-ci-red-mrb"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            blob = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            if sig in blob or gitclaim._same(row, repo_c, "FIX", f"#{num}"):
+                offered[sig] = {
+                    "repo": repo_c,
+                    "pr": num,
+                    "pass_sha": tip,
+                    "signature": sig,
+                    "url": pull_url,
+                    "nick": who,
+                }
+                save_ledger(home, doc)
+                return "duplicate"
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=claim.title,
+            pass_sha=tip,
+            fail_signature=sig,
+            mrb_fail_by=who,
+        )
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if changed in ("added", "duplicate"):
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": num,
+            "pass_sha": tip,
+            "signature": sig,
+            "url": pull_url,
+            "nick": who,
+        }
+        save_ledger(home, doc)
+        if who:
+            gitclaim.stamp_mrb_fail(home, repo_c, f"#{num}", tip, who)
+        return changed if changed in ("added", "duplicate") else "skipped"
+    return "skipped"
+
+
+def reset_live_mrb_hold_on_ci_red(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    url: str = "",
+    detail: str = "",
+) -> str:
+    """FR #9924: clear accepted/offered MRB for repo#pr then enqueue FIX.
+
+    Returns ``added`` / ``duplicate`` / ``skipped`` / ``no-hold``.
+    """
+    if not ci_failure_triggers_mrb_reset(detail or "failure"):
+        return "skipped"
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    tip = _norm_sha(sha)
+    if not repo_c or not num or not tip:
+        return "skipped"
+    holders: list[str] = []
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            return "skipped"
+        cleared = gitclaim.clear_live_mrb_hold_for_ci_red(qdoc, repo_c, num)
+        holders = list(cleared)
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if not holders:
+        # Still offer FIX if CI red even without a hold? No — acceptance requires hold.
+        return "no-hold"
+    nick = holders[0] if holders else ""
+    return enqueue_ci_red_mrb_fix(
+        home,
+        repo=repo_c,
+        pr=num,
+        sha=tip,
+        url=url,
+        nick=nick,
+        detail=detail or "failure",
+    )
+
+
 def head_sha_for_mrb_fail(repo: str, num: str) -> str:
     """Live head SHA for a DONE MRB FAIL. Tests replace this."""
     state = fetch_pr_state(repo, str(num).lstrip("#"))
@@ -2024,6 +2280,41 @@ def refresh_ci_failed_tips(
         else:
             out["skipped"] += 1
     return out
+
+
+def handle_workflow_run_event(home: Path, payload: dict[str, Any]) -> str:
+    """FR #10007: success workflow_run stamps matching pending rows. No REST."""
+    if not isinstance(payload, dict):
+        return "skipped"
+    wr = payload.get("workflow_run")
+    if not isinstance(wr, dict):
+        return "skipped"
+    conclusion = str(wr.get("conclusion") or "").strip().lower()
+    status = str(wr.get("status") or "").strip().lower()
+    if status and status != "completed":
+        return "skipped"
+    if conclusion != "success":
+        return "skipped"
+    sha = str(wr.get("head_sha") or "").strip()
+    nums = set()
+    for pr in wr.get("pull_requests") or []:
+        if isinstance(pr, dict) and pr.get("number") is not None:
+            nums.add(str(pr.get("number")))
+    doc = load_ledger(home)
+    changed = False
+    for row in doc.get("pending") or []:
+        if not isinstance(row, dict):
+            continue
+        row_sha = str(row.get("head_sha") or row.get("sha") or "").strip()
+        row_num = str(row.get("number") or row.get("pr") or "").strip().lstrip("#")
+        if (sha and row_sha == sha) or (row_num and row_num in nums):
+            row["checks"] = "success"
+            row["checks_source"] = "workflow_run"
+            changed = True
+    if not changed:
+        return "skipped"
+    save_ledger(home, doc)
+    return "advanced"
 
 
 def handle_check_run_event(

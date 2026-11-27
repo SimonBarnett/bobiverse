@@ -57,7 +57,20 @@ def test_parse_unlimited_limited_unknown():
 
 
 def test_dispatch_on_off(tmp_path):
-    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
+    # FR #9986: need remaining>0 (unlimited+remaining0 is phantom, not fuel)
+    cd.refresh_allowance(
+        tmp_path,
+        fetch_user=lambda: {
+            "quota_snapshots": {
+                "premium_interactions": {
+                    "unlimited": False,
+                    "remaining": 12,
+                    "percent_remaining": 40,
+                }
+            }
+        },
+        now=1.0,
+    )
     assert cd.has_allowance(tmp_path) is True
     cd.refresh_allowance(
         tmp_path,

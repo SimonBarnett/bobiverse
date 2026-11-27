@@ -1,0 +1,23 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Weights New Digest</title>
+<style>
+body{font-family:Segoe UI,sans-serif;background:#0d1117;color:#e6edf3;margin:24px}
+.grid{display:grid;grid-template-columns:1fr 1fr 2fr 0.5fr 0.5fr;gap:4px;max-width:900px}
+.th,.td{padding:8px;background:#161b22;border:1px solid #30363d}
+.th{font-weight:600;color:#8b949e}
+.model{min-width:14em}
+.narrow{min-width:4em}
+.btn{margin-top:12px;margin-right:8px;padding:6px 12px;background:#238636;color:#fff;border:0;border-radius:6px}
+.btn.secondary{background:#21262d;border:1px solid #30363d}
+.status{margin-top:8px;color:#3fb950}
+</style></head><body>
+<h1>Weights</h1>
+<p>GET|PUT /bob/v1/models — Refresh updates Copilot catalog</p>
+<div class="grid">
+<div class="th">Agent</div><div class="th">CLI</div><div class="th model">Model</div><div class="th narrow">Context</div><div class="th narrow">Effort</div>
+<div class="td">Plan</div><div class="td">Grok</div><div class="td model">grok-4.5</div><div class="td narrow">256</div><div class="td narrow">high</div>
+<div class="td">Copilot-MRB</div><div class="td">Copilot</div><div class="td model">claude-haiku-4.5</div><div class="td narrow"></div><div class="td narrow"></div>
+<div class="td">Copilot-PR</div><div class="td">Copilot</div><div class="td model">(auto)</div><div class="td narrow"></div><div class="td narrow"></div>
+</div>
+<button class="btn secondary">Refresh models</button><button class="btn">Save</button>
+<div class="status">Saved</div>
+</body></html>

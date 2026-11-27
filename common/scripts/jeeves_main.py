@@ -539,22 +539,89 @@ def run_heal(
     except Exception as exc:  # noqa: BLE001
         errors.append(f"http_probe:{type(exc).__name__}")
 
-    # 4) monitor health as report
+    # 3b) FR #9836: start ircJeeves when Stopped+intended-up while Ergo up; heal webhooks;
+    #     probe local :7700 and public report before trusting OK. Never BobIrcd/Ergo.
+    try:
+        mon_root = monitor_tools_dir()
+        if mon_root is not None:
+            path_s = str(mon_root)
+            if path_s not in sys.path:
+                sys.path.insert(0, path_s)
+            import health as health_mod  # noqa: WPS433 — monitor lib next to jeeves_main
+
+            irc_st = health_mod._service_state("ircJeeves")
+            irc_start = health_mod._service_start_type("ircJeeves")
+            bi_st = health_mod._service_state("BobIrcd")
+            bi_start = health_mod._service_start_type("BobIrcd")
+            intended = health_mod.chair_intended_up(irc_start)
+            ergo_up = health_mod.ergo_is_up(bi_st, bi_start)
+            if (
+                intended
+                and ergo_up
+                and irc_st.lower() not in ("running", "skipped")
+            ):
+                msg = f"start ircJeeves (was {irc_st}; StartType={irc_start}; FR #9836)"
+                if dry_run:
+                    actions.append(f"dry-run:{msg}")
+                else:
+                    hr = health_mod.heal_start_ircjeeves()
+                    for a in hr.get("actions") or []:
+                        actions.append(f"ircJeeves:{a}")
+                    if hr.get("ok"):
+                        notes.append(f"FR #9836 healed ircJeeves: {hr.get('actions')}")
+                    else:
+                        findings.append(
+                            f"FR #9836 ircJeeves heal failed: {hr.get('error') or hr.get('actions')}"
+                        )
+            # BobCallback / W3SVC when :7700 or public report down
+            loc_ok, loc_code, loc_detail = health_mod.probe_local_report()
+            pub_ok, pub_code, pub_detail = health_mod.probe_public_report()
+            if not (loc_ok and pub_ok):
+                msg = (
+                    f"heal webhooks local={loc_detail} public={pub_detail} (FR #9836)"
+                )
+                if dry_run:
+                    actions.append(f"dry-run:{msg}")
+                else:
+                    br = health_mod.heal_bobcallback_local()
+                    for a in br.get("actions") or []:
+                        actions.append(f"webhook:{a}")
+                    try:
+                        time.sleep(2.0)
+                    except Exception:
+                        pass
+                    loc_ok, loc_code, loc_detail = health_mod.probe_local_report()
+                    pub_ok, pub_code, pub_detail = health_mod.probe_public_report()
+            notes.append(
+                f"report probes local={loc_detail} public={pub_detail} (FR #9836)"
+            )
+            if not loc_ok:
+                findings.append(f"local /bob/v1/report not 200 ({loc_detail})")
+            if not pub_ok:
+                findings.append(f"public /bob/v1/report not 200 ({pub_detail})")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"chair_webhook_heal:{type(exc).__name__}")
+
+    # 4) monitor health (auto-heal inside health.py when BOB_HEALTH_AUTO=1; never BobIrcd)
     try:
         payload, code = run_monitor_check(
             "health",
             chair_home=chair,
             digest_home=home,
-            dry_run=False,
+            dry_run=bool(dry_run),
         )
         if code != 0:
             findings.extend(payload.get("findings") or [f"health exit={code}"])
-            notes.append("health: report only (never restart BobIrcd)")
+            notes.append("health: finding (never restart BobIrcd; FR #9836 heal above)")
         else:
             notes.append("health: ok")
             # FR #6587: surface soft notes (e.g. BobIrcd Stopped/Disabled on remote-Ergo hosts).
             for n in payload.get("notes") or []:
                 notes.append(str(n))
+            # Surface heal actions taken inside the health check.
+            heal_blob = payload.get("heal") if isinstance(payload, dict) else None
+            if isinstance(heal_blob, dict) and heal_blob:
+                notes.append(f"health.heal={heal_blob}")
     except Exception as exc:  # noqa: BLE001
         errors.append(f"health:{type(exc).__name__}")
 
