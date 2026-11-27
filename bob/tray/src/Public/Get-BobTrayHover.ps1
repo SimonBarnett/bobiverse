@@ -79,7 +79,7 @@ function Get-ContextWindowTokens {
         if (-not (Test-Path $p)) { return 500000 }
         $d = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
         $m = $d.models
-        foreach ($name in @('grok-4.6', 'grok-4.5', 'grok-4')) {
+        foreach ($name in @('grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4')) {
             if ($m.$name -and $m.$name.info -and $m.$name.info.context_window) {
                 return [int]$m.$name.info.context_window
             }
