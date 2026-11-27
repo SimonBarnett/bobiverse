@@ -1062,6 +1062,13 @@ def handle_request(
     stash_response_headers([])
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    # FR #10080: public Bob skill MCP. Does not touch /bob/v1/*.
+    if route == "/mcp":
+        import bob_mcp
+
+        code, payload = bob_mcp.handle_mcp(verb, body)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
     # FR #6815 / #7274: public /jeeves* on bob.ntsa.uk (IIS rewrite to this process).
     if route == JEEVES_LOGIN_PATH or route.startswith(JEEVES_LOGIN_PATH + "/"):
         import jeeves_settings_http as _jhttp
