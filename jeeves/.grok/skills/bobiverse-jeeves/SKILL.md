@@ -39,7 +39,7 @@ deterministic and token-less except the optional GitHub token used for filing is
 | Digest home (`digest.json`, `registered-machines.json`, `chair-outbox.txt`, `webhook-queue`) | `BOB_DIGEST_HOME` = `~\.bobiverse` |
 | Ergo (IRC server, separate service `BobIrcd`) | `<ai root>\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
 | Webhook receiver | task `BobCallback` (SYSTEM) `python scripts\bobcallback.py --home <digest home> --bind 127.0.0.1 --port 7700` |
-| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450), `/builds`, `/models` (FR #8835) -> 127.0.0.1:7700 |
+| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450), `/builds`, `/models` (FR #8835), `/ask` (FR #10031: GET `/bob/v1/ask/health`, POST `/bob/v1/ask` allowlisted by `BOB_ASK_ALLOWLIST`) -> 127.0.0.1:7700 |
 | Ports | 6697 TLS (public), 6667 plaintext loopback, 7700 bobcallback loopback |
 | Logs | `<ai root>\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
 | Chair-home files | `cmd-trace.log` (time/nick/command/reply), `webhook-health.json`, `resync-token-source.log`, `operators.txt`, `identity.json` (DPAPI) |

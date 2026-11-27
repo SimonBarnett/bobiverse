@@ -187,8 +187,8 @@ def test_fr6405_interval_default_and_override(monkeypatch):
     import chair_health as ch
 
     monkeypatch.delenv("JEEVES_TICKET_CLOSURE_S", raising=False)
-    assert ch.TICKET_CLOSURE_S == 900.0
-    assert ch.ticket_closure_interval_s() == 900.0
+    assert ch.TICKET_CLOSURE_S == 3600.0
+    assert ch.ticket_closure_interval_s() == 3600.0
     monkeypatch.setenv("JEEVES_TICKET_CLOSURE_S", "120")
     assert ch.ticket_closure_interval_s() == 120.0
 
