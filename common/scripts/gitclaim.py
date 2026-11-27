@@ -1167,7 +1167,7 @@ def row_fr_depends_blocked_reason(
     FR #9455: pass ``issue_fetch`` so digests absent from the local queue still resolve
     (same as ``row_depends_open_reason`` / ``depends_gate_reason``).
     """
-    if _canon_task(row) != "FR":
+    if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
     body = str(row.get("body") or "")
@@ -1192,7 +1192,7 @@ def row_fr_depends_blocked_reason(
                 if g1 == DEPENDS_HELD_REASON:
                     return f"{DEPENDS_HELD_REASON}: {tok}"
                 if g1 == "ok-fr-digest":
-                    continue
+                    return f"depends-on open: {tok}"
                 if (repo, oid) in open_keys:
                     return (
                         f"depends-on open: {tok} "
@@ -1210,7 +1210,7 @@ def row_fr_depends_blocked_reason(
             if g1 == DEPENDS_HELD_REASON:
                 return f"{DEPENDS_HELD_REASON}: {tok}"
             if g1 == "ok-fr-digest":
-                continue
+                return f"depends-on open: {tok}"
             if pair in open_keys:
                 return f"depends-on open: {tok}"
             continue
@@ -1227,7 +1227,7 @@ def row_fr_depends_blocked_reason(
             if g1 == DEPENDS_HELD_REASON:
                 return f"{DEPENDS_HELD_REASON}: {tok}"
             if g1 == "ok-fr-digest":
-                continue
+                return f"depends-on open: {tok}"
             if pair in open_keys:
                 return f"depends-on open: {tok}"
     return None
@@ -1252,7 +1252,7 @@ def depends_gate_reason(
     ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
     digests were absent from the local queue).
     """
-    if _canon_task(row) != "FR":
+    if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     qdoc = doc if isinstance(doc, dict) else {}
     fetch = issue_fetch
@@ -1355,7 +1355,7 @@ def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
     ``row["repo"]``. Repo keys are lower-cased. Empty / ``(none)`` / malformed /
     self-reference yield no refs. Public parser/resolver: BOB-D1 / BOB-D2.
     """
-    if not isinstance(row, dict) or _canon_task(row) != "FR":
+    if not isinstance(row, dict) or _canon_task(row) not in ("FR", "FIX", "MRB"):
         return []
     home_repo = _repo_key(str(row.get("repo") or ""))
     self_num_raw = str(row.get("id") or "").strip().lstrip("#")
@@ -1402,7 +1402,7 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
     without parentheses, or ``see digest``) are treated as notes - not
     ``depends-unresolved``. A line that is *only* junk still fails closed.
     """
-    if not isinstance(row, dict) or _canon_task(row) != "FR":
+    if not isinstance(row, dict) or _canon_task(row) not in ("FR", "FIX", "MRB"):
         return False
     home_repo = _repo_key(str(row.get("repo") or ""))
     self_num_raw = str(row.get("id") or "").strip().lstrip("#")
@@ -1513,7 +1513,7 @@ def row_depends_open_reason(
       short-circuit as ``depends-unresolved`` before G1 soft-allow (see
       ``_row_depends_on_has_bad_ref`` / ``bob_g1_depends_annotation_soft``).
     """
-    if _canon_task(row) != "FR":
+    if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     if _row_depends_on_has_bad_ref(row):
         return DEPENDS_UNRESOLVED_REASON
@@ -1543,6 +1543,7 @@ def row_depends_open_reason(
     refs = _row_depends_on_issue_refs(row)
     if not refs:
         return None
+    unknown = False
     for repo, num in refs:
         g1 = _bob_g1_digest_gate_for_pair(
             doc if isinstance(doc, dict) else {}, repo, str(num), issue_fetch=fetch
@@ -1550,18 +1551,21 @@ def row_depends_open_reason(
         if g1 == DEPENDS_HELD_REASON:
             return DEPENDS_HELD_REASON
         if g1 == "ok-fr-digest":
-            # Unheld digest (local queue or live GitHub) satisfies while OPEN.
-            continue
+            # FR #10059: an unheld OPEN digest still blocks dispatch.
+            return DEPENDS_OPEN_REASON
         dep = find_open_fr_row(doc, repo, num) if doc is not None else None
         if dep is not None:
             labs = _depend_row_label_names(dep)
             if "hold" in labs or "on-hold" in labs:
                 return DEPENDS_HELD_REASON
             if row_is_digest_issue(dep):
-                continue
+                return DEPENDS_OPEN_REASON
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
         if issue_open is None:
+            # FR #10059: no live checker and not a positive CLOSED is unknown.
+            # Keep scanning so a later ref that is positively OPEN still wins.
+            unknown = True
             continue
         try:
             if bool(issue_open(repo, str(num))):
@@ -1572,7 +1576,10 @@ def row_depends_open_reason(
                 return DEPENDS_OPEN_REASON
         except Exception:
             # Unknown / budget / network: fail closed (BOB-D5 / FR #8809).
-            return DEPENDS_UNRESOLVED_REASON
+            unknown = True
+            continue
+    if unknown:
+        return DEPENDS_UNRESOLVED_REASON
     return None
 
 
@@ -19001,6 +19008,19 @@ def format_assign_refusal_log(
 
 
 
+
+def _depends_open_assign_reason(row: dict) -> str:
+    """Shop reason for !assign. irc_agent prefixes ``assign: refused - ``."""
+    refs = _row_depends_on_issue_refs(row)
+    if not refs:
+        return "depends-on open"
+    repo, num = refs[0]
+    home = str(row.get("repo") or "").strip()
+    if repo and home and repo.lower() != home.lower():
+        return "depends-on open %s#%s" % (repo, num)
+    return "depends-on open #%s" % num
+
+
 def assign_row(
     home: Path,
     nick: str,
@@ -19230,6 +19250,10 @@ def assign_row(
                 issue_fetch=depends_issue_fetch_checker(fetch_issue),
             )
             if live_dep:
+                if live_dep == DEPENDS_OPEN_REASON or str(live_dep).startswith(
+                    "depends-on open"
+                ):
+                    return "refused", _depends_open_assign_reason(cand)
                 return "refused", f"row blocked: {live_dep}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
