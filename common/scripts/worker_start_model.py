@@ -707,16 +707,16 @@ def resolved_start_settings(
     efforts = (c or {}).get("workerStartEffort") or {}
     contexts = (c or {}).get("workerStartContext") or {}
     sources = (c or {}).get("settings_source") or {}
+    e = os.environ if env is None else env
+    effort = str((e or {}).get("BOB_WORKER_START_EFFORT") or (e or {}).get("BOB_GROK_EFFORT") or "").strip()
+    context = str((e or {}).get("BOB_WORKER_START_CONTEXT") or (e or {}).get("BOB_GROK_CONTEXT") or "").strip()
     if cli == "grok":
-        effort = configured_start_effort("grok", c, env=env)
-        context = configured_start_context("grok", c, env=env)
+        effort = configured_start_effort("grok", c, env=env) or effort
+        context = configured_start_context("grok", c, env=env) or context
         if not effort:
             effort = normalize_effort(efforts.get("grok")) or DEFAULT_EFFORT
         if not context:
             context = normalize_context(contexts.get("grok"))
-    else:
-        effort = ""
-        context = ""
     source = str(sources.get(cli) or "local")
     if env_model_pin(cli, env):
         source = "env-pin"
