@@ -279,6 +279,8 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 
 ## Front-page HTML docs (FR #6453 / FR #8835)
 
+**FR #9776 !build:** `.bobiverse/build-webhooks.yml` (catalog seed `common/defaults/builds-catalog.example.json`, install `flamingo`) packs the site kit via `Pack-BobWebhooksSiteKit.ps1`. The artifact is `MANIFEST.json`. The recipe does not list `jeeves-*.msi` or `ergo.exe`.
+
 Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
 
 **Coverage rule (FR #8835):** every public route under `/bob/v1/*` served by Jeeves/BobCallback (plus local health/digest and outbound stall/wake) MUST have (1) a card in Webhooks & API on the home page, (2) a page under `docs/webhooks/`, and (3) a row on `docs/webhooks/index.html`. Registry: `common/scripts/bob_webhook_docs.py`. Route inventory: `common/scripts/bob_route_inventory.py`. Enforced by `common/tests/test_fr8835_webhook_docs_route_coverage.py` (also run from `pytest-ascii-bom`). Coming operations (models PATCH) use DocEntry.status="coming" until served. POST models/refresh (#8820) and PUT models (#8708 / #8819 / #9122 / #9273 IIS forward) are live.
