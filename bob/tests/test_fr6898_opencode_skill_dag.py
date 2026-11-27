@@ -50,9 +50,9 @@ def test_opencode_launch_writes_project_mcp_not_user_profile(tmp_path, monkeypat
     # Flat mcp.skill-dag (OpenCode accepts this) or mcp.servers.skill-dag
     entry = servers.get("skill-dag") or (servers.get("servers") or {}).get("skill-dag")
     assert entry is not None, data
-    cmd = entry.get("command") or []
-    assert cmd and cmd[0] == "python"
-    assert any(str(a).replace("\\", "/").endswith("skill_dag_mcp.py") for a in cmd)
+    assert entry.get("type") == "remote"
+    assert entry.get("url") == bw.BOB_SKILL_MCP_URL
+    assert "command" not in entry
 
     bw.write_opencode_skill_dag_mcp_config_if_agent(spec)
     assert (worker / "opencode.json").is_file()
