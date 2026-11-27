@@ -1176,6 +1176,7 @@ def weights_copilot_model(home: Path | str | None, kind: str | None = None) -> s
     seen = False
     model = ""
     legacy = ""
+    pr_model = ""
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1186,10 +1187,14 @@ def weights_copilot_model(home: Path | str | None, kind: str | None = None) -> s
             model = text
         elif agent == "Copilot":
             legacy = text
-    # A present kind row wins, including a blank model. Legacy Copilot is only
-    # used when that kind row has not been saved yet.
-    if seen or want == "Copilot":
+        elif agent == "Copilot-PR":
+            pr_model = text
+    # A present kind row wins, including a blank model. Untyped reads use the
+    # Copilot row, then Copilot-PR (FR #9995) when that row was renamed.
+    if seen:
         return model
+    if not kind:
+        return legacy or pr_model
     return legacy
 
 
