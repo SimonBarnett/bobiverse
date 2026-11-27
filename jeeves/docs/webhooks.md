@@ -18,7 +18,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/report` | Public fleet digest JSON (FR #9864: soft-degrade within `BOB_REPORT_BUILD_BUDGET_S`; may include `degraded` / `degraded_parts`). |
 | GET | `/bob/v1/digest` | Fast last-good / lightweight fleet JSON alias (FR #9864). IIS rewrites to backend digest (not a client 301 to report). |
 | POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
-| POST | `/bob/v1/git` | GitHub git webhook → digest queue |
+| POST | `/bob/v1/git` | GitHub git webhook → digest queue. Allow-list matches `New-BobGitWebhook.ps1`, including `workflow_run` and `pull_request_review` (FR #10007). |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
 | POST | `/bob/v1/hours` | Create a work-time entry (open or closed); needs `idempotency_key` — **open, no secret** (FR #3450) |
@@ -31,6 +31,8 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
 | GET | `/bob/v1/gitcust` | Priority customer and task catalog (`customers`, `tasks` with kind `sc`\|`so`\|`wbs`, free-text title, path). FR #9982. |
 | POST | `/bob/v1/gitcust` | Register a customer and/or task subfolder. 202. Secret-free JSON. FR #9982. Scanner (FR #9983) walks customer roots and SC/SO/WBS task folders; title comes from `title.txt` or the folder name and is never empty. Periodic catch-up `GITCUST_UPDATE_S` defaults to 3600 (minimum 60) and calls the same scanner (FR #9984). POST on create stays primary. |
+| GET | `/bob/v1/ask/health` | Ask webhook liveness: `{"ok":true,"service":"ask"}` (FR #10032 / digest #10031). Open. |
+| POST | `/bob/v1/ask` | Accept an ask envelope (`sc`, `correlation_id`, optional `text`). Fail closed unless `sc` is in `BOB_ASK_ALLOWLIST` (FR #10033): missing or empty allowlist returns 403 `not_allowed`. Success **202** echoes `correlation_id` and does not echo `sc`. Secret-shaped JSON keys return 400 `secret_field`. Do not log the body. Other verbs **405**. |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
