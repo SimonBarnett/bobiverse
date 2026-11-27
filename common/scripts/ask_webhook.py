@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 
 ASK_PATH = "/bob/v1/ask"
@@ -38,8 +39,25 @@ def validate_ask(raw: bytes | str) -> tuple[dict | None, str]:
     return {"sc": sc, "correlation_id": corr}, ""
 
 
+_REDACT = re.compile(
+    r"(?i)(password\s*=\S+|bearer\s+\S+|github_pat_\S+|ghp_[A-Za-z0-9]+)"
+)
+
+
+def allowlist() -> set[str]:
+    """FR #10033: comma-separated sc codes. Empty means refuse every POST."""
+    raw = os.environ.get("BOB_ASK_ALLOWLIST") or ""
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def redact(text: str) -> str:
+    return _REDACT.sub("[redacted]", text or "")
+
+
 def handle_post(raw: bytes | str) -> tuple[int, bytes]:
     row, why = validate_ask(raw)
     if row is None:
         return 400, json.dumps({"error": why}).encode("utf-8")
+    if row["sc"] not in allowlist():
+        return 403, json.dumps({"error": "not_allowed"}).encode("utf-8")
     return 202, json.dumps({"ok": True, "correlation_id": row["correlation_id"]}).encode("utf-8")

@@ -16,7 +16,8 @@ def test_get_health():
     assert json.loads(body)["ok"] is True
 
 
-def test_post_requires_sc_and_correlation():
+def test_post_requires_sc_and_correlation(monkeypatch):
+    monkeypatch.setenv("BOB_ASK_ALLOWLIST", "acme")
     code, body = ask.handle_post(b"{}")
     assert code == 400
     assert json.loads(body)["error"] == "bad_sc"
@@ -27,7 +28,8 @@ def test_post_requires_sc_and_correlation():
     assert "acme" not in body.decode()
 
 
-def test_callback_routes(tmp_path: Path):
+def test_callback_routes(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BOB_ASK_ALLOWLIST", "acme")
     code, body = bobcallback.handle_request(
         "GET", "/bob/v1/ask/health", {}, b"", "127.0.0.1", tmp_path
     )
