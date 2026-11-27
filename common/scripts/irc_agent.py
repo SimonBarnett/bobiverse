@@ -5027,15 +5027,9 @@ class Client:
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(
-                home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
-            ),
-            is_pull=gitclaim.github_is_pull_checker(
-                home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
-            ),
-            issue_open=gitclaim.github_issue_open_checker(
-                home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
-            ),
+            pr_exists=None,
+            is_pull=None,
+            issue_open=None,
             names_refresh=names_refresh,
         )
 
