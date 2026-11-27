@@ -515,6 +515,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When chair GH 429s: compare New-BobGitWebhook subscribed events vs bobcallback.GIT_EVENTS allow-list before adding more polls; dropped workflow_run forces REST. File anti-omnibus FR-W0 accept-events first, then kill poll cadences.
 <!-- harvest-tip:intake-in_789cef4c2f0a4929 -->
 - When folding a CONFLICTING FIX tip, keep a single allowlist entry if both sides added the same field with different comments; push onto the existing PR branch and do not open a second pull request.
+<!-- harvest-tip:intake-in_fbe27d53477c4614 -->
+- When a FIX CI log is unavailable because gh is rate-limited, do not push a blind main fold. NACK after recording which step failed and which targeted pytest already passed.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.

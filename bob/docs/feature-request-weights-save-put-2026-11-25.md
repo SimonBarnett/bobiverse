@@ -14,6 +14,7 @@ TipForm Weights Save against `https://bob.ntsa.uk/bob/v1/models` succeeds (no HT
 - Redeploy / repair live IIS `BobModelsWebhook` so PUT|PATCH reach BobCallback (same class as #9273/#9585; content-only publish does not refresh `web.config`).
 - Keep/require installer public empty-PUT probe (JSON 400 `agents must be a list` = forwarded; HTML/404 = fail when require switch set).
 - Docs note owner-authorised redeploy and public write exposure.
+- FR #9992: a content-only publish does not refresh `web.config`. This change does not redeploy live IIS. The owner runs the installer. Probe class: JSON 400 `agents must be a list` is forwarded; HTML, 404, or empty 403 is not.
 - Tray evidence: `weights_save` 2xx and `weights_reload_match` true after Save.
 
 ## Success

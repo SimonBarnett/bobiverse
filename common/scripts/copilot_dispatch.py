@@ -1162,13 +1162,18 @@ def weights_copilot_model(home: Path | str | None) -> str:
         rows = mc.load_catalog_file(home)
     except Exception:  # noqa: BLE001
         return ""
+    fallback = ""
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if str(row.get("agent") or "").strip() != "Copilot":
-            continue
-        return str(row.get("model") or "").strip()
-    return ""
+        agent = str(row.get("agent") or "").strip()
+        model = str(row.get("model") or "").strip()
+        if agent == "Copilot":
+            return model
+        # FR #9995: kind rows replace the single Copilot agent. Untyped reads use Copilot-PR.
+        if agent == "Copilot-PR":
+            fallback = model
+    return fallback
 
 
 def resolve_copilot_model(*, home: Path | None = None) -> str:
