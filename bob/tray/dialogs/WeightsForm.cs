@@ -75,17 +75,23 @@ namespace BobDialogs
             colModel.FlatStyle = FlatStyle.Flat;
             colModel.DisplayStyle = DataGridViewComboBoxDisplayStyle.ComboBox;
             colModel.Items.Add("");
+            colModel.FillWeight = 200f; // FR #9993 Model about 2x
+            colModel.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             DataGridViewComboBoxColumn colContext = new DataGridViewComboBoxColumn();
             colContext.Name = "Context";
             colContext.HeaderText = ColumnHeaders[3];
             colContext.FlatStyle = FlatStyle.Flat;
             // FR #8716: start empty+blank only; EditingControlShowing fills from ``clis``.
             colContext.Items.Add("");
+            colContext.FillWeight = 50f; // FR #9993 half
+            colContext.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             DataGridViewComboBoxColumn colEffort = new DataGridViewComboBoxColumn();
             colEffort.Name = "Effort";
             colEffort.HeaderText = ColumnHeaders[4];
             colEffort.FlatStyle = FlatStyle.Flat;
             colEffort.Items.Add("");
+            colEffort.FillWeight = 50f; // FR #9993 half
+            colEffort.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
 
             grid.Columns.AddRange(new DataGridViewColumn[] { colAgent, colCli, colModel, colContext, colEffort });
             grid.EditingControlShowing += Grid_EditingControlShowing;
