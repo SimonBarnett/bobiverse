@@ -89,12 +89,31 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP "bob-msi-out"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+          # FR #9766: Pack copies prebuilt exes. This job builds them, then passes the dirs.
+          $trayDir = Join-Path $env:RUNNER_TEMP "ci-tray"
+          $statusDir = Join-Path $env:RUNNER_TEMP "ci-status"
+          $watcherDir = Join-Path $env:RUNNER_TEMP "ci-watcher"
+          New-Item -ItemType Directory -Force -Path $trayDir, $statusDir, $watcherDir | Out-Null
+          & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $trayDir -Targets "tray,about"
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobDialogs.ps1 tray exit $LASTEXITCODE" }
+          & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $statusDir -Targets status
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobDialogs.ps1 status exit $LASTEXITCODE" }
+          & "$root\bob\scripts\Build-BobWatcher.ps1" -RepoRoot $root -OutDir $watcherDir
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobWatcher.ps1 exit $LASTEXITCODE" }
+          $watcherExe = Join-Path $watcherDir "watcher-build\dist\Watch-AgentHealth.exe"
+          if (Test-Path -LiteralPath $watcherExe) {
+            Copy-Item -LiteralPath $watcherExe -Destination (Join-Path $watcherDir "Watch-AgentHealth.exe") -Force
+          }
+
           # Do NOT pass -EmbedErgoPassword (issue #4 / FR #4216): public CI MSI must not embed PASS.
           & "$root\common\scripts\Pack-BobiverseRelease.ps1" `
             -Product bob `
             -RepoRoot $root `
             -OutDir $out `
             -Version $msiVersion `
+            -TrayArtifactDir $trayDir `
+            -StatusArtifactDir $statusDir `
+            -WatcherArtifactDir $watcherDir `
             -KeepStage
           if ($LASTEXITCODE -ne 0) { throw "Pack-BobiverseRelease.ps1 exit $LASTEXITCODE" }
 

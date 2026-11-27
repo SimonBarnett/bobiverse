@@ -515,6 +515,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - OpenCode no-jobs twin of Cursor #10019: file product Clear-ACK (#10038) and gh_auth_missing (#10039) plus monitor fingerprints (#10040/#10041) as Depends-on digest children same turn --- do not leave (owe) rows.
 <!-- harvest-tip:intake-in_657cab73ea2f41cb -->
 - When chair GH 429s: compare New-BobGitWebhook subscribed events vs bobcallback.GIT_EVENTS allow-list before adding more polls; dropped workflow_run forces REST. File anti-omnibus FR-W0 accept-events first, then kill poll cadences.
+<!-- harvest-tip:intake-in_fbe27d53477c4614 -->
+- When a FIX CI log is unavailable because gh is rate-limited, do not push a blind main fold. NACK after recording which step failed and which targeted pytest already passed.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
