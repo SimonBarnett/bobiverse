@@ -2282,6 +2282,41 @@ def refresh_ci_failed_tips(
     return out
 
 
+def handle_workflow_run_event(home: Path, payload: dict[str, Any]) -> str:
+    """FR #10007: success workflow_run stamps matching pending rows. No REST."""
+    if not isinstance(payload, dict):
+        return "skipped"
+    wr = payload.get("workflow_run")
+    if not isinstance(wr, dict):
+        return "skipped"
+    conclusion = str(wr.get("conclusion") or "").strip().lower()
+    status = str(wr.get("status") or "").strip().lower()
+    if status and status != "completed":
+        return "skipped"
+    if conclusion != "success":
+        return "skipped"
+    sha = str(wr.get("head_sha") or "").strip()
+    nums = set()
+    for pr in wr.get("pull_requests") or []:
+        if isinstance(pr, dict) and pr.get("number") is not None:
+            nums.add(str(pr.get("number")))
+    doc = load_ledger(home)
+    changed = False
+    for row in doc.get("pending") or []:
+        if not isinstance(row, dict):
+            continue
+        row_sha = str(row.get("head_sha") or row.get("sha") or "").strip()
+        row_num = str(row.get("number") or row.get("pr") or "").strip().lstrip("#")
+        if (sha and row_sha == sha) or (row_num and row_num in nums):
+            row["checks"] = "success"
+            row["checks_source"] = "workflow_run"
+            changed = True
+    if not changed:
+        return "skipped"
+    save_ledger(home, doc)
+    return "advanced"
+
+
 def handle_check_run_event(
     home: Path,
     payload: dict[str, Any],

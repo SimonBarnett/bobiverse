@@ -2,6 +2,6 @@
   "agents": [
     {"id": "plan", "cli": "grok", "model": "grok-4.6", "context": 512, "effort": "med"},
     {"id": "priority", "cli": "grok", "model": "grok-4.6", "context": 256, "effort": "high"},
-    {"id": "jeeves", "cli": "grok", "model": "grok-4.5", "context": 512, "effort": "low"}
+    {"id": "jeeves", "cli": "grok", "model": "grok-4.7", "context": 512, "effort": "low"}
   ]
 }

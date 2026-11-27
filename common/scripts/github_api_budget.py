@@ -92,6 +92,17 @@ def _fmt_reset_local(reset_unix: float | None, *, now: float | None = None) -> s
         return "?"
 
 
+_PATH_BUCKETS = ("reconcile", "mog", "ticket", "assign", "report", "copilot")
+
+
+def _path_bucket(path: str) -> str:
+    p = str(path or "").lower()
+    for name in _PATH_BUCKETS:
+        if name in p:
+            return name
+    return "other"
+
+
 class GithubApiBudget:
     """Process + durable hourly call counter with ETag store and backoff floor."""
 
@@ -124,6 +135,7 @@ class GithubApiBudget:
         stored_hour = int(doc.get("hour") or -1)
         if stored_hour != hour:
             self.used = 0
+            self.path_counts = {}
             self.hour = hour
             self.rate_remaining: int | None = (
                 int(doc["rate_remaining"]) if doc.get("rate_remaining") is not None else None
@@ -143,6 +155,8 @@ class GithubApiBudget:
             )
         else:
             self.used = int(doc.get("used") or 0)
+            raw_counts = doc.get("path_counts") if isinstance(doc.get("path_counts"), dict) else {}
+            self.path_counts = {str(k): int(v) for k, v in raw_counts.items()}
             self.hour = stored_hour
             self.rate_remaining = (
                 int(doc["rate_remaining"]) if doc.get("rate_remaining") is not None else None
@@ -177,6 +191,7 @@ class GithubApiBudget:
                     "rate_reset": self.rate_reset,
                     "search_rate_remaining": self.search_rate_remaining,
                     "search_rate_reset": self.search_rate_reset,
+                    "path_counts": dict(getattr(self, "path_counts", {}) or {}),
                 },
             )
         except OSError:
@@ -193,6 +208,7 @@ class GithubApiBudget:
         if hour != self.hour:
             self.hour = hour
             self.used = 0
+            self.path_counts = {}
             self._backoff_logged = False
 
     def remaining_budget(self) -> int:
@@ -342,6 +358,12 @@ class GithubApiBudget:
         self._roll_hour()
         if charged:
             self.used += 1
+            bucket = _path_bucket(path)
+            counts = getattr(self, "path_counts", None)
+            if not isinstance(counts, dict):
+                counts = {}
+                self.path_counts = counts
+            counts[bucket] = int(counts.get(bucket) or 0) + 1
         rem = self.rate_remaining if self.rate_remaining is not None else "?"
         self.log(
             f"INFO github-api calls={self.used}/{self.budget_per_hour} path={path} "
@@ -376,9 +398,13 @@ class GithubApiBudget:
     def status_line(self) -> str:
         self._roll_hour()
         rem = self.rate_remaining if self.rate_remaining is not None else "?"
+        counts = getattr(self, "path_counts", {}) or {}
+        top = sorted(counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[:4]
+        top_s = ",".join(f"{k}={v}" for k, v in top) or "-"
         return (
             f"github-api: used={self.used}/{self.budget_per_hour} "
-            f"X-RateLimit-Remaining={rem} reset={_fmt_reset_local(self.rate_reset, now=self.clock())}"
+            f"X-RateLimit-Remaining={rem} reset={_fmt_reset_local(self.rate_reset, now=self.clock())} "
+            f"paths={top_s}"
         )
 
     def conditional_get(
