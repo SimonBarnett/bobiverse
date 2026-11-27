@@ -20,5 +20,5 @@ release:
   never_latest: true
 install_test:
   machine: flamingo
-  note: "IRCD payload only; do not install the chair MSI or copy jeeves/www"
+  note: "IRCD payload only; do not install the chair MSI or the site kit"
   products: []
