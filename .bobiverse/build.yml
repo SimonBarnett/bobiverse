@@ -25,7 +25,7 @@ suites:
     cwd: .
     timeout: 7200
 pack:
-  cmd: powershell -NoProfile -File common/scripts/Pack-BobiverseRelease.ps1 -Product all -Version {{version}} -OutDir {{out_dir}}
+  cmd: powershell -NoProfile -File common/scripts/Invoke-BobiverseReleasePack.ps1 -Product all -Version {{version}} -OutDir {{out_dir}}
   artifacts:
     - "jeeves-{{version}}.msi"
     - "jeeves-{{version}}.msi.sha256"
