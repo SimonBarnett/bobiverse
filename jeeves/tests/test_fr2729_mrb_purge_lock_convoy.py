@@ -127,8 +127,8 @@ def test_fr2729_ten_plus_open_mrb_rows_slow_github_do_not_starve_queue(tmp_path,
     assert len(doc.get("unaccepted") or []) == n_rows
     assert waited < 0.5, f"load_queue waited {waited:.2f}s behind the report purge (FR #2729)"
     assert not any(t.is_alive() for t in readers)
-    # single-flight: concurrent GETs do not each re-ask GitHub for every row
-    assert len(calls) <= n_rows, f"{len(calls)} GitHub calls for {n_rows} rows"
+    # FR #10010: report GET does not ask GitHub at all.
+    assert calls == []
 
 
 def test_fr2729_report_uses_shared_60s_cache(tmp_path, monkeypatch):
@@ -155,10 +155,8 @@ def test_fr2729_report_uses_shared_60s_cache(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gitclaim.urllib.request, "urlopen", fake_urlopen)
     bobreport._public_queue(tmp_path)
-    first = len(hits)
     bobreport._public_queue(tmp_path)
-    assert first == 10
-    assert len(hits) == first, "second report GET re-asked GitHub (no shared cache)"
+    assert hits == []
     assert gitclaim.PR_EXISTS_CACHE_TTL_S == 60.0
 
 
@@ -212,7 +210,7 @@ def test_fr2729_report_purge_uses_short_lock_wait(tmp_path, monkeypatch):
     monkeypatch.setattr(gitclaim, "github_pr_exists_checker", lambda **k: (lambda r, n: True))
     monkeypatch.setattr(gitclaim, "purge_dead_mrb_rows", fake_purge)
     bobreport._public_queue(tmp_path)
-    assert 0 < float(seen.get("lock_timeout") or 0) <= 0.5
+    assert seen == {}
 
 
 def test_fr2729_row_added_during_github_check_is_not_lost(tmp_path):
