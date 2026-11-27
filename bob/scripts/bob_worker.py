@@ -3598,10 +3598,10 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
-        f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
-        f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
-        f"CAST IRON: Grok, Cursor, and OpenCode MUST load Bob skills only from https://bob.ntsa.uk/mcp "
-        f"(resolve, then get_skill). Do not run skill_dag_mcp.py, do not run a command from .cursor\\mcp.json, "
+        f"Your working folder is {worker_dir}. FIRST use the MCP server skill-dag at https://bob.ntsa.uk/mcp. "
+        f"Its tools are list_catalog and get_skill. get_skill accepts name, skill, or a SKILL.md path. "
+        f"Do not read a process-local skill-dag-core stub. Do not WebFetch that URL. "
+        f"Do not run skill_dag_mcp.py, do not run a command from .cursor\\mcp.json, "
         f"and do not read {worker_dir}\\.grok\\skills. "
         f"If that MCP is missing or dead, ACK then GIVEUP with reason skill-dag-mcp-down. "
         f"Do not invent skill bodies. Do not continue the FR/MRB/UAT job. "
@@ -4096,6 +4096,65 @@ def cursor_skill_catalog_process_local_drop() -> Optional[str]:
     return None
 
 
+def cursor_git_project_root(cwd: str | Path) -> str:
+    """Cursor reads ``.cursor/mcp.json`` from the git toplevel, not a nested seat cwd."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return os.path.normpath(str(cwd))
+    top = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not top:
+        return os.path.normpath(str(cwd))
+    return os.path.normpath(top)
+
+
+def cursor_project_slug(project_root: str | Path) -> str:
+    text = os.path.normpath(str(project_root))
+    return text.replace(":", "").replace("\\", "-").replace("/", "-")
+
+
+def cursor_mcp_approval_id(project_root: str | Path, server: dict, name: str = "skill-dag") -> str:
+    """Same id Cursor writes on ``agent mcp enable`` (sha256 of path + server, 16 hex)."""
+    payload = json.dumps(
+        {"path": os.path.normpath(str(project_root)), "server": server},
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"{name}-{digest}"
+
+
+def approve_cursor_mcp_server(
+    project_root: str | Path,
+    server: dict,
+    name: str = "skill-dag",
+    *,
+    home: str | Path | None = None,
+) -> Path:
+    """Project mcp.json servers stay unloaded until this approval id exists."""
+    root = os.path.normpath(str(project_root))
+    base = Path(home) if home else Path.home()
+    path = base / ".cursor" / "projects" / cursor_project_slug(root) / "mcp-approvals.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current: list[str] = []
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                current = [str(item) for item in loaded]
+        except json.JSONDecodeError:
+            current = []
+    ident = cursor_mcp_approval_id(root, server, name)
+    if ident not in current:
+        current.append(ident)
+        path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def cursor_skill_dag_mcp_document(
     worker_cwd: str,
     job_worktree: str | Path | None = None,
@@ -4104,14 +4163,8 @@ def cursor_skill_dag_mcp_document(
     return {"mcpServers": {"skill-dag": skill_dag_remote_mcp_entry()}}
 
 
-def write_cursor_skill_dag_mcp_config(
-    worker_cwd: str,
-    job_worktree: str | Path | None = None,
-) -> Path:
-    """Write skill-dag into the seat cwd ``.cursor/mcp.json`` only (FR #6865)."""
-    cfg = Path(worker_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
+def _write_cursor_mcp_json(cfg: Path, incoming: dict) -> None:
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    incoming = cursor_skill_dag_mcp_document(worker_cwd, job_worktree=job_worktree)
     data: dict = {"mcpServers": {}}
     if cfg.is_file():
         try:
@@ -4128,6 +4181,27 @@ def write_cursor_skill_dag_mcp_config(
     new = json.dumps(data, indent=2) + "\n"
     if not cfg.is_file() or cfg.read_text(encoding="utf-8") != new:
         cfg.write_text(new, encoding="utf-8")
+
+
+def write_cursor_skill_dag_mcp_config(
+    worker_cwd: str,
+    job_worktree: str | Path | None = None,
+    *,
+    home: str | Path | None = None,
+) -> Path:
+    """Write skill-dag where Cursor loads it: the git toplevel ``.cursor/mcp.json``.
+
+    A seat cwd of ``<repo>\\worker`` is not the project root. Cursor ignores
+    ``worker\\.cursor\\mcp.json``. The server also stays unloaded until approved.
+    """
+    incoming = cursor_skill_dag_mcp_document(worker_cwd, job_worktree=job_worktree)
+    project = cursor_git_project_root(worker_cwd)
+    cfg = Path(project) / CURSOR_SKILL_DAG_MCP_RELPATH
+    _write_cursor_mcp_json(cfg, incoming)
+    seat_cfg = Path(worker_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
+    if seat_cfg.resolve() != cfg.resolve():
+        _write_cursor_mcp_json(seat_cfg, incoming)
+    approve_cursor_mcp_server(project, incoming["mcpServers"]["skill-dag"], home=home)
     return cfg
 
 
