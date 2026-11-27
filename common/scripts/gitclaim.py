@@ -1051,6 +1051,30 @@ def _depend_row_label_names(row: dict) -> set[str]:
     return names
 
 
+def _depend_queue_state(doc: dict | None, repo: str, num: int) -> str:
+    """Lower-case queue state for a depend, including closed rows. Empty if absent."""
+    if not isinstance(doc, dict) or num < 1:
+        return ""
+    want = (_repo_key(repo), int(num))
+    for bucket in (
+        doc.get("unaccepted") or [],
+        doc.get("accepted") or [],
+        doc.get("done") or [],
+    ):
+        for row in bucket:
+            if not isinstance(row, dict):
+                continue
+            rkey = _repo_key(str(row.get("repo") or ""))
+            raw = str(row.get("id") or "").strip().lstrip("#")
+            try:
+                n = int(raw) if raw else 0
+            except ValueError:
+                continue
+            if (rkey, n) == want:
+                return str(row.get("state") or "").strip().lower()
+    return ""
+
+
 def find_open_fr_row(doc: dict | None, repo: str, num: int) -> dict | None:
     """Locate an open FR queue row by ``(repo, number)`` (BOB-G1 digest labels)."""
     if not isinstance(doc, dict) or num < 1:
@@ -1562,6 +1586,8 @@ def row_depends_open_reason(
                 return DEPENDS_OPEN_REASON
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
+        if _depend_queue_state(doc if isinstance(doc, dict) else {}, repo, num) == "closed":
+            continue
         if issue_open is None:
             # FR #10059: no live checker and not a positive CLOSED is unknown.
             # Keep scanning so a later ref that is positively OPEN still wins.

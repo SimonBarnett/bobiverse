@@ -1076,6 +1076,21 @@ def handle_request(
             stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
             return code, payload
         return 405, b""
+    if route == "/bob/v1/gitcust":
+        import gitcust
+
+        if verb in ("GET", "HEAD"):
+            code, payload = gitcust.catalog(Path(home) if home else Path("."))
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, b"" if verb == "HEAD" else payload
+        if verb == "POST":
+            code, payload = gitcust.register(
+                Path(home) if home else Path("."),
+                body if isinstance(body, (bytes, str)) else b"",
+            )
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, payload
+        return 405, b""
     # FR #10080: public Bob skill MCP. Does not touch /bob/v1/*.
     if route == "/mcp":
         import bob_mcp

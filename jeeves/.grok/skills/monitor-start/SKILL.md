@@ -53,6 +53,7 @@ You are the **MONITORING** agent - not the chair, not a worker. May `!ignore` / 
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
 | Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019). **Report only** unless explicit `--force-orphan-busy` and `accepted` empty (harvest #1967 keep seats busy) |
 | OpenCode seats | `opencode_seats` | live GET `/bob/v1/report` flamingo `kind=opencode` stuck age / model_mismatch / week-exhausted while busy (FR #8583). **Report only** â€” digest alone misses remote OpenCode |
+| OpenCode Clear timeout | `opencode_clear_timeout` | FR #10040: local log has Clear TimeoutExpired and stale no-ACK while turns are empty. `Test-JeevesMonitorOpencodeClearTimeout.ps1` |
 | Stale digest | `stale_digest` | digest not updating |
 | Orphan last-good workers | `workers_last_good_orphan` | `workers_stale` + empty live workers + non-empty `workers_last_good` (FR #9145; token-free; local digest only) |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
