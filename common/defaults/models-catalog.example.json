@@ -50,7 +50,14 @@
       "effort": ""
     },
     {
-      "agent": "Copilot",
+      "agent": "Copilot-MRB",
+      "cli": "Copilot",
+      "model": "",
+      "context": "",
+      "effort": ""
+    },
+    {
+      "agent": "Copilot-PR",
       "cli": "Copilot",
       "model": "",
       "context": "",
