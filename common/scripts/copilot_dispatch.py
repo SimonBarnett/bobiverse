@@ -1172,7 +1172,7 @@ def weights_copilot_model(home: Path | str | None, kind: str | None = None) -> s
         rows = mc.load_catalog_file(home)
     except Exception:  # noqa: BLE001
         return ""
-want = copilot_agent_for_kind(kind) if kind else "Copilot"
+    want = copilot_agent_for_kind(kind) if kind else "Copilot"
     seen = False
     model = ""
     legacy = ""
