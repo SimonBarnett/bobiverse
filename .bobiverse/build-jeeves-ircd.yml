@@ -1,0 +1,24 @@
+# FR #9777 — Ergo/BobIrcd payload. No www rebuild and no chair MSI.
+machine: flamingo
+baseline: last_release_tag
+channel: "#bobiverse"
+max_parallel_builds: 1
+suites:
+  - name: ircd-recipe
+    cmd: python -m pytest -q -p no:cacheprovider jeeves/tests/test_fr9777_ircd_build_yml.py
+    cwd: .
+    timeout: 600
+pack:
+  cmd: powershell -NoProfile -File jeeves/scripts/Pack-BobIrcdPayload.ps1 -RepoRoot . -OutDir {{out_dir}}
+  artifacts:
+    - ergo.exe
+    - default.yaml
+    - Install-BobIrcd.ps1
+release:
+  target: none
+  tag: ""
+  never_latest: true
+install_test:
+  machine: flamingo
+  note: "IRCD payload only; do not install the chair MSI or copy jeeves/www"
+  products: []

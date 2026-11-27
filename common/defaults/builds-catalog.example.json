@@ -25,5 +25,14 @@
     "dep": ["webhooks"],
     "version": "0.1.40",
     "ref": "main"
+  },
+  {
+    "name": "Bobiverse Jeeves IRCD",
+    "yml": "SimonBarnett/bobiverse:.bobiverse/build-jeeves-ircd.yml",
+    "output": "D:\\Temp\\bobiverse-jeeves-ircd",
+    "install": "flamingo",
+    "dep": ["ircd"],
+    "version": "0.1.40",
+    "ref": "main"
   }
 ]
