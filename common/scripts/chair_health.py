@@ -63,12 +63,12 @@ FIRST_IDLE_OFFER_PUSH_DELAY_S = 8.0
 INTAKE_OUTBOX_S = 60.0
 FIRST_INTAKE_OUTBOX_DELAY_S = 30.0
 INTAKE_OUTBOX_BACKOFF_MAX_S = 900.0
-# FR #6391 / #6405: ticket-closure poll backup (webhook is event-first). Default 15 min.
-TICKET_CLOSURE_S = 900.0
+# FR #6391 / #6405 / #10012: ticket-closure poll backup. Default hourly.
+TICKET_CLOSURE_S = 3600.0
 FIRST_TICKET_CLOSURE_DELAY_S = 45.0
 
 def ticket_closure_interval_s() -> float:
-    """FR #6405: default 15 min; override with JEEVES_TICKET_CLOSURE_S (>=60)."""
+    """FR #10012: default 3600s; override with JEEVES_TICKET_CLOSURE_S (>=60)."""
     raw = (os.environ.get("JEEVES_TICKET_CLOSURE_S") or "").strip()
     if raw:
         try:
