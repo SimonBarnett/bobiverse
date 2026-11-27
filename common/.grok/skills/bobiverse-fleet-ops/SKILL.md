@@ -199,4 +199,6 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - Tip tray hotpatch on a remote shop: Install-BobTrayHotpatch can fail when BobTrayLifecycle uses try/catch as a hashtable value (WinPS 5.1); fix parse before ForceNew; interactive TipForm start may still need the console (schtasks /IT 267011); living host FRs use Refs not Closes.
 <!-- harvest-tip:intake-in_64d865bc6b044096 -->
 - Tray Plan/Priority links need tip bob-tray.exe (Agents>Plan/Priority) plus vendor\plan\PlanAgent.exe (skills-visionary plan-v* release, sha verified) and vendor\priority\PriorityAgent.exe; ForceNew Start-BobTray -SkipServiceRestart; --dump-menu takes an output path
+<!-- harvest-tip:intake-in_ens_2abab6d5a634 -->
+- On marchhare, when ARP bob VERSION exceeds git tip VERSION Sync skip-newer-install blocks compose; overlaying tip flat scripts beside an older frozen bob-ear.exe can exit-2 crash-loop --- tip skills/common first, rebuild/Install-BobEarExe (or newer bob MSI) before tip scripts robocopy, keep ROLLBACK.ps1
 <!-- harvest-lessons-eof -->
