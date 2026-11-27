@@ -52,8 +52,8 @@ def test_fr8846_cursor_launch_writes_skill_dag_mcp_server(tmp_path):
     data = json.loads(spec.files[mcp_key])
     assert "skill-dag" in data.get("mcpServers", {})
     server = data["mcpServers"]["skill-dag"]
-    assert server.get("command")
-    assert isinstance(server.get("args"), list) and server["args"]
+    assert server.get("url") == bw.BOB_SKILL_MCP_URL
+    assert "command" not in server
     prompt_txt = spec.files[str(run / "prompt.txt")]
     assert "skill-dag-mcp-down" in prompt_txt
     assert "bob\\bob\\scripts" not in prompt_txt

@@ -154,7 +154,10 @@ def test_fr8785_flat_install_spaces_prompt_matches_mcp_and_once_resolve(
     mcp_key = str(worker / ".cursor" / "mcp.json")
     assert mcp_key in spec.files
     cfg = json.loads(spec.files[mcp_key])["mcpServers"]["skill-dag"]
-    args = list(cfg["args"])
+    assert cfg.get("url") == bw.BOB_SKILL_MCP_URL
+    assert "args" not in cfg
+    # Local script still resolves a job tree when invoked directly (path-with-spaces).
+    args = bw.skill_dag_mcp_launch_args(str(worker), job_worktree=job_wt)
     assert Path(args[0]).resolve() == flat_mcp.resolve()
     assert "--job-worktree-file" in args
     ptr_path = Path(args[args.index("--job-worktree-file") + 1])

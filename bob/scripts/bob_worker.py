@@ -192,24 +192,27 @@ def resolve_install_root(raw: str | None = None) -> str:
     return _default_install_root()
 
 
+# FR #10146: worker seats call the public skill catalog. Do not launch a local stdio MCP.
+BOB_SKILL_MCP_URL = "https://bob.ntsa.uk/mcp"
+
+
+def skill_dag_remote_mcp_entry() -> dict:
+    """HTTP skill-dag entry shared by Cursor and OpenCode seat configs (FR #10146)."""
+    return {"url": BOB_SKILL_MCP_URL}
+
+
+def skill_dag_remote_mcp_toml_block() -> str:
+    return "[mcp_servers.skill-dag]\n" f'url = "{BOB_SKILL_MCP_URL}"\n'
+
+
 def maybe_sync_install_skills(*, install_root: str | None = None, job_busy: bool = False) -> dict:
-    """FR #7238: overlay origin `.grok/skills` between jobs (never mid-ACK)."""
-    root = str(install_root or os.environ.get("BOB_INSTALL_ROOT") or "").strip()
-    if not root:
-        return {"ok": False, "reason": "no-install", "sha": ""}
-    try:
-        import sync_install_skills as sis
-    except ImportError:
-        scripts = _common_scripts_dir()
-        sys.path.insert(0, str(scripts))
-        try:
-            import sync_install_skills as sis  # type: ignore
-        except ImportError:
-            return {"ok": False, "reason": "no-helper", "sha": ""}
-    try:
-        return sis.sync_install_skills_from_origin(root, job_busy=job_busy)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "reason": type(exc).__name__, "sha": ""}
+    """FR #10146: do not git-overlay `.grok/skills` between jobs.
+
+    The seat book is ``https://bob.ntsa.uk/mcp`` (``list_catalog`` / ``get_skill``).
+    ``install_root`` and ``job_busy`` are kept so existing callers stay valid.
+    """
+    del install_root, job_busy
+    return {"ok": True, "reason": "remote-mcp", "sha": ""}
 
 
 def _common_scripts_dir() -> Path:
@@ -4157,19 +4160,17 @@ def write_skill_dag_mcp_config(
     *,
     vision_cwd: str | Path | None = None,
 ) -> Path:
-    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#6899).
+    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#10146).
 
-    ``vision_cwd`` is the install worker tree used for ``--root`` packs. Bound grok
-    seats pass the install worker here so rewrite does not take roots from bound-cwd.
+    The entry is the public HTTP catalog (``list_catalog`` / ``get_skill``). It does
+    not launch ``skill_dag_mcp.py --root``. ``vision_cwd`` is unused for the URL.
     """
+    del vision_cwd
     grok_dir = Path(worker_cwd) / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
     cfg = grok_dir / "config.toml"
-    roots_from = str(vision_cwd or worker_cwd)
     write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
-    block = _skill_dag_toml_block(
-        skill_dag_mcp_launch_args(roots_from, job_worktree=None, pointer_cwd=worker_cwd)
-    )
+    block = skill_dag_remote_mcp_toml_block()
     text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
     new = _upsert_skill_dag_toml(text, block)
     if text != new:
@@ -4201,14 +4202,7 @@ def cursor_skill_dag_mcp_document(
     job_worktree: str | Path | None = None,
 ) -> dict:
     write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
-    return {
-        "mcpServers": {
-            "skill-dag": {
-                "command": "python",
-                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=None),
-            }
-        }
-    }
+    return {"mcpServers": {"skill-dag": skill_dag_remote_mcp_entry()}}
 
 
 def write_cursor_skill_dag_mcp_config(
@@ -6055,25 +6049,30 @@ def opencode_skill_dag_mcp_document(
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898 / #7196)."""
-    perm = opencode_skill_read_permission_block(worker_cwd)
+    """Project ``opencode.json`` fragment with the public skill-dag MCP (FR #6898 / #10146)."""
+    del worker_cwd
+    perm: dict = {}
     if job_worktree:
-        allow = perm.setdefault("external_directory", {})
+        allow: dict = {}
         for key in opencode_job_worktree_read_patterns(job_worktree):
             allow[key] = "allow"
         # FR #8572: linked worktree gitdir (index.lock) is outside the job cwd.
         for key in opencode_job_gitdir_read_patterns(job_worktree):
             allow[key] = "allow"
-    return {
+        if allow:
+            perm["external_directory"] = allow
+    doc = {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
             "skill-dag": {
-                "type": "local",
-                "command": skill_dag_mcp_argv(worker_cwd, job_worktree=job_worktree),
+                "type": "remote",
+                "url": BOB_SKILL_MCP_URL,
             }
         },
-        "permission": perm,
     }
+    if perm:
+        doc["permission"] = perm
+    return doc
 
 
 def write_opencode_skill_dag_mcp_config(
@@ -6155,9 +6154,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
     rules = rules_text(cwd, mode)
     files: dict = {}
     job_wt = (os.environ.get("BOB_JOB_WORKTREE") or "").strip() or None
+    # FR #10146: seat MCP is the public URL written into config files, not a stdio argv.
     mcp_args: list = []
-    if str(mode).strip().lower() == "agent" and str(kind).strip().lower() in ("grok", "cursor"):
-        mcp_args = skill_dag_mcp_launch_args(cwd, job_worktree=job_wt)
     if kind == "grok":
         # FR #2699: every grok seat (agent/plan/monitor/maintenance) shares the same
         # --no-auto-update + --no-alt-screen prefix so Plan cannot self-update mid-session.
