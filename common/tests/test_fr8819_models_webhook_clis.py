@@ -61,7 +61,8 @@ def test_fr8819_get_returns_nested_clis_and_agents(tmp_path: Path):
         "Cursor",
         "Opencode",
         "Opencode-Free",
-        "Copilot",
+        "Copilot-MRB",
+        "Copilot-PR",
     ]
     for row in doc["agents"]:
         assert "cli" in row and row["cli"]
