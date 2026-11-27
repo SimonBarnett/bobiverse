@@ -1023,6 +1023,10 @@ class ChairJobs:
             return
         if not self._fleet_pool_busy.acquire(blocking=False):
             return
+        if not gab.GithubApiBudget(self.digest_home).allow("fleet"):
+            self._fleet_pool_busy.release()
+            self.log("INFO fleet-pools skipped: github backoff")
+            return
         slot = float(self.next_fleet_pool)
         nxt = slot + float(FLEET_POOL_TICK_S)
         while nxt <= now:
@@ -1106,6 +1110,10 @@ class ChairJobs:
         token, _src = self.token_loader()
         now_f = self.clock()
         observe = True
+        # FR #10013: same-token GitHub calls stop when the shared floor says no.
+        if not gab.GithubApiBudget(self.digest_home).allow("copilot"):
+            self.log("INFO copilot-tick skipped: github backoff")
+            return
 
         def fetch_user() -> dict:
             data, code = self._github_json(
