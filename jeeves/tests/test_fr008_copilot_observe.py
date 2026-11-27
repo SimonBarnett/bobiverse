@@ -204,17 +204,32 @@ def test_observe_independent_of_dispatch_disabled(tmp_path):
 
 
 def test_observe_independent_of_cooldown(tmp_path):
-    """Observer still runs under cooldown; FR #9733 clears sticky exhaust when obs is ok."""
+    """Observer still runs under cooldown; FR #9733 clears sticky exhaust when obs has remaining>0."""
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW)
     cd.mark_tokens_exhausted(tmp_path, now=NOW, reset_date="2099-01-01T00:00:00Z")
     assert cd.cooldown_active(tmp_path, now=NOW + 10) is True
     cd.observe_quota(tmp_path, fetch_user=lambda: LIMITED, now=NOW + 400)
     assert cd.load_observation(tmp_path)["remaining"] == 140
-    # LIMITED parses as state=ok — sticky exhaust must clear (FR #9733).
+    # LIMITED has remaining>0 — sticky exhaust must clear (FR #9733).
     allow = cd.load_allowance(tmp_path)
     assert allow.get("tasks_exhausted") is False
     assert allow.get("exhausted") is False
     assert cd.cooldown_active(tmp_path, now=NOW + 410) is False
+
+
+def test_observe_unlimited_remaining_zero_does_not_clear_sticky_exhaust(tmp_path):
+    """FR #9986: phantom unlimited+remaining=0 must not clear coding-agent exhaust."""
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW)
+    cd.mark_tokens_exhausted(tmp_path, now=NOW, reset_date="2099-01-01T00:00:00Z")
+    assert cd.cooldown_active(tmp_path, now=NOW + 10) is True
+    cd.observe_quota(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW + 400)
+    obs = cd.load_observation(tmp_path)
+    assert obs.get("unlimited") is True
+    assert obs.get("remaining") == 0
+    allow = cd.load_allowance(tmp_path)
+    assert allow.get("tasks_exhausted") is True
+    assert cd.cooldown_active(tmp_path, now=NOW + 410) is True
+    assert cd.has_allowance(tmp_path, now=NOW + 410) is False
 
 
 def test_observe_failure_does_not_clear_sticky_exhaust(tmp_path):
