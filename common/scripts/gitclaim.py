@@ -1277,13 +1277,30 @@ def depends_gate_reason(
     digests were absent from the local queue).
     """
     # FR #10055 / #10057: finished FIX rows and rows outside the operator wave.
+    # The offer path reads the queue: done FIX ids and doc["operator_wave_open"].
     try:
         import digest_offer_gate as _wave
 
-        why_fix = _wave.finished_fix_reoffer_reason(row)
+        view = dict(row) if isinstance(row, dict) else {}
+        qdoc = doc if isinstance(doc, dict) else {}
+        if "recent_done_keys" not in view:
+            done_keys = []
+            for item in qdoc.get("done") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("task") or "").strip().upper() != "FIX":
+                    continue
+                repo_s = str(item.get("repo") or "").strip()
+                num_s = str(item.get("id") or "").strip().lstrip("#")
+                if repo_s and num_s:
+                    done_keys.append("%s#%s" % (repo_s, num_s))
+            view["recent_done_keys"] = done_keys
+        if "operator_wave_open" not in view and qdoc.get("operator_wave_open"):
+            view["operator_wave_open"] = qdoc.get("operator_wave_open")
+        why_fix = _wave.finished_fix_reoffer_reason(view)
         if why_fix:
             return why_fix
-        why_wave = _wave.outside_operator_wave_reason(row)
+        why_wave = _wave.outside_operator_wave_reason(view)
         if why_wave:
             return why_wave
     except Exception:
@@ -1588,6 +1605,10 @@ def row_depends_open_reason(
             return DEPENDS_HELD_REASON
         if g1 == "ok-fr-digest":
             # FR #10059: an unheld OPEN digest still blocks dispatch.
+            import digest_offer_gate as _wave
+
+            if _wave.open_depend_blocks("open", ["fr-digest"]):
+                return DEPENDS_OPEN_REASON
             return DEPENDS_OPEN_REASON
         dep = find_open_fr_row(doc, repo, num) if doc is not None else None
         if dep is not None:

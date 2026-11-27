@@ -19,6 +19,22 @@ def test_fr10057_row_outside_wave_is_blocked():
     assert gate.outside_operator_wave_reason({"id": "9763", "operator_wave_open": ["9763"]}) is None
 
 
+def test_fr10055_queue_done_and_wave_feed_the_gate():
+    import gitclaim
+
+    repo = "SimonBarnett/bobiverse"
+    fix = {"task": "FIX", "repo": repo, "id": "9417", "state": "open"}
+    doc = {
+        "done": [{"task": "FIX", "repo": repo, "id": "#9417"}],
+        "operator_wave_open": ["9763"],
+        "unaccepted": [],
+        "accepted": [],
+    }
+    assert gitclaim.depends_gate_reason(fix, doc) == "finished-fix"
+    other = {"task": "FR", "repo": repo, "id": "9803", "state": "open", "body": "Depends-on: (none)\n"}
+    assert gitclaim.depends_gate_reason(other, doc) == "outside-operator-wave"
+
+
 def test_fr10059_open_depend_blocks():
     assert gate.open_depend_blocks("open", ["hold"]) is True
     assert gate.open_depend_blocks("open", []) is True
