@@ -46,12 +46,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           sparse-checkout: |
-            bob/tray
+            bob/tray/**
             bob/scripts/Build-BobDialogs.ps1
             bob/scripts/Stage-BobTrayHotpatchArtifact.ps1
             bob/scripts/Write-BobTrayDeployedIdentity.ps1
             bob/scripts/bob_tray_version.py
             common/scripts/Bobiverse-Common.ps1
+            common/VERSION
           sparse-checkout-cone-mode: false
 
       - name: Build tray dialogs with Build-BobDialogs.ps1
