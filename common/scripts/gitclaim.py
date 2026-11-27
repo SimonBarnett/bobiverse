@@ -1252,6 +1252,18 @@ def depends_gate_reason(
     ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
     digests were absent from the local queue).
     """
+    # FR #10055 / #10057: finished FIX rows and rows outside the operator wave.
+    try:
+        import digest_offer_gate as _wave
+
+        why_fix = _wave.finished_fix_reoffer_reason(row)
+        if why_fix:
+            return why_fix
+        why_wave = _wave.outside_operator_wave_reason(row)
+        if why_wave:
+            return why_wave
+    except Exception:
+        pass
     if _canon_task(row) != "FR":
         return None
     qdoc = doc if isinstance(doc, dict) else {}
