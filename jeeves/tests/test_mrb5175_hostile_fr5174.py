@@ -34,7 +34,7 @@ def test_http_201_without_task_id_does_not_accept(tmp_path):
             "quota_snapshots": {
                 "premium_interactions": {
                     "unlimited": True,
-                    "remaining": 0,
+                    "remaining": 5,
                     "percent_remaining": 100,
                     "overage_permitted": True,
                     "credits_used": 39,
