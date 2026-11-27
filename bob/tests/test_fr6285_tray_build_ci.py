@@ -31,6 +31,8 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "name: build-bob-tray" in text
     assert "runs-on: windows-latest" in text
     assert "Build-BobDialogs.ps1" in text
+    build = BUILD.read_text(encoding="utf-8")
+    assert "bob\\tray\\dialogs" in build
     assert "bob/tray/**" in text
     assert "bob/tests/test_fr6285_tray_build_ci.py" in text
     assert "persist-credentials: false" in text
