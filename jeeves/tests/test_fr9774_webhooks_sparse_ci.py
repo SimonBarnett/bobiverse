@@ -13,6 +13,7 @@ _ROOTS = (
     "bob/tray/assets/ntsa-gut-logo.png",
     "bob/tray/assets/bob-systray.ico",
     "common/scripts",
+    ".github/workflows/build-jeeves-webhooks.yml",
 )
 
 
