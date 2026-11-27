@@ -40,9 +40,14 @@ def test_fr8808_open_keys_flip_closed_clears_depends_open():
     open_keys = {(REPO.lower(), 5)}
     assert gitclaim.row_depends_open_reason(blocked, open_keys) == gitclaim.DEPENDS_OPEN_REASON
 
-    # Flip: depend CLOSED / not in open set.
+    # Flip: depend CLOSED. Absence alone is unknown (FR #10059); the checker says closed.
     open_keys_after = set()
-    assert gitclaim.row_depends_open_reason(blocked, open_keys_after) is None
+    assert (
+        gitclaim.row_depends_open_reason(
+            blocked, open_keys_after, issue_open=lambda repo, num: False
+        )
+        is None
+    )
 
 
 def test_fr8808_queue_state_closed_drops_from_open_fr_issue_keys():
@@ -59,7 +64,12 @@ def test_fr8808_queue_state_closed_drops_from_open_fr_issue_keys():
 
     keys_closed = gitclaim.open_fr_issue_keys(doc_closed)
     assert (REPO.lower(), 5) not in keys_closed
-    assert gitclaim.row_depends_open_reason(blocked, keys_closed) is None
+    assert (
+        gitclaim.row_depends_open_reason(
+            blocked, keys_closed, issue_open=lambda repo, num: False
+        )
+        is None
+    )
 
 
 def test_fr8808_issue_open_checker_flip_false_clears_gate():
@@ -88,8 +98,13 @@ def test_fr8808_all_depends_closed_when_mixed_refs():
         gitclaim.row_depends_open_reason(blocked, {("simonbarnett/other", 7)})
         == gitclaim.DEPENDS_OPEN_REASON
     )
-    # both closed
-    assert gitclaim.row_depends_open_reason(blocked, set()) is None
+    # both closed. The checker is what proves closed (FR #10059).
+    assert (
+        gitclaim.row_depends_open_reason(
+            blocked, set(), issue_open=lambda repo, num: False
+        )
+        is None
+    )
 
 
 def test_fr8808_8754_index_skips_closed_so_blocked_reason_clears():

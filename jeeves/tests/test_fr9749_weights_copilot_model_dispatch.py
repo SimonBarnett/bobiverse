@@ -24,7 +24,7 @@ def _row(task="FR", num=9749, **extra):
 def _write_weights_copilot(home: Path, model: str) -> None:
     rows = mc.default_agent_rows()
     for r in rows:
-        if r["agent"] == "Copilot":
+        if r["agent"] in ("Copilot", "Copilot-PR", "Copilot-MRB"):
             r["model"] = model
     path = mc.catalog_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)

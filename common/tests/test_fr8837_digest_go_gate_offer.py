@@ -141,13 +141,14 @@ def test_fr8837_fr_digest_open_without_hold_offers(home: Path):
     fi.handle_focus_cmd(home, REPO)
 
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
-    assert st == "ok" and job is not None
-    assert job["id"] == "#8837"
+    # FR #10059: an unheld OPEN digest still blocks the child.
+    assert st == "empty"
+    assert job is None
     doc = gitclaim.load_queue(home)
-    assert gitclaim.row_fr_depends_blocked_reason(child, doc) is None
+    assert gitclaim.row_fr_depends_blocked_reason(child, doc) is not None
     assert (
         gitclaim.row_depends_open_reason(child, gitclaim.open_fr_issue_keys(doc), doc=doc)
-        is None
+        == gitclaim.DEPENDS_OPEN_REASON
     )
 
 

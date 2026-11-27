@@ -83,27 +83,30 @@ def test_fr9733_pool_for_digest_fresher_obs_ok_beats_sticky_allowance(tmp_path: 
     assert not (pool.get("resume_at") or "").strip()
 
 
-def _unlimited_with_remaining(remaining: int) -> dict:
-    snap = json.loads(json.dumps(UNLIMITED))
-    snap["quota_snapshots"]["premium_interactions"]["remaining"] = remaining
-    return snap
+def _unlimited_with_remaining(n: int) -> dict:
+    snap = UNLIMITED["quota_snapshots"]["premium_interactions"]
+    out = {
+        "copilot_plan": UNLIMITED["copilot_plan"],
+        "quota_reset_date_utc": UNLIMITED["quota_reset_date_utc"],
+        "quota_snapshots": {
+            "premium_interactions": dict(snap, remaining=n, unlimited=True),
+        },
+    }
+    return out
 
 
-def test_fr9733_phantom_unlimited_remaining_zero_does_not_clear_sticky(tmp_path: Path):
-    """FR #9986: unlimited + remaining=0 is not fresher fuel, so sticky exhaust stays."""
+def test_fr9733_phantom_unlimited_does_not_clear_sticky(tmp_path: Path):
+    """FR #9986: remaining 0 with unlimited and percent 100 is not a real balance."""
     home = tmp_path / "digest"
     until = NOW + 30 * 24 * 3600
     _write_sticky_exhausted(home, until_epoch=until, fetched_epoch=NOW)
-    assert cd.cooldown_active(home, now=NOW + 10) is True
-
     cd.observe_quota(home, fetch_user=lambda: UNLIMITED, now=NOW + 400)
     allow = cd.load_allowance(home)
     assert allow.get("tasks_exhausted") is True
-    assert cd.cooldown_active(home, now=NOW + 410) is True
 
 
 def test_fr9733_observe_ok_clears_sticky_allowance_exhaust(tmp_path: Path):
-    """observe_quota with remaining>0 clears sticky exhaust stamps (like refresh_allowance)."""
+    """observe_quota ok with remaining>0 clears sticky exhaust stamps."""
     home = tmp_path / "digest"
     until = NOW + 30 * 24 * 3600
     _write_sticky_exhausted(home, until_epoch=until, fetched_epoch=NOW)

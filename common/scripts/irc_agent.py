@@ -5021,19 +5021,28 @@ class Client:
         return "wait"
 
     def _assign_row_named(self, wnick, repo, task, ident, *, names_refresh=None):
+        import github_api_budget as gab
+
+        paused = not gab.GithubApiBudget(self.home).allow("assign")
         return gitclaim.assign_row(
             self.home,
             wnick,
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(
+            pr_exists=None
+            if paused
+            else gitclaim.github_pr_exists_checker(
                 home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
             ),
-            is_pull=gitclaim.github_is_pull_checker(
+            is_pull=None
+            if paused
+            else gitclaim.github_is_pull_checker(
                 home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
             ),
-            issue_open=gitclaim.github_issue_open_checker(
+            issue_open=None
+            if paused
+            else gitclaim.github_issue_open_checker(
                 home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
             ),
             names_refresh=names_refresh,

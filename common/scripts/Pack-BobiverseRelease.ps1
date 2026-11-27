@@ -24,6 +24,8 @@ param(
     [switch]$SkipPriorityExe,
     # Tests only (needs -SkipMsi): skip skills-visionary PlanAgent.exe download (FR #9354); MZ stub / fixture.
     [switch]$SkipPlanAgentExe,
+    # Tests only (needs -SkipMsi): skip jeeves-mcp JeevesAgent.exe download (FR #9689); MZ stub / fixture.
+    [switch]$SkipJeevesAgentExe,
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
     [switch]$SkipJeevesExe,
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
@@ -32,6 +34,12 @@ param(
     [switch]$SkipAircNetworkInstallerExe,
     # Tests only (needs -SkipMsi): skip Watch-AgentHealth.exe compile (FR #6603 stage gates).
     [switch]$SkipWatcherExe,
+    # FR #9766: prebuilt CI artifacts. Release pack copies these and does not rebuild.
+    [string]$TrayArtifactDir = '',
+    [string]$StatusArtifactDir = '',
+    [string]$WatcherArtifactDir = '',
+    # FR #9778: prebuilt webhooks site kit (www + MANIFEST.json). Required for a release pack.
+    [string]$WebhooksArtifactDir = '',
     # FR #6423 / MRB #6427: test-only override for the published-release downgrade gate (requires -SkipMsi).
     [string]$LatestPublishedVersion = '',
     # FR #6423 / MRB #6427: skip GitHub latest comparison (requires -SkipMsi; release packs must not skip).
@@ -74,10 +82,29 @@ if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed t
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 if ($SkipPlanAgentExe -and -not $SkipMsi) { throw '-SkipPlanAgentExe is only allowed together with -SkipMsi (an MSI without PlanAgent.exe must never ship; FR #9354)' }
 if ($SkipPriorityExe -and -not $SkipMsi) { throw '-SkipPriorityExe is only allowed together with -SkipMsi (an MSI without PriorityAgent.exe must never ship; FR #8701)' }
+if ($SkipJeevesAgentExe -and -not $SkipMsi) { throw '-SkipJeevesAgentExe is only allowed together with -SkipMsi (an MSI without JeevesAgent.exe must never ship; FR #9689)' }
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
 if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
 if ($SkipWatcherExe -and -not $SkipMsi) { throw '-SkipWatcherExe is only allowed together with -SkipMsi (an MSI without Watch-AgentHealth.exe must never ship; FR #6603)' }
+if (-not $TrayArtifactDir -and $env:BOB_TRAY_ARTIFACT) { $TrayArtifactDir = $env:BOB_TRAY_ARTIFACT }
+if (-not $StatusArtifactDir -and $env:BOB_STATUS_ARTIFACT) { $StatusArtifactDir = $env:BOB_STATUS_ARTIFACT }
+if (-not $WatcherArtifactDir -and $env:BOB_WATCHER_ARTIFACT) { $WatcherArtifactDir = $env:BOB_WATCHER_ARTIFACT }
+if (-not $WebhooksArtifactDir -and $env:BOB_WEBHOOKS_ARTIFACT_DIR) { $WebhooksArtifactDir = $env:BOB_WEBHOOKS_ARTIFACT_DIR }
+
+function Copy-BobPrebuiltExe {
+    param(
+        [string]$Dir,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Dest
+    )
+    $src = if ($Dir) { Join-Path $Dir $Name } else { '' }
+    if (-not $src -or -not (Test-Path -LiteralPath $src)) { throw "missing $Name" }
+    $destDir = Split-Path -Parent $Dest
+    if ($destDir) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+    Copy-Item -LiteralPath $src -Destination $Dest -Force
+    Write-Host "INFO bob staged prebuilt $Name"
+}
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -281,9 +308,95 @@ function Stage-BobAgentFolders([string]$Stage) {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ("INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701 / #9354 tag={0})" -f $priVendor.tag)
+    # FR #9689: stage JeevesAgent.exe from jeeves-mcp release for TipForm Agents > Jeeves.
+    # Mirrored into vendor\ by Copy-BobTrayVendorExes.
+    $jeevesDir = Join-Path $Stage 'jeeves'
+    New-Item -ItemType Directory -Force -Path $jeevesDir | Out-Null
+    $jeevesAgentExe = Join-Path $jeevesDir 'JeevesAgent.exe'
+    $jeevesVendor = $null
+    $jeevesSrc = $null
+    foreach ($c in @(
+            [string]$env:BOB_JEEVES_AGENT_EXE,
+            (Join-Path $OutDir 'JeevesAgent.exe')
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { $jeevesSrc = $c; break }
+    }
+    if ($SkipJeevesAgentExe) {
+        $fix = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\JeevesAgent.exe'
+        if ($jeevesSrc) {
+            Copy-Item -LiteralPath $jeevesSrc -Destination $jeevesAgentExe -Force
+        } elseif (Test-Path -LiteralPath $fix -PathType Leaf) {
+            Copy-Item -LiteralPath $fix -Destination $jeevesAgentExe -Force
+        } else {
+            [IO.File]::WriteAllBytes($jeevesAgentExe, [byte[]](0x4D, 0x5A))
+        }
+        $jeevesVendor = @{
+            tag = 'skip-test'
+            sha256 = (Get-BobiverseFileSha256 -Path $jeevesAgentExe)
+            bytes = [int64](Get-Item -LiteralPath $jeevesAgentExe).Length
+            repo = 'local-skip'
+            asset = 'JeevesAgent.exe'
+            url = ''
+            path = $jeevesAgentExe
+        }
+        Write-Host 'WARN bob pack: -SkipJeevesAgentExe (test stage JeevesAgent.exe stub)'
+    } elseif ($jeevesSrc) {
+        Copy-Item -LiteralPath $jeevesSrc -Destination $jeevesAgentExe -Force
+        $jeevesVendor = @{
+            tag = 'local'
+            sha256 = (Get-BobiverseFileSha256 -Path $jeevesAgentExe)
+            bytes = [int64](Get-Item -LiteralPath $jeevesAgentExe).Length
+            repo = 'local'
+            asset = 'JeevesAgent.exe'
+            url = $jeevesSrc
+            path = $jeevesAgentExe
+        }
+        Write-Host ("INFO bob staged jeeves\JeevesAgent.exe from {0}" -f $jeevesSrc)
+    } else {
+        $jeevesTag = [string]$env:BOB_JEEVES_AGENT_RELEASE_TAG
+        $cache = Join-Path $OutDir 'vendor\jeeves-mcp'
+        try {
+            $jeevesVendor = Save-BobiverseGhReleaseVerifiedExe `
+                -Repo 'SimonBarnett/jeeves-mcp' `
+                -AssetName 'JeevesAgent.exe' `
+                -Destination $jeevesAgentExe `
+                -Tag $jeevesTag `
+                -CacheDir $cache `
+                -TimeoutSec 900
+        } catch {
+            # FIX #9742: CI must not fail the bob MSI while jeeves-mcp#7 has no release.
+            # Operator packs (no GITHUB_ACTIONS) still fail closed.
+            $msg = $_.Exception.Message
+            $ciStub = ($env:GITHUB_ACTIONS -eq 'true') -and ($msg -match 'release not found|Resolve-BobiverseGhReleaseTag')
+            if (-not $ciStub) { throw }
+            $fix = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\JeevesAgent.exe'
+            if (Test-Path -LiteralPath $fix -PathType Leaf) {
+                Copy-Item -LiteralPath $fix -Destination $jeevesAgentExe -Force
+            } else {
+                [IO.File]::WriteAllBytes($jeevesAgentExe, [byte[]](0x4D, 0x5A))
+            }
+            $jeevesVendor = @{
+                tag = 'ci-missing-release'
+                sha256 = (Get-BobiverseFileSha256 -Path $jeevesAgentExe)
+                bytes = [int64](Get-Item -LiteralPath $jeevesAgentExe).Length
+                repo = 'SimonBarnett/jeeves-mcp'
+                asset = 'JeevesAgent.exe'
+                url = ''
+                path = $jeevesAgentExe
+            }
+            Write-Host ("WARN FR #9689: jeeves-mcp release missing ({0}); CI staged fixture JeevesAgent.exe" -f $msg)
+        }
+    }
+    if (-not (Test-Path -LiteralPath $jeevesAgentExe -PathType Leaf)) {
+        throw 'FR #9689: bob MSI stage missing jeeves\JeevesAgent.exe'
+    }
+    $jeevesMan = Join-Path $jeevesDir 'JeevesAgent.MANIFEST.json'
+    $null = Write-BobiverseVendoredExeManifest -Path $jeevesMan -Info $jeevesVendor -Fr '9689' -Bob ''
+    Write-Host ("INFO bob staged jeeves\JeevesAgent.exe for bob-ear MSI (FR #9689 tag={0})" -f $jeevesVendor.tag)
     # FR #9468 / #9598: mirror PlanAgent + PriorityAgent into vendor\; never stage bob-plan.exe.
     # TipForm Agents > Plan uses vendor\plan\PlanAgent.exe (FR #9605 / #9641). Release sources:
     # skills-visionary plan-* / priority-mcp launcher-*.
+    # FR #9689: also mirror JeevesAgent.exe into vendor\jeeves\.
     $null = Copy-BobTrayVendorExes -Root $Stage -Require
     if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\plan\PlanAgent.exe') -PathType Leaf)) {
         throw 'FR #9468/#9598: bob MSI stage missing vendor\plan\PlanAgent.exe'
@@ -293,6 +406,9 @@ function Stage-BobAgentFolders([string]$Stage) {
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\priority\PriorityAgent.exe') -PathType Leaf)) {
         throw 'FR #9468: bob MSI stage missing vendor\priority\PriorityAgent.exe'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'vendor\jeeves\JeevesAgent.exe') -PathType Leaf)) {
+        throw 'FR #9689: bob MSI stage missing vendor\jeeves\JeevesAgent.exe'
     }
 
 
@@ -642,13 +758,29 @@ function Stage-Product([string]$Name) {
         if (-not (Test-Path -LiteralPath $seedSrc)) { throw 'jeeves pack requires common\defaults\models-valid-combos.seed.json (FR #8709)' }
         Copy-Item -LiteralPath $seedSrc -Destination (Join-Path $defaultsDest 'models-valid-combos.seed.json') -Force
         Write-Host 'INFO jeeves staged defaults\models-valid-combos.seed.json (FR #8709)'
-        # FR #7455: publish jeeves/www beside flat scripts so Install-BobWebhooks ..\www\irc-ntsa works from MSI layout.
-        $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
-        if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }
+        # FR #7455 layout still ships www. FR #9778: a release pack copies it from the webhooks artifact.
         $wwwDest = Join-Path $stage 'www'
         New-Item -ItemType Directory -Force -Path $wwwDest | Out-Null
-        Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
-        Write-Host 'INFO jeeves staged www from jeeves\www (FR #7455)'
+        if (-not $SkipMsi) {
+            if (-not $WebhooksArtifactDir) {
+                throw 'jeeves release pack requires -WebhooksArtifactDir or BOB_WEBHOOKS_ARTIFACT_DIR (FR #9778)'
+            }
+            $manifest = Join-Path $WebhooksArtifactDir 'MANIFEST.json'
+            $wwwSrc = Join-Path $WebhooksArtifactDir 'www'
+            if (-not (Test-Path -LiteralPath $manifest)) {
+                throw "jeeves pack missing MANIFEST.json under WebhooksArtifactDir (FR #9778): $WebhooksArtifactDir"
+            }
+            if (-not (Test-Path -LiteralPath $wwwSrc)) {
+                throw "jeeves pack missing www under WebhooksArtifactDir (FR #9778): $WebhooksArtifactDir"
+            }
+            Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
+            Write-Host 'INFO jeeves staged www from webhooks artifact (FR #9778)'
+        } else {
+            $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
+            if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }
+            Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
+            Write-Host 'INFO jeeves staged www from jeeves\www for -SkipMsi tests (FR #7455)'
+        }
         # FR #2301 / WP3: one-file jeeves.exe (chair + in-proc HTTP)
         $jeevesExeDir = Join-Path $stage 'jeeves'
         New-Item -ItemType Directory -Force -Path $jeevesExeDir | Out-Null
@@ -675,11 +807,8 @@ function Stage-Product([string]$Name) {
             if ($SkipWatcherExe) {
                 Write-Host 'WARN bob pack: -SkipWatcherExe (test stage; no Watch-AgentHealth.exe)'
             } else {
-                $buildWatcher = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobWatcher.ps1')
-                $watcherExe = (& $buildWatcher -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
-                if (-not $watcherExe -or -not (Test-Path -LiteralPath $watcherExe)) { throw 'Build-BobWatcher.ps1 did not produce Watch-AgentHealth.exe' }
-                Copy-Item -LiteralPath $watcherExe -Destination (Join-Path $wahDest 'Watch-AgentHealth.exe') -Force
-                Write-Host 'INFO bob staged Watch-AgentHealth.exe'
+                # FR #9766: do not call Build-BobWatcher.ps1 on the release path.
+                Copy-BobPrebuiltExe -Dir $WatcherArtifactDir -Name 'Watch-AgentHealth.exe' -Dest (Join-Path $wahDest 'Watch-AgentHealth.exe')
             }
             Write-Host "INFO bob staged Watch-AgentHealth from $wahSrc"
         } else {
@@ -702,9 +831,11 @@ function Stage-Product([string]$Name) {
         if (Test-Path -LiteralPath $dlgSrc) {
             New-Item -ItemType Directory -Force -Path (Join-Path $stage 'dialogs') | Out-Null
             Copy-Item -Path (Join-Path $dlgSrc '*') -Destination (Join-Path $stage 'dialogs') -Recurse -Force
-            $buildDialogs = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobDialogs.ps1')
-            $dlgExes = @(& $buildDialogs -RepoRoot $RepoRoot -OutDir (Join-Path $stage 'tools'))
-            if ($dlgExes.Count -lt 3) { throw 'Build-BobDialogs.ps1 did not produce bob-about.exe + bob-status.exe + bob-tray.exe' }
+            # FR #9766: stage prebuilt dialog exes. Do not call Build-BobDialogs.ps1.
+            $toolsOut = Join-Path $stage 'tools'
+            Copy-BobPrebuiltExe -Dir $TrayArtifactDir -Name 'bob-tray.exe' -Dest (Join-Path $toolsOut 'bob-tray.exe')
+            Copy-BobPrebuiltExe -Dir $TrayArtifactDir -Name 'bob-about.exe' -Dest (Join-Path $toolsOut 'bob-about.exe')
+            Copy-BobPrebuiltExe -Dir $StatusArtifactDir -Name 'bob-status.exe' -Dest (Join-Path $toolsOut 'bob-status.exe')
         } else { throw 'bob pack requires bob/tray/dialogs (t828u compiled dialogs)' }
         # Merge BobBridge module into stage\src (keep bobiverse VERSION)
         $traySrcDir = Join-Path $traySrc 'src'

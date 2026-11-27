@@ -1826,7 +1826,21 @@ function Start-BobTrayAgentWatch {
     }
     elseif (Test-BobTrayAgentFuelExhausted -Kind $kind) {
         if ($kind -eq 'cursor') {
-            # cursor-agent supports --api-key / CURSOR_API_KEY (session BYOK).
+            # FR #10001: this machine's CURSOR_API_KEY or ~/.cursor login. Do not prompt when either is present.
+            $cred = Resolve-BobCursorSeatCredential
+            if ($cred.Source -eq 'local-env') {
+                $key = [Environment]::GetEnvironmentVariable('CURSOR_API_KEY', 'User')
+                if ([string]::IsNullOrWhiteSpace($key)) {
+                    $key = [Environment]::GetEnvironmentVariable('CURSOR_API_KEY', 'Process')
+                }
+                Write-TrayLog 'agents: cursor using local CURSOR_API_KEY (value not logged)'
+                $sessionEnv = @{ CURSOR_API_KEY = $key }
+                $key = $null
+            }
+            elseif ($cred.Source -eq 'local-login') {
+                Write-TrayLog 'agents: cursor using local login (~/.cursor); no session key dialog'
+            }
+            else {
             Write-TrayLog 'agents: cursor fuel remaining 0 - requesting session CURSOR_API_KEY dialog'
             $key = Show-BobTraySessionApiKeyDialog -Title 'Cursor session API key' -Prompt "No Cursor tokens remaining (auto / cursor_pools).`r`nEnter CURSOR_API_KEY for this start only (not saved; process-scoped for the child only)."
             if (-not $key) {
@@ -1843,6 +1857,7 @@ function Start-BobTrayAgentWatch {
                 return
             }
             $sessionEnv = @{ CURSOR_API_KEY = $key }
+            }
         }
     }
     $ps = $ps1
