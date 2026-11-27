@@ -20692,10 +20692,16 @@ class Supervisor:
         # Sweep remaining extras; prefer install root as KeepPath so finished wt is gone.
         anchor = install or wt
         if (self.kind or "").strip().lower() == "opencode" and anchor:
-            try:
-                opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
-            except Exception as e:  # noqa: BLE001
-                self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+            # FR #10038: Clear must not block ACK/inject. Run it off the seat
+            # thread. TimeoutExpired is logged inside the helper and does not
+            # starve the job path.
+            def _clear() -> None:
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+
+            threading.Thread(target=_clear, name="oc-clear", daemon=True).start()
         self._clear_per_job_seat_state(job)
 
     def _opencode_finish_decide(self, job_key: str) -> str:
