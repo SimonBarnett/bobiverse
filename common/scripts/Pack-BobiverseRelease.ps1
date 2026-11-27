@@ -32,6 +32,10 @@ param(
     [switch]$SkipAircNetworkInstallerExe,
     # Tests only (needs -SkipMsi): skip Watch-AgentHealth.exe compile (FR #6603 stage gates).
     [switch]$SkipWatcherExe,
+    # FR #9766: prebuilt CI artifacts. Release pack copies these and does not rebuild.
+    [string]$TrayArtifactDir = '',
+    [string]$StatusArtifactDir = '',
+    [string]$WatcherArtifactDir = '',
     # FR #6423 / MRB #6427: test-only override for the published-release downgrade gate (requires -SkipMsi).
     [string]$LatestPublishedVersion = '',
     # FR #6423 / MRB #6427: skip GitHub latest comparison (requires -SkipMsi; release packs must not skip).
@@ -78,6 +82,23 @@ if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed t
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
 if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
 if ($SkipWatcherExe -and -not $SkipMsi) { throw '-SkipWatcherExe is only allowed together with -SkipMsi (an MSI without Watch-AgentHealth.exe must never ship; FR #6603)' }
+if (-not $TrayArtifactDir -and $env:BOB_TRAY_ARTIFACT) { $TrayArtifactDir = $env:BOB_TRAY_ARTIFACT }
+if (-not $StatusArtifactDir -and $env:BOB_STATUS_ARTIFACT) { $StatusArtifactDir = $env:BOB_STATUS_ARTIFACT }
+if (-not $WatcherArtifactDir -and $env:BOB_WATCHER_ARTIFACT) { $WatcherArtifactDir = $env:BOB_WATCHER_ARTIFACT }
+
+function Copy-BobPrebuiltExe {
+    param(
+        [string]$Dir,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Dest
+    )
+    $src = if ($Dir) { Join-Path $Dir $Name } else { '' }
+    if (-not $src -or -not (Test-Path -LiteralPath $src)) { throw "missing $Name" }
+    $destDir = Split-Path -Parent $Dest
+    if ($destDir) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+    Copy-Item -LiteralPath $src -Destination $Dest -Force
+    Write-Host "INFO bob staged prebuilt $Name"
+}
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -675,11 +696,8 @@ function Stage-Product([string]$Name) {
             if ($SkipWatcherExe) {
                 Write-Host 'WARN bob pack: -SkipWatcherExe (test stage; no Watch-AgentHealth.exe)'
             } else {
-                $buildWatcher = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobWatcher.ps1')
-                $watcherExe = (& $buildWatcher -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
-                if (-not $watcherExe -or -not (Test-Path -LiteralPath $watcherExe)) { throw 'Build-BobWatcher.ps1 did not produce Watch-AgentHealth.exe' }
-                Copy-Item -LiteralPath $watcherExe -Destination (Join-Path $wahDest 'Watch-AgentHealth.exe') -Force
-                Write-Host 'INFO bob staged Watch-AgentHealth.exe'
+                # FR #9766: do not call Build-BobWatcher.ps1 on the release path.
+                Copy-BobPrebuiltExe -Dir $WatcherArtifactDir -Name 'Watch-AgentHealth.exe' -Dest (Join-Path $wahDest 'Watch-AgentHealth.exe')
             }
             Write-Host "INFO bob staged Watch-AgentHealth from $wahSrc"
         } else {
@@ -702,9 +720,11 @@ function Stage-Product([string]$Name) {
         if (Test-Path -LiteralPath $dlgSrc) {
             New-Item -ItemType Directory -Force -Path (Join-Path $stage 'dialogs') | Out-Null
             Copy-Item -Path (Join-Path $dlgSrc '*') -Destination (Join-Path $stage 'dialogs') -Recurse -Force
-            $buildDialogs = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobDialogs.ps1')
-            $dlgExes = @(& $buildDialogs -RepoRoot $RepoRoot -OutDir (Join-Path $stage 'tools'))
-            if ($dlgExes.Count -lt 3) { throw 'Build-BobDialogs.ps1 did not produce bob-about.exe + bob-status.exe + bob-tray.exe' }
+            # FR #9766: stage prebuilt dialog exes. Do not call Build-BobDialogs.ps1.
+            $toolsOut = Join-Path $stage 'tools'
+            Copy-BobPrebuiltExe -Dir $TrayArtifactDir -Name 'bob-tray.exe' -Dest (Join-Path $toolsOut 'bob-tray.exe')
+            Copy-BobPrebuiltExe -Dir $TrayArtifactDir -Name 'bob-about.exe' -Dest (Join-Path $toolsOut 'bob-about.exe')
+            Copy-BobPrebuiltExe -Dir $StatusArtifactDir -Name 'bob-status.exe' -Dest (Join-Path $toolsOut 'bob-status.exe')
         } else { throw 'bob pack requires bob/tray/dialogs (t828u compiled dialogs)' }
         # Merge BobBridge module into stage\src (keep bobiverse VERSION)
         $traySrcDir = Join-Path $traySrc 'src'
