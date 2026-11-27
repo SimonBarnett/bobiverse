@@ -1173,13 +1173,24 @@ def weights_copilot_model(home: Path | str | None, kind: str | None = None) -> s
     except Exception:  # noqa: BLE001
         return ""
     want = copilot_agent_for_kind(kind) if kind else "Copilot"
+    seen = False
+    model = ""
+    legacy = ""
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if str(row.get("agent") or "").strip() != want:
-            continue
-        return str(row.get("model") or "").strip()
-    return ""
+        agent = str(row.get("agent") or "").strip()
+        text = str(row.get("model") or "").strip()
+        if agent == want:
+            seen = True
+            model = text
+        elif agent == "Copilot":
+            legacy = text
+    # A present kind row wins, including a blank model. Legacy Copilot is only
+    # used when that kind row has not been saved yet.
+    if seen or want == "Copilot":
+        return model
+    return legacy
 
 
 def resolve_copilot_model(*, home: Path | None = None, kind: str | None = None) -> str:
