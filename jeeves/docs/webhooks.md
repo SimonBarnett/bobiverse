@@ -18,7 +18,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/report` | Public fleet digest JSON (FR #9864: soft-degrade within `BOB_REPORT_BUILD_BUDGET_S`; may include `degraded` / `degraded_parts`). |
 | GET | `/bob/v1/digest` | Fast last-good / lightweight fleet JSON alias (FR #9864). IIS rewrites to backend digest (not a client 301 to report). |
 | POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
-| POST | `/bob/v1/git` | GitHub git webhook → digest queue |
+| POST | `/bob/v1/git` | GitHub git webhook → digest queue. Allow-list matches `New-BobGitWebhook.ps1`, including `workflow_run` and `pull_request_review` (FR #10007). |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
 | POST | `/bob/v1/hours` | Create a work-time entry (open or closed); needs `idempotency_key` — **open, no secret** (FR #3450) |
