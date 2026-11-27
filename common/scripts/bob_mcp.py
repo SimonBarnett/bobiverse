@@ -2,17 +2,42 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import bob_skill_catalog as catalog
 
 MCP_PATH = "/mcp"
 HOST = "https://bob.ntsa.uk"
+_PRODUCTS = ("bob", "jeeves", "common", "airc")
 
 
 def default_roots() -> list[Path]:
-    repo = Path(__file__).resolve().parents[2]
-    return [repo / name / ".grok" / "skills" for name in ("bob", "jeeves", "common", "airc")]
+    """Skill books live in the bobiverse checkout, not inside the frozen exe.
+
+    A webhook ``jeeves.exe`` extracts to ``_MEI*``. ``__file__`` there does not
+    see ``C:\\ai\\bobiverse\\bob\\.grok\\skills``. Prefer that install tree, then
+    ``BOB_REPO_ROOT``, then the repo that contains this file.
+    """
+    repos: list[Path] = []
+    install = Path(r"C:\ai\bobiverse")
+    if install.is_dir():
+        repos.append(install)
+    env_root = (os.environ.get("BOB_REPO_ROOT") or "").strip()
+    if env_root:
+        repos.append(Path(env_root))
+    repos.append(Path(__file__).resolve().parents[2])
+    found: list[Path] = []
+    seen: set[str] = set()
+    for repo in repos:
+        for name in _PRODUCTS:
+            root = repo / name / ".grok" / "skills"
+            key = str(root).lower()
+            if key in seen or not root.is_dir():
+                continue
+            seen.add(key)
+            found.append(root)
+    return found
 
 
 def describe() -> dict:
