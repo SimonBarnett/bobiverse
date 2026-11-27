@@ -18918,7 +18918,16 @@ class Supervisor:
                     return False
             blocked, msg = probe_gh_auth(subprocess.run)
             if blocked:
+                # FR #10039: do not stay online as a job-capable seat.
                 self.log(msg)
+                self.log(
+                    "opencode: gh_auth_missing; leaving "
+                    "(fingerprint opencode_gh_auth_missing) FR #10039"
+                )
+                try:
+                    self.shutdown("gh-auth-missing", EXIT_REFUSED)
+                except Exception as e:
+                    self.log(f"opencode: gh-auth shutdown failed {type(e).__name__}")
                 return False
         with self._lock:
             if self._shutting:
