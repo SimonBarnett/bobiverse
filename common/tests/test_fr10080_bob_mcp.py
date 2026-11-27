@@ -48,6 +48,21 @@ def test_post_list_and_get(tmp_path: Path):
     skill = json.loads(json.loads(body)["result"]["content"][0]["text"])
     assert "hello" in skill["skillMd"]
     assert "github_pat_" not in body.decode()
+    req["id"] = 3
+    req["params"] = {"name": "get_skill", "arguments": {"skill": "bob-shop"}}
+    code, body = bob_mcp.handle_mcp("POST", json.dumps(req).encode(), roots)
+    assert code == 200
+    by_skill = json.loads(json.loads(body)["result"]["content"][0]["text"])
+    assert by_skill["name"] == "bob-shop"
+    req["id"] = 4
+    req["params"] = {
+        "name": "get_skill",
+        "arguments": {"path": "bob/.grok/skills/bob-shop/SKILL.md"},
+    }
+    code, body = bob_mcp.handle_mcp("POST", json.dumps(req).encode(), roots)
+    assert code == 200
+    by_path = json.loads(json.loads(body)["result"]["content"][0]["text"])
+    assert "hello" in by_path["skillMd"]
 
 
 def test_callback_routes_mcp_and_home_card(tmp_path: Path):
