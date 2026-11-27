@@ -38,6 +38,8 @@ param(
     [string]$TrayArtifactDir = '',
     [string]$StatusArtifactDir = '',
     [string]$WatcherArtifactDir = '',
+    # FR #9778: prebuilt webhooks site kit (www + MANIFEST.json). Required for a release pack.
+    [string]$WebhooksArtifactDir = '',
     # FR #6423 / MRB #6427: test-only override for the published-release downgrade gate (requires -SkipMsi).
     [string]$LatestPublishedVersion = '',
     # FR #6423 / MRB #6427: skip GitHub latest comparison (requires -SkipMsi; release packs must not skip).
@@ -88,6 +90,7 @@ if ($SkipWatcherExe -and -not $SkipMsi) { throw '-SkipWatcherExe is only allowed
 if (-not $TrayArtifactDir -and $env:BOB_TRAY_ARTIFACT) { $TrayArtifactDir = $env:BOB_TRAY_ARTIFACT }
 if (-not $StatusArtifactDir -and $env:BOB_STATUS_ARTIFACT) { $StatusArtifactDir = $env:BOB_STATUS_ARTIFACT }
 if (-not $WatcherArtifactDir -and $env:BOB_WATCHER_ARTIFACT) { $WatcherArtifactDir = $env:BOB_WATCHER_ARTIFACT }
+if (-not $WebhooksArtifactDir -and $env:BOB_WEBHOOKS_ARTIFACT_DIR) { $WebhooksArtifactDir = $env:BOB_WEBHOOKS_ARTIFACT_DIR }
 
 function Copy-BobPrebuiltExe {
     param(
@@ -755,13 +758,29 @@ function Stage-Product([string]$Name) {
         if (-not (Test-Path -LiteralPath $seedSrc)) { throw 'jeeves pack requires common\defaults\models-valid-combos.seed.json (FR #8709)' }
         Copy-Item -LiteralPath $seedSrc -Destination (Join-Path $defaultsDest 'models-valid-combos.seed.json') -Force
         Write-Host 'INFO jeeves staged defaults\models-valid-combos.seed.json (FR #8709)'
-        # FR #7455: publish jeeves/www beside flat scripts so Install-BobWebhooks ..\www\irc-ntsa works from MSI layout.
-        $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
-        if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }
+        # FR #7455 layout still ships www. FR #9778: a release pack copies it from the webhooks artifact.
         $wwwDest = Join-Path $stage 'www'
         New-Item -ItemType Directory -Force -Path $wwwDest | Out-Null
-        Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
-        Write-Host 'INFO jeeves staged www from jeeves\www (FR #7455)'
+        if (-not $SkipMsi) {
+            if (-not $WebhooksArtifactDir) {
+                throw 'jeeves release pack requires -WebhooksArtifactDir or BOB_WEBHOOKS_ARTIFACT_DIR (FR #9778)'
+            }
+            $manifest = Join-Path $WebhooksArtifactDir 'MANIFEST.json'
+            $wwwSrc = Join-Path $WebhooksArtifactDir 'www'
+            if (-not (Test-Path -LiteralPath $manifest)) {
+                throw "jeeves pack missing MANIFEST.json under WebhooksArtifactDir (FR #9778): $WebhooksArtifactDir"
+            }
+            if (-not (Test-Path -LiteralPath $wwwSrc)) {
+                throw "jeeves pack missing www under WebhooksArtifactDir (FR #9778): $WebhooksArtifactDir"
+            }
+            Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
+            Write-Host 'INFO jeeves staged www from webhooks artifact (FR #9778)'
+        } else {
+            $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
+            if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }
+            Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
+            Write-Host 'INFO jeeves staged www from jeeves\www for -SkipMsi tests (FR #7455)'
+        }
         # FR #2301 / WP3: one-file jeeves.exe (chair + in-proc HTTP)
         $jeevesExeDir = Join-Path $stage 'jeeves'
         New-Item -ItemType Directory -Force -Path $jeevesExeDir | Out-Null
