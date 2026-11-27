@@ -189,6 +189,10 @@ gh pr ready <url>   # or just: gh pr ready   (from the worktree; uses the curren
 
 A draft PR is not reviewable and strands the MRB. Verify `gh pr view <pr> --json isDraft` reports `false` before DONE.
 
+## CI only when closing a digest (FR #10056)
+
+A child FR, a child FIX, and an MRB of a child do not run the package suite and do not start GitHub Actions. Do not run `gh run watch`, `gh pr checks --watch`, or `gh workflow run`. Do not push an empty commit to retrigger CI. Local evidence is the diff and the one new test file. One CI run belongs to the pull request that closes the digest, after its children are done. FR #3948 still applies at MRB: do not poll CI.
+
 ## Targeted in-job tests (FR #8157)
 
 OpenCode (and other seats) must **not** run full trees such as `python -m pytest jeeves/tests -q` or `python -m pytest common/tests -q` inside a job --- those hit the ~600 s shell tool timeout and burn the job budget. CI already runs the full suites on the PR.
