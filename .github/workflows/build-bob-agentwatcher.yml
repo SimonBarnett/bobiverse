@@ -1,0 +1,103 @@
+# Isolated Watch-AgentHealth.exe build (FR #9765).
+# Not a release, MSI, install, or service restart. Build-BobWatcher.ps1 owns PyInstaller.
+# Sparse checkout: agentwatcher sources plus the build script. Artifact bob-agentwatcher.
+name: build-bob-agentwatcher
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-agentwatcher.yml
+      - bob/agentwatcher/**
+      - bob/scripts/Build-BobWatcher.ps1
+      - bob/tests/test_fr9765_agentwatcher_build_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-bob-agentwatcher.yml
+      - bob/agentwatcher/**
+      - bob/scripts/Build-BobWatcher.ps1
+      - bob/tests/test_fr9765_agentwatcher_build_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-agentwatcher:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            bob/agentwatcher
+            bob/scripts/Build-BobWatcher.ps1
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
+
+      - name: Build Watch-AgentHealth.exe with Build-BobWatcher.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "agentwatcher-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $py = (Get-Command python).Source
+          & "$root\bob\scripts\Build-BobWatcher.ps1" -RepoRoot $root -OutDir $out -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobWatcher.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "watcher-build\dist\Watch-AgentHealth.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing Watch-AgentHealth.exe" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $exe).Length
+          $builtAt = [DateTime]::UtcNow.ToString("o")
+          $runId = [string]$env:GITHUB_RUN_ID
+          $stage = Join-Path $env:RUNNER_TEMP "agentwatcher-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "Watch-AgentHealth.exe")
+          Set-Content -Encoding ascii (Join-Path $stage "Watch-AgentHealth.exe.sha256") "$hash  Watch-AgentHealth.exe"
+          $manifest = [ordered]@{
+            source_commit   = $env:WORKFLOW_COMMIT
+            workflow_commit = $env:WORKFLOW_COMMIT
+            exe_name        = "Watch-AgentHealth.exe"
+            exe_sha256      = $hash
+            exe_size_bytes  = $size
+            build_time_utc  = $builtAt
+            workflow_run_id = $runId
+            builder         = "Build-BobWatcher.ps1"
+            fr              = "9765"
+            files           = @("Watch-AgentHealth.exe", "Watch-AgentHealth.exe.sha256", "MANIFEST.json")
+          }
+          ($manifest | ConvertTo-Json -Depth 5) | Set-Content -Encoding utf8 (Join-Path $stage "MANIFEST.json")
+          @(
+            "source_commit=$($env:WORKFLOW_COMMIT)"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
+            "exe_name=Watch-AgentHealth.exe"
+            "exe_sha256=$hash"
+            "exe_size_bytes=$size"
+            "build_time_utc=$builtAt"
+            "workflow_run_id=$runId"
+            "builder=Build-BobWatcher.ps1"
+            "fr=9765"
+            "files=Watch-AgentHealth.exe,Watch-AgentHealth.exe.sha256,MANIFEST.json"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+          "stage=$stage" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-agentwatcher
+          path: ${{ runner.temp }}/agentwatcher-artifact
+          if-no-files-found: error

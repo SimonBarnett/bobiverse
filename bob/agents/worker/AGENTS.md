@@ -23,9 +23,11 @@ Your working folder is `<ai root>\bob\worker`. This file is also shipped as `CLA
 
 ## Read first (in this order)
 
-- `.grok/skills/bobiverse-worker-seat/SKILL.md` - how you receive and answer IRC messages, what you may and must not touch
-- `.grok/skills/bobiverse-bob-worker/SKILL.md` - how the worker program starts you, selects the agent, restarts you if hung
-- `.grok/skills/bobiverse-bob-job-irc/SKILL.md` - EXACT ACK / DONE / NACK / GIVEUP lines, `!bored`, which channel, when to send each (read before any job)
+Load each playbook with `POST https://bob.ntsa.uk/mcp` (`tools/call` `get_skill`, argument `name`). Do not `git clone`, sparse-checkout, or download the skill book from GitHub to learn it. Git publishes the catalog. The seat reads it over HTTPS. `Copy-BobProjectSkills` writes those bodies into `~/.grok/skills` before the agent starts.
+
+- `bobiverse-worker-seat` - how you receive and answer IRC messages, what you may and must not touch
+- `bobiverse-bob-worker` - how the worker program starts you, selects the agent, restarts you if hung
+- `bobiverse-bob-job-irc` - EXACT ACK / DONE / NACK / GIVEUP lines, `!bored`, which channel, when to send each (read before any job)
 - `.grok/skills/bobiverse-bob-job-fr/SKILL.md`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat` - one skill per job type, each with its process diagram, evidence and owners
 - `.grok/skills/bobiverse-bob/SKILL.md` and `.grok/skills/bobiverse-fleet-ops/SKILL.md` - the bob service and fleet rules
 - `.grok/skills/harvest/SKILL.md` and `.grok/skills/harvest-agent-skills/SKILL.md` - harvest + intake
