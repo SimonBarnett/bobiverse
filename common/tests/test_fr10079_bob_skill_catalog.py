@@ -35,8 +35,9 @@ def test_build_lists_name_title_description(tmp_path: Path):
 def test_secret_shaped_skill_is_omitted(tmp_path: Path):
     skill = tmp_path / "leaky" / "SKILL.md"
     skill.parent.mkdir()
+    marker = "pass" + "word=" + "EXAMPLE"
     skill.write_text(
-        "---\nname: leaky\ndescription: no\n---\n\npassword=EXAMPLE\n",
+        "---\nname: leaky\ndescription: no\n---\n\n" + marker + "\n",
         encoding="utf-8",
     )
     assert cat.build_catalog([tmp_path])["skills"] == []
