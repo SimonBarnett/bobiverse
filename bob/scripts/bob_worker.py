@@ -7073,9 +7073,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    Invoke-OpencodeRun $raw '' ''",
             r"}",
-            # FR #8133: do not run the standing prompt as a watched turn. Idle seats
-            # wait on ReadLine; the first job inject starts turn_started and the ceiling.
-            r"Write-Output 'opencode-ready: idle (FR #8133; first turn is the first job inject)'",
+            # Same as Grok and Cursor: the seat prompt (MCP skill-dag, then the
+            # worker briefing) is the first OpenCode run. It is not a job, so
+            # FR #8133 still leaves the hard ceiling off until a @@BOBJOB1 inject.
+            r"Write-Output 'opencode-ready: prompt (skill-dag MCP + seat prompt)'",
+            r"Invoke-OpencodeRun $prompt '' ''",
             r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-OpencodeInbound $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
             r"exit 0",
         ])
