@@ -29,6 +29,8 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
 | PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
+| GET | `/bob/v1/ask/health` | Ask webhook liveness: `{"ok":true,"service":"ask"}` (FR #10032 / digest #10031). Open. |
+| POST | `/bob/v1/ask` | Accept an ask envelope (`sc`, `correlation_id`, optional `text`). Fail closed unless `sc` is in `BOB_ASK_ALLOWLIST` (FR #10033): missing or empty allowlist returns 403 `not_allowed`. Success **202** echoes `correlation_id` and does not echo `sc`. Secret-shaped JSON keys return 400 `secret_field`. Do not log the body. Other verbs **405**. |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
