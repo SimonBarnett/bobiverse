@@ -1,7 +1,48 @@
-# bobiverse
+# Bobiverse
 
-Fleet IRC product: single-file MSIs for **Jeeves** (Ergo + chair), **Bob** ears, and **airc** consoles.
+**6GL for software: say what you want in plain English. Git does the work. IRC runs the shop.**
 
+Bobiverse turns feature intent into shipped code with a closed loop:
+
+| Role | What it does |
+|------|----------------|
+| **Plan** | Writes feature-request digests with Gantt-style dependencies |
+| **Jeeves** | Deterministic Windows service: queues, assigns, and chairs the fleet |
+| **Bob** | Machine agents that open PRs, run merge-review boards (MRB), and fix CI |
+
+**Control surface:** private IRC (`#bobiverse` + per-machine shops).
+**Fuel today:** xAI Grok / Cursor / OpenAI-compatible CLIs. **Codex:** next.
+
+<p align="center">
+  <img src="docs/assets/readme/01-bob-fleet-tray.png" alt="Bob Fleet tray: Agents and Plan" width="720" />
+</p>
+
+<p align="center"><em>Bob Fleet tray - start Plan or a worker seat (Grok / Cursor / OpenCode)</em></p>
+
+<p align="center">
+  <img src="docs/assets/readme/02-halloy-shop-wire.png" alt="Halloy shop: Jeeves assign and worker ACK" width="720" />
+</p>
+
+<p align="center"><em>Shop wire - deterministic Jeeves assign, Bob worker ACK on IRC</em></p>
+
+<p align="center">
+  <img src="docs/assets/readme/03-fleet-irc-presence.png" alt="Live fleet presence on IRC" width="720" />
+</p>
+
+<p align="center"><em>Live fleet presence - ears, shops, and chair on the wire</em></p>
+
+### Why it matters
+
+- **Plain English in, Git out.** Intent is planned as digests; code lands as PRs with review boards and CI fixes.
+- **Deterministic chair.** Jeeves is a service, not an LLM - assign / ACK / DONE is an exact wire contract.
+- **Multi-agent fuel.** Swap CLIs without rewriting the shop. Codex plugs in as another Bob seat.
+- **Training-grade traces.** Every job yields structured Git + IRC history (plan -> assign -> patch -> MRB -> CI) for coding-agent eval - with secrets kept out of the wire.
+
+More product context: [docs/VISION-product-onepager.md](docs/VISION-product-onepager.md).
+
+Fleet product ships as single-file MSIs for **Jeeves** (Ergo + chair), **Bob** ears, and **airc** consoles. Operator install and sync docs start below.
+
+## Operator docs
 | MSI | Service(s) | Nick | Install tree |
 |-----|------------|------|--------------|
 | `jeeves-*.msi` | `BobIrcd` + `ircJeeves` | `Jeeves` | `<ai root>\jeeves` (+ Ergo → `<ai root>\ergo`) |
@@ -15,7 +56,7 @@ The repo is split per service; each folder holds that service's scripts, skills,
 ```text
 jeeves/   scripts/ (Install-Jeeves, Start-Jeeves, Install-BobIrcd/Chair/Webhooks, Watch-*) .grok/skills/ AGENTS.md docs/ tools/ tests/
 bob/      scripts/ (Install-Bob, Start-Bob*, bob_worker.py, Build-BobWorker) .grok/skills/ AGENTS.md agents/{worker,plan} docs/
-          tray/ (the systray: tools/ src/ assets/ config/ dialogs/ = bob-about + bob-status exes) agentwatcher/ (Watch-AgentHealth) tests/   (t829u: first-class bob sources; staged/installed trees stay flat)
+          tray/ (the systray: tools/ src/ assets/ config/ dialogs/ = bob-about + bob-status exes) agentwatcher/ (Watch-AgentHealth; CI build-bob-agentwatcher.yml artifact bob-agentwatcher, FR #9765) tests/   (t829u: first-class bob sources; staged/installed trees stay flat)
 airc/     scripts/ (Install-Airc*, Start-AircConsole*, airc_console*.py) .grok/skills/ AGENTS.md docs/ packaging/Product.wxs tests/
 common/   scripts/ (Bobiverse-Common, Pack-BobiverseRelease, Fetch-*, Update/Sync/Check, repo_layout.py, the shared python engine: irc_agent.py wire.py ...)
           .grok/skills/ (harvest, fleet-ops) docs/ third_party/{nssm,ergo,wix}/ VERSION tests/ (tests only; repo_layout.py lives in common/scripts — FR #963)

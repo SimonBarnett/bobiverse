@@ -1146,11 +1146,21 @@ def record_api_result(
             set_allowance(home, exhausted=False)
 
 
-def weights_copilot_model(home: Path | str | None) -> str:
-    """Weights Copilot agent ``model`` from ``models-catalog.json`` (FR #9749).
+def copilot_agent_for_kind(kind: str | None) -> str:
+    """FR #9996: MRB and FIX use Copilot-MRB; FR uses Copilot-PR."""
+    k = str(kind or "").strip().upper()
+    if k in ("MRB", "FIX"):
+        return "Copilot-MRB"
+    if k == "FR":
+        return "Copilot-PR"
+    return "Copilot"
 
-    Empty string when home missing, catalog unavailable, or Copilot row blank
-    (omit key on task POST → GitHub Auto).
+
+def weights_copilot_model(home: Path | str | None, kind: str | None = None) -> str:
+    """Weights Copilot agent ``model`` from ``models-catalog.json`` (FR #9749 / #9996).
+
+    Kind selects Copilot-MRB or Copilot-PR. Empty string when home missing,
+    catalog unavailable, or the row model is blank (omit key on task POST).
     """
     if home is None:
         return ""
@@ -1162,24 +1172,41 @@ def weights_copilot_model(home: Path | str | None) -> str:
         rows = mc.load_catalog_file(home)
     except Exception:  # noqa: BLE001
         return ""
+    want = copilot_agent_for_kind(kind) if kind else "Copilot"
+    seen = False
+    model = ""
+    legacy = ""
+    pr_model = ""
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if str(row.get("agent") or "").strip() != "Copilot":
-            continue
-        return str(row.get("model") or "").strip()
-    return ""
+        agent = str(row.get("agent") or "").strip()
+        text = str(row.get("model") or "").strip()
+        if agent == want:
+            seen = True
+            model = text
+        elif agent == "Copilot":
+            legacy = text
+        elif agent == "Copilot-PR":
+            pr_model = text
+    # A present kind row wins, including a blank model. Untyped reads use the
+    # Copilot row, then Copilot-PR (FR #9995) when that row was renamed.
+    if seen:
+        return model
+    if not kind:
+        return legacy or pr_model
+    return legacy
 
 
-def resolve_copilot_model(*, home: Path | None = None) -> str:
-    """CCA ``model`` for ``agents/.../tasks`` (FR #9738 / #9749).
+def resolve_copilot_model(*, home: Path | None = None, kind: str | None = None) -> str:
+    """CCA ``model`` for ``agents/.../tasks`` (FR #9738 / #9749 / #9996).
 
-    When ``home`` is set, Weights Copilot row is the locked source (FR #9749):
+    When ``home`` is set, the kind row is the locked source:
     non-empty → include; empty → omit (do not fall through to env/allowance).
-    Without ``home``, env ``BOB_COPILOT_MODEL`` then allowance ``model``.
+    Without ``home``, env ``BOB_COPILOT_MODEL``.
     """
     if home is not None:
-        return weights_copilot_model(home)
+        return weights_copilot_model(home, kind)
     raw = (os.environ.get("BOB_COPILOT_MODEL") or "").strip()
     if raw:
         return raw
@@ -1244,7 +1271,7 @@ def build_task_body(
             f"Closes {repo}{ident if ident.startswith('#') else '#' + ident}."
         )
     body: dict[str, str] = {"prompt": "\n".join(prompt_lines)}
-    model_s = resolve_copilot_model(home=home) if model is None else str(model or "").strip()
+    model_s = resolve_copilot_model(home=home, kind=task) if model is None else str(model or "").strip()
     if model_s:
         body["model"] = model_s
     br = resolve_copilot_base_ref(home=home) if base_ref is None else str(base_ref or "").strip()
@@ -1539,8 +1566,8 @@ def dispatch_row(
     if st not in ("ok", "duplicate"):
         return {"status": "accept-failed", "accept": st}
     doc = _load_jobs(home)
-    # FR #9749: persist Weights Copilot model on the job for digest/tray (#9748).
-    model = resolve_copilot_model(home=home)
+    # FR #9996: persist the kind row (MRB/FIX → Copilot-MRB, FR → Copilot-PR).
+    model = resolve_copilot_model(home=home, kind=task)
     job_row = {
         "repo": repo,
         "task": task,

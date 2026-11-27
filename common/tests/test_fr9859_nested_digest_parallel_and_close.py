@@ -157,29 +157,18 @@ def test_fr9859_parallel_children_both_offerable(home: Path):
     fi.handle_focus_cmd(home, REPO)
 
     doc = gitclaim.load_queue(home)
-    assert gitclaim.depends_gate_reason(child_a, doc) is None
-    assert gitclaim.depends_gate_reason(child_c, doc) is None
+    # FR #10059: an unheld OPEN digest still blocks both children.
+    assert gitclaim.depends_gate_reason(child_a, doc) == gitclaim.DEPENDS_OPEN_REASON
+    assert gitclaim.depends_gate_reason(child_c, doc) == gitclaim.DEPENDS_OPEN_REASON
 
-    # Digests are not work offers.
     assert gitclaim.row_is_digest_issue(digest)
 
     st1, job1 = gitclaim.offer_focus_top(home, me1, "#marchhare")
-    assert st1 == "ok" and job1 is not None
-    assert job1["id"] in ("#101", "#103")
-
+    assert st1 == "empty"
+    assert job1 is None
     st2, job2 = gitclaim.offer_focus_top(home, me2, "#marchhare")
-    assert st2 == "ok" and job2 is not None
-    assert job2["id"] in ("#101", "#103")
-    assert job1["id"] != job2["id"]
-
-    doc2 = gitclaim.load_queue(home)
-    offered = {
-        r["id"]: str(r.get("offered_to") or "")
-        for r in doc2["unaccepted"]
-        if r.get("id") in ("#101", "#103")
-    }
-    assert offered["#101"] and offered["#103"]
-    assert offered["#101"] != offered["#103"]
+    assert st2 == "empty"
+    assert job2 is None
 
 
 def test_fr9859_ordered_sibling_blocks_until_closed(home: Path):
@@ -209,10 +198,22 @@ def test_fr9859_ordered_sibling_blocks_until_closed(home: Path):
     fi.handle_focus_cmd(home, REPO)
 
     doc = gitclaim.load_queue(home)
-    assert gitclaim.depends_gate_reason(child_a, doc) is None
+    # Digest #200 is still OPEN, so A is blocked too (FR #10059).
+    assert gitclaim.depends_gate_reason(child_a, doc) == gitclaim.DEPENDS_OPEN_REASON
     why_b = gitclaim.depends_gate_reason(child_b, doc)
     assert why_b == gitclaim.DEPENDS_OPEN_REASON
 
+    st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
+    assert st == "empty"
+    assert job is None
+
+    # Close the digest. A is then offerable; B stays blocked on open A.
+    digest_row = next(r for r in doc["accepted"] if r.get("id") == "#200")
+    digest_row["state"] = "closed"
+    gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    doc = gitclaim.load_queue(home)
+    child_a = next(r for r in doc["unaccepted"] if r.get("id") == "#201")
+    assert gitclaim.depends_gate_reason(child_a, doc) is None
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok" and job is not None
     assert job["id"] == "#201"
@@ -220,12 +221,11 @@ def test_fr9859_ordered_sibling_blocks_until_closed(home: Path):
     # Accept A (move to accepted) - B still blocked while A open/accepted.
     doc = gitclaim.load_queue(home)
     unacc = [r for r in doc["unaccepted"] if r.get("id") != "#201"]
-    accepted = list(doc.get("accepted") or []) + [
-        next(r for r in doc["unaccepted"] if r.get("id") == "#201")
-    ]
-    accepted[-1]["nick"] = me
-    accepted[-1]["accepted_ts"] = "2026-10-01T11:00:00Z"
-    _write(home, unaccepted=unacc, accepted=[digest] + [accepted[-1]])
+    a_moved = next(r for r in doc["unaccepted"] if r.get("id") == "#201")
+    a_moved["nick"] = me
+    a_moved["accepted_ts"] = "2026-10-01T11:00:00Z"
+    closed_digest = [r for r in (doc.get("accepted") or []) if r.get("id") == "#200"]
+    _write(home, unaccepted=unacc, accepted=closed_digest + [a_moved])
 
     doc = gitclaim.load_queue(home)
     child_b2 = next(r for r in doc["unaccepted"] if r.get("id") == "#202")
