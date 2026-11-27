@@ -1062,6 +1062,21 @@ def handle_request(
     stash_response_headers([])
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    if route == "/bob/v1/gitcust":
+        import gitcust
+
+        if verb in ("GET", "HEAD"):
+            code, payload = gitcust.catalog(Path(home) if home else Path("."))
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, b"" if verb == "HEAD" else payload
+        if verb == "POST":
+            code, payload = gitcust.register(
+                Path(home) if home else Path("."),
+                body if isinstance(body, (bytes, str)) else b"",
+            )
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, payload
+        return 405, b""
     # FR #6815 / #7274: public /jeeves* on bob.ntsa.uk (IIS rewrite to this process).
     if route == JEEVES_LOGIN_PATH or route.startswith(JEEVES_LOGIN_PATH + "/"):
         import jeeves_settings_http as _jhttp
