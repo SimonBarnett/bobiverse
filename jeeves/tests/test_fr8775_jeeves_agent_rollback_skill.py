@@ -26,6 +26,8 @@ CLOSURE = frozenset(
         "bobiverse-jeeves-agent-monitor",
         "bobiverse-jeeves-agent-winrm",
         "bobiverse-build",
+        # install depends_on winrm (FR #8794 / #9376); resolve(rollback) includes it
+        "bobiverse-jeeves-agent-winrm",
     }
 )
 DEPS = (
