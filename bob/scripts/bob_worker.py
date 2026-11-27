@@ -21103,13 +21103,19 @@ class Supervisor:
             self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
             return
         with self._lock:
-            if self._irc_reconnecting:
-                return
+            # FR #10021: a second write loss after a reconnect (or during the
+            # flush that follows it) must log grace again. Ignoring the loss
+            # while _irc_reconnecting is still true left the seat deaf.
+            already = bool(self._irc_reconnecting)
             self._irc_reconnecting = True
             self._irc_lost_at = self.clock()
         self.log(
             f"irc: lost ({why}); reconnect grace {self.reconnect_grace_s:.0f}s - keeping agent"
         )
+        if already:
+            th_live = self._reconnect_thread
+            if th_live is not None and th_live.is_alive():
+                return
         th = threading.Thread(
             target=self._reconnect_loop, args=(why,), name="irc-reconnect", daemon=True
         )
@@ -21138,11 +21144,14 @@ class Supervisor:
                 try:
                     self.irc.prepare_reconnect()
                     self.irc.connect_with_retries(attempts=1, timeout=20.0, backoff_s=(0.0,))
-                    self.log("irc: reconnected; flushing outbox and re-ACK")
-                    self._after_irc_reconnect()
+                    # FR #10021: clear the reconnecting flag and rebind on_lost
+                    # before any further say, so the next SSLEOFError starts grace.
                     with self._lock:
                         self._irc_reconnecting = False
                         self._irc_lost_at = None
+                    self.irc.on_lost = self._on_irc_lost
+                    self.log("irc: reconnected; flushing outbox and re-ACK")
+                    self._after_irc_reconnect()
                     return
                 except Exception as e:
                     self.log(
@@ -21164,6 +21173,13 @@ class Supervisor:
             self.irc.on_nak = self.bored.nak
             self.irc.on_nak_line = self._replay_done_on_busy_hold  # FR #4642
         ob = self.run_dir / "outbox.txt"
+        # FR #10021: a missing outbox after reconnect is an empty file, not FileNotFoundError.
+        try:
+            if not ob.exists():
+                ob.parent.mkdir(parents=True, exist_ok=True)
+                ob.write_text("", encoding="utf-8")
+        except OSError as e:
+            self.log(f"irc: post-reconnect outbox create {type(e).__name__}")
         try:
             drain_outbox(
                 ob,
