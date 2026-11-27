@@ -23,6 +23,14 @@ def test_fr9766_pack_does_not_invoke_dialog_or_watcher_build():
     assert "Build-BobWatcher.ps1" not in text or "do not call Build-BobWatcher.ps1" in text
 
 
+def test_fr9766_msi_workflow_passes_prebuilt_dirs():
+    wf = (ROOT / ".github" / "workflows" / "build-bob-msi.yml").read_text(encoding="utf-8")
+    assert '-TrayArtifactDir $trayDir' in wf
+    assert '-StatusArtifactDir $statusDir' in wf
+    assert '-WatcherArtifactDir $watcherDir' in wf
+    assert '-Targets "tray,about"' in wf
+
+
 def test_fr9766_docs_name_artifact_inputs():
     docs = DOCS.read_text(encoding="utf-8-sig")
     assert "FR #9766" in docs
