@@ -87,3 +87,68 @@ def register(home: Path, raw) -> tuple[int, bytes]:
             doc["tasks"].append(row)
     save_store(home, doc)
     return 202, json.dumps({"ok": True}).encode("utf-8")
+
+
+_KIND_PREFIX = re.compile(r"^(SC|SO|WBS)[\s._-]*", re.I)
+
+
+def classify_folder(name: str) -> str:
+    upper = (name or "").strip().upper()
+    if upper.startswith("SC"):
+        return "sc"
+    if upper.startswith("SO"):
+        return "so"
+    if upper.startswith("WBS"):
+        return "wbs"
+    return ""
+
+
+def folder_title(folder: Path) -> str:
+    meta = folder / "title.txt"
+    if meta.is_file():
+        text = meta.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        if text and text[0].strip():
+            return text[0].strip()[:240]
+    raw = folder.name.strip()
+    title = _KIND_PREFIX.sub("", raw).strip(" ._-\t")
+    return title or raw
+
+
+def scan_tree(root: Path) -> dict:
+    """Scan customer roots. Task folders are SC/SO/WBS children. Title is never empty."""
+    root = Path(root)
+    customers = []
+    tasks = []
+    if not root.is_dir():
+        return {"customers": customers, "tasks": tasks}
+    for cust in sorted(p for p in root.iterdir() if p.is_dir()):
+        customers.append({"name": cust.name, "path": cust.name})
+        for child in sorted(p for p in cust.iterdir() if p.is_dir()):
+            kind = classify_folder(child.name)
+            if not kind:
+                continue
+            title = folder_title(child)
+            if not title:
+                title = child.name
+            tasks.append(
+                {
+                    "customer": cust.name,
+                    "kind": kind,
+                    "title": title,
+                    "path": f"{cust.name}/{child.name}",
+                }
+            )
+    return {"customers": customers, "tasks": tasks}
+
+
+def merge_scan(home: Path, root: Path) -> dict:
+    found = scan_tree(root)
+    doc = load_store(home)
+    for cust in found["customers"]:
+        if not any(c.get("name") == cust["name"] for c in doc["customers"]):
+            doc["customers"].append(cust)
+    for task in found["tasks"]:
+        if not any(t.get("path") == task["path"] and t.get("kind") == task["kind"] for t in doc["tasks"]):
+            doc["tasks"].append(task)
+    save_store(home, doc)
+    return doc

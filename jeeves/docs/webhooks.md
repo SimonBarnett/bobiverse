@@ -30,7 +30,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
 | PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
 | GET | `/bob/v1/gitcust` | Priority customer and task catalog (`customers`, `tasks` with kind `sc`\|`so`\|`wbs`, free-text title, path). FR #9982. |
-| POST | `/bob/v1/gitcust` | Register a customer and/or task subfolder. 202. Secret-free JSON. FR #9982. |
+| POST | `/bob/v1/gitcust` | Register a customer and/or task subfolder. 202. Secret-free JSON. FR #9982. Scanner (FR #9983) walks customer roots and SC/SO/WBS task folders; title comes from `title.txt` or the folder name and is never empty. |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
