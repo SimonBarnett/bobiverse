@@ -11,6 +11,23 @@ import bob_seat_skills as seat  # noqa: E402
 SRC = ROOT / "scripts" / "bob_seat_skills.py"
 
 
+COPY = ROOT.parent / "bob" / "tray" / "src" / "Private" / "Copy-BobProjectSkills.ps1"
+AGENTS = ROOT.parent / "bob" / "agents" / "worker" / "AGENTS.md"
+
+
+def test_worker_start_loads_dag_not_git():
+    text = COPY.read_text(encoding="utf-8")
+    assert "FR #10081" in text
+    assert "https://bob.ntsa.uk/mcp" in text
+    assert "get_skill" in text
+    assert "list_catalog" in text
+    assert "git clone" not in text.lower()
+    assert "Copy-Item $src" not in text
+    agents = AGENTS.read_text(encoding="utf-8")
+    assert "https://bob.ntsa.uk/mcp" in agents
+    assert "Do not `git clone`" in agents
+
+
 def test_source_does_not_fetch_git():
     text = SRC.read_text(encoding="utf-8")
     assert "FR #10081" in text
