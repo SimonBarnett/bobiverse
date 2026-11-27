@@ -20,6 +20,9 @@ def test_fr9689_pack_pins_vendor_jeeves_paths():
     assert "jeeves-mcp" in pack
     assert "BOB_JEEVES_AGENT_RELEASE_TAG" in pack
     assert "JeevesAgent.exe" in pack
+    # FIX #9742: GitHub Actions may stub when the jeeves-mcp release does not exist yet.
+    assert "GITHUB_ACTIONS" in pack
+    assert "ci-missing-release" in pack
 
 
 def test_fr9689_sync_mirrors_jeeves_into_vendor():

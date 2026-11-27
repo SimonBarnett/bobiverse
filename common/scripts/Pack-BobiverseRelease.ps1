@@ -331,13 +331,37 @@ function Stage-BobAgentFolders([string]$Stage) {
     } else {
         $jeevesTag = [string]$env:BOB_JEEVES_AGENT_RELEASE_TAG
         $cache = Join-Path $OutDir 'vendor\jeeves-mcp'
-        $jeevesVendor = Save-BobiverseGhReleaseVerifiedExe `
-            -Repo 'SimonBarnett/jeeves-mcp' `
-            -AssetName 'JeevesAgent.exe' `
-            -Destination $jeevesAgentExe `
-            -Tag $jeevesTag `
-            -CacheDir $cache `
-            -TimeoutSec 900
+        try {
+            $jeevesVendor = Save-BobiverseGhReleaseVerifiedExe `
+                -Repo 'SimonBarnett/jeeves-mcp' `
+                -AssetName 'JeevesAgent.exe' `
+                -Destination $jeevesAgentExe `
+                -Tag $jeevesTag `
+                -CacheDir $cache `
+                -TimeoutSec 900
+        } catch {
+            # FIX #9742: CI must not fail the bob MSI while jeeves-mcp#7 has no release.
+            # Operator packs (no GITHUB_ACTIONS) still fail closed.
+            $msg = $_.Exception.Message
+            $ciStub = ($env:GITHUB_ACTIONS -eq 'true') -and ($msg -match 'release not found|Resolve-BobiverseGhReleaseTag')
+            if (-not $ciStub) { throw }
+            $fix = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\tests\fixtures\JeevesAgent.exe'
+            if (Test-Path -LiteralPath $fix -PathType Leaf) {
+                Copy-Item -LiteralPath $fix -Destination $jeevesAgentExe -Force
+            } else {
+                [IO.File]::WriteAllBytes($jeevesAgentExe, [byte[]](0x4D, 0x5A))
+            }
+            $jeevesVendor = @{
+                tag = 'ci-missing-release'
+                sha256 = (Get-BobiverseFileSha256 -Path $jeevesAgentExe)
+                bytes = [int64](Get-Item -LiteralPath $jeevesAgentExe).Length
+                repo = 'SimonBarnett/jeeves-mcp'
+                asset = 'JeevesAgent.exe'
+                url = ''
+                path = $jeevesAgentExe
+            }
+            Write-Host ("WARN FR #9689: jeeves-mcp release missing ({0}); CI staged fixture JeevesAgent.exe" -f $msg)
+        }
     }
     if (-not (Test-Path -LiteralPath $jeevesAgentExe -PathType Leaf)) {
         throw 'FR #9689: bob MSI stage missing jeeves\JeevesAgent.exe'
