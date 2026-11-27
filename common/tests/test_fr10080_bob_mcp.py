@@ -30,6 +30,18 @@ def test_get_describes_without_a_token():
     assert "token" not in json.dumps(doc).lower()
 
 
+def test_default_roots_reads_bob_repo_root(tmp_path: Path, monkeypatch):
+    book = tmp_path / "bob" / ".grok" / "skills" / "demo"
+    book.mkdir(parents=True)
+    (book / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: from the checkout\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_REPO_ROOT", str(tmp_path))
+    roots = bob_mcp.default_roots()
+    assert any((root / "demo" / "SKILL.md").is_file() for root in roots)
+
+
 def test_post_list_and_get(tmp_path: Path):
     roots = _roots(tmp_path)
     req = {
