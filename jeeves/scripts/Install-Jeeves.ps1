@@ -420,7 +420,11 @@ if (-not $script:InstallChairService) {
     $sup = Join-Path $InstallRoot 'scripts\Start-BobCallbackSupervised.ps1'
     if (-not (Test-Path -LiteralPath $sup)) { $sup = Join-Path $PSScriptRoot 'Start-BobCallbackSupervised.ps1' }
     $whParams = "-NoProfile -ExecutionPolicy Bypass -File `"$sup`" -DigestHome `"$digestHome`" -Port 7700"
-    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $whName, 'powershell.exe'))
+    # Re-running Install-Jeeves must set the existing service. nssm install throws when it exists.
+    $whSvc = Get-Service -Name $whName -ErrorAction SilentlyContinue
+    if (-not $whSvc) {
+        [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $whName, 'powershell.exe'))
+    }
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'Application', 'powershell.exe'))
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'AppDirectory', (Split-Path -Parent $sup)))
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'AppParameters', $whParams))
