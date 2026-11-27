@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Jeeves webhook-first job DB</title>
+<style>body{font-family:Segoe UI,sans-serif;background:#0d1117;color:#e6edf3;margin:24px}
+h1{font-size:18px}.row{padding:8px;background:#161b22;border:1px solid #30363d;margin:4px 0;max-width:720px}
+.ok{color:#3fb950}.muted{color:#8b949e}</style></head><body>
+<h1>Jeeves job DB — webhook-first (no product UI)</h1>
+<p class="muted">Ops stub: GitHub events update queue.json; hourly ETag only for drift.</p>
+<div class="row"><span class="ok">workflow_run</span> completed success → merge-on-green advance (no 60s poll)</div>
+<div class="row"><span class="ok">pull_request_review</span> accepted → apply_git_webhook (not 400)</div>
+<div class="row"><span class="ok">issues/PR closed</span> → queue drop + ticket-closure wake</div>
+<div class="row">github-api: remaining=4200 used=12/1000 paths=reconcile:8 mog:0 ticket:0</div>
+</body></html>
