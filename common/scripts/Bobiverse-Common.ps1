@@ -1157,17 +1157,41 @@ function Set-BobiverseNssmAppExitRestart {
     FR #1055: pin NSSM to Restart on Default AND exit code 0.
     Graceful chair quit exits 0; without an explicit AppExit 0=Restart some installs
     leave ircJeeves Stopped after a clean exit even when Default=Restart.
+    FR #9863: also pin AppThrottle (default 1500ms). Rapid unexpected bob-ear death
+    inside the throttle window leaves Get-Service Status=Paused until Restart-Service;
+    never Stop-Process the NSSM-managed ear - use Restart-Service / Restart-BobEar.ps1.
     #>
     param(
         [Parameter(Mandatory)][string]$Nssm,
         [Parameter(Mandatory)][string]$ServiceName,
-        [int]$RestartDelayMs = 2000
+        [int]$RestartDelayMs = 2000,
+        [int]$AppThrottleMs = 1500
     )
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', '0', 'Restart'))
     if ($RestartDelayMs -gt 0) {
         [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRestartDelay', ([string]$RestartDelayMs)))
     }
+    # FR #9863: explicit throttle so Pause-after-crash is documented + re-pinned on Update.
+    if ($AppThrottleMs -gt 0) {
+        [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppThrottle', ([string]$AppThrottleMs)))
+    }
+}
+
+function Set-BobiverseNssmAppRotate {
+    <#
+    FR #9896: pin NSSM AppRotate* so AppStdout/AppStderr cannot grow unbounded.
+    Walrus ircJeeves stdout.log hit ~64MB with rotation unset. Defaults match
+    airc Install-AircConsole (1 MiB) plus AppRotateOnline while Running.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Nssm,
+        [Parameter(Mandatory)][string]$ServiceName,
+        [int]$RotateBytes = 1048576
+    )
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRotateFiles', '1'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRotateBytes', ([string]$RotateBytes)))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRotateOnline', '1'))
 }
 
 function Test-BobiverseServiceDeletePending {
@@ -1605,11 +1629,13 @@ function Get-BobiverseDataDriveRoot {
 
 function Get-BobiverseJobWorktreeBase {
     <#
-      FR #4988: base directory for job worktrees / scratch.
+      FR #4988 / #9692: base directory for job worktrees / scratch.
       Override order:
         1. -Override
-        2. env BOB_JOB_WORKTREE_BASE (dedicated)
-        3. -BridgeHome / env BOB_BRIDGE_HOME -> <bridge>\worktrees (never the bare bridge root alone if it is a drive root)
+        2. env BOB_JOB_WORKTREE_BASE (dedicated; kept even on the system drive)
+        3. -BridgeHome / env BOB_BRIDGE_HOME -> <bridge>\worktrees, but when that
+           lands on the system drive and a data disk exists, prefer
+           <data drive>\ai\worktrees (FR #9692 - flamingo C: filled with bridge orphans)
         4. default <data drive>\ai\worktrees
       Never returns a drive root.
     #>
@@ -1622,10 +1648,14 @@ function Get-BobiverseJobWorktreeBase {
         [switch]$Create
     )
     $chosen = $null
+    $fromBridge = $false
+    $fromExplicit = $false
     if ($PSBoundParameters.ContainsKey('Override') -and $Override) {
         $chosen = [string]$Override
+        $fromExplicit = $true
     } elseif ($env:BOB_JOB_WORKTREE_BASE -and $env:BOB_JOB_WORKTREE_BASE.Trim()) {
         $chosen = $env:BOB_JOB_WORKTREE_BASE.Trim()
+        $fromExplicit = $true
     } else {
         if (-not $PSBoundParameters.ContainsKey('BridgeHome')) {
             $BridgeHome = [string]$env:BOB_BRIDGE_HOME
@@ -1636,6 +1666,7 @@ function Get-BobiverseJobWorktreeBase {
                 throw "FR #4988: BOB_BRIDGE_HOME / -BridgeHome must not be a drive root ($bh); set BOB_JOB_WORKTREE_BASE to <drive>\\ai\\worktrees"
             }
             $chosen = [IO.Path]::Combine(([IO.Path]::GetFullPath($bh)).TrimEnd('\'), 'worktrees')
+            $fromBridge = $true
         }
     }
     if (-not $chosen) {
@@ -1652,6 +1683,36 @@ function Get-BobiverseJobWorktreeBase {
     $full = [IO.Path]::GetFullPath($chosen)
     if (Test-BobiverseIsDriveRoot $full) {
         throw "FR #4988: job worktree base must not be a drive root ($full); use <drive>\\ai\\worktrees or set BOB_JOB_WORKTREE_BASE"
+    }
+    # FR #9692: BridgeHome on the system volume must not pin job trees to C: when a
+    # data disk exists. Explicit BOB_JOB_WORKTREE_BASE / -Override still win.
+    # Compare with a path prefix (not only GetPathRoot) so tests can pass fake
+    # -SystemDrive / -Disks roots under a real volume.
+    if ($fromBridge -and -not $fromExplicit) {
+        if (-not $SystemDrive) { $SystemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' } }
+        try {
+            $sysPrefix = [IO.Path]::GetFullPath(($SystemDrive.TrimEnd('\') + '\')).TrimEnd('\')
+        } catch {
+            $sysPrefix = ($SystemDrive.TrimEnd('\') + '\').TrimEnd('\')
+        }
+        $underSystem = $false
+        if ($sysPrefix) {
+            $underSystem = $full.StartsWith($sysPrefix + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                ($full.TrimEnd('\') -ieq $sysPrefix)
+        }
+        if ($underSystem) {
+            $dataRoot = Get-BobiverseDataDriveRoot -Disks $Disks -SystemDrive $SystemDrive
+            $root = [string]$dataRoot
+            if ($root -match '^[A-Za-z]:$') { $root = $root + '\' }
+            elseif ($root -match '^[A-Za-z]:\\+$') { $root = $root.Substring(0, 2) + '\' }
+            else { $root = $root.TrimEnd('\') }
+            $alt = [IO.Path]::GetFullPath([IO.Path]::Combine($root, 'ai', 'worktrees'))
+            $altUnderSystem = $alt.StartsWith($sysPrefix + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                ($alt.TrimEnd('\') -ieq $sysPrefix)
+            if ((-not $altUnderSystem) -and -not (Test-BobiverseIsDriveRoot $alt)) {
+                $full = $alt
+            }
+        }
     }
     # FR #8493: a resolved base on a volume under MinFreeGB (default 2) moves to
     # <data drive>\ai\worktrees when that drive is a different volume. A roomy
@@ -4534,7 +4595,8 @@ function Copy-BobTrayVendorExes {
         return @{ ok = $false; missing = @($missing) }
     }
     # FR #9641: PlanAgent must not be a renamed bob-worker (Agents > Plan must not open a Workers seat).
-    Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require
+    # FR #9843: capture Hashtable return (do not pollute Copy-BobTrayVendorExes callers).
+    $null = Assert-BobiversePlanAgentNotBobWorker -Root $Root -Require:$Require
     return @{ ok = $true; missing = @() }
 }
 

@@ -3880,6 +3880,81 @@ def clear_seat_doing(
 
 
 @_digest_locked
+def clear_machine_workers_after_recycle(
+    home: Path,
+    machine_id: str,
+    *,
+    briefer_nick: str = "",
+) -> dict:
+    """FR #9784: wipe digest workers for a machine right after a successful recycle route.
+
+    Pre-recycle seat nicks must not stay offerable (live_seat_nicks) or paint TipForm
+    as idle/doing while ``bob-worker.exe`` count is 0. Also drop ``workers_last_good``
+    so FR #8513 restore cannot resurrect the ghosts.
+    """
+    mid = fold_machine_id(machine_id) or normalize_machine_id(machine_id) or str(
+        machine_id or ""
+    ).strip().lower()
+    out = {"cleared": False, "machine": mid, "nicks": []}
+    if not mid or mid in {"jeeves", "ircjeeves", "fleet"}:
+        return out
+    doc = load_digest(home)
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid)
+    if not isinstance(ent, dict):
+        # Try unfolder / alias keys.
+        for key, cand in list(machines.items()):
+            if fold_machine_id(key) == mid and isinstance(cand, dict):
+                ent = cand
+                mid = fold_machine_id(key) or mid
+                break
+    if not isinstance(ent, dict):
+        return out
+    nicks: list[str] = []
+    for row in _coerce_worker_list(ent.get("worker_list")):
+        n = str((row or {}).get("nick") or "").strip()
+        if n:
+            nicks.append(n)
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    for pid, w in workers.items():
+        if not str(pid).isdigit():
+            continue
+        if isinstance(w, dict):
+            n = str(w.get("nick") or "").strip()
+            if n:
+                nicks.append(n)
+            else:
+                nicks.append(f"{mid}-{pid}")
+        else:
+            nicks.append(f"{mid}-{pid}")
+    # Dedupe preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for n in nicks:
+        k = n.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(n)
+    out["nicks"] = uniq
+    ent["worker_list"] = []
+    ent["workers"] = {}
+    ent["working_on"] = ""
+    ent.pop("workers_last_good", None)
+    ent.pop("workers_last_good_at", None)
+    ent.pop("workers_stale", None)
+    ent.pop("workers_stale_age_s", None)
+    _refresh_machine_activity_from_worker_list(ent)
+    if briefer_nick:
+        doc["briefer"] = briefer_nick
+    doc["ts"] = _utc_now_iso()
+    _note_event(doc, "recycle-clear-workers", machine=mid, nicks=",".join(uniq[:12]))
+    save_digest(home, doc)
+    out["cleared"] = True
+    return out
+
+
+@_digest_locked
 def set_seat_waiting(
     home: Path,
     nick: str,
@@ -5795,7 +5870,7 @@ def _digest_fleet_layout(doc: dict | None) -> dict:
 
 
 def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
-    """FR #6148 / #7178: public Copilot pool — never omit; prefer freshest source."""
+    """FR #6148 / #7178 / #9748: public Copilot pool + nested ``tasks`` list."""
     try:
         import copilot_dispatch as cd
 
@@ -5808,12 +5883,20 @@ def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
                 best = cd.prefer_public_pool(best, fleet_copilot)
             elif isinstance(sticky, dict):
                 best = cd.prefer_public_pool(best, sticky)
-        return cd.ensure_public_pool(best)
+        pool = cd.ensure_public_pool(best)
+        # Attach after normalize so ensure_public_pool never drops live jobs.
+        try:
+            pool["tasks"] = list(cd.tasks_for_digest(home) or [])
+        except Exception:  # noqa: BLE001
+            pool["tasks"] = []
+        return pool
     except Exception:  # noqa: BLE001
         try:
             import copilot_dispatch as cd
 
-            return cd.empty_public_pool(error="unread")
+            pool = cd.empty_public_pool(error="unread")
+            pool["tasks"] = []
+            return pool
         except Exception:  # noqa: BLE001
             return {
                 "state": "unknown",
@@ -5823,7 +5906,18 @@ def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
                 "reset_at": "",
                 "fetched_at": "",
                 "last_error": "unread",
+                "tasks": [],
             }
+
+
+def _digest_copilot_tasks(home: Path) -> list:
+    """FR #9748: active Copilot jobs (also nested on ``digest.copilot.tasks``)."""
+    try:
+        import copilot_dispatch as cd
+
+        return cd.tasks_for_digest(home)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _intake_outbox_public(home: Path) -> dict:
@@ -5899,6 +5993,8 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
+        # FR #9748: live jobs are digest.copilot.tasks (nested), never top-level
+        # copilot_tasks and never machines.copilot.
         "copilot": _digest_copilot_pool(home, doc),
         "fleet_pools": _digest_fleet_pools(doc),
         "fleet": _digest_fleet_layout(doc),

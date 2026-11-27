@@ -74,10 +74,43 @@ def parse_recycle_wire(body: str) -> str | None:
     return resolve_recycle_machine(token)
 
 
+def _roster_or_chair(mid: str) -> str | None:
+    """Return folded mid when it is on the roster or the chair host."""
+    folded = bobreport.fold_machine_id(mid) or mid
+    if folded in bobreport.roster_machine_ids() or folded == chair_home_machine():
+        return folded
+    return None
+
+
+def resolve_recycle_seat(token: str) -> tuple[str, str] | None:
+    """FR #9780: ``<machine>-<pid>`` seat nick → ``(machine_id, seat_nick)`` or None."""
+    raw = (token or "").strip().lower()
+    if not raw:
+        return None
+    parsed = bobreport.parse_seat_nick(raw)
+    if not parsed:
+        return None
+    mid, pid = parsed
+    folded = _roster_or_chair(mid)
+    if not folded:
+        return None
+    return folded, f"{folded}-{pid}"
+
+
 def resolve_recycle_machine(token: str) -> str | None:
     raw = (token or "").strip().lower()
     if raw in {"jeeves", "ircjeeves"}:
         return "jeeves"
+    # FR #9780: shop seat nick ``flamingo-17160`` maps to machine ``flamingo``.
+    seat = resolve_recycle_seat(raw)
+    if seat:
+        return seat[0]
+    # Bob-<machine> ear form (ops recycle via ear nick).
+    ear_mid = bobreport.machine_from_nick(raw)
+    if ear_mid:
+        hit = _roster_or_chair(ear_mid)
+        if hit:
+            return hit
     mid = bobreport.normalize_machine_id(token)
     if not mid:
         return None

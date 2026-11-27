@@ -379,7 +379,9 @@ function Stage-BobAgentFolders([string]$Stage) {
         Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
         # FR #9641: after worker lands, refuse identical bytes under PlanAgent (Workers seat via Agents > Plan).
-        Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
+        # FR #9843: Assert returns a Hashtable - capture or heat Stage becomes
+        # "System.Collections.Hashtable <path>" (FR #6969 resurfaced).
+        $null = Assert-BobiversePlanAgentNotBobWorker -Root $Stage -Require
     }
     if ($SkipEarExe) {
         Write-Host 'WARN bob pack: -SkipEarExe (test stage; no bob-ear.exe)'
@@ -794,7 +796,8 @@ function Stage-Product([string]$Name) {
         if ((-not $EmbedErgoPassword) -and (Test-Path -LiteralPath $stageErgoGuard)) {
             Remove-Item -LiteralPath $stageErgoGuard -Force
         }
-        Stage-BobAgentFolders -Stage $stage
+        # FR #9843: never let Stage-BobAgentFolders success-stream objects join into $stage.
+        $null = Stage-BobAgentFolders -Stage $stage
         Write-Host ("INFO bob staged TipForm tray from {0} pin={1}" -f $traySrc, ((Get-Content (Join-Path $traySrc 'PIN.txt') -TotalCount 1).Trim()))
     }
     if ($Name -eq 'airc') {
@@ -928,13 +931,30 @@ function Stage-Product([string]$Name) {
     return $stage
 }
 
-function Assert-BobiverseHeatStagePath([string]$Stage) {
+function Assert-BobiverseHeatStagePath {
+    param(
+        # FR #9843: accept object so Hashtable leaks are rejected before [string] join.
+        [Parameter(Mandatory)]$Stage
+    )
     # FR #6969: heat.exe DirectoryHarvester rejects URIs / "npm notice" blobs
     # when Stage-Product leaked native stdout into $stage.
-    $t = [string]$Stage
+    # FR #9843: Hashtable / multi-object success-stream leaks become
+    # "System.Collections.Hashtable <path>" under [string] coercion.
+    if ($null -eq $Stage) { throw 'FR #6969: heat stage path is empty' }
+    if ($Stage -is [System.Collections.IDictionary] -or $Stage -is [hashtable]) {
+        throw 'FR #6969/#9843: heat stage path is a Hashtable (Stage-Product success-stream leak; capture helper output with $null =).'
+    }
+    if ($Stage -is [System.Array] -or ($Stage -is [System.Collections.IList] -and -not ($Stage -is [string]))) {
+        throw 'FR #6969/#9843: heat stage path is a list/array (Stage-Product success-stream leak; capture helper output with $null =).'
+    }
+    if ($Stage -isnot [string] -and $Stage -isnot [System.IO.DirectoryInfo]) {
+        $tn = $Stage.GetType().FullName
+        throw "FR #6969/#9843: heat stage path is not a string path (type=$tn); capture Stage-Product helper output."
+    }
+    $t = if ($Stage -is [System.IO.DirectoryInfo]) { [string]$Stage.FullName } else { [string]$Stage }
     if ([string]::IsNullOrWhiteSpace($t)) { throw 'FR #6969: heat stage path is empty' }
-    if ($t -match '://' -or $t -match '(?i)npm notice') {
-        throw 'FR #6969: heat stage path is not a directory (native command stdout leaked into Stage-Product; capture npm ci).'
+    if ($t -match '://' -or $t -match '(?i)npm notice' -or $t -match '(?i)System\.Collections\.Hashtable') {
+        throw 'FR #6969: heat stage path is not a directory (native command stdout leaked into Stage-Product; capture npm ci / helper Hashtable).'
     }
     if (-not (Test-Path -LiteralPath $t -PathType Container)) {
         $shown = $t
