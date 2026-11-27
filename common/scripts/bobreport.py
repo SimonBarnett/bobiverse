@@ -4737,6 +4737,15 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
     import github_api_budget as gab
 
     ev = (event or "").strip().lower()
+    if ev == "workflow_run":
+        try:
+            import mrb_merge_on_green
+
+            mrb_merge_on_green.handle_workflow_run_event(home, payload)
+        except Exception:  # noqa: BLE001
+            pass
+        gab.stamp_git_webhook(home)
+        return GitWebhookOutcome(ok=True, announced=False)
     if ev == "check_run":
         try:
             import mrb_merge_on_green

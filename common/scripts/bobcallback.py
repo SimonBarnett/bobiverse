@@ -124,13 +124,14 @@ GIT_EVENTS = frozenset(
         "issue_comment",
         "check_run",
         "check_suite",
+        "workflow_run",
     }
 )
-# Subscribed but not applied (CI state comes from check_run + resync).
-GIT_IGNORED_EVENTS = frozenset({"workflow_run"})
+# FR #10007: workflow_run is applied (was ignored). Keep the set for unknown events.
+GIT_IGNORED_EVENTS = frozenset()
 # FR #9104: under local intake rate limit, ack noisy CI storms with 204 (no GitHub retry)
 # instead of 429. push / issues / PR keep 429 so GitHub backs off those.
-GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite"})
+GIT_RATE_DEFER_EVENTS = frozenset({"check_run", "check_suite", "workflow_run"})
 GIT_ERROR_REASONS = frozenset(
     {
         "missing signature",
@@ -1062,6 +1063,28 @@ def handle_request(
     stash_response_headers([])
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    if route == "/bob/v1/gitcust":
+        import gitcust
+
+        if verb in ("GET", "HEAD"):
+            code, payload = gitcust.catalog(Path(home) if home else Path("."))
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, b"" if verb == "HEAD" else payload
+        if verb == "POST":
+            code, payload = gitcust.register(
+                Path(home) if home else Path("."),
+                body if isinstance(body, (bytes, str)) else b"",
+            )
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, payload
+        return 405, b""
+    # FR #10080: public Bob skill MCP. Does not touch /bob/v1/*.
+    if route == "/mcp":
+        import bob_mcp
+
+        code, payload = bob_mcp.handle_mcp(verb, body)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
     # FR #6815 / #7274: public /jeeves* on bob.ntsa.uk (IIS rewrite to this process).
     if route == JEEVES_LOGIN_PATH or route.startswith(JEEVES_LOGIN_PATH + "/"):
         import jeeves_settings_http as _jhttp
