@@ -17201,14 +17201,21 @@ class BoredEmitter:
             self._fire_seat_release_giveup("no-terminal-reply")
         elif reason == "ack-stale":
             self._fire_seat_release_giveup(reason)
-        # FR #7238: pull merged skills between jobs (this send is idle).
+        # FR #10022: send !bored before skill sync or worktree prune. A busy
+        # sync lock or Clear/prune must not hold this tick.
+        ok = False
+        try:
+            ok = bool(self.send())
+        except Exception as e:
+            self.log(f"bored: send error {type(e).__name__}")
         try:
             sk = maybe_sync_install_skills(job_busy=False)
             if sk.get("sha"):
                 self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
+            elif sk.get("reason") in ("skills-sync-busy", "busy"):
+                self.log(f"skills-sync skipped reason={sk.get('reason')}")
         except Exception:
             pass
-        # FR #9183: while idle / after terminal job lines, retry locked removes + sweep extras.
         if reason in ("idle", "start", "done", "free", "turn"):
             sweep = getattr(self, "idle_worktree_sweep_fn", None)
             if sweep is not None:
@@ -17216,11 +17223,6 @@ class BoredEmitter:
                     sweep(reason)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"job-wt-sweep: failed:{type(e).__name__}")
-        ok = False
-        try:
-            ok = bool(self.send())
-        except Exception as e:
-            self.log(f"bored: send error {type(e).__name__}")
         if not ok:
             self._retry_at = now + self.retry_s
             self.log(f"bored: not sent ({reason}) - retry in {self.retry_s:.0f}s")
@@ -19734,12 +19736,9 @@ class Supervisor:
             )
             # Soft-cap extras via existing Clear helper when a job tree (or install) is known.
             anchor = keep or install
+            # FR #10022: Clear/prune on the idle path is OpenCode only. Cursor
+            # !bored must not wait on worktree prune.
             if anchor and (self.kind or "").strip().lower() == "opencode":
-                try:
-                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
-                except Exception as e:  # noqa: BLE001
-                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
-            elif anchor and install:
                 try:
                     opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
                 except Exception as e:  # noqa: BLE001
