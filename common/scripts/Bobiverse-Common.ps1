@@ -1230,11 +1230,13 @@ function Get-BobiverseChairHost {
     <#
       FR #6947: configured chair host. Default walrus. Env JEEVES_CHAIR_HOST only
       (no seat CLI --chair-host).
+      FR #9945: never assign to $host/$Host (PS automatic read-only InternalHost);
+      that throw made Install-Jeeves treat the chair as non-chair and Disable ircJeeves.
     #>
     $raw = [string]$env:JEEVES_CHAIR_HOST
-    $host = ($raw.ToLowerInvariant() -replace '[^a-z0-9_-]', '-').Trim('-_')
-    if (-not $host) { $host = 'walrus' }
-    return $host
+    $chairHost = ($raw.ToLowerInvariant() -replace '[^a-z0-9_-]', '-').Trim('-_')
+    if (-not $chairHost) { $chairHost = 'walrus' }
+    return $chairHost
 }
 
 function Test-BobiverseIsChairHost {
