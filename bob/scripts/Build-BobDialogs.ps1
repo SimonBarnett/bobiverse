@@ -16,7 +16,8 @@ param(
     [string]$RepoRoot = '',
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$SourceDir = '',
-    [string]$SourceCommit = ''   # FR #6924: optional; else WORKFLOW_COMMIT / git HEAD
+    [string]$SourceCommit = '',   # FR #6924: optional; else WORKFLOW_COMMIT / git HEAD
+    [string]$Targets = 'all'      # FR #9763: tray, about, status, all (comma or space separated)
 )
 $ErrorActionPreference = 'Stop'
 $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
@@ -46,12 +47,25 @@ $manifest = Join-Path $SourceDir 'bob-dialogs.manifest'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $built = @()
+$want = @{}
+foreach ($tok in ($Targets -split '[,\s]+')) {
+    $tok = $tok.Trim().ToLowerInvariant()
+    if ($tok) { $want[$tok] = $true }
+}
+if ($want.Count -eq 0 -or $want.ContainsKey('all')) {
+    $want = @{ tray = $true; about = $true; status = $true }
+}
+foreach ($name in @($want.Keys)) {
+    if ($name -notin @('tray', 'about', 'status', 'all')) { throw "unknown -Targets token '$name' (tray, about, status, all)" }
+}
+$targetOf = @{ 'bob-about.exe' = 'about'; 'bob-status.exe' = 'status'; 'bob-tray.exe' = 'tray' }
 foreach ($d in @(
         @{ Exe = 'bob-about.exe';  Srcs = @('BobAbout.cs');  Main = 'BobDialogs.AboutProgram';  Refs = @('System.ServiceProcess.dll') },
         @{ Exe = 'bob-status.exe'; Srcs = @('OpencodePaint.cs', 'BobStatus.cs'); Main = 'BobDialogs.StatusProgram'; Refs = @() },
         # FR #8682 JeevesJMcp + main BOB-37/39/plan/opencode helpers
         @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'OpencodePaint.cs', 'BobStatus.cs', 'BobModelsClient.cs', 'WeightsForm.cs', 'GrokNoTokenGate.cs', 'JeevesModelsWebhook.cs', 'JeevesNoTokenGate.cs', 'JeevesJMcp.cs', 'JeevesLazyDag.cs', 'PlanMcpConfig.cs', 'PlanModelsWebhook.cs', 'OpencodeFreeThenPaid.cs', 'OpenCodePaidExhaustedGate.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll', 'System.Management.dll') })) {
 
+    if (-not $want[$targetOf[$d.Exe]]) { continue }
     $out = Join-Path $OutDir $d.Exe
     $tmp = $out + '.new'
     $argv = @('/nologo', '/target:winexe', '/optimize+', '/debug-', '/platform:anycpu', "/out:$tmp",

@@ -1,5 +1,5 @@
-# Isolated bob-tray / bob-status / bob-about build (FR #6285).
-# Not a release, MSI, install, or tray restart. Build-BobDialogs.ps1 owns csc.exe.
+# Isolated bob-tray + bob-about build (FR #6285 / #9763).
+# Status is build-bob-status.yml. Not a release, MSI, install, or tray restart.
 # Uploads SHA-256 provenance so Slab can hotpatch MarchHare from a known artifact.
 name: build-bob-tray
 
@@ -45,6 +45,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          sparse-checkout: |
+            bob/tray
+            bob/scripts/Build-BobDialogs.ps1
+            bob/scripts/Stage-BobTrayHotpatchArtifact.ps1
+            bob/scripts/Write-BobTrayDeployedIdentity.ps1
+            bob/scripts/bob_tray_version.py
+            common/scripts/Bobiverse-Common.ps1
+          sparse-checkout-cone-mode: false
 
       - name: Build tray dialogs with Build-BobDialogs.ps1
         env:
@@ -55,9 +63,10 @@ jobs:
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
           $out = Join-Path $env:RUNNER_TEMP "bob-tray-out"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $out
+          & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $out -Targets tray,about
           if ($LASTEXITCODE -ne 0) { throw "Build-BobDialogs.ps1 exit $LASTEXITCODE" }
-          foreach ($name in @("bob-tray.exe", "bob-status.exe", "bob-about.exe")) {
+          $trayExes = @("bob-tray.exe", "bob-about.exe")
+          foreach ($name in $trayExes) {
             $exe = Join-Path $out $name
             if (-not (Test-Path -LiteralPath $exe)) { throw "missing $name" }
           }
@@ -92,7 +101,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $watch)) { throw "artifact missing Watch-BobTray.ps1" }
           $provPath = Join-Path $stage "provenance.txt"
           if (-not (Test-Path -LiteralPath $provPath)) { throw "missing provenance.txt" }
-          foreach ($name in @("bob-tray.exe", "bob-status.exe", "bob-about.exe")) {
+          foreach ($name in $trayExes) {
             $exe = Join-Path $stage $name
             if (-not (Test-Path -LiteralPath $exe)) { throw "missing $name in artifact" }
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
