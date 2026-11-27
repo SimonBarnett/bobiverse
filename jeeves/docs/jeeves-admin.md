@@ -7,6 +7,8 @@ IRCd: **BobIrcd** → live root `<ai root>\ergo` (MSI stages `ergo\` then Instal
 
 **FR #9775 sparse CI:** `.github/workflows/build-jeeves-ircd.yml` sparse-checkouts `Fetch-Ergo.ps1`, its fetch helper, and `Install-BobIrcd.ps1`, stages `ergo.exe` plus the upstream `default.yaml` and `Install-BobIrcd.ps1`, and uploads artifact `jeeves-ircd`. The workflow does not list `jeeves/www`. It does not compile Ergo.
 
+**FR #9777 !build:** `.bobiverse/build-jeeves-ircd.yml` (catalog seed, install `flamingo`) runs `Pack-BobIrcdPayload.ps1`. Artifacts are `ergo.exe`, `default.yaml`, and `Install-BobIrcd.ps1`. The recipe does not copy `jeeves/www` and does not pack the chair MSI.
+
 ## Checklist
 
 1. Remove legacy **BobJeeves** from SCM (Install-Jeeves does this).

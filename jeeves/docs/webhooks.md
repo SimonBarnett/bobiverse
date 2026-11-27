@@ -281,6 +281,8 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 
 ## Front-page HTML docs (FR #6453 / FR #8835)
 
+**FR #9776 !build:** `.bobiverse/build-webhooks.yml` (catalog seed `common/defaults/builds-catalog.example.json`, install `flamingo`) packs the site kit via `Pack-BobWebhooksSiteKit.ps1`. The artifact is `MANIFEST.json`. The recipe does not list `jeeves-*.msi` or `ergo.exe`.
+
 **FR #9778 pack:** `Pack-BobiverseRelease.ps1 -Product jeeves` (release, without `-SkipMsi`) copies `www` from `-WebhooksArtifactDir` or `BOB_WEBHOOKS_ARTIFACT_DIR` and requires `MANIFEST.json` there. It fails when that input is missing. `build-jeeves-msi.yml` builds the site kit and passes `-WebhooksArtifactDir`. `-SkipMsi` tests may still stage `jeeves\www`.
 
 Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
