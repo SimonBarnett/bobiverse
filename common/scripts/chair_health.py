@@ -35,8 +35,8 @@ import github_api_budget as gab
 WEBHOOK_PROBE_S = 1800.0
 # FR #3212: hourly (or slower) reconcile — webhooks carry live state; 15-min polling burned the core bucket.
 RESYNC_S = 3600.0
-# FR #3948: drain merge-on-green pending without seat CI polls.
-MERGE_ON_GREEN_S = 60.0
+# FR #3948 / #10011: event-first merge-on-green. Backup sweep is hourly, not 60s.
+MERGE_ON_GREEN_S = 3600.0
 FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
 # FR #5170: Copilot virtual-seat poll + webhook ensure (not a resync).
 # FR #7255 / #7377: fleet OpenCode Go + Copilot on a dedicated fixed-rate 60s timer
