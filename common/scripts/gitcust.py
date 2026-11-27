@@ -152,3 +152,20 @@ def merge_scan(home: Path, root: Path) -> dict:
             doc["tasks"].append(task)
     save_store(home, doc)
     return doc
+
+
+def updater_interval_s() -> int:
+    """FR #9984: catch-up scan interval. Env GITCUST_UPDATE_S, default 3600, minimum 60."""
+    import os
+
+    raw = (os.environ.get("GITCUST_UPDATE_S") or "").strip()
+    try:
+        val = int(raw) if raw else 3600
+    except ValueError:
+        val = 3600
+    return max(60, val)
+
+
+def run_updater(home: Path, root: Path) -> dict:
+    """Periodic catch-up. Does not replace POST on create."""
+    return merge_scan(home, root)
