@@ -3190,7 +3190,8 @@ function Get-BobTrayTitle {
     }
     if (-not $mid -and $env:BOB_MACHINE_ID) { $mid = [string]$env:BOB_MACHINE_ID }
     if (-not $mid) { $mid = 'this-machine' }
-    return ('#Bobiverse ({0})' -f $mid)
+    # FR #10003: top title is Bobiverse #<machine>, not #Bobiverse (mid).
+    return ('Bobiverse #{0}' -f $mid)
 }
 
 function Test-BobLiveGrokIsFleetSeat {
