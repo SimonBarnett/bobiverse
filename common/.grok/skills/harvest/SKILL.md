@@ -521,6 +521,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A WinRM Invoke-Command Start-Process is inside the WinRM job and dies when the session ends. A durable extra seat needs a detached start. BOB_WORKER_MAX above 2 is not a bypass and a silent death is not a logged cap refusal.
 <!-- harvest-tip:intake-in_fbe27d53477c4614 -->
 - When a FIX CI log is unavailable because gh is rate-limited, do not push a blind main fold. NACK after recording which step failed and which targeted pytest already passed.
+<!-- harvest-tip:intake-in_984804423c7c4843 -->
+- After FR #9986, unlimited plus remaining=0 must not clear tasks_exhausted; only remaining greater than 0 does. Update the FR #9733 pin instead of folding main.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
