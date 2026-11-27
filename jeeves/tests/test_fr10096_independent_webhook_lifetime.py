@@ -19,6 +19,7 @@ def test_fr10096_chair_only_does_not_bind_http():
     assert "--chair-only" in install
     assert "$whName = 'BobWebhooks'" in install
     assert "Get-Service -Name $whName" in install
+    assert "Start-Service -Name $whName" in install
     assert "127.0.0.1:7700" in install
     docs = DOCS.read_text(encoding="utf-8")
     assert "BobWebhooks" in docs

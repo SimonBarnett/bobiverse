@@ -431,6 +431,15 @@ if (-not $script:InstallChairService) {
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'DisplayName', 'bobiverse webhooks'))
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $whName, 'Start', 'SERVICE_AUTO_START'))
     Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $whName -RestartDelayMs 2000
+    # Chair still holds :7700 until it is stopped. Release the port, then start BobWebhooks
+    # before the later Start-Service ircJeeves (--chair-only) so intake does not go 502.
+    if (-not $NoStart) {
+        $chairNow = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($chairNow -and $chairNow.Status -eq 'Running') {
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        }
+        Start-Service -Name $whName -ErrorAction Stop
+    }
     Write-Host 'INFO FR #10096 service BobWebhooks owns 127.0.0.1:7700; ircJeeves is --chair-only'
     Write-Host 'INFO skipping Python BobCallback scheduled task (BobWebhooks owns :7700; FR #10096)'
     try {
