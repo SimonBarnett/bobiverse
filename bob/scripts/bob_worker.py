@@ -3694,17 +3694,11 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
-        f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"FR #7000 / #8785 / #8846 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
-        f"`{worker_dir}\\.cursor\\mcp.json` -> mcpServers.skill-dag only: run its `command` with **all** `args` unchanged "
-        f"(script is args[0]; keep every `--root` and `--job-worktree-file`), then append "
-        f"`--once resolve --seed <job-type token>` (e.g. FR or MRB) and `--once get_skill --path <matched[].path>` "
-        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path. "
-        f"PowerShell: `$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
-        f"& $cfg.command @($cfg.args) --once resolve --seed MRB`. Do not invent skill bodies. "
-        f"CAST IRON (FR #8846): a missing or dead skill-dag MCP is never fixed by grepping job skills from disk. "
-        f"If mcp.json is missing, MCP unreachable, and the mcp.json --once CLI also fails, ACK then GIVEUP with reason "
-        f"`skill-dag-mcp-down` (optional diagnostic only on that GIVEUP line). Do not continue the FR/MRB/UAT job. "
+        f"CAST IRON: Grok, Cursor, and OpenCode MUST load Bob skills only from https://bob.ntsa.uk/mcp "
+        f"(resolve, then get_skill). Do not run skill_dag_mcp.py, do not run a command from .cursor\\mcp.json, "
+        f"and do not read {worker_dir}\\.grok\\skills. "
+        f"If that MCP is missing or dead, ACK then GIVEUP with reason skill-dag-mcp-down. "
+        f"Do not invent skill bodies. Do not continue the FR/MRB/UAT job. "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -3930,10 +3924,9 @@ def rules_text(folder: str, kind: str) -> str:
         skill_line = f"Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
     else:
         skill_line = (
-            f"Read {folder}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
-            f"(do not read every skill in {folder}\\.grok\\skills). "
-            f"FR #8846: if skill-dag MCP and the mcp.json --once CLI both fail, GIVEUP skill-dag-mcp-down — "
-            f"never continue FR/MRB/UAT by reading job skills from disk. "
+            f"Read {folder}\\AGENTS.md. CAST IRON: every CLI loads Bob skills only from https://bob.ntsa.uk/mcp "
+            f"(resolve, then get_skill). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
+            f"If that MCP is down, GIVEUP skill-dag-mcp-down — never continue FR/MRB/UAT from disk. "
         )
     return (f"{head}{skill_line}"
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
@@ -22449,6 +22442,10 @@ def run_agent(args, log: Log) -> int:
         actual = wsm.concrete_model_id(child_env.get(wsm.ENV_ACTUAL_MODEL))
         if not actual:
             actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
+        if not actual and kind == "cursor":
+            actual = wsm.concrete_model_id(wsm.cursor_cli_selected_model(env=child_env or os.environ))
+        if not actual and kind == "grok":
+            actual = wsm.concrete_model_id((child_env or os.environ).get("BOB_GROK_MODEL"))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
         _cfg = wsm.load_worker_start_config(env=child_env or os.environ)
         cfg_model = wsm.launch_selected_model(kind, _cfg, env=child_env or os.environ)

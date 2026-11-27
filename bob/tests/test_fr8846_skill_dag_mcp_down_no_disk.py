@@ -10,19 +10,14 @@ import gitclaim
 
 def test_fr8846_worker_prompt_forbids_disk_fallback_and_names_giveup():
     prompt = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\ai\bob\home", "marchhare", "marchhare-1")
-    assert "FR #8846" in prompt
+    assert "https://bob.ntsa.uk/mcp" in prompt
     assert "skill-dag-mcp-down" in prompt
     assert "GIVEUP" in prompt
     low = prompt.lower()
-    assert "grepping job skills from disk" in low or "from disk" in low
-    assert "never" in low
-    # FR #8785 path: mcp.json only, never invent bob\\bob\\scripts
-    assert ".cursor/mcp.json" in prompt or ".cursor\\mcp.json" in prompt
+    assert "do not run skill_dag_mcp.py" in low
     assert "bob\\bob\\scripts" not in prompt
     assert "bob/bob/scripts" not in prompt
-    assert r"C:\ai\bob\bob\scripts\skill_dag_mcp.py" not in prompt
-    assert "`--root` / `--job-worktree` args" not in prompt
-    assert "--job-worktree-file" in prompt
+    assert "--once resolve" not in prompt
 
 
 def test_fr8846_rules_text_forbids_disk_continue():

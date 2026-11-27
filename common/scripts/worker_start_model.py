@@ -774,6 +774,32 @@ def append_launch_dryrun(
 
 
 
+def cursor_cli_selected_model(env: dict[str, str] | None = None) -> str:
+    """Model the Cursor CLI starts when the launcher passes no --model.
+
+    Reads selectedModel.modelId, then model.modelId, from ~/.cursor/cli-config.json.
+    Does not read auth fields.
+    """
+    e = os.environ if env is None else env
+    home = str(e.get("USERPROFILE") or e.get("HOME") or "").strip()
+    if not home:
+        return ""
+    path = Path(home) / ".cursor" / "cli-config.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("selectedModel", "model"):
+        block = data.get(key)
+        if isinstance(block, dict):
+            mid = str(block.get("modelId") or "").strip()
+            if mid:
+                return mid
+    return ""
+
+
 def concrete_model_id(raw: object) -> str:
     """A resolved model id. PowerShell templates such as ``$model`` are not ids."""
     got = str(raw or "").strip().strip("'\"")
