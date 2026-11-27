@@ -44,7 +44,7 @@ def test_shas_match_rejects_different_prefix():
 
 def test_chair_health_drains_merge_on_green():
     text = (ROOT / "common" / "scripts" / "chair_health.py").read_text(encoding="utf-8")
-    assert "MERGE_ON_GREEN_S = 60.0" in text
+    assert "MERGE_ON_GREEN_S = 3600.0" in text
     assert "mrb_merge_on_green.process_pending" in text
     assert "next_merge_on_green" in text
 

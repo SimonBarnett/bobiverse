@@ -35,8 +35,8 @@ import github_api_budget as gab
 WEBHOOK_PROBE_S = 1800.0
 # FR #3212: hourly (or slower) reconcile — webhooks carry live state; 15-min polling burned the core bucket.
 RESYNC_S = 3600.0
-# FR #3948: drain merge-on-green pending without seat CI polls.
-MERGE_ON_GREEN_S = 60.0
+# FR #3948 / #10011: event-first merge-on-green. Backup sweep is hourly, not 60s.
+MERGE_ON_GREEN_S = 3600.0
 FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
 # FR #5170: Copilot virtual-seat poll + webhook ensure (not a resync).
 # FR #7255 / #7377: fleet OpenCode Go + Copilot on a dedicated fixed-rate 60s timer
@@ -275,6 +275,9 @@ def run_ticket_closure_cycle(
     """
     import sys
     from argparse import Namespace
+
+    if gab.GithubApiBudget(digest_home).in_backoff():
+        return {"skipped": "github-backoff", "closed_count": 0, "poll_outcome": "skipped"}
 
     try:
         import ticket_closure as tc
@@ -815,35 +818,38 @@ class ChairJobs:
         now = self.clock()
         if now >= self.next_merge_on_green:
             self.next_merge_on_green = now + MERGE_ON_GREEN_S
-            try:
-                import mrb_merge_on_green
+            if not gab.GithubApiBudget(self.home).allow("mog"):
+                self.log("INFO merge-on-green skipped: github backoff")
+            else:
+                try:
+                    import mrb_merge_on_green
 
-                token, src = self.token_loader()
-                if token and not self.token_source:
-                    self.token_source = src or ""
-                out = mrb_merge_on_green.process_pending(
-                    self.home,
-                    token=token or None,
-                    log=self.log,
-                    rate_remaining=mrb_merge_on_green.get_rate_remaining,
-                )
-                # FR #4543: when budget is low, stretch the next sweep so offers/resync keep quota.
-                if out.get("backed_off"):
-                    self.next_merge_on_green = now + max(MERGE_ON_GREEN_S, 300.0)
-                    self.log(
-                        "INFO merge-on-green back-off "
-                        f"rate_remaining={out.get('rate_remaining')} "
-                        f"pending={out.get('seen', 0)}"
+                    token, src = self.token_loader()
+                    if token and not self.token_source:
+                        self.token_source = src or ""
+                    out = mrb_merge_on_green.process_pending(
+                        self.home,
+                        token=token or None,
+                        log=self.log,
+                        rate_remaining=mrb_merge_on_green.get_rate_remaining,
                     )
-                elif out.get("merged") or out.get("requeued") or out.get("skipped_hold") or out.get("dropped"):
-                    self.log(
-                        "INFO merge-on-green "
-                        f"merged={out.get('merged', 0)} requeued={out.get('requeued', 0)} "
-                        f"wait={out.get('wait', 0)} hold={out.get('skipped_hold', 0)} "
-                        f"dropped={out.get('dropped', 0)} err={out.get('errors', 0)}"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"WARN merge-on-green: {type(exc).__name__}: {exc}")
+                    # FR #4543: when budget is low, stretch the next sweep so offers/resync keep quota.
+                    if out.get("backed_off"):
+                        self.next_merge_on_green = now + max(MERGE_ON_GREEN_S, 300.0)
+                        self.log(
+                            "INFO merge-on-green back-off "
+                            f"rate_remaining={out.get('rate_remaining')} "
+                            f"pending={out.get('seen', 0)}"
+                        )
+                    elif out.get("merged") or out.get("requeued") or out.get("skipped_hold") or out.get("dropped"):
+                        self.log(
+                            "INFO merge-on-green "
+                            f"merged={out.get('merged', 0)} requeued={out.get('requeued', 0)} "
+                            f"wait={out.get('wait', 0)} hold={out.get('skipped_hold', 0)} "
+                            f"dropped={out.get('dropped', 0)} err={out.get('errors', 0)}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f"WARN merge-on-green: {type(exc).__name__}: {exc}")
         now = self.clock()
         if now >= self.next_stall:
             self.next_stall = now + STALL_S
