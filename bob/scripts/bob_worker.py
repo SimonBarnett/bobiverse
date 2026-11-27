@@ -6231,6 +6231,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "opencode_stdout_log.py", cwd=cwd, install_root=install_root
         )
         log_path = log_resolved or (Path(__file__).resolve().parent / "opencode_stdout_log.py")
+        pty_resolved = _resolve_installed_worker_script(
+            "opencode_conpty_run.py", cwd=cwd, install_root=install_root
+        )
+        pty_path = pty_resolved or (Path(__file__).resolve().parent / "opencode_conpty_run.py")
         # FR #8150: peek OpenCode app log for ERROR Free usage / rate-limit (stdout may be silent).
         pes_resolved = _resolve_installed_worker_script(
             "provider_error_source.py", cwd=cwd, install_root=install_root
@@ -6316,6 +6320,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$wedgePy = '{esc(wedge_text)}'",
             f"$isolatePy = '{esc(str(iso_path))}'",
             f"$stdoutLogPy = '{esc(str(log_path))}'",
+            f"$conptyPy = '{esc(str(pty_path))}'",
             f"$providerErrPy = '{esc(str(pes_path))}'",
             r"$script:ocStdoutLog = ''",
             r"$script:ocDagRetries = 1",
@@ -6544,7 +6549,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
             # FR #8734 / BOB-29: stdout tee into seat-<nick>.log names the launched model.
             r"        Write-Output ('opencode-run model=' + $model + ' job=' + [string]$jobKey)",
-            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
+            # ConPTY so the CLI treats stdout as a console and flushes each chunk.
+            # The capture file grows as bytes arrive; the loop below mirrors them.
+            r"        $argvFile = Join-Path $capDir ('bob-oc-argv-' + [guid]::NewGuid().ToString('n') + '.json')",
+            r"        [IO.File]::WriteAllText($argvFile, ($argList | ConvertTo-Json -Compress -Depth 4))",
+            r"        $pyPty = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $pyPty) { $pyPty = 'python.exe' }",
+            r"        $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--cwd', $(if ($ocDir) { $ocDir } else { '' }), '--argv-file', $argvFile)",
+            r"        $proc = Start-Process -FilePath $pyPty -ArgumentList $ptyArgs -PassThru -WindowStyle Hidden",
             r"        $timedOut = $false",
             r"        $killReason = ''",
             r"        $fuelHitLive = $false",
