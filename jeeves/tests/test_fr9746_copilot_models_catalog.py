@@ -24,7 +24,8 @@ COPILOT_SEED_IDS = (
 
 
 def _legacy_seven_rows(**overrides: dict) -> list[dict]:
-    rows = [r for r in mc.default_agent_rows() if r["agent"] != "Copilot"]
+    skip = {"Copilot", "Copilot-MRB", "Copilot-PR"}
+    rows = [r for r in mc.default_agent_rows() if r["agent"] not in skip]
     for row in rows:
         if row["agent"] in overrides:
             row.update(overrides[row["agent"]])
@@ -33,13 +34,11 @@ def _legacy_seven_rows(**overrides: dict) -> list[dict]:
 
 def test_fr9746_default_row_blank_copilot():
     rows = mc.default_agent_rows()
-    assert rows[-1] == {
-        "agent": "Copilot",
-        "cli": "Copilot",
-        "model": "",
-        "context": "",
-        "effort": "",
-    }
+    assert rows[-2]["agent"] == "Copilot-MRB"
+    assert rows[-1]["agent"] == "Copilot-PR"
+    assert rows[-1]["cli"] == "Copilot"
+    assert rows[-1]["model"] == ""
+    assert rows[-2]["model"] == ""
     assert "copilot" in mc.VALID_CLI_KEYS
     assert mc.CLI_KEY_TO_PUBLIC["copilot"] == "Copilot"
     assert "Copilot" in mc.CLI_PUBLIC_KEYS
@@ -72,7 +71,7 @@ def test_fr9746_get_model_choices_no_contexts_efforts(tmp_path: Path):
     )
     assert code == 200
     doc = json.loads(body.decode("utf-8"))
-    assert [r["agent"] for r in doc["agents"]][-1] == "Copilot"
+    assert [r["agent"] for r in doc["agents"]][-1] == "Copilot-PR"
     copilot = doc["clis"]["Copilot"]["models"]
     assert "claude-haiku-4.5" in copilot
     for _mid, node in copilot.items():
@@ -82,7 +81,7 @@ def test_fr9746_get_model_choices_no_contexts_efforts(tmp_path: Path):
 def test_fr9746_put_get_round_trip_and_empty_model(tmp_path: Path):
     rows = mc.default_agent_rows()
     for r in rows:
-        if r["agent"] == "Copilot":
+        if r["agent"] in ("Copilot-MRB", "Copilot-PR"):
             r["model"] = "claude-haiku-4.5"
     body = json.dumps({"agents": rows}).encode("utf-8")
     code, _ = handle_request(
@@ -94,13 +93,13 @@ def test_fr9746_put_get_round_trip_and_empty_model(tmp_path: Path):
     )
     assert code2 == 200
     doc = json.loads(payload.decode("utf-8"))
-    copilot = next(r for r in doc["agents"] if r["agent"] == "Copilot")
+    copilot = next(r for r in doc["agents"] if r["agent"] in ("Copilot-MRB", "Copilot-PR"))
     assert copilot["model"] == "claude-haiku-4.5"
     assert copilot["cli"] == "Copilot"
 
     # empty model round-trip
     for r in rows:
-        if r["agent"] == "Copilot":
+        if r["agent"] in ("Copilot-MRB", "Copilot-PR"):
             r["model"] = ""
     body2 = json.dumps({"agents": rows}).encode("utf-8")
     code3, _ = handle_request(
@@ -112,7 +111,7 @@ def test_fr9746_put_get_round_trip_and_empty_model(tmp_path: Path):
     )
     assert code4 == 200
     copilot2 = next(
-        r for r in json.loads(payload4.decode("utf-8"))["agents"] if r["agent"] == "Copilot"
+        r for r in json.loads(payload4.decode("utf-8"))["agents"] if r["agent"] in ("Copilot-MRB", "Copilot-PR")
     )
     assert copilot2["model"] == ""
 
@@ -135,7 +134,7 @@ def test_fr9746_get_backfills_seven_row_catalog(tmp_path: Path):
     before = json.dumps(legacy, separators=(",", ":")).encode("utf-8")
     path.write_bytes(before)
     rows = mc.load_catalog_file(tmp_path)
-    assert [r["agent"] for r in rows][-1] == "Copilot"
+    assert [r["agent"] for r in rows][-1] == "Copilot-PR"
     assert rows[-1]["model"] == ""
     plan = next(r for r in rows if r["agent"] == "Plan")
     assert plan["model"] == "build0.1"
@@ -147,14 +146,14 @@ def test_fr9746_get_backfills_seven_row_catalog(tmp_path: Path):
     )
     assert code == 200
     doc = json.loads(payload.decode("utf-8"))
-    assert [r["agent"] for r in doc["agents"]][-1] == "Copilot"
+    assert [r["agent"] for r in doc["agents"]][-1] == "Copilot-PR"
     assert path.read_bytes() == before
 
 
 def test_fr9746_put_seven_row_preserves_stored_copilot(tmp_path: Path):
     rows8 = mc.default_agent_rows()
     for r in rows8:
-        if r["agent"] == "Copilot":
+        if r["agent"] in ("Copilot-MRB", "Copilot-PR"):
             r["model"] = "gpt-5.4"
     handle_request(
         "PUT",
@@ -181,7 +180,8 @@ def test_fr9746_put_seven_row_preserves_stored_copilot(tmp_path: Path):
     assert stored.get("unrelated") is None or True
     agents = {r["agent"]: r for r in stored["agents"]}
     assert agents["Plan"]["model"] == "edited-plan"
-    assert agents["Copilot"]["model"] == "gpt-5.4"
+    assert agents["Copilot-MRB"]["model"] == "gpt-5.4"
+    assert agents["Copilot-PR"]["model"] == "gpt-5.4"
 
 
 def test_fr9746_put_seven_row_inserts_blank_copilot_when_absent(tmp_path: Path):
@@ -199,19 +199,18 @@ def test_fr9746_put_seven_row_inserts_blank_copilot_when_absent(tmp_path: Path):
     assert code == 204
     stored = json.loads((tmp_path / mc.MODELS_CATALOG_NAME).read_text(encoding="utf-8"))
     agents = {r["agent"]: r for r in stored["agents"]}
-    assert agents["Copilot"] == {
-        "agent": "Copilot",
-        "cli": "Copilot",
-        "model": "",
-        "context": "",
-        "effort": "",
-    }
+    blank = {"cli": "Copilot", "model": "", "context": "", "effort": ""}
+    assert agents["Copilot-MRB"]["agent"] == "Copilot-MRB"
+    assert agents["Copilot-PR"]["agent"] == "Copilot-PR"
+    for name in ("Copilot-MRB", "Copilot-PR"):
+        for key, val in blank.items():
+            assert agents[name][key] == val
 
 
 def test_fr9746_put_rejects_wrong_cli_and_case_and_missing_grok(tmp_path: Path):
     rows = mc.default_agent_rows()
     for r in rows:
-        if r["agent"] == "Copilot":
+        if r["agent"] in ("Copilot-MRB", "Copilot-PR"):
             r["cli"] = "Grok"
     code, payload = handle_request(
         "PUT",
