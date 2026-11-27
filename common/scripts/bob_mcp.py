@@ -122,7 +122,11 @@ def handle_mcp(verb: str, body: bytes | str, roots: list[Path] | None = None) ->
         elif method == "tools/list":
             result = {
                 "tools": [
-                    {"name": "list_catalog", "description": "List public Bob skills"},
+                    {
+                        "name": "list_catalog",
+                        "description": "List public Bob skills",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
                     {
                         "name": "get_skill",
                         "description": "Return one public SKILL.md",
