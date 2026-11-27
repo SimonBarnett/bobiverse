@@ -1596,107 +1596,13 @@ def resolve_opencode_model(
             return True
         return False
 
-    skipped: list[str] = []
-    candidates: list[tuple[str, str]] = []
-
-    try:
-        import worker_start_model as wsm
-
-        start_cfg = wsm.load_worker_start_config(env=env)
-        start_model = str((start_cfg.get("workerStartModels") or {}).get("opencode") or "").strip()
-        start_free = wsm.default_opencode_free_model(start_cfg)
-        start_paid = wsm.default_opencode_paid_model(start_cfg)
-    except Exception:
-        start_cfg = {}
-        start_model = ""
-        start_free = "opencode/deepseek-v4.1-flash-free"
-        start_paid = "opencode-go/deepseek-v4-pro"
-
-    # FR #8454: free remaining > 0 or unknown starts on a free id even when the
-    # tray/env pin is paid. Paid slot only when free is known 0 and paid > 0.
-    # FR #6363: a free operator env / config still beats the tray free slot.
-    env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
-    pinned = seat_model_pinned(env) and bool(env_model)
-    free_known_zero = _opencode_free_known_zero(fuel)
-    # FR #8555: a free-pool pause (seat-start app-log scan or a prior refusal)
-    # means free is exhausted even when the catalogue still reports 100. Fold it
-    # into the branch choice so the paid slot is tried instead of every free
-    # candidate being skipped as paused and the seat dying with model=-.
-    if not free_known_zero and opencode_fuel is not None:
-        try:
-            if opencode_fuel.is_opencode_model_paused(
-                "opencode-free", state_dir, now=now
-            ):
-                free_known_zero = True
-        except Exception:
-            pass
-
-    def _is_paid(mid: str) -> bool:
-        try:
-            import worker_start_model as wsm
-
-            return bool(wsm.opencode_is_go_or_paid(mid))
-        except Exception:
-            low = str(mid or "").lower()
-            return low.startswith("opencode-go/") or low.endswith("-pro")
-
-    if not free_known_zero:
-        if pinned and _is_paid(env_model):
-            skipped.append(f"pin:{env_model}:free-first")
-        elif pinned and env_model:
-            candidates.append(("pin", env_model))
-        elif env_model and _is_paid(env_model):
-            skipped.append(f"env:{env_model}:free-first")
-        elif env_model:
-            candidates.append(("env", env_model))
-
-        if start_model and _is_paid(start_model):
-            skipped.append(f"start:{start_model}:free-first")
-        elif start_model:
-            candidates.append(("tray", start_model))
-
-        cfg_model = read_opencode_config_model(env)
-        if cfg_model and _is_paid(cfg_model):
-            skipped.append(f"config:{cfg_model}:free-first")
-        elif cfg_model:
-            candidates.append(("config", cfg_model))
-
-        if start_free:
-            candidates.append(("start", start_free))
-
-        for free_id in fuel.opencode_free_model_ids or ():
-            fid = str(free_id or "").strip()
-            if fid and not _is_paid(fid):
-                candidates.append(("fuel", fid))
-    else:
-        if pinned and env_model and not _is_paid(env_model):
-            skipped.append(f"pin:{env_model}:free-exhausted")
-        elif env_model and not _is_paid(env_model):
-            skipped.append(f"env:{env_model}:free-exhausted")
-        # FR #8541: free known 0 + go unknown must still try the paid tray slot
-        # (do not skip as exhausted / report capped-paused).
-        if start_paid and (
-            _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel)
-        ):
-            candidates.append(("paid", start_paid))
-        elif start_paid:
-            skipped.append(f"paid:{start_paid}:exhausted")
-
-    chosen: Optional[str] = None
-    source = ""
-    for src, mid in candidates:
-        if _paused(mid):
-            skipped.append(f"{src}:{mid}:paused")
-            continue
-        if _opencode_model_known_capped(mid, fuel):
-            skipped.append(f"{src}:{mid}:capped")
-            continue
-        chosen = mid
-        source = src
-        break
-
-    skip_s = ",".join(skipped) if skipped else "-"
-    line = f"opencode model={chosen or '-'} source={source or '-'} skipped={skip_s}"
+    # The free link and the paid link each pass one model. Do not pick another.
+    selected = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
+    if not selected and env is not None:
+        selected = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+    source = "env" if selected else ""
+    chosen: Optional[str] = selected or None
+    line = f"opencode model={chosen or '-'} source={source or '-'} skipped=-"
     if log_fn is not None:
         try:
             log_fn(line)
@@ -6183,7 +6089,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-cursor.ps1")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
-        agent_line = (f"& '{esc(exe)}' --plan --model auto --workspace '{esc(cwd)}' $prompt" if mode == "plan"
+        agent_line = (f"& '{esc(exe)}' --plan --workspace '{esc(cwd)}' $prompt" if mode == "plan"
                       else f"& '{esc(exe)}' --trust --force --workspace '{esc(cwd)}' -- $prompt")
         try:
             import worker_start_model as wsm
@@ -6268,21 +6174,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         try:
             import worker_start_model as wsm
 
-            _oc_cfg = wsm.load_worker_start_config()
-            oc_cfg_model = wsm.launch_selected_model("opencode", _oc_cfg, env=os.environ)
-            if not oc_cfg_model:
-                oc_cfg_model = wsm.default_opencode_free_model(_oc_cfg)
-            oc_paid_model = wsm.default_opencode_paid_model(_oc_cfg)
+            oc_cfg_model = wsm.env_model_pin("opencode", os.environ)
+            oc_paid_model = ""
         except Exception:
             oc_cfg_model = ""
             oc_paid_model = ""
-        if not oc_cfg_model:
-            oc_cfg_model = "opencode/deepseek-v4.1-flash-free"
-        if not oc_paid_model:
-            oc_paid_model = "opencode-go/deepseek-v4-pro"
-        oc_fallback = (
-            f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
-        )
+        # Weights row is the model. Do not fill a free or paid default.
+        oc_fallback = ""
         # FR #9211: pin OpenCode favicon on the launch-opencode PowerShell console (Win11 AUMID + WM_SETICON).
         oc_ico_path = find_window_icon(Path(install_root) if install_root else None, kind="opencode")
         oc_ico_lit = esc(str(oc_ico_path)) if oc_ico_path else ""
@@ -6434,17 +6332,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    } catch { return $true }",
             r"}",
             r"function Try-OpencodeSwitchToPaid([string]$Current, [string]$Reason) {",
-            r"    if ($script:ocStopClosed) { return $false }",
-            r"    if ($script:ocPaidSwitched) { return $false }",
-            r"    if (-not (Test-OpencodeModelIsFree $Current)) { return $false }",
-            r"    if (-not $script:ocPaidModel) { return $false }",
-            r"    if (-not (Test-OpencodePaidPoolRemains)) { return $false }",
-            r"    $script:ocPaidSwitched = $true",
-            r"    $script:ocSwitchPaid = $true",
-            r"    $script:model = $script:ocPaidModel",
-            r"    $env:BOB_OPENCODE_MODEL = $script:ocPaidModel",
-            r"    Write-Output ('opencode switch-to-paid model=' + $script:ocPaidModel + ' reason=' + $Reason)",
-            r"    return $true",
+            r"    return $false",
             r"}",
             # FR #7899: ReadAllText throws when OpenCode still holds bob-oc-out exclusive.
             r"function Read-OpencodeCapture([string]$Path) {",
@@ -6525,18 +6413,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    $script:ocTurnN++",
             # FR #7952: once per job, before the run. Never changes $model mid-turn.
-            r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
-            r"        $pyResume = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
-            r"        if (-not $pyResume) { $pyResume = 'python.exe' }",
-            r"        $nextModel = ''",
-            r"        try { $nextModel = (& $pyResume $pyHelper next-model --dir $pauseStateDir --configured $env:BOB_OPENCODE_CONFIGURED_MODEL --current $model 2>$null | Select-Object -Last 1) } catch { $nextModel = '' }",
-            r"        $nextModel = ([string]$nextModel).Trim()",
-            r"        if ($nextModel -and $nextModel -ne $model) {",
-            r"            $model = $nextModel",
-            r"            $env:BOB_OPENCODE_MODEL = $model",
-            r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
-            r"        }",
-            r"    }",
+            r"    # Weights model stays. Do not swap it for another id.",
             # FR #8734 / BOB-29: $argList is built after the pause-return model update
             # so -m, the seat line and the job header name the same model.
             r"    if ($ocDir) {",
@@ -18909,19 +18786,7 @@ class Supervisor:
                             f"opencode: seat-start-refusal report failed {type(e).__name__}"
                         )
                     return False
-            blocked, msg = probe_gh_auth(subprocess.run)
-            if blocked:
-                # FR #10039: do not stay online as a job-capable seat.
-                self.log(msg)
-                self.log(
-                    "opencode: gh_auth_missing; leaving "
-                    "(fingerprint opencode_gh_auth_missing) FR #10039"
-                )
-                try:
-                    self.shutdown("gh-auth-missing", EXIT_REFUSED)
-                except Exception as e:
-                    self.log(f"opencode: gh-auth shutdown failed {type(e).__name__}")
-                return False
+            # Grok and Cursor start without a gh auth status gate. OpenCode does too.
         with self._lock:
             if self._shutting:
                 return False
