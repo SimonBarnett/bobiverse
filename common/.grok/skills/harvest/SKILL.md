@@ -511,8 +511,16 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - gh REST 0 remaining: load C:\passwords\gitPAT.txt into GH_TOKEN without printing; wait for core reset then pr create; GraphQL may still have budget
 - After tip allowlist clears, prefer open MERGEABLE non-draft (#9917/#9417/#9918); never offer CONFLICTING or draft as MRB --- FIX-first or skip; walrus truncate+pos=0 shop-wire for live !bored nicks
 - Harvest-lesson tips that append the same SKILL.md trailing hunk: set merge=union in .gitattributes (git add -f under install exclude /*) and insert before - Harvest-lesson tips are documentation; they do not require CI --- light triage then gh pr merge --admin --squash (fold CONFLICTING same-SKILL appends onto tip first)
+<!-- harvest-tip:intake-in_1ba0900f1c5f4298 -->
+- OpenCode no-jobs twin of Cursor #10019: file product Clear-ACK (#10038) and gh_auth_missing (#10039) plus monitor fingerprints (#10040/#10041) as Depends-on digest children same turn --- do not leave (owe) rows.
 <!-- harvest-tip:intake-in_657cab73ea2f41cb -->
 - When chair GH 429s: compare New-BobGitWebhook subscribed events vs bobcallback.GIT_EVENTS allow-list before adding more polls; dropped workflow_run forces REST. File anti-omnibus FR-W0 accept-events first, then kill poll cadences.
+<!-- harvest-tip:intake-in_789cef4c2f0a4929 -->
+- When folding a CONFLICTING FIX tip, keep a single allowlist entry if both sides added the same field with different comments; push onto the existing PR branch and do not open a second pull request.
+<!-- harvest-tip:intake-in_99a865ea9aed4c13 -->
+- A WinRM Invoke-Command Start-Process is inside the WinRM job and dies when the session ends. A durable extra seat needs a detached start. BOB_WORKER_MAX above 2 is not a bypass and a silent death is not a logged cap refusal.
+<!-- harvest-tip:intake-in_fbe27d53477c4614 -->
+- When a FIX CI log is unavailable because gh is rate-limited, do not push a blind main fold. NACK after recording which step failed and which targeted pytest already passed.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
@@ -526,3 +534,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - WINDBI cannot start PowerShell. ACTIVATE only accepts {P|r|d|c|L} plus an entity name. xp_cmdshell CreateProcess error 5 and SQL Agent "process could not be created" for NT SERVICE\SQLAgent$instance are the service account. CREATE CREDENTIAL is server-level; msdb has no dbo.sp_add_credential. Grant the proxy to CmdExec subsystem 3 before the job step.
 - Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
 - The same issue number in two repos is not a twin. Close only the repo the operator named.
+- When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.

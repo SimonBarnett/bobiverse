@@ -25,8 +25,9 @@ def _row(**extra):
 
 def test_http_201_without_task_id_does_not_accept(tmp_path):
     fi.handle_focus_cmd(tmp_path, f"high {REPO}")
-    # FR #9986: remaining 0 + percent 100 is phantom and stays exhausted.
-    # A positive remaining lets dispatch reach the missing-task-id check.
+# FR #9986: remaining=0 is never dispatch fuel, even when unlimited and
+    # overage_permitted are set. Use a positive remaining so the POST runs and
+    # the missing-task-id path is what this test asserts.
     cd.refresh_allowance(
         tmp_path,
         fetch_user=lambda: {
