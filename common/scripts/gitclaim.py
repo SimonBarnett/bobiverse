@@ -3461,6 +3461,9 @@ _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES: tuple[tuple[re.Pattern[str], str], .
     (re.compile(r"(?i)\b(?:server|host)\s+from\s+config\b.{0,80}\bBOB_CHAIR_MACHINE\b"), "walrus"),
     (re.compile(r"(?i)\bBOB_CHAIR_MACHINE\b.{0,80}\b(?:chair|Ergo|needs-walrus)\b"), "walrus"),
     (re.compile(r"(?i)\bneeds-walrus\s+alias\b"), "walrus"),
+    # FR #10327 / class #10119: jeeves.exe umbrella titles are chair-host ops; body
+    # ``require_machine: ionos`` alone still does not pin (FR #9637).
+    (re.compile(r"(?i)^jeeves\.exe\s*:"), "walrus"),
 )
 
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Kept for _body_for_queue preserve
