@@ -6417,6 +6417,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    } catch { return $true }",
             r"}",
             r"function Try-OpencodeSwitchToPaid([string]$Current, [string]$Reason) {",
+            # FR #8645: stop-closed must not switch the seat onto a paid model.
+            r"    if ($script:ocStopClosed) { return $false }",
             r"    return $false",
             r"}",
             # FR #7899: ReadAllText throws when OpenCode still holds bob-oc-out exclusive.

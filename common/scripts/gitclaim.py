@@ -22447,18 +22447,19 @@ def release_stale_busy(
             mine = [r for r in acc if _owner(r) == me]
             for r in mine:
                 age = _accepted_row_age_s(r, float(now))
+                epoch = _accepted_ts_epoch(r)
+                pre_session = session_started is not None and (
+                    epoch is None or epoch < float(session_started)
+                )
                 if age >= BUSY_STALE_S:
                     continue  # stale by age
+                if pre_session:
+                    continue  # stale by FR #3742 session boundary
                 if (
                     _digest_seat_explicit_idle(home, nick)
                     and age >= IDLE_DIGEST_RELEASE_S
                 ):
                     continue  # digest idle while the chair still holds ACC
-                if session_started is not None:
-                    epoch = _accepted_ts_epoch(r)
-                    # Missing/bad ts: treat as pre-session (same as age path).
-                    if epoch is None or epoch < float(session_started):
-                        continue  # stale by FR #3742 session boundary
                 return False  # genuinely recent job in this session: honour busy
             if mine:
                 # FR #4422: never mark done without a merged PR or a closed issue.
@@ -22471,8 +22472,14 @@ def release_stale_busy(
                 for r in mine:
                     fin = dict(r)
                     age = _accepted_row_age_s(r, float(now))
+                    epoch = _accepted_ts_epoch(r)
+                    pre_session = session_started is not None and (
+                        epoch is None or epoch < float(session_started)
+                    )
                     if age >= BUSY_STALE_S:
                         reason = "STALE_BUSY"
+                    elif pre_session:
+                        reason = "LOST_DONE_RESTART"
                     elif (
                         _digest_seat_explicit_idle(home, nick)
                         and age >= IDLE_DIGEST_RELEASE_S
