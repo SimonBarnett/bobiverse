@@ -1,0 +1,3 @@
+## Lesson
+
+- bobiverse-bob-job-fr / FR job assign text says 'skill-dag MCP resolve then get_skill'. Evidence: skill-dag MCP tools available were skill-dag_list_catalog and skill-dag_get_skill; no resolve tool. Used list_catalog then get_skill and it...
