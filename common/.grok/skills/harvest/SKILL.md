@@ -578,4 +578,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Digest completeness gate: harvest digest bullets starting - ** must end with ) or lessons:/held; append (FR #N) when a CAST IRON bullet would otherwise fail test_mrb2718_digest_bullets_complete_lines
 - OpenCode launch-opencode.ps1 pins seat cwd via opencode run --dir and ConPTY --cwd, not Start-Process -WorkingDirectory; stale WorkingDirectory asserts FAIL on main
 - FR #8865 tip overlay: worker_prompt tests must use tmp_path; ignore install tips that still say MCP resolve then get_skill (public MCP has list_catalog/get_skill only).
+- MRB: when pytest tmp_path lives under job worktrees, assert against the synthetic job Path object (and fixture marker), never the literal substring 'worktrees'.
 - Public skill-dag MCP lists list_catalog+get_skill only; job briefs must not require resolve unless the MCP lists it. Link Closes to the open twin (#10268) not only the closed duplicate receipt.
