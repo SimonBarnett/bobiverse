@@ -129,7 +129,9 @@ def test_fr6366_wrapper_sets_workingdirectory_and_no_pause_on_watchdog(tmp_path:
     )
     script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
     script = spec.files[script_key]
-    assert "WorkingDirectory" in script
+    # cwd is pinned via opencode run --dir and the ConPTY --cwd argument (not Start-Process).
+    assert "'--dir', $ocDir" in script
+    assert "'--cwd', $ocDir" in script
     assert "$ocDir" in script
     # Watchdog timeout must not call record-pause (FR #6366).
     assert "record-pause" in script
