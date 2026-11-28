@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 import traceback
 from pathlib import Path
@@ -64,6 +65,30 @@ def _save_seen(sig: str, doc: dict[str, Any]) -> None:
     path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
 
+_CTX_KEY_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+def context_lines(context: dict[str, Any] | None) -> str:
+    """FR #10048: seat evidence lines (nick, kind, job, ...) for the intake body.
+
+    Keys are sanitized, values truncated and passed through ``crash_report.redact``.
+    Context is NOT part of the dedupe signature, so a repeat inside the rate window
+    still dedupes even when the seat evidence differs.
+    """
+    if not context:
+        return ""
+    lines: list[str] = []
+    for raw_key, raw_val in context.items():
+        key = _CTX_KEY_RE.sub("-", str(raw_key or "").strip().lower()).strip("-")[:32]
+        if not key or raw_val is None or str(raw_val) == "":
+            continue
+        val = " ".join(str(raw_val).split())[:200]
+        lines.append(f"{key}: {crash_report.redact(val)}")
+    if not lines:
+        return ""
+    return "context:\n" + "\n".join(lines) + "\n"
+
+
 def report(
     component: str,
     exc: BaseException,
@@ -73,6 +98,7 @@ def report(
     rate_s: int | None = None,
     filer_post: Callable[..., dict[str, Any]] | None = None,
     repo: str = crash_report.DEFAULT_REPO,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Log + intake one distinct failure. Never raises."""
     try:
@@ -123,7 +149,8 @@ def report(
             f"crash-sig:{sig}\n"
             f"exception: {type(exc).__name__}: {crash_report.redact(str(exc)[:180])}\n"
             f"first_seen: {first}\n"
-            f"last_seen: {now}\n\n"
+            f"last_seen: {now}\n"
+            f"{context_lines(context)}\n"
             f"```\n{crash_report.redact(''.join(traceback.format_exception(type(exc), exc, tb))[-8000:])}\n```\n"
             f"\n---\n_via-runtime-failure component=`{component}` FR=#5050_\n"
         )
@@ -184,5 +211,11 @@ def report(
         return {"ok": False, "error": type(outer).__name__}
 
 
-def report_message(component: str, message: str, *, site: str = "") -> dict[str, Any]:
-    return report(component, RuntimeError(message), site=site)
+def report_message(
+    component: str,
+    message: str,
+    *,
+    site: str = "",
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return report(component, RuntimeError(message), site=site, context=context)

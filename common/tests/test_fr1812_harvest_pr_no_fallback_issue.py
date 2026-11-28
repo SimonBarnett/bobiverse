@@ -1,6 +1,7 @@
 """FR #1812: harvest/skill intake with existing PR URL must not file fallback issue."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -111,6 +112,13 @@ def test_fr1812_harvest_without_pr_queues_not_issue_fallback():
 
 
 def test_fr1812_draft_pr_exception_is_logged_on_record():
+    """Skill-source lesson PR failure is logged on the record and queued; no issue fallback.
+
+    A skill payload with no files and no PR link takes the skill-source lesson PR path
+    (FR #3299 / #2705), which raises GitHubDown after saving the record as queued.
+    """
+    import pytest
+
     filer = RaisingDraftFiler()
     home = _home("_tmp_intake_fr1812_log")
     norm = {
@@ -124,10 +132,14 @@ def test_fr1812_draft_pr_exception_is_logged_on_record():
         "contact": "",
         "contact_public": False,
     }
-    rec = intake.file_submission(home, norm, filer, intake_id="in_fr1812c")
-    assert rec["state"] == "filed_issue_fallback"
+    with pytest.raises(intake.GitHubDown):
+        intake.file_submission(home, norm, filer, intake_id="in_fr1812c")
+    assert filer.issues == []
+    rec = json.loads(intake._record_path(home, "in_fr1812c").read_text(encoding="utf-8"))
+    assert rec["state"] == "queued"
+    assert rec["queued"] is True
     assert "draft_pr_error" in rec
-    assert "draft PR not implemented" in str(rec["draft_pr_error"])
+    assert "create_pr not implemented" in str(rec["draft_pr_error"])
 
 
 def test_fr1812_skip_fr_for_skill_summary_with_pr_url():

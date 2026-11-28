@@ -28,6 +28,13 @@ except ImportError:  # flat install: common/scripts composed beside bob/scripts
         sys.path.insert(0, str(_flat))
     import repo_clone_store as _repo_clone_store  # type: ignore
 
+# FR #10276 / FR #10245: a linked job worktree whose .git gitfile or metadata dir
+# is broken cannot commit or push. Seats must NACK it before ACK, not claim work.
+try:
+    from job_worktree_gitdir import linked_worktree_problem as _linked_worktree_problem
+except ImportError:  # check skipped only when the helper is not composed beside this file
+    _linked_worktree_problem = None
+
 # Credential stores and password folders must never become --dir.
 # Slashes are normalized before the match so C:/passwords and C:\passwords agree.
 DIR_FORBIDDEN_RX = re.compile(
@@ -1103,6 +1110,23 @@ def _try_prune_stale_holder(
     return "pruned", ""
 
 
+def broken_linked_worktree_reason(path: str | Path) -> str:
+    """FR #10276: reason when *path* is a linked worktree with broken git metadata, else ``""``.
+
+    Only a ``.git`` gitfile is checked. A plain directory without ``.git`` (legacy
+    reuse) and a full clone are left alone.
+    """
+    if _linked_worktree_problem is None or not path:
+        return ""
+    root = Path(path)
+    if not (root / ".git").is_file():
+        return ""
+    try:
+        return _linked_worktree_problem(root) or ""
+    except OSError as exc:
+        return f"cannot inspect worktree: {type(exc).__name__}"
+
+
 def _nack_create_failed(key: str, err_class: str, detail: str = "") -> str:
     reason = f"worktree-create-failed:{err_class or 'unknown'}"
     tip = redact_git_detail(detail) if detail else ""
@@ -2033,6 +2057,19 @@ def ensure_opencode_job_worktree(
     if decision["state"] != "absent":
         if decision.get("state") == "project" and decision.get("path"):
             key = decision.get("key") or ""
+            broken = broken_linked_worktree_reason(decision["path"])
+            if broken:
+                nack = _nack_create_failed(key, "broken-gitdir", broken)
+                return {
+                    "state": "create_failed",
+                    "nack": nack,
+                    "nacks": [nack],
+                    "path": decision.get("path") or "",
+                    "key": key,
+                    "message": CREATE_FAILED_MESSAGE,
+                    "error_class": "broken-gitdir",
+                    "error_detail": broken,
+                }
             mrb = re.match(r"(?i)^(MRB|FIX)\s+(\S+)#(\d+)$", key.strip())
             if mrb:
                 repo = mrb.group(2)

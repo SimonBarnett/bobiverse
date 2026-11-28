@@ -537,6 +537,10 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-tip:intake-in_7d41adc9841e48ce -->
 - Fresh digest 0% or age<=120 beats TipForm snapshot; under-cap uses Get-BobTrayEmptyOnlineFillAgentChoice
+<!-- harvest-tip:intake-in_ceb92a34bc124fb4 -->
+- Re-offered covered FR: re-ACK, verify gh pr closingIssuesReferences, DONE same PR URL; no second implement PR.
+<!-- harvest-tip:intake-in_b78238bf30b548b8 -->
+- Share digest_blocks_cca_refill between watch_copilot_haiku_refill.ps1 and copilot_dispatch.cca_refill_no_fuel_reason; exit before Get-FailedLoopIds when NO_FUEL.
 <!-- harvest-tip:intake-in_98a3b38a40fa45e6 -->
 - After OpenCode weights-row pin change, unpinned seats still need free-first resolve_opencode_model; pin path is BOB_SEAT_MODEL_PIN only.
 <!-- harvest-tip:intake-in_01fd445291d84d82 -->
@@ -578,3 +582,6 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Digest completeness gate: harvest digest bullets starting - ** must end with ) or lessons:/held; append (FR #N) when a CAST IRON bullet would otherwise fail test_mrb2718_digest_bullets_complete_lines
 - OpenCode launch-opencode.ps1 pins seat cwd via opencode run --dir and ConPTY --cwd, not Start-Process -WorkingDirectory; stale WorkingDirectory asserts FAIL on main
 - FR #8865 tip overlay: worker_prompt tests must use tmp_path; ignore install tips that still say MCP resolve then get_skill (public MCP has list_catalog/get_skill only).
+- MRB: prior blocked board is not automatic FAIL when tip now meets FR acceptance and CI is green; cursor/aider turn_ended should also call drain_run_outbox_now (filed #10362)
+- MRB: when pytest tmp_path lives under job worktrees, assert against the synthetic job Path object (and fixture marker), never the literal substring 'worktrees'.
+- Public skill-dag MCP lists list_catalog+get_skill only; job briefs must not require resolve unless the MCP lists it. Link Closes to the open twin (#10268) not only the closed duplicate receipt.
