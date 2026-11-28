@@ -104,6 +104,8 @@ A **principal** is derived per message from the nick plus the services account t
 
 ### MONITORING agent auth (FR #8827) â€” no secrets in this doc
 
+**FR #9691:** The Start Menu **Start Jeeves Monitor** seat (`bob-worker.exe --mode monitor`) is deprecated. Use `--mode jeeves` instead.
+
 The Start Menu **Start Jeeves Monitor** seat (`bob-worker.exe --mode monitor`) has **no IRC** of its own. To run chair commands it uses one of:
 
 1. **Ear relay (preferred on a fleet box):** append UTF-8 lines to the local ear outbox (`%USERPROFILE%\.bobiverse\outbox.txt` or the ear home outbox), e.g. `PRIVMSG #bobiverse :!ignore owner/repo` or `PRIVMSG Jeeves :!stuck`. The ear nick `bob-<machine>` is already an **ear** principal (full mutators). Pace ~3 s between lines; read chair `cmd-trace.log` for replies.

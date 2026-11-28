@@ -4,7 +4,7 @@ connection for that agent and relays IRC -> agent the instant a message arrives.
 Modes
   --mode agent   worker seat: cwd <install>\worker, IRC nick <machine>-<pid>, joins ONLY #<machine>
   --mode plan    plan agent: cwd <install>\plan, no IRC, fire-and-forget launch
-  --mode monitor Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent
+  --mode monitor [DEPRECATED - use --mode jeeves] Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent (FR #9691)
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
   --mode jeeves  Agents > Jeeves (FR #9640): IRC agent-like, outside Workers MaxWorkers=2 hard cap
 
@@ -3508,6 +3508,8 @@ def describe_agent_child_launch(
     FR #6891: grok **agent** seats use a bound cwd under ``run_dir`` (outside the install
     tree) plus seat-local ``GROK_HOME`` so ``grok inspect`` lists only skill-dag-core
     (+ bundled). Plan/monitor/cursor keep the caller's cwd.
+    
+    FR #9691: monitor mode is deprecated in favor of jeeves mode.
     """
     mode_l = (mode or "agent").strip().lower()
     folder = str(cwd)
@@ -3762,8 +3764,10 @@ def plan_prompt(plan_dir: str) -> str:
 
 def monitor_prompt(jeeves_dir: str) -> str:
     # FR #954: start prompt must force monitor-start immediately (Start Jeeves Monitor shortcut).
+    # FR #9691: Note that this mode is deprecated; prefer --mode jeeves.
     return (
-        f"You are the Jeeves monitoring agent. Read AGENTS.md and run the monitor-start skill now; do not wait for me. "
+        f"[DEPRECATED - FR #9691] You are the Jeeves monitoring agent (use --mode jeeves for new code). "
+        f"Read AGENTS.md and run the monitor-start skill now; do not wait for me. "
         f"NEW session only (never resume). CWD is {jeeves_dir}. Skills live in {jeeves_dir}\\.grok\\skills "
         f"(there is no top-level .\\skills). Open {jeeves_dir}\\.grok\\skills\\monitor-start\\SKILL.md and execute it NOW: "
         f"run token-free Test-JeevesMonitor* / Invoke-JeevesMonitorCheck cycles (health, idle seats, queue flow, "
@@ -22215,7 +22219,13 @@ def _default_jeeves_root(install_root: Path) -> Path:
 
 
 def run_monitor(args, log: Log) -> int:
-    """FR #787: Jeeves MONITORING seat — same fuel pick as Agent, CWD = jeeves install, no IRC, never resume."""
+    """FR #787: Jeeves MONITORING seat — same fuel pick as Agent, CWD = jeeves install, no IRC, never resume.
+    
+    FR #9691: DEPRECATED - use --mode jeeves instead. This mode will be removed in a future version.
+    """
+    # FR #9691: Log deprecation warning
+    log("WARNING: --mode monitor is deprecated (FR #9691). Please use --mode jeeves instead.")
+    
     work = Path(getattr(args, "work_root", "") or "") if getattr(args, "work_root", None) else None
     folder = work if work and str(work) else _default_jeeves_root(Path(args.install_root))
     folder = Path(folder)
