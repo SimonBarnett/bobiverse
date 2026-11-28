@@ -3462,6 +3462,17 @@ _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES: tuple[tuple[re.Pattern[str], str], .
     (re.compile(r"(?i)\bBOB_CHAIR_MACHINE\b.{0,80}\b(?:chair|Ergo|needs-walrus)\b"), "walrus"),
     (re.compile(r"(?i)\bneeds-walrus\s+alias\b"), "walrus"),
 )
+# FR #10200: title-only chair-host ops for bobiverse. Intake / BobCallback / ARR 502
+# outages run on the chair host (FR #1899), so a live-webhook 502 title must not be
+# offered to a shop seat (redqueen). Title only: body prose never pins bobiverse.
+_REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(
+        r"(?i)\b(?:live\s+)?(?:intake|webhook|BobCallback|ARR)\b.{0,40}\b502\b"
+    ), "walrus"),
+    (re.compile(
+        r"(?i)\b502\b.{0,40}\b(?:intake|webhook|BobCallback|ARR)\b"
+    ), "walrus"),
+)
 
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Kept for _body_for_queue preserve
 # and non-bobiverse helpers. FR #9637: bobiverse infer_require_machine ignores these
@@ -3812,6 +3823,12 @@ def infer_require_machine(
         for rx, mid in _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES:
             blob = title_blob + "\n" + body_blob
             if rx.search(blob):
+                if _is_retired_require_machine(mid):
+                    return ""
+                return fold_chair_host(mid)
+        # FR #10200: live webhook / intake 502 ops titles (title only, never body).
+        for rx, mid in _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_TITLE_CUES:
+            if rx.search(title_blob):
                 if _is_retired_require_machine(mid):
                     return ""
                 return fold_chair_host(mid)
