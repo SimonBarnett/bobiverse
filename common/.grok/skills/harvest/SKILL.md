@@ -533,6 +533,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After FR #9986, unlimited plus remaining=0 must not clear tasks_exhausted; only remaining greater than 0 does. Update the FR #9733 pin instead of folding main.
 <!-- harvest-tip:intake-in_6aecf60597f74258 -->
 - When FIX CI is already pushed on the reviewed SHA, re-run the named failing test and DONE that PR URL if it passes; do not add an empty commit.
+<!-- harvest-tip:intake-in_1366c7119d3d4507 -->
+- PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
