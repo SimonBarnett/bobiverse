@@ -555,6 +555,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - bob-tray engine update-hover-engine: LocalOnly hover inside 45s step; full grok/peer belongs off hot path
 <!-- harvest-tip:intake-in_92d9faddbf0147df -->
 - jeeves source tests: assert OpenCode launcher strings from repo_layout REPO path, not bob.scripts import __file__.
+<!-- harvest-tip:intake-in_ens_c79c4e6746d2 -->
+- When file_submission gains a new filing branch, update fr1812 state assertions in the same change.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
