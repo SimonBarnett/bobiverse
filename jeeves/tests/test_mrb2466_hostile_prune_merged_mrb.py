@@ -74,10 +74,13 @@ def test_mrb2466_purge_dead_mrb_rows_persists(tmp_path, monkeypatch):
 
 
 def test_mrb2466_public_queue_source_wires_purge():
+    """FR #10010: GET /report must not call GitHub. Purge stays on webhook/reconcile."""
     src = Path(bobreport.__file__).read_text(encoding="utf-8")
-    assert "purge_dead_mrb_rows" in src
-    assert "FR #2458" in src or "2458" in src
-    assert "github_pr_exists_checker" in src
+    start = src.index("def _public_queue")
+    window = src[start : start + 900]
+    assert "FR #10010" in window
+    assert "purge_dead_mrb_rows" not in window
+    assert "github_pr_exists_checker" not in window
 
 
 def test_mrb2466_remove_unaccepted_tasks_normalizes_task_case():

@@ -71,6 +71,12 @@ def test_fr9919_outbox_free_refuse_reason_unit():
 
 
 def test_fr9919_supervisor_drain_run_outbox_now_wired():
+    """Grok/opencode flush must run before turn_ended arms !bored (FR #9919)."""
     src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
     assert "def drain_run_outbox_now" in src
-    assert 'drain_run_outbox_now("turn_ended")' in src
+    start = src.split("def _start_turn_watcher", 1)[1]
+    block = start.split("def _on_inject", 1)[0]
+    drain_at = block.find('self.drain_run_outbox_now("turn_ended")')
+    ended_at = block.find("self.bored.turn_ended(")
+    assert drain_at != -1 and ended_at != -1
+    assert drain_at < ended_at

@@ -5479,7 +5479,9 @@ $poll.Add_Tick({
                     try {
                     [void](Invoke-BobTrayWarmEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot) -Body {
                         param($Root)
-                        $h = Get-BobTrayHover
+                        # FR #10333: same as startup (FR #8884) — WMI live-grok + peer-peek can
+                        # exceed the 45s engine step; digest + local store feed the tray snapshot.
+                        $h = Get-BobTrayHover -LocalOnly
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
                             # FR #9462: keep online_zero_workers alert durable on tray-status.json (TipForm/Status paint).
                             $merged = @()
