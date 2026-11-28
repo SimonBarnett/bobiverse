@@ -537,8 +537,12 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-tip:intake-in_b78238bf30b548b8 -->
 - Share digest_blocks_cca_refill between watch_copilot_haiku_refill.ps1 and copilot_dispatch.cca_refill_no_fuel_reason; exit before Get-FailedLoopIds when NO_FUEL.
+<!-- harvest-tip:intake-in_ens_01c2dc63c1b8 -->
+- When a linked worktree .git gitfile points at a missing admin dir, run job_worktree_gitlink.py --check first; --repair only with an explicit branch (the admin dir is rebuilt, the working tree is untouched).
 <!-- harvest-tip:intake-in_ens_0415dab42afc -->
 - summarize offerable vs live offer_focus_top: log live_skip; never fold to blocked_other without it; nak busy needs bored_gate_busy_reason when seat_open_job empty
+<!-- harvest-tip:intake-in_92d9faddbf0147df -->
+- jeeves source tests: assert OpenCode launcher strings from repo_layout REPO path, not bob.scripts import __file__.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
@@ -553,3 +557,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
 - The same issue number in two repos is not a twin. Close only the repo the operator named.
 - When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.
+- FR #8865 tip overlay: worker_prompt tests must use tmp_path; ignore install tips that still say MCP resolve then get_skill (public MCP has list_catalog/get_skill only).
