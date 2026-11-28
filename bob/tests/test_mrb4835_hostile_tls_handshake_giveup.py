@@ -8,7 +8,7 @@ SKILL = (
     / ".grok"
     / "skills"
     / "bobiverse-bob-worker"
-    / "SKILL.md"
+    / "lessons.md"
 )
 
 

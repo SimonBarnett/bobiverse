@@ -149,6 +149,39 @@ if ($st -ne 'OPEN') { throw 'issue closed; NACK instead of opening a PR' }
 
 If the issue is closed (duplicate, operator close, superseded), **do not** open or push a PR. Send `NACK FR owner/repo#N` (reason on a separate line, e.g. `issue closed upstream`) so the program releases `!bored`. A shop `CANCEL FR ... (closed by ...)` from Jeeves is the same stop: abandon, NACK, stop.
 
+## Reuse an existing PR on a resumed branch (FR #10241 / FR #10105)
+
+A resumed `fr-N` branch may already have a pull request from an earlier run. Before `gh pr create`, look for it:
+
+```powershell
+gh pr list --repo owner/name --head fr-N --state all --json number,state,url,isDraft
+```
+
+* **An OPEN PR exists:** reuse it. Do not run `gh pr create` (a second PR duplicates the first). Push any new commits to the branch, make sure the body has `Closes owner/repo#N`, run `gh pr ready <url>` if it is still a draft, then DONE with that PR URL.
+* **Only CLOSED or MERGED PRs exist:** the earlier PR is not reviewable. Open a new PR from the branch with `gh pr create` and note the old PR number in the body.
+* **No PR:** continue with `gh pr create` as below.
+
+Never guess the PR number. Take the URL from `gh pr list` or from `gh pr create`.
+
+## Resume a non-git or empty worktree (FR #10267)
+
+A resumed FR run (same `fr-N` branch, new run) can find the job worktree missing its `.git`, or a clean tree with no work of its own. Do not assume the earlier run's files are there, and do not open a second PR for the branch. This follows FR #10241 (PR #10266).
+
+1. Run `git status` in the job worktree. If it fails (not a git repo) or shows no changes and no commits ahead of `origin/main`, treat it as an empty resume.
+2. In either case, look up the head branch before any `gh pr create`:
+
+```powershell
+$prs = gh pr list --repo owner/name --head fr-N --state all --json number,url,state,isDraft | ConvertFrom-Json
+$open = @($prs | Where-Object { $_.state -eq 'OPEN' })
+```
+
+* **OPEN PR exists:** reuse it. Never open a second PR for the same branch. Run `gh pr ready <url>` if `isDraft` is true, make sure its body has `Closes owner/repo#N`, then send DONE with that URL.
+* **Only a MERGED PR:** the FR is already implemented. Check that it `Closes` the issue, then DONE with its URL. Do not re-implement.
+* **Only CLOSED (unmerged) PRs:** the old PR is dead. Open a new PR from the branch with `gh pr create` and say in its body that it supersedes the closed PR.
+* **No PR at all, and the worktree is empty:** the work was never started. Rebuild from `origin/main` as a new job; do not reuse a stale worktree.
+
+Never DONE with a URL you did not read from `gh pr list` / `gh pr create` in this run.
+
 ## DONE URL - capture `gh pr create` output (FR #108)
 
 Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns. Capture `$url` first; append DONE as **its own short command** afterward (FR #2876 — never check the outbox first).
@@ -188,6 +221,10 @@ gh pr ready <url>   # or just: gh pr ready   (from the worktree; uses the curren
 ```
 
 A draft PR is not reviewable and strands the MRB. Verify `gh pr view <pr> --json isDraft` reports `false` before DONE.
+
+## CI only when closing a digest (FR #10056)
+
+A child FR, a child FIX, and an MRB of a child do not run the package suite and do not start GitHub Actions. Do not run `gh run watch`, `gh pr checks --watch`, or `gh workflow run`. Do not push an empty commit to retrigger CI. Local evidence is the diff and the one new test file. One CI run belongs to the pull request that closes the digest, after its children are done. FR #3948 still applies at MRB: do not poll CI.
 
 ## Targeted in-job tests (FR #8157)
 
@@ -290,5 +327,7 @@ Generalised from 73 harvested lessons that never reached this book (audit for FR
 - When an FR names a skill book in another repo, land only the assigned repo in the one PR and file the other book through intake in the same turn. Do not open a second implement PR from the FR seat.
 - **Greenfield product FRs:** ship the VISION and a foundation with a testable gate (for example DNS ownership) first, then file child FRs. Children wait for the foundation PR. Never store customer keys in project infrastructure (device-only), never log secrets, and make no live vendor calls in a foundation PR. (5 lessons: harvest #1179, #1168, #1155, #1152, #1133)
 - **Closes vs Refs:** living or multi-WP FRs get `Refs` only, so after `gh pr create` verify that `closingIssuesReferences` is empty. Never write `Closes` next to an unrelated issue number, even in prose. If an unrelated PR closed a harvest/skill issue, strip the link and reopen the issue. (2 lessons: harvest #2253, #1919)
+- **Digest #9762 stacked tray CI (harvest #10099):** FR #9764 `build-bob-status.yml` shares `Build-BobDialogs.ps1` with tray CI (#9763). Land status on a **PR base of the open tray branch** until tray merges; put `Closes` in the body only when the PR targets `main` (GitHub does not auto-close from a non-default base). MRB still closes by hand on stacked bases if needed.
 - **CAST IRON (FR #9400) — ops / gate trackers:** never `Closes` an umbrella rebuild/install or GateIssues tracker while its body still lists open `Depends-on` / `GateIssues` / unchecked acceptance (tool-only PRs use `Refs` / `Toward` until gates CLOSED + install receipt). Prove with `python common/scripts/closes_ops_gate_tracker.py` (see `jeeves/tests/test_fr9400_closes_ops_gate_tracker.py`). Split tool FR vs ops FR up front when both are needed.
+- **CAST IRON (FR #9400) — ops / gate trackers:** never `Closes` an umbrella rebuild/install or GateIssues tracker while its body still lists open `Depends-on` / `GateIssues` / unchecked acceptance (tool-only PRs use `Refs` / `Toward` until gates CLOSED + install receipt). Prove with `python common/scripts/closes_ops_gate_tracker.py` (see `jeeves/tests/test_fr9400_closes_ops_gate_tracker.py`). Split tool FR vs ops FR up front when both are needed (FR #9400)
 - **Test harness gotchas:** register seat machines (registered_machines plus a cleared roster cache) in sibling and author-block tests. Fixture real queue/digest shapes, use `repo_layout.ROOT`, and give sparse worktrees `common/tests` or PYTHONPATH. Grep existing gate ids before adding a new one. Stub the cap-refusal in queue tests on a live two-agent box. After policy merges (#3289/#3311 and kin), update stale pins to the new shapes before claiming suite-green (FR #3396 / PR #3448). Pack stage tests that would rebuild exes need `-SkipEarExe`/`-SkipAircExe`. `Path.exists` can raise `OSError` on stale mapped drive letters — tolerate it in ai-root probes. Keep changed `*.md` ASCII/UTF-8 no-BOM (no mojibake) so airc fr3391-style gates stay green. (FR #3396 + harvest #964, #129, #141)

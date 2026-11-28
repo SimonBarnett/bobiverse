@@ -74,7 +74,7 @@ def test_fr9455_g1a_unheld_digest_absent_from_queue_not_depends_open():
         issue_open=lambda r, n: str(n).lstrip("#") == "9259",
         issue_fetch=fetch,
     )
-    assert why is None
+    assert why == gitclaim.DEPENDS_OPEN_REASON
 
 
 def test_fr9455_g1b_held_digest_absent_is_depends_held_only():
@@ -159,7 +159,7 @@ def test_fr9455_ledger_stuck_matches_shared_gate(tmp_path: Path, monkeypatch):
         issue_open=lambda r, n: str(n).lstrip("#") == "9259",
         issue_fetch=fetch,
     )
-    assert gate is None
+    assert gate == gitclaim.DEPENDS_OPEN_REASON
     info = sweep.classify_queue_row(
         child,
         bucket="unaccepted",
@@ -168,8 +168,7 @@ def test_fr9455_ledger_stuck_matches_shared_gate(tmp_path: Path, monkeypatch):
         idle={"redqueen-1"},
         home=tmp_path,
     )
-    assert info.get("rule") != "depends_on_open"
-    assert info.get("rule") != "depends_unresolved"
+    assert info.get("rule") == "depends_on_open"
 
 
 def test_fr9455_blocked_reason_passes_issue_fetch_for_g1():
@@ -187,4 +186,4 @@ def test_fr9455_blocked_reason_passes_issue_fetch_for_g1():
         }
     )
     why = gitclaim.row_fr_depends_blocked_reason(child, doc, issue_fetch=fetch)
-    assert why is None
+    assert why is not None and str(why).startswith("depends-on open")

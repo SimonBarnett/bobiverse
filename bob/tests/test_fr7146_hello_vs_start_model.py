@@ -58,6 +58,21 @@ def test_fr7146_run_agent_pins_hello_configured_and_post_launch_actual():
     assert "hello_model" in chunk
 
 
+def test_cursor_hello_uses_cli_selected_model(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    (home / ".cursor").mkdir(parents=True)
+    (home / ".cursor" / "cli-config.json").write_text(
+        '{"selectedModel":{"modelId":"composer-2.5"},"authInfo":{"token":"nope"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    import worker_start_model as wsm
+
+    assert wsm.cursor_cli_selected_model() == "composer-2.5"
+    line = bw.worker_hello_line("cursor", model="composer-2.5", build="b6405b9769ec")
+    assert line == "worker ready kind=cursor model=composer-2.5 build=b6405b9769ec"
+
+
 def test_fr7146_docs_do_not_call_hello_the_launch_actual():
     text = (ROOT / "bob" / "docs" / "bob-worker.md").read_text(encoding="utf-8")
     assert "is the model the seat actually starts with" not in text

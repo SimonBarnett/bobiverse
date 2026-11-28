@@ -41,10 +41,19 @@ def parse_depends_on(body: str | None, repo: str = "") -> tuple[tuple[str, int],
         value = (m.group(1) or "").strip()
         if not value or _NONE_RE.match(value):
             continue
-        for raw in re.split(r"[,;\s]+", value):
-            tok = raw.strip().strip("`*")
-            if not tok:
-                continue
+        # Single-line bodies may keep prose after "(none)" on the same Depends-on
+        # line (digest children tables). First token (none) => no deps for that line.
+        tokens = [
+            t
+            for t in (
+                raw.strip().strip("`*")
+                for raw in re.split(r"[,;\s]+", value)
+            )
+            if t
+        ]
+        if tokens and _NONE_RE.match(tokens[0]):
+            continue
+        for tok in tokens:
             qm = _QUALIFIED_RE.match(tok)
             if qm:
                 pair = (qm.group(1), int(qm.group(2)))

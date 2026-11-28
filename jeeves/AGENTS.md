@@ -86,6 +86,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Focus present (bobiverse under strict) | `scripts\Test-JeevesMonitorFocusPresent.ps1` | `tools\monitor\focus_present.py` |
 | Seats stuck doing / NAK busy | `scripts\Test-JeevesMonitorSeatsStuckDoing.ps1` | `tools\monitor\seats_stuck_doing.py` |
 | OpenCode seats (live /report) | `scripts\Test-JeevesMonitorOpencodeSeats.ps1` | `tools\monitor\opencode_seats.py` (FR #8583; flamingo kind=opencode age/quota; report-only) |
+| OpenCode Clear timeout | `scripts\Test-JeevesMonitorOpencodeClearTimeout.ps1` | `tools\monitor\opencode_clear_timeout.py` (FR #10040; Clear TimeoutExpired plus stale no-ACK and empty turns) |
 | Disk starvation (live /report) | `scripts\Test-JeevesMonitorDiskStarvation.ps1` | `tools\monitor\disk_starvation.py` (machine-pinned intake + auto `Invoke-BobiverseDiskStarvationRemediate`) |
 | Intake allowlist drift (live 403) | `scripts\Test-JeevesMonitorIntakeAllowlist.ps1` | `tools\monitor\intake_allowlist.py` (FR #3117) |
 | Github resync focus starve | `scripts\Test-JeevesMonitorGithubResyncFocus.ps1` | `tools\monitor\github_resync_focus.py` (FR #3146) |

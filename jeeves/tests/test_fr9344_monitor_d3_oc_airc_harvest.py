@@ -27,8 +27,9 @@ def test_fr9344_monitor_d3_before_bob_g1():
 
 
 def test_fr9344_worker_opencode_paid_pin():
-    text = WORKER.read_text(encoding="utf-8")
-    _no_bom(WORKER)
+    lessons = WORKER.with_name("lessons.md")
+    text = lessons.read_text(encoding="utf-8")
+    _no_bom(lessons)
     assert "9344" in text
     assert "BOB_OPENCODE_MODEL" in text
     assert "deepseek-v4-pro" in text
