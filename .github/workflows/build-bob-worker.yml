@@ -29,6 +29,9 @@ on:
       - bob/tests/test_fr8218_worker_artifact_manifest.py
       - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
       - bob/tests/test_fr6320_opencode_worktree_create.py
+      - bob/tests/test_fr6328_opencode_worktree_off_thread.py
+      - bob/tests/test_fr10360_job_worktree_git_off_thread.py
+      - bob/tests/test_fr10376_build_worker_ci_wiring.py
       - bob/tests/test_fr6370_opencode_finish_followup.py
   push:
     branches: [main]
@@ -55,6 +58,9 @@ on:
       - bob/tests/test_fr8218_worker_artifact_manifest.py
       - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
       - bob/tests/test_fr6320_opencode_worktree_create.py
+      - bob/tests/test_fr6328_opencode_worktree_off_thread.py
+      - bob/tests/test_fr10360_job_worktree_git_off_thread.py
+      - bob/tests/test_fr10376_build_worker_ci_wiring.py
       - bob/tests/test_fr6370_opencode_finish_followup.py
 
 permissions:
@@ -82,6 +88,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
+          python -m pip install pytest
+          if ($LASTEXITCODE -ne 0) { throw "pip install pytest failed: $LASTEXITCODE" }
+
+      - name: FR #10360 / #6328 job worktree off-thread pytest
+        run: |
+          python -m pytest -q `
+            bob/tests/test_fr10360_job_worktree_git_off_thread.py `
+            bob/tests/test_fr6328_opencode_worktree_off_thread.py
+          if ($LASTEXITCODE -ne 0) { throw "worktree off-thread pytest failed: $LASTEXITCODE" }
 
       - name: Build bob-worker.exe with Build-BobWorker.ps1
         env:
