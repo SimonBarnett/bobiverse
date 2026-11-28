@@ -6365,6 +6365,60 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
     return changed
 
 
+def _sweep_closed_pr_digest_doing(home: Path, repo: str, ident: str) -> int:
+    """FR #10110: idle every digest seat still doing MRB/FIX for a closed PR.
+
+    The done-row loop in ``apply_queue_event`` only reaches seats named by a
+    matching ``done`` row, so a seat whose accepted row was already gone, or a
+    closed PR with no queue row (``noop``), kept ``doing`` and nak-busied !bored.
+    This sweep matches digest work text by task, PR number and repo short name
+    (``bobiverse MRB #N``). Other tasks, other PR numbers, other repos and
+    ``offered`` rows (Jeeves' own pending offer) are never touched.
+    """
+    num = str(ident or "").strip().lstrip("#")
+    short = str(repo or "").rsplit("/", 1)[-1].strip().lower()
+    if not num.isdigit() or not short:
+        return 0
+    rx = re.compile(rf"\b(?:mrb|fix)\s+#?{num}(?!\d)", re.IGNORECASE)
+
+    def _busy_match(text: str) -> bool:
+        low = (text or "").lower()
+        return short in low and bool(rx.search(text or ""))
+
+    try:
+        doc = bobreport.load_digest(home)
+    except Exception:
+        return 0
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    targets: list[str] = []
+    for mid, ent in machines.items():
+        if not isinstance(ent, dict):
+            continue
+        for row in ent.get("worker_list") or []:
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("state") or "").strip().lower()
+            if state == "offered":
+                continue
+            work = str(row.get("work") or row.get("working_on") or "")
+            nick = str(row.get("nick") or "").strip()
+            if nick and _busy_match(work):
+                targets.append(nick)
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for pid, w in workers.items():
+            if not isinstance(w, dict):
+                continue
+            if _busy_match(str(w.get("working_on") or "")):
+                targets.append(f"{mid}-{pid}")
+    cleared = 0
+    for nick in dict.fromkeys(targets):
+        with contextlib.suppress(Exception):
+            out = bobreport.clear_seat_doing(home, nick, only_if_work_contains=num)
+            if getattr(out, "ok", False):
+                cleared += 1
+    return cleared
+
+
 def apply_queue_event(home: Path, claim: GitClaim) -> str:
     """Apply one deterministic queue transition.
 
@@ -6410,6 +6464,10 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 dirty = True
 
             if not dirty:
+                if claim.event == "pull_request" and claim.action == "closed":
+                    # FR #10110: a closed PR with no queue row still idles stale digest seats.
+                    with contextlib.suppress(Exception):
+                        _sweep_closed_pr_digest_doing(home, claim.repo, claim.id)
                 return changed
             try:
                 _write_queue(queue_path(home), doc)
@@ -6453,6 +6511,9 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 bobreport.clear_seat_doing(
                                     home, seat, only_if_work_contains=ident
                                 )
+                # FR #10110: also idle seats whose done/accepted row is gone.
+                with contextlib.suppress(Exception):
+                    _sweep_closed_pr_digest_doing(home, claim.repo, claim.id)
             elif claim.event == "issues" and claim.action == "closed":
                 # FR #4415: same for closed issues (FR/PR rows dropped).
                 with contextlib.suppress(Exception):
