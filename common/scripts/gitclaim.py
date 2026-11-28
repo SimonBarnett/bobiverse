@@ -2810,6 +2810,13 @@ def tipform_restore_escalate_reason(
     return None
 
 
+# FR #10239: receipt-shaped titles of a give-up / refusal record, not new work.
+_GIVEUP_RECEIPT_TITLE_RE = re.compile(
+    r"(?i)^(?:FR|FIX|MRB|UAT)\s*#?\d+\s*(?:\([^)]*\)\s*)?(?:GIVEUP|NACK)\b"
+    r"|\b(?:GIVEUP|NACK)\s+(?:receipt|triage)\b"
+)
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -2836,6 +2843,11 @@ def issue_skip_fr_reason(
     # are not shop FR work. They must not be offered or stamped needs_human.
     if re.match(r"(?i)^stall:", title_s):
         return "stall_receipt"
+    # FR #10239: via-intake GIVEUP/NACK receipts (worker record of a give-up, e.g.
+    # "FR #10119 GIVEUP: ...", "FR #10227 (GIVEUP triage): ...") are not FR work
+    # even when the chair stamped feature-request. Offering them wastes a seat.
+    if "via-intake" in labs and _GIVEUP_RECEIPT_TITLE_RE.search(title_s):
+        return "giveup_receipt"
     # FR #9038: bob-worker files these when the agent CLI exits non-zero
     # (report_agent_cli_nonzero_exit). They are detector receipts of FR #7593,
     # already handled by GIVEUP + seat restart. Do not offer them as FR work.
