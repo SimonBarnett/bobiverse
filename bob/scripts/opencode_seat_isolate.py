@@ -127,15 +127,19 @@ def handshake_only(text: str) -> bool:
     a finished turn. A later tool line (``skill-dag_...``) is real output.
     """
     vis = plain_console(text).replace("\x00", "")
+    # ESC can be dropped by the console logger; leftover CSI still is not a turn.
+    vis = re.sub(r"\[[0-9;?]*[A-Za-z]", "", vis)
     lines = [ln.strip() for ln in vis.splitlines() if ln.strip()]
     if not lines:
         return True
     blob = re.sub(r"\s+", " ", " ".join(lines)).strip()
-    if len(blob) > 240:
-        return False
     if "skill-dag" in blob.lower():
         return False
-    return bool(re.match(r"^> build\b", blob)) and len(lines) <= 2
+    if len(blob) > 400:
+        return False
+    if re.search(r"> build\b", blob):
+        return True
+    return len(blob) < 180 and "opencode.exe" in blob.lower()
 
 
 def classify_startup(
@@ -163,6 +167,12 @@ def classify_startup(
             code = None
     if code == 0:
         return "continue"
+    # Seat redqueen-10148: exit -1 and ~165 bytes never reached classify's
+    # "> build" anchor, so the wrapper returned to ReadLine with no error.
+    if code is not None and code < 0 and handshake_only(text):
+        if int(attempt) < 1:
+            return "retry"
+        return "giveup"
     low = (text or "").lower()
     if any(c in low for c in RATE_CUES):
         return "continue"

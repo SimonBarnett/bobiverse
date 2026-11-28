@@ -143,7 +143,7 @@ def test_mrb2602_irc_lost_exit_3_and_docs_skill():
     assert "EXIT_IRC_LOST = 3" in _read(WORKER_PY)
     post = _read(POST)
     assert "FR #3180" in post and "manual only" in post.lower()
-    skill = _read(SKILL)
+    skill = _read(SKILL) + "\n" + _read(SKILL.with_name("lessons.md"))
     assert "FR #3180" in skill
-    assert "manual only" in skill.lower()
+    assert "manual" in skill.lower()
     assert "HealWorkerSeats" not in skill

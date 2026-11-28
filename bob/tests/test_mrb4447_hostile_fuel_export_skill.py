@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-WORKER = REPO / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+WORKER = REPO / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
 HARVEST = REPO / "common" / ".grok" / "skills" / "harvest" / "SKILL.md"
 NEEDLE = (
     "Get-BobAgentFuel must call only functions listed in BobBridge FunctionsToExport "

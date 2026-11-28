@@ -272,7 +272,7 @@ def test_mrb5400_skill_pins_fr5327_done_not_stale_replay():
         / ".grok"
         / "skills"
         / "bobiverse-bob-worker"
-        / "SKILL.md"
+        / "lessons.md"
     )
     text = skill_path.read_text(encoding="utf-8")
     assert "FR #4842 / #5327" in text

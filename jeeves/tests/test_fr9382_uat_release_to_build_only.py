@@ -46,7 +46,10 @@ def _uat_row(repo: str, **extra) -> dict:
 
 def test_uat_release_allowlist_includes_bobiverse_excludes_wetherby():
     assert uat_release.repo_has_release_to_build("SimonBarnett/bobiverse")
-    assert uat_release.repo_has_release_to_build("SimonBarnett/priority-mcp")
+    assert uat_release.repo_has_release_to_build("SimonBarnett/a-search")
+    assert uat_release.repo_has_release_to_build("SimonBarnett/skills-visionary")
+    # FR #9416: priority-mcp / priority-customer stay off the default allowlist.
+    assert not uat_release.repo_has_release_to_build("SimonBarnett/priority-mcp")
     assert not uat_release.repo_has_release_to_build("SimonBarnett/wetherby")
     assert not uat_release.repo_has_release_to_build("SimonBarnett/obw")
     assert not uat_release.repo_has_release_to_build("SimonBarnett/ce-priority")
