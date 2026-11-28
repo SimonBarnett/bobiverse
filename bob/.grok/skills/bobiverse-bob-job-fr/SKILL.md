@@ -163,6 +163,25 @@ gh pr list --repo owner/name --head fr-N --state all --json number,state,url,isD
 
 Never guess the PR number. Take the URL from `gh pr list` or from `gh pr create`.
 
+## Resume a non-git or empty worktree (FR #10267)
+
+A resumed FR run (same `fr-N` branch, new run) can find the job worktree missing its `.git`, or a clean tree with no work of its own. Do not assume the earlier run's files are there, and do not open a second PR for the branch. This follows FR #10241 (PR #10266).
+
+1. Run `git status` in the job worktree. If it fails (not a git repo) or shows no changes and no commits ahead of `origin/main`, treat it as an empty resume.
+2. In either case, look up the head branch before any `gh pr create`:
+
+```powershell
+$prs = gh pr list --repo owner/name --head fr-N --state all --json number,url,state,isDraft | ConvertFrom-Json
+$open = @($prs | Where-Object { $_.state -eq 'OPEN' })
+```
+
+* **OPEN PR exists:** reuse it. Never open a second PR for the same branch. Run `gh pr ready <url>` if `isDraft` is true, make sure its body has `Closes owner/repo#N`, then send DONE with that URL.
+* **Only a MERGED PR:** the FR is already implemented. Check that it `Closes` the issue, then DONE with its URL. Do not re-implement.
+* **Only CLOSED (unmerged) PRs:** the old PR is dead. Open a new PR from the branch with `gh pr create` and say in its body that it supersedes the closed PR.
+* **No PR at all, and the worktree is empty:** the work was never started. Rebuild from `origin/main` as a new job; do not reuse a stale worktree.
+
+Never DONE with a URL you did not read from `gh pr list` / `gh pr create` in this run.
+
 ## DONE URL - capture `gh pr create` output (FR #108)
 
 Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns. Capture `$url` first; append DONE as **its own short command** afterward (FR #2876 — never check the outbox first).
