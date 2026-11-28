@@ -3820,6 +3820,9 @@ def _worker_prompt_from_install_tip(worker_dir: str, home: str, machine: str, ni
             continue
         if "bob/bob/scripts" in raw.replace("\\", "/"):
             continue
+        # FR #10268: public https://bob.ntsa.uk/mcp has no resolve tool; ignore stale tips.
+        if "MCP resolve then get_skill" in raw or "(resolve, then get_skill)" in raw:
+            continue
         rendered = _apply_worker_prompt_tokens(raw, worker_dir, home, machine, nick)
         if "bob/bob/scripts" in rendered.replace("\\", "/"):
             continue
@@ -4076,7 +4079,8 @@ def rules_text(folder: str, kind: str) -> str:
     else:
         skill_line = (
             f"Read {folder}\\AGENTS.md. CAST IRON: every CLI loads Bob skills only from https://bob.ntsa.uk/mcp "
-            f"(list_catalog, then get_skill; resolve only if the MCP lists it). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
+            f"(list_catalog and get_skill; there is no resolve tool on the public MCP). "
+            f"Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
             f"If that MCP is down, GIVEUP skill-dag-mcp-down — never continue FR/MRB/UAT from disk. "
         )
     return (f"{head}{skill_line}"
@@ -15041,7 +15045,7 @@ def opencode_job_finish_steps(
         f"FINISH {key}. " + work_line
         + "This is a NEW opencode run (no --resume/--continue). "
         + sha_line
-        + "Per job call skill-dag MCP list_catalog then get_skill (resolve only if the MCP lists it); file what you learn with "
+        + "Per job call skill-dag MCP get_skill (list_catalog optional); file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
         "Search with the grep tool or Select-String: ripgrep (rg) may not be on PATH on this Windows seat. "
