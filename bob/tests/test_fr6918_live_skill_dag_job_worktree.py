@@ -47,8 +47,8 @@ def test_fr6918_start_has_no_job_worktree_flag(tmp_path):
     grok_body = (Path(launched["child"]["cwd"]) / ".grok" / "config.toml").read_text(
         encoding="utf-8"
     )
-    assert "--job-worktree-file" in grok_body
-    assert " --job-worktree " not in f" {grok_body} "
+    assert bw.BOB_SKILL_MCP_URL in grok_body
+    assert "skill_dag_mcp.py" not in grok_body
     t = launched["tree"]
     run = tmp_path / "run-c"
     run.mkdir()
@@ -63,11 +63,8 @@ def test_fr6918_start_has_no_job_worktree_flag(tmp_path):
     )
     bw.write_cursor_skill_dag_mcp_config_if_agent(cur)
     cur_body = (Path(t["worker"]) / ".cursor" / "mcp.json").read_text(encoding="utf-8")
-    assert "--job-worktree-file" in cur_body
-    assert '"--job-worktree"' not in cur_body
-    for pack in (t["seat"], t["bobpack"], t["harvest"]):
-        assert pack.as_posix() in grok_body.replace("\\", "/")
-        assert pack.as_posix() in cur_body.replace("\\", "/")
+    assert bw.BOB_SKILL_MCP_URL in cur_body
+    assert "skill_dag_mcp.py" not in cur_body
 
 
 def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
@@ -90,13 +87,13 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
     cur_w = (t["worker"] / ".cursor" / "mcp.json").read_text(encoding="utf-8").replace("\\", "/")
     grok_ptr = (bound.parent / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
     cur_ptr = (t["worker"] / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
-    assert "--job-worktree-file" in grok_w
+    assert bw.BOB_SKILL_MCP_URL in grok_w
     assert w.as_posix() in grok_ptr
     assert w.as_posix() in cur_ptr
     assert sibling.as_posix() not in grok_ptr
     assert sibling.as_posix() not in cur_ptr
-    assert t["harvest"].as_posix() in grok_w
-    assert t["harvest"].as_posix() in cur_w
+    assert "skill_dag_mcp.py" not in grok_w
+    assert "skill_dag_mcp.py" not in cur_w
     assert not (bound / "skill-dag-job-worktree").exists()
 
     bw.refresh_live_skill_dag_mcp_files(
@@ -121,7 +118,7 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
     grok_toml = (bound / ".grok" / "config.toml").read_text(encoding="utf-8")
     assert grok_end == ""
     assert cur_end == ""
-    assert t["harvest"].as_posix() in grok_toml.replace("\\", "/")
+    assert bw.BOB_SKILL_MCP_URL in grok_toml
 
 
 def test_fr6918_never_writes_user_cursor_mcp(tmp_path, monkeypatch):

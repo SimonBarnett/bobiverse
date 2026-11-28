@@ -329,3 +329,6 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - FR #9277: progress heartbeat / agent I/O after turn_ended cancels armed done-miss; paid OpenCode go unknown mid-job logs fuel: once not out-of-fuel spam
 - After harvest clears, BoredEmitter should skip the first idle_s (2s debounce) so !bored returns in seconds; harvest outbox chatter must not reset that clock
 - bob-worker-net embeds SourceCommit by rewriting GeneratedSourceCommit.cs before dotnet publish and restoring the placeholder in finally (AssemblyMetadata -p alone is unreliable for --version).
+<!-- harvest-tip:intake-in_744abd2678734a5c -->
+- Hotpatch the worker wrapper by rebuilding bob-worker.exe into <install>\worker\bob-worker.exe. The tray copies that file by hash. A running seat keeps the old exe and its local skill-dag config until it is started again.
+<!-- harvest-lessons-eof -->
