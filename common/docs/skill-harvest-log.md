@@ -1,6 +1,14 @@
 # Skill harvest log
 
 
+## 2026-11-28 - GHA pwsh quote Build-BobDialogs -Targets
+
+| Field | Value |
+|-------|-------|
+| Lesson | GitHub Actions pwsh: quote comma lists for `[string]$Targets` on Build-BobDialogs (`-Targets "tray,about"`). |
+| Evidence | MRB #10060 build-bob-tray failure; intake harvest #10100 |
+| Refs | Closes SimonBarnett/bobiverse#10100 |
+
 ## 2026-11-23 - FR #9344 monitor D3 release + paid OC pin + airc not-op
 
 | Field | Value |
