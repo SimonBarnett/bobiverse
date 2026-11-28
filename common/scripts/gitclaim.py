@@ -19,6 +19,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import contextlib
 import copy
@@ -1510,6 +1511,19 @@ def depends_issue_open_checker(issue_open=None):
         return None
 
 
+def _depend_fetched_closed(repo: str, num, issue_fetch) -> bool:
+    """True when ``issue_fetch`` positively reports the depend as CLOSED."""
+    if issue_fetch is None:
+        return False
+    try:
+        issue = issue_fetch(repo, str(num))
+    except Exception:
+        return False
+    if not isinstance(issue, dict):
+        return False
+    return str(issue.get("state") or "").strip().lower() == "closed"
+
+
 def row_depends_open_reason(
     row: dict,
     open_keys: set[tuple[str, int]] | None = None,
@@ -1587,6 +1601,10 @@ def row_depends_open_reason(
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
         if _depend_queue_state(doc if isinstance(doc, dict) else {}, repo, num) == "closed":
+            continue
+        # FR #10105 (issue #10251): a parent positively CLOSED via issue_fetch (even
+        # with leftover hold/digest labels) clears the child; it is not an unknown.
+        if _depend_fetched_closed(repo, num, fetch):
             continue
         if issue_open is None:
             # FR #10059: no live checker and not a positive CLOSED is unknown.
@@ -2793,6 +2811,13 @@ def tipform_restore_escalate_reason(
     return None
 
 
+# FR #10239: receipt-shaped titles of a give-up / refusal record, not new work.
+_GIVEUP_RECEIPT_TITLE_RE = re.compile(
+    r"(?i)^(?:FR|FIX|MRB|UAT)\s*#?\d+\s*(?:\([^)]*\)\s*)?(?:GIVEUP|NACK)\b"
+    r"|\b(?:GIVEUP|NACK)\s+(?:receipt|triage)\b"
+)
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -2819,6 +2844,11 @@ def issue_skip_fr_reason(
     # are not shop FR work. They must not be offered or stamped needs_human.
     if re.match(r"(?i)^stall:", title_s):
         return "stall_receipt"
+    # FR #10239: via-intake GIVEUP/NACK receipts (worker record of a give-up, e.g.
+    # "FR #10119 GIVEUP: ...", "FR #10227 (GIVEUP triage): ...") are not FR work
+    # even when the chair stamped feature-request. Offering them wastes a seat.
+    if "via-intake" in labs and _GIVEUP_RECEIPT_TITLE_RE.search(title_s):
+        return "giveup_receipt"
     # FR #9038: bob-worker files these when the agent CLI exits non-zero
     # (report_agent_cli_nonzero_exit). They are detector receipts of FR #7593,
     # already handled by GIVEUP + seat restart. Do not offer them as FR work.
@@ -3462,6 +3492,17 @@ _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES: tuple[tuple[re.Pattern[str], str], .
     (re.compile(r"(?i)\bBOB_CHAIR_MACHINE\b.{0,80}\b(?:chair|Ergo|needs-walrus)\b"), "walrus"),
     (re.compile(r"(?i)\bneeds-walrus\s+alias\b"), "walrus"),
 )
+# FR #10200: title-only chair-host ops for bobiverse. Intake / BobCallback / ARR 502
+# outages run on the chair host (FR #1899), so a live-webhook 502 title must not be
+# offered to a shop seat (redqueen). Title only: body prose never pins bobiverse.
+_REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(
+        r"(?i)\b(?:live\s+)?(?:intake|webhook|BobCallback|ARR)\b.{0,40}\b502\b"
+    ), "walrus"),
+    (re.compile(
+        r"(?i)\b502\b.{0,40}\b(?:intake|webhook|BobCallback|ARR)\b"
+    ), "walrus"),
+)
 
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Kept for _body_for_queue preserve
 # and non-bobiverse helpers. FR #9637: bobiverse infer_require_machine ignores these
@@ -3812,6 +3853,12 @@ def infer_require_machine(
         for rx, mid in _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES:
             blob = title_blob + "\n" + body_blob
             if rx.search(blob):
+                if _is_retired_require_machine(mid):
+                    return ""
+                return fold_chair_host(mid)
+        # FR #10200: live webhook / intake 502 ops titles (title only, never body).
+        for rx, mid in _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_TITLE_CUES:
+            if rx.search(title_blob):
                 if _is_retired_require_machine(mid):
                     return ""
                 return fold_chair_host(mid)
@@ -8841,7 +8888,9 @@ _PR_SHAPED_FR_TITLE_RE = re.compile(
 )
 
 
-def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None) -> bool:
+def fr_row_offerable(
+    row: dict, *, pr_exists=None, is_pull=None, issue_open=None, merged_twin=None
+) -> bool:
     """True when an FR row may be offered (FR #846 / #1313 / #2340 / #4257).
 
     Rejects FR rows that are actually pull requests:
@@ -8892,6 +8941,13 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None
     if issue_open is not None and repo and num:
         try:
             if not bool(issue_open(repo, num)):
+                return False
+        except Exception:
+            pass
+    # FR #10235: a title already carried by a MERGED PR is a twin of landed work.
+    if merged_twin is not None and repo and title:
+        try:
+            if bool(merged_twin(repo, title)):
                 return False
         except Exception:
             pass
@@ -9581,6 +9637,117 @@ def github_issue_open_checker(
 
     _check.peek = lambda repo, num: _cache_peek(store, f"issue_open:{repo}#{num}")
     return _check
+
+
+# FR #10235: process-wide verdict cache for the merged-twin title search.
+MERGED_TWIN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+
+
+def _merged_twin_norm(text: str) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def github_merged_twin_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``merged_twin(repo, title)`` -> True when a MERGED PR in ``repo`` already
+    carries this exact title (FR #10235; class of twin FR #10114 / #10217).
+
+    An FR whose title matches work that already landed on main is a twin: it must not
+    be offered again. Comparison is whitespace- and case-insensitive on the full title.
+    Returns None when offline / no token. Search failures raise ``GitHubLookupUnknown``
+    (never a twin), so a rate limit cannot drop real work.
+    """
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else MERGED_TWIN_SHARED_CACHE
+
+    def _check(repo: str, title: str) -> bool:
+        want = _merged_twin_norm(title)
+        if not repo or not want:
+            return False
+        key = f"merged_twin:{repo}|{want}"
+        if hasattr(store, "get"):
+            hit = store.get(key, _CACHE_MISS)
+            if hit is not _CACHE_MISS:
+                return hit
+        elif key in store:
+            return store[key]
+        query = f'repo:{repo} is:pr is:merged in:title "{" ".join(str(title).split())}"'
+        api = (
+            "https://api.github.com/search/issues?per_page=10&q="
+            + urllib.parse.quote(query, safe="")
+        )
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-gitclaim",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                raw = resp.read()
+                body = json.loads(
+                    raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                )
+            items = (body or {}).get("items") or []
+            ok = any(
+                isinstance(it, dict)
+                and _merged_twin_norm(it.get("title")) == want
+                and "pull_request" in it
+                for it in items
+            )
+            store[key] = ok
+            return ok
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            _log_github_lookup_failure(
+                "merged_twin",
+                repo,
+                want[:80],
+                code=code,
+                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                exc=e,
+            )
+            raise GitHubLookupUnknown(f"merged_twin {repo} http={code}") from e
+        except GitHubLookupUnknown:
+            raise
+        except Exception as e:
+            _log_github_lookup_failure("merged_twin", repo, want[:80], exc=e)
+            raise GitHubLookupUnknown(f"merged_twin {repo} {type(e).__name__}") from e
+
+    _check.peek = lambda repo, title: _cache_peek(
+        store, f"merged_twin:{repo}|{_merged_twin_norm(title)}"
+    )
+    return _check
+
+
+def _fr_merged_twin_checker(merged_twin=None):
+    """Injected merged-twin checker, else the unbudgeted live default (FR #10235).
+
+    Like ``depends_issue_open_checker`` / FR #9411, the offer path must not depend on
+    ``BORED_GITHUB_CALL_BUDGET``: at budget 0 a budgeted lookup never fires.
+    """
+    if merged_twin is not None:
+        return merged_twin
+    try:
+        return github_merged_twin_checker()
+    except Exception:
+        return None
 
 
 def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None, issue_open=None) -> int:
@@ -14655,6 +14822,7 @@ def offer_focus_top(
     issue_open=None,
     fetch_issue=None,
     offered_via: str | None = None,
+    merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
@@ -14716,6 +14884,8 @@ def offer_focus_top(
     # FR #9411: CLOSED FR live check is also unbudgeted - BORED_GITHUB_CALL_BUDGET=0
     # otherwise never fires and CLOSED ops trackers stay offerable (class of #9376).
     fr_closed_issue_open = depends_issue_open_checker(issue_open)
+    # FR #10235: unbudgeted merged-PR twin check for FR offers (see fr_row_offerable).
+    fr_merged_twin = _fr_merged_twin_checker(merged_twin)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -14975,6 +15145,7 @@ def offer_focus_top(
                     is_pull=is_pull,
                     pr_exists=pr_exists,
                     issue_open=fr_closed_issue_open,
+                    merged_twin=fr_merged_twin,
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -15291,6 +15462,7 @@ def offer_top(
     is_pull=None,
     issue_open=None,
     fetch_issue=None,
+    merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
     import time as _time
@@ -15302,6 +15474,8 @@ def offer_top(
     depends_issue_fetch = depends_issue_fetch_checker(fetch_issue)
     # FR #9411: unbudgeted CLOSED FR check (budget 0 would otherwise never fire).
     fr_closed_issue_open = depends_issue_open_checker(issue_open)
+    # FR #10235: unbudgeted merged-PR twin check for FR offers.
+    fr_merged_twin = _fr_merged_twin_checker(merged_twin)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -15426,9 +15600,10 @@ def offer_top(
                     is_pull=is_pull,
                     pr_exists=pr_exists,
                     issue_open=fr_closed_issue_open,
+                    merged_twin=fr_merged_twin,
                 ):
                     i += 1
-                    continue  # FR #846 / #838 / #2340
+                    continue  # FR #846 / #838 / #2340 / #10235
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     i += 1

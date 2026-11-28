@@ -18,6 +18,15 @@ Walrus/jeeves **rebuild + Slab-install** issues (GateIssues / "Instructions for 
 - Use label `hold` while gates are open; tool-only PRs use `Refs` / `Toward`, never `Closes`, until install acceptance (FR #9400).
 - If a tracker was already offered, labeling `hold` (or the ops body cues) clears `offered_to` / seat-holds. `!stuck` / `!sweep` also release ghost offers (`released_offers`) for held rows and idle seats past offer timeout with no ACK.
 
+## Live `/bob/v1/report` down (FR #10106)
+
+When public `GET https://bob.ntsa.uk/bob/v1/report` returns **502/503/504** (IIS/BobCallback upstream), fleet JSON is unavailable but **IRC shop wire still works**. Monitor checks:
+
+- `probe_live_report` records `report_http_status` (502 is not a silent `None`).
+- Token-free checks attach **`inbound_transcript` fallback** (tail of `<bob home>/inbound-transcript.log` for Jeeves `ACK`/`DONE`/`GIVEUP` and disk-class giveups) via `inbound_transcript_fallback` in `tools/monitor/_common.py`.
+- **Heal** is still walrus-side (`webhooks_up_with_chair` / BobCallback + IIS); the 30-minute chair `webhook-health` probe announces public targets down on transition (`chair_health.py`).
+- **FR #10107:** while the gateway is down, `intervene_assign` **does not** emit blind `!assign` lines from stale local queue rows — use IRC/inbound-transcript instead until `GET /bob/v1/report` is 200 again.
+
 ## Bored push notify (FR #9879)
 
 `!bored` (and shop `worker ready` / `DONE`) must reach the MONITORING agent as a **push** from the ear inbound transcript — not via the 5–15 minute health loop.
