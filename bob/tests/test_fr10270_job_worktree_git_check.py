@@ -65,6 +65,23 @@ def test_repaired_when_admin_fixed_and_git_works(tmp_path: Path):
     assert intake_calls == []
 
 
+def test_ok_when_helper_ok_and_recheck_passes(tmp_path: Path):
+    """Second rev-parse is the success signal; helper token ok must not file intake."""
+    wt = tmp_path / "fr-10270"
+    wt.mkdir()
+    run = _git_run([False, True])
+    intake_calls = []
+    state = bw.verify_job_worktree_git(
+        wt,
+        run=run,
+        repair=lambda p: "ok",
+        intake=lambda *a, **k: intake_calls.append(a) or True,
+        log=lambda m: None,
+    )
+    assert state == "ok"
+    assert intake_calls == []
+
+
 def test_git_still_broken_files_intake(tmp_path: Path):
     wt = tmp_path / "fr-10270"
     wt.mkdir()
@@ -150,3 +167,34 @@ def test_intake_argv_pins_repo_and_kind(tmp_path: Path):
     assert argv[argv.index("-Repo") + 1] == "SimonBarnett/bobiverse"
     assert argv[argv.index("-Kind") + 1] == "issue"
     assert "Report-BobiverseIntakeIssue.ps1" in " ".join(argv)
+
+
+def test_intake_nonzero_exit_returns_false(tmp_path: Path):
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 7, "", "fail")
+
+    ok = bw.file_job_worktree_git_intake(
+        tmp_path / "fr-10270", "git-still-broken", "branch-missing", run=run, log=lambda m: None
+    )
+    assert ok is False
+
+
+def test_resolve_job_worktree_ps1_prefers_explicit(tmp_path: Path):
+    script = tmp_path / "Bobiverse-Common.ps1"
+    script.write_text("# stub\n", encoding="ascii")
+    found = bw._resolve_job_worktree_ps1("Bobiverse-Common.ps1", explicit=script)
+    assert found == script
+
+
+def test_grok_cursor_inject_wires_verify_call():
+    """Hostile pin: Grok/Cursor MRB/FIX path must call verify_job_worktree_git (not OpenCode-only)."""
+    import inspect
+
+    src = inspect.getsource(bw.Supervisor._inject_line)
+    assert "verify_job_worktree_git" in src
+    # After prepared_mrb nack guard (Grok/Cursor), not only inside opencode-ready.
+    assert 'prepared_mrb.get("nack")' in src
+    nack_at = src.index('prepared_mrb.get("nack")')
+    # First verify after nack is the Grok/Cursor wire; opencode-ready has its own later.
+    verify_positions = [i for i in range(len(src)) if src.startswith("verify_job_worktree_git", i)]
+    assert any(pos > nack_at for pos in verify_positions)
