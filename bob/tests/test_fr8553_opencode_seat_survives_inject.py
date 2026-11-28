@@ -28,12 +28,13 @@ def test_fr8553_launcher_omits_nonewwindow_with_redirects(tmp_path: Path):
         None,
     )
     ps1 = next(v for k, v in spec.files.items() if str(k).endswith("launch-opencode.ps1"))
-    assert "RedirectStandardOutput" in ps1
-    assert "RedirectStandardError" in ps1
-    assert "Start-Process -FilePath $exe -ArgumentList $argStr" in ps1
-    # The spawn lines themselves must not carry -NoNewWindow (comment may mention it).
+    assert "$conptyPy" in ps1
+    assert "--argv-file" in ps1
+    assert "Start-Process -FilePath $pyPty" in ps1
+    # FR #8553: never Start-Process the opencode exe with console redirects (hang/tear-down).
     for line in ps1.splitlines():
-        if "Start-Process -FilePath $exe" in line and "RedirectStandardOutput" in line:
+        if "Start-Process -FilePath $exe" in line:
+            assert "RedirectStandardOutput" not in line, line
             assert "-NoNewWindow" not in line, line
 
 
