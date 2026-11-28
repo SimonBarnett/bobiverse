@@ -772,3 +772,9 @@ Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobivers
 
 For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `require_machine:` / `=` lines (and other title/body text cues). Pins require `needs-<machine>` / `require_machine:<machine>` labels, hard issue pins, or operator `!pin`. Body lines remain as ops notes. Supersedes earlier FR #4512 wording that dedicated body lines still pinned bobiverse (see also lines that document soft-cue vs dedicated-line for bobiverse).
 
+## 2026-11-28 - harvest #10103 (build-bob-tray sparse VERSION)
+
+Sparse GHA checkout for tray/status CI must include `common/VERSION` when scripts call `Get-BobiverseRepoPath`; without it `Test-BobiverseSplitRepo` is false and `Build-BobDialogs.ps1` looked under legacy flat `dialogs` paths.
+
+Books: bobiverse-fleet-ops, bob-tray-dialogs. Refs: SimonBarnett/bobiverse#10103
+
