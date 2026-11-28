@@ -778,3 +778,9 @@ Public `GET /bob/v1/report` 502 drops fleet digest JSON; monitor uses `probe_liv
 
 Books: bobiverse-jeeves-monitor, inbound_transcript. Refs: SimonBarnett/bobiverse#10106
 
+## 2026-11-28 FR #10107 skip blind intervene_assign when report gateway down
+
+While `GET /bob/v1/report` returns 502, `intervene_assign` exits OK with `skipped: report_gateway_down` (no stale local-queue `!assign`); optional `BOB_MONITOR_SKIP_OPENCODE_SEATS` and `skip_opencode_seats` avoid OpenCode seats when partial queue data remains. Walrus still heals BobCallback/IIS; twin #9246 same title.
+
+Books: bobiverse-jeeves-monitor, intervene_assign. Refs: SimonBarnett/bobiverse#10107 SimonBarnett/bobiverse#10106
+

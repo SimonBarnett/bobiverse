@@ -386,6 +386,38 @@ def fetch_live_report(
     return probe_live_report(url=url, timeout=timeout, env=env).get("doc")
 
 
+def live_report_gateway_down(
+    url: str | None = None,
+    *,
+    timeout: float = 12.0,
+    env: Optional[dict] = None,
+) -> dict[str, Any]:
+    """True when public /bob/v1/report is 502-class or missing JSON (FR #10107)."""
+    probe = probe_live_report(url=url, timeout=timeout, env=env)
+    status = int(probe.get("status") or 0)
+    down = status in (502, 503, 504) or (
+        probe.get("doc") is None and status >= 500
+    )
+    probe["gateway_down"] = down
+    return probe
+
+
+def seat_agent_kind(seat: dict) -> str:
+    """Digest/worker row agent kind (grok, cursor, opencode, ...)."""
+    for key in ("kind", "agent", "agent_kind", "seat_kind"):
+        raw = str((seat or {}).get(key) or "").strip().lower()
+        if raw:
+            return raw
+    model = str((seat or {}).get("model") or "").strip().lower()
+    if model.startswith("opencode") or "/opencode" in model:
+        return "opencode"
+    return ""
+
+
+def is_opencode_seat(seat: dict) -> bool:
+    return seat_agent_kind(seat) == "opencode"
+
+
 def inbound_transcript_fallback(
     chair: Path,
     digest: Path,

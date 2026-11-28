@@ -63,6 +63,7 @@ def test_disk_starvation_report_502_attaches_transcript(monkeypatch, tmp_path: P
     )
 
     monkeypatch.setenv("BOB_INSTALL_ROOT", str(tmp_path / "bob"))
+    monkeypatch.setenv("BOB_HOME", str(ear))
     monkeypatch.setattr(
         ds,
         "probe_live_report",
