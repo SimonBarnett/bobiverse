@@ -585,6 +585,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Always append DONE as isolated outbox call before long merge/harvest chains; turn-end watchdog fires on missing DONE.
 <!-- harvest-tip:intake-in_ens_598f595650f2 -->
 - Harvest conflict-FIX: merge origin/main on intake branch, keep tip anchor, push; check_conflict_markers on skill path only.
+<!-- harvest-tip:intake-in_6b8fd80a0fb143b8 -->
+- When PriorityAgent should stop listing priority-customer via gh, write gitcust-catalog.json under the digest home (GET /bob/v1/gitcust). Public POST from off-box can 403; localhost :7700 POST returns 202. Launcher reads GET first and still clones only when a launch needs the tree.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
