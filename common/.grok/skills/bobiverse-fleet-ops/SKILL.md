@@ -202,4 +202,6 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - Tray Plan/Priority links need tip bob-tray.exe (Agents>Plan/Priority) plus vendor\plan\PlanAgent.exe (skills-visionary plan-v* release, sha verified) and vendor\priority\PriorityAgent.exe; ForceNew Start-BobTray -SkipServiceRestart; --dump-menu takes an output path
 <!-- harvest-tip:intake-in_ens_2abab6d5a634 -->
 - On marchhare, when ARP bob VERSION exceeds git tip VERSION Sync skip-newer-install blocks compose; overlaying tip flat scripts beside an older frozen bob-ear.exe can exit-2 crash-loop --- tip skills/common first, rebuild/Install-BobEarExe (or newer bob MSI) before tip scripts robocopy, keep ROLLBACK.ps1
+<!-- harvest-tip:intake-in_ens_85afb9689875 -->
+- When the shop install is dirty and behind main, copy only clean runtime scripts with git checkout origin/main -- those paths, then git reset HEAD so the bytes stay and local skill edits stay. Restart only ircBob. A frozen bob-worker.exe does not load bob_worker.py until rebuild.
 <!-- harvest-lessons-eof -->
