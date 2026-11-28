@@ -14,12 +14,20 @@ WRAPPER = ROOT / "scripts" / "Test-JeevesMonitorOpencodeClearTimeout.ps1"
 
 
 def test_fr10040_clear_timeout_and_stale_no_ack():
+    for clear_line in (
+        "opencode finish: Clear result=failed:TimeoutExpired\n",
+        "opencode finish: Clear result=skipped:timeout\n",
+    ):
+        text = (
+            clear_line
+            + "relay: stale worktree offer #812 age_s=295 (no ACK yet)\n"
+        )
+        fp = clear_mod.scan_log(text, machine="marchhare", nick="marchhare-20008", turns_empty=True)
+        assert fp == "opencode_clear_timeout_no_ack:marchhare:marchhare-20008"
     text = (
-        "opencode finish: Clear result=failed:TimeoutExpired\n"
+        "opencode finish: Clear result=skipped:timeout\n"
         "relay: stale worktree offer #812 age_s=295 (no ACK yet)\n"
     )
-    fp = clear_mod.scan_log(text, machine="marchhare", nick="marchhare-20008", turns_empty=True)
-    assert fp == "opencode_clear_timeout_no_ack:marchhare:marchhare-20008"
     assert clear_mod.scan_log(text, machine="marchhare", nick="n", turns_empty=False) is None
     assert clear_mod.scan_log("Clear result=ok", machine="m", nick="n", turns_empty=True) is None
 

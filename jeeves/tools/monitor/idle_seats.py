@@ -339,6 +339,12 @@ def _check_live_report(chair, digest, qpath, *, require_missing_queue: bool = Tr
     url = common.live_report_url()
     if _live_report_unusable(doc, usable_overlay):
         findings.append("local queue missing; live report unavailable/stale/incomplete")
+        probe = common.probe_live_report(url=url)
+        transcript_fb = common.inbound_transcript_fallback(chair, digest)
+        if int(probe.get("status") or 0) in (502, 503, 504):
+            notes.append("FR #10106: public /report gateway error; use inbound-transcript for shop wire")
+        elif transcript_fb:
+            notes.append("FR #10106: inbound-transcript fallback while live report unusable")
         return (
             {
                 "ok": False,
@@ -354,6 +360,8 @@ def _check_live_report(chair, digest, qpath, *, require_missing_queue: bool = Tr
                 "findings": findings,
                 "source": "live_report",
                 "live_report_url": url,
+                "report_http_status": int(probe.get("status") or 0),
+                "inbound_transcript": transcript_fb,
                 "offerable_estimate": True,
                 "unverified_gates": list(_UNVERIFIED_GATES),
             },

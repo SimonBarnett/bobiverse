@@ -1,13 +1,21 @@
 # Skill harvest log
 
 
+## 2026-11-28 - GHA pwsh quote Build-BobDialogs -Targets
+
+| Field | Value |
+|-------|-------|
+| Lesson | GitHub Actions pwsh: quote comma lists for `[string]$Targets` on Build-BobDialogs (`-Targets "tray,about"`). |
+| Evidence | MRB #10060 build-bob-tray failure; intake harvest #10100 |
+| Refs | Closes SimonBarnett/bobiverse#10100 |
+
 ## 2026-11-28 - Digest #9762 tray/status CI PR bases
 
 | Field | Value |
 |-------|-------|
 | Lesson | Status sparse CI (#9764) shares Build-BobDialogs -Targets with tray (#9763); stack status PR on the tray branch until tray merges; Closes auto-links only when PR base is main. |
 | Evidence | Digest #9762 children #10060/#10061/#10064; intake harvest #10099 |
-| Refs | Closes SimonBarnett/bobiverse#10099 |
+| Refs | Closes SimonBarnett/bobiverse#10099
 
 ## 2026-11-23 - FR #9344 monitor D3 release + paid OC pin + airc not-op
 
@@ -784,10 +792,27 @@ For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `re
 
 Sparse GHA checkout for tray/status CI must include `common/VERSION` when scripts call `Get-BobiverseRepoPath`; without it `Test-BobiverseSplitRepo` is false and `Build-BobDialogs.ps1` looked under legacy flat `dialogs` paths.
 Books: bobiverse-fleet-ops, bob-tray-dialogs. Refs: SimonBarnett/bobiverse#10103
+
+## 2026-11-28 digest #10019 MRB auto-merge refuse (harvest #10104)
+
+Digest #10019 MRB batch: child PRs #10067-#10075. When `gh pr merge --auto` fails with GraphQL `enablePullRequestAutoMerge` (unstable / not clean), comment `merge-on-green pending` with the PASS head SHA and finish the MRB without polling CI (FR #3948). Jeeves merge-on-green owns the merge.
+Books: bobiverse-bob-job-mrb. Refs: SimonBarnett/bobiverse#10019 SimonBarnett/bobiverse#10104
 ## 2026-11-28 digest #9991 IIS web.config heal (FR #9992 harvest #10101)
 Digest #9991 children landed in product PRs #10083-#10090. Live IIS `web.config` forward (BobModelsWebhook PUT) is walrus operator redeploy via `Install-BobWebhooks.ps1`, not FR-seat production PUT. Workers ship the `models_put_forward` probe classifier and pytest; PR body tells owner to redeploy.
 Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#9991 SimonBarnett/bobiverse#9992 SimonBarnett/bobiverse#10101
 ## 2026-11-28 - harvest #10102 (Digest #10078)
 Public Bob skill MCP (`https://bob.ntsa.uk/mcp`) matches plan.ntsa.uk: GET describes tools; POST `tools/call` `list_catalog` and `get_skill`; seat `Copy-BobProjectSkills` hydrates `~/.grok/skills` over HTTPS — no git clone of the skill book. Product stack #10092 catalog builder, #10093 POST /mcp, #10094 seat HTTPS loader.
 Books: bobiverse-worker-seat, bobiverse-bob-worker. Refs: SimonBarnett/bobiverse#10092 SimonBarnett/bobiverse#10093 SimonBarnett/bobiverse#10094 SimonBarnett/bobiverse#10102
+
+## 2026-11-28 FR #10106 /report 502 monitor transcript fallback
+
+Public `GET /bob/v1/report` 502 drops fleet digest JSON; monitor uses `probe_live_report` (HTTP status visible) and tails `inbound-transcript.log` for shop ACK/DONE/GIVEUP while walrus heals BobCallback/IIS. Chair `webhook-health` still announces public down.
+
+Books: bobiverse-jeeves-monitor, inbound_transcript. Refs: SimonBarnett/bobiverse#10106
+
+## 2026-11-28 FR #10107 skip blind intervene_assign when report gateway down
+
+While `GET /bob/v1/report` returns 502, `intervene_assign` exits OK with `skipped: report_gateway_down` (no stale local-queue `!assign`); optional `BOB_MONITOR_SKIP_OPENCODE_SEATS` and `skip_opencode_seats` avoid OpenCode seats when partial queue data remains. Walrus still heals BobCallback/IIS; twin #9246 same title.
+
+Books: bobiverse-jeeves-monitor, intervene_assign. Refs: SimonBarnett/bobiverse#10107 SimonBarnett/bobiverse#10106
 

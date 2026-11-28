@@ -36,7 +36,10 @@ from _common import (
     build_parser,
     fetch_live_report,
     find_upward_file,
+    inbound_transcript_fallback,
     live_report_url,
+    probe_live_report,
+    resolve_homes,
     run_check,
 )
 
@@ -441,18 +444,41 @@ def check(args: Any) -> tuple[dict[str, Any], int]:
             )
     else:
         url = live_report_url()
-        # Prefer public bob.ntsa.uk when default irc host differs
         env_url = (os.environ.get("BOB_REPORT_URL") or "").strip()
-        doc = fetch_live_report(url=env_url or url or "https://bob.ntsa.uk/bob/v1/report")
+        target = env_url or url or "https://bob.ntsa.uk/bob/v1/report"
+        probe = probe_live_report(url=target)
+        doc = probe.get("doc")
+        http_status = int(probe.get("status") or 0)
         source = "live_report"
+        chair, digest = resolve_homes(args)
+        transcript_fb = None
+        report_down = doc is None or http_status >= 500 or http_status in (502, 503, 504)
+        if report_down:
+            transcript_fb = inbound_transcript_fallback(chair, digest)
         if doc is None:
+            notes = []
+            if report_down:
+                notes.append(
+                    f"live GET /bob/v1/report down status={http_status or probe.get('error')}"
+                )
+            if transcript_fb:
+                notes.append("fallback=inbound_transcript for shop wire")
+                for hit in transcript_fb.get("disk_giveups") or []:
+                    seat = str(hit.get("nick") or "")
+                    mid = machine_from_nick(seat)
+                    if mid and is_fleet_machine_id(mid):
+                        # Surface transcript-disk hints; full fleet queue still needs report heal.
+                        notes.append(f"transcript disk giveup seat={seat}")
             return (
                 {
                     "ok": True,
                     "soft_ok": True,
                     "reason": "report_unavailable",
                     "source": source,
-                    "findings": [],
+                    "report_http_status": http_status,
+                    "report_error": probe.get("error") or "",
+                    "inbound_transcript": transcript_fb,
+                    "findings": notes,
                 },
                 EXIT_OK,
             )
