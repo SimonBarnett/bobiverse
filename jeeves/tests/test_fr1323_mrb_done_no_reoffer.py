@@ -1,4 +1,4 @@
-"""FR #1323: after DONE MRB (PASS/FAIL), do not re-offer same row_key — even if done trimmed or offered_to lingers."""
+"""FR #1323 / #9885: PASS seat blocked; other seats may merge-follow MRB while PR open."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -65,18 +65,24 @@ def test_done_mrb_blocks_reoffer_before_mrb_done_stamp(tmp_path, monkeypatch):
     assert key not in (led.get("mrb_done") or {})
     done_rows = list(gitclaim._load_queue_unlocked(tmp_path).get("done") or [])
     assert any(str(r.get("id")) == "#10" for r in done_rows)
-    # Phantom unaccepted while DONE holds — must not re-offer (FR #1323 intent).
+    # Phantom unaccepted while DONE holds — same PASS seat blocked (FR #4661); others ok (FR #9885).
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
         {
             "v": 1,
-            "unaccepted": [_mrb(10)],
+            "unaccepted": [_mrb(10, mergeable=True, mergeable_state="clean")],
             "accepted": [],
             "done": done_rows,
         },
     )
+    def pr_open(repo: str, num: str) -> bool:
+        return repo == REPO and str(num).lstrip("#") == "10"
+
     assert gitclaim.offer_focus_top(tmp_path, "marchhare-41928", "#marchhare")[0] == "empty"
-    assert gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")[0] == "empty"
+    assert (
+        gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo", pr_exists=pr_open)[0]
+        == "ok"
+    )
     # MERGED path stamps the durable ledger (FR #8137).
     gitclaim.stamp_mrb_done(tmp_path, REPO, "#10")
     led2 = gitclaim.ledger_load(tmp_path)
@@ -158,12 +164,15 @@ def test_same_nick_not_reoffered_after_done_pass(tmp_path, monkeypatch):
         gitclaim.queue_path(tmp_path),
         {
             "v": 1,
-            "unaccepted": [_mrb(10)],
+            "unaccepted": [_mrb(10, mergeable=True, mergeable_state="clean")],
             "accepted": [],
             "done": done_rows,
         },
     )
+    def pr_open(repo: str, num: str) -> bool:
+        return repo == REPO and str(num).lstrip("#") == "10"
+
     st, _ = gitclaim.offer_focus_top(tmp_path, "marchhare-41928", "#marchhare")
     assert st == "empty"
-    st2, _ = gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")
-    assert st2 == "empty"
+    st2, _ = gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo", pr_exists=pr_open)
+    assert st2 == "ok"
