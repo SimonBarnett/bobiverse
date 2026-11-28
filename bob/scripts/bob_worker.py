@@ -3578,6 +3578,9 @@ def _worker_prompt_from_install_tip(worker_dir: str, home: str, machine: str, ni
             continue
         if "bob/bob/scripts" in raw.replace("\\", "/"):
             continue
+        # FR #10268: public https://bob.ntsa.uk/mcp has no resolve tool; ignore stale tips.
+        if "MCP resolve then get_skill" in raw or "(resolve, then get_skill)" in raw:
+            continue
         rendered = _apply_worker_prompt_tokens(raw, worker_dir, home, machine, nick)
         if "bob/bob/scripts" in rendered.replace("\\", "/"):
             continue
