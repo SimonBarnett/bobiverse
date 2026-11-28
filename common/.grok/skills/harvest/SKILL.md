@@ -569,6 +569,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - jeeves source tests: assert OpenCode launcher strings from repo_layout REPO path, not bob.scripts import __file__.
 <!-- harvest-tip:intake-in_ens_c79c4e6746d2 -->
 - When file_submission gains a new filing branch, update fr1812 state assertions in the same change.
+<!-- harvest-tip:intake-in_d4dce413c2d44f26 -->
+- When verify_job_worktree_git can block ~180s, park like FR #6328 create --- bind opencode_verify_job_worktree on Relay and strip sync verify from _inject_line opencode-ready
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
