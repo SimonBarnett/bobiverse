@@ -19,6 +19,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import contextlib
 import copy
@@ -8841,7 +8842,9 @@ _PR_SHAPED_FR_TITLE_RE = re.compile(
 )
 
 
-def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None) -> bool:
+def fr_row_offerable(
+    row: dict, *, pr_exists=None, is_pull=None, issue_open=None, merged_twin=None
+) -> bool:
     """True when an FR row may be offered (FR #846 / #1313 / #2340 / #4257).
 
     Rejects FR rows that are actually pull requests:
@@ -8892,6 +8895,13 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None
     if issue_open is not None and repo and num:
         try:
             if not bool(issue_open(repo, num)):
+                return False
+        except Exception:
+            pass
+    # FR #10235: a title already carried by a MERGED PR is a twin of landed work.
+    if merged_twin is not None and repo and title:
+        try:
+            if bool(merged_twin(repo, title)):
                 return False
         except Exception:
             pass
@@ -9581,6 +9591,117 @@ def github_issue_open_checker(
 
     _check.peek = lambda repo, num: _cache_peek(store, f"issue_open:{repo}#{num}")
     return _check
+
+
+# FR #10235: process-wide verdict cache for the merged-twin title search.
+MERGED_TWIN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+
+
+def _merged_twin_norm(text: str) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def github_merged_twin_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``merged_twin(repo, title)`` -> True when a MERGED PR in ``repo`` already
+    carries this exact title (FR #10235; class of twin FR #10114 / #10217).
+
+    An FR whose title matches work that already landed on main is a twin: it must not
+    be offered again. Comparison is whitespace- and case-insensitive on the full title.
+    Returns None when offline / no token. Search failures raise ``GitHubLookupUnknown``
+    (never a twin), so a rate limit cannot drop real work.
+    """
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else MERGED_TWIN_SHARED_CACHE
+
+    def _check(repo: str, title: str) -> bool:
+        want = _merged_twin_norm(title)
+        if not repo or not want:
+            return False
+        key = f"merged_twin:{repo}|{want}"
+        if hasattr(store, "get"):
+            hit = store.get(key, _CACHE_MISS)
+            if hit is not _CACHE_MISS:
+                return hit
+        elif key in store:
+            return store[key]
+        query = f'repo:{repo} is:pr is:merged in:title "{" ".join(str(title).split())}"'
+        api = (
+            "https://api.github.com/search/issues?per_page=10&q="
+            + urllib.parse.quote(query, safe="")
+        )
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-gitclaim",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                raw = resp.read()
+                body = json.loads(
+                    raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                )
+            items = (body or {}).get("items") or []
+            ok = any(
+                isinstance(it, dict)
+                and _merged_twin_norm(it.get("title")) == want
+                and "pull_request" in it
+                for it in items
+            )
+            store[key] = ok
+            return ok
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            _log_github_lookup_failure(
+                "merged_twin",
+                repo,
+                want[:80],
+                code=code,
+                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                exc=e,
+            )
+            raise GitHubLookupUnknown(f"merged_twin {repo} http={code}") from e
+        except GitHubLookupUnknown:
+            raise
+        except Exception as e:
+            _log_github_lookup_failure("merged_twin", repo, want[:80], exc=e)
+            raise GitHubLookupUnknown(f"merged_twin {repo} {type(e).__name__}") from e
+
+    _check.peek = lambda repo, title: _cache_peek(
+        store, f"merged_twin:{repo}|{_merged_twin_norm(title)}"
+    )
+    return _check
+
+
+def _fr_merged_twin_checker(merged_twin=None):
+    """Injected merged-twin checker, else the unbudgeted live default (FR #10235).
+
+    Like ``depends_issue_open_checker`` / FR #9411, the offer path must not depend on
+    ``BORED_GITHUB_CALL_BUDGET``: at budget 0 a budgeted lookup never fires.
+    """
+    if merged_twin is not None:
+        return merged_twin
+    try:
+        return github_merged_twin_checker()
+    except Exception:
+        return None
 
 
 def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None, issue_open=None) -> int:
@@ -14648,6 +14769,7 @@ def offer_focus_top(
     issue_open=None,
     fetch_issue=None,
     offered_via: str | None = None,
+    merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
@@ -14709,6 +14831,8 @@ def offer_focus_top(
     # FR #9411: CLOSED FR live check is also unbudgeted - BORED_GITHUB_CALL_BUDGET=0
     # otherwise never fires and CLOSED ops trackers stay offerable (class of #9376).
     fr_closed_issue_open = depends_issue_open_checker(issue_open)
+    # FR #10235: unbudgeted merged-PR twin check for FR offers (see fr_row_offerable).
+    fr_merged_twin = _fr_merged_twin_checker(merged_twin)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -14968,6 +15092,7 @@ def offer_focus_top(
                     is_pull=is_pull,
                     pr_exists=pr_exists,
                     issue_open=fr_closed_issue_open,
+                    merged_twin=fr_merged_twin,
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -15284,6 +15409,7 @@ def offer_top(
     is_pull=None,
     issue_open=None,
     fetch_issue=None,
+    merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
     import time as _time
@@ -15295,6 +15421,8 @@ def offer_top(
     depends_issue_fetch = depends_issue_fetch_checker(fetch_issue)
     # FR #9411: unbudgeted CLOSED FR check (budget 0 would otherwise never fire).
     fr_closed_issue_open = depends_issue_open_checker(issue_open)
+    # FR #10235: unbudgeted merged-PR twin check for FR offers.
+    fr_merged_twin = _fr_merged_twin_checker(merged_twin)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -15419,9 +15547,10 @@ def offer_top(
                     is_pull=is_pull,
                     pr_exists=pr_exists,
                     issue_open=fr_closed_issue_open,
+                    merged_twin=fr_merged_twin,
                 ):
                     i += 1
-                    continue  # FR #846 / #838 / #2340
+                    continue  # FR #846 / #838 / #2340 / #10235
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     i += 1
