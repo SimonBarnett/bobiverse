@@ -772,3 +772,9 @@ Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobivers
 
 For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `require_machine:` / `=` lines (and other title/body text cues). Pins require `needs-<machine>` / `require_machine:<machine>` labels, hard issue pins, or operator `!pin`. Body lines remain as ops notes. Supersedes earlier FR #4512 wording that dedicated body lines still pinned bobiverse (see also lines that document soft-cue vs dedicated-line for bobiverse).
 
+## 2026-11-28 FR #10106 /report 502 monitor transcript fallback
+
+Public `GET /bob/v1/report` 502 drops fleet digest JSON; monitor uses `probe_live_report` (HTTP status visible) and tails `inbound-transcript.log` for shop ACK/DONE/GIVEUP while walrus heals BobCallback/IIS. Chair `webhook-health` still announces public down.
+
+Books: bobiverse-jeeves-monitor, inbound_transcript. Refs: SimonBarnett/bobiverse#10106
+

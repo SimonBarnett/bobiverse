@@ -327,18 +327,25 @@ def live_report_url(env: Optional[dict] = None) -> str:
     return DEFAULT_LIVE_REPORT_URL
 
 
-def fetch_live_report(
+def probe_live_report(
     url: str | None = None,
     timeout: float = 12.0,
     env: Optional[dict] = None,
-) -> dict[str, Any] | None:
-    """GET public fleet report JSON. Returns None on any failure (FR #8579)."""
+) -> dict[str, Any]:
+    """GET public fleet report; always return status metadata (FR #10106)."""
     import urllib.error
     import urllib.request
 
     target = (url or live_report_url(env)).strip()
+    out: dict[str, Any] = {
+        "url": target,
+        "status": 0,
+        "doc": None,
+        "error": "",
+    }
     if not target:
-        return None
+        out["error"] = "empty_url"
+        return out
     try:
         req = urllib.request.Request(
             target,
@@ -350,19 +357,56 @@ def fetch_live_report(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
+            out["status"] = int(getattr(resp, "status", 200) or 200)
         doc = json.loads(raw or "{}")
+        if isinstance(doc, dict):
+            out["doc"] = doc
+        else:
+            out["error"] = "not_json_object"
+    except urllib.error.HTTPError as exc:
+        out["status"] = int(exc.code)
+        out["error"] = f"HTTPError:{exc.code}"
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         TimeoutError,
         json.JSONDecodeError,
         OSError,
         ValueError,
-    ):
+    ) as exc:
+        out["error"] = type(exc).__name__
+    return out
+
+
+def fetch_live_report(
+    url: str | None = None,
+    timeout: float = 12.0,
+    env: Optional[dict] = None,
+) -> dict[str, Any] | None:
+    """GET public fleet report JSON. Returns None on any failure (FR #8579)."""
+    return probe_live_report(url=url, timeout=timeout, env=env).get("doc")
+
+
+def inbound_transcript_fallback(
+    chair: Path,
+    digest: Path,
+    *,
+    max_age_sec: float = 7200.0,
+) -> dict[str, Any] | None:
+    """Inbound shop-wire tail when live /report is down (FR #10106)."""
+    try:
+        import inbound_transcript as it
+    except ImportError:
         return None
-    if not isinstance(doc, dict):
+    home = it.resolve_monitor_ear_home(chair, digest)
+    if home is None:
         return None
-    return doc
+    summary = it.summarize_inbound_monitor_fallback(home, max_age_sec=max_age_sec)
+    if not summary.get("wire_events") and not summary.get("disk_giveups"):
+        if int(summary.get("lines") or 0) == 0:
+            return None
+    summary["ear_home"] = str(home)
+    summary["fallback"] = "inbound_transcript"
+    return summary
 
 
 def report_age_sec(doc: dict[str, Any] | None, *, now: float | None = None) -> float | None:
