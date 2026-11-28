@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import bobreport
+import harvest_lesson_tip
 import repo_alias
 
 # FR #628: the per-seat "wait" NAK after DONE/GIVEUP is off by default (0 = never NAK a seat that
@@ -9142,6 +9143,8 @@ def mrb_row_not_offerable_reason(
     )
     if hold:
         return f"hold:{hold}"
+    if harvest_lesson_tip.harvest_lesson_row_polluted(row):
+        return "harvest_lesson_stack_polluted"
     # Structural / live URL checks stay in mrb_row_offerable (shared tail).
     return None
 
