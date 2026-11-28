@@ -106,6 +106,24 @@ NAK_BORED_WAIT = "NAK !BORED wait"
 NAK_BORED_BUSY = "NAK !BORED busy"
 NO_JOBS = "no jobs"
 
+_LAST_OFFER_EMPTY_SKIP: dict[str, str] = {}
+
+
+def _offer_empty_skip_key(home: Path, nick: str) -> str:
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    return f"{_root(home)!s}|{me}"
+
+
+def note_offer_empty_skip(home: Path, nick: str, reason: str) -> None:
+    """FR #10339: last live skip for clamp_empty_reply_stats after offer_focus_top empty."""
+    why = str(reason or "").strip()
+    if why:
+        _LAST_OFFER_EMPTY_SKIP[_offer_empty_skip_key(home, nick)] = why
+
+
+def take_last_offer_empty_skip(home: Path, nick: str) -> str:
+    return _LAST_OFFER_EMPTY_SKIP.pop(_offer_empty_skip_key(home, nick), "")
+
 
 def format_bored_busy_nak(nick: str, open_job: str = "") -> str:
     """FR #4415: busy NAK names the seat and held/offered job (operators + seat logs).
@@ -10688,12 +10706,13 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
 
 
 
-def clamp_empty_reply_stats(stats: dict | None) -> dict:
+def clamp_empty_reply_stats(stats: dict | None, *, live_skip: str | None = None) -> dict:
     """FR #2333: empty bored reply must never claim N>0 offerable for this seat.
 
     `summarize_empty_offer` can still count a row the live `offer_focus_top` path
     skipped (cooldown, awaits_mrb1, sticky_skip edge, PR checker, …). When the shop
-    already returned empty for this nick, fold leftover offerable into `blocked_other`.
+    already returned empty for this nick, fold leftover offerable into `blocked_other`
+    only when ``live_skip`` names the first live ineligible reason (FR #10339).
     """
     out = dict(stats or {})
     try:
@@ -10701,12 +10720,19 @@ def clamp_empty_reply_stats(stats: dict | None) -> dict:
     except (TypeError, ValueError):
         off = 0
     if off > 0:
-        try:
-            prev = int(out.get("blocked_other") or 0)
-        except (TypeError, ValueError):
-            prev = 0
-        out["blocked_other"] = prev + off
-        out["offerable"] = 0
+        why = str(live_skip or out.get("live_skip") or "").strip()
+        if why:
+            try:
+                prev = int(out.get("blocked_other") or 0)
+            except (TypeError, ValueError):
+                prev = 0
+            out["blocked_other"] = prev + off
+            out["live_skip"] = why
+            out["offerable"] = 0
+        else:
+            # FR #10339: do not hide summarize/live drift behind opaque blocked_other.
+            out["offerable_live_mismatch"] = off
+            out["offerable"] = 0
     return out
 
 
@@ -11420,6 +11446,15 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
             extra.append(f"coderabbit_hold={coderabbit_hold}")
     if blocked_other:
         extra.append(f"blocked_other={blocked_other}")
+    try:
+        mismatch = int(stats.get("offerable_live_mismatch") or 0)
+    except (TypeError, ValueError):
+        mismatch = 0
+    if mismatch:
+        extra.append(f"offerable_live_mismatch={mismatch}")
+    live_skip = str(stats.get("live_skip") or "").strip()
+    if live_skip:
+        extra.append(f"live_skip={live_skip}")
     skip_bits = []
     for item in (stats.get("skips") or [])[:8]:
         if not isinstance(item, dict):
@@ -14644,6 +14679,81 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
         return ""
 
 
+def _first_live_offer_skip(
+    home: Path,
+    doc: dict,
+    me: str,
+    *,
+    now_f: float,
+    live,
+    ledger,
+    open_dep_keys,
+) -> str:
+    """First ineligible row on the live !bored path (FR #10339)."""
+    import focus_ignore
+
+    def _key(row: dict) -> str:
+        task = str(row.get("task") or "FR").strip().upper() or "FR"
+        repo_s = str(row.get("repo") or "").strip()
+        ident = str(row.get("id") or "").strip()
+        if ident and not ident.startswith("#"):
+            ident = "#" + ident
+        return f"{task} {repo_s}{ident}".strip()
+
+    order = ordered_unaccepted(home, doc.get("unaccepted") or [])
+    for cand in order:
+        if not isinstance(cand, dict):
+            continue
+        key = _key(cand)
+        repo = str(cand.get("repo") or "")
+        if focus_ignore.is_ignored(home, repo):
+            return f"{key}:repo-ignored"
+        try:
+            import dispatch_lock as _dl
+
+            blk = _dl.row_blocked_reason(home, cand)
+            if blk:
+                return f"{key}:{blk}"
+        except Exception:
+            pass
+        if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
+            return f"{key}:cooldown"
+        skip_why = row_skip_fr_reason(cand)
+        if skip_why:
+            return f"{key}:{skip_why}"
+        if digest_issue_reason(cand):
+            return f"{key}:digest-gate"
+        skip_why = row_fr_skip_offer_reason(cand)
+        if skip_why:
+            return f"{key}:{skip_why}"
+        if depends_gate_reason(
+            cand,
+            doc,
+            open_keys=open_dep_keys,
+            issue_open=None,
+            issue_fetch=None,
+        ):
+            return f"{key}:depends"
+        if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
+            return f"{key}:machine"
+        if ledger_blocks(ledger, cand, me, live):
+            return f"{key}:ledger"
+        to = str(cand.get("offered_to") or "").strip()
+        if to:
+            them = (canonical_worker_nick(to) or to).strip().lower()
+            me_l = (canonical_worker_nick(me) or me).strip().lower()
+            if them and them != me_l:
+                return f"{key}:sticky-other"
+        row = dict(cand)
+        _stamp_require_machine(row)
+        if row_blocked_for_machine(row, me):
+            return f"{key}:require_machine"
+        if not _seat_model_allows_row(home, me, row):
+            return f"{key}:model"
+        return ""
+    return "no-eligible-rows"
+
+
 def offer_focus_top(
     home: Path,
     nick: str,
@@ -14677,8 +14787,10 @@ def offer_focus_top(
     now_f = _time.time() if now is None else float(now)
     # FR #4181: never stamp an offer onto a seat still marked out-of-fuel.
     if seat_is_out_of_fuel(home, nick, now_f):
+        note_offer_empty_skip(home, nick, "out-of-fuel")
         return "empty", None
     if seat_fuel_pause_reason(home, nick, now_f):
+        note_offer_empty_skip(home, nick, "fuel-pause")
         return "empty", None
     live = live_seat_nicks(home)
     free = free_seat_nicks(home, live)
@@ -14688,6 +14800,10 @@ def offer_focus_top(
         heal_mrb_reviewer_deadlock(home, idle=free, live=live, now=now_f)
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
+    # FR #10339 / #10337: digest-idle !bored must release young ACC before the open-job gate.
+    if _digest_seat_explicit_idle(home, me):
+        with contextlib.suppress(Exception):
+            release_stale_busy(home, me, now_f)
     ledger = ledger_load(home)
     # FR #7926: computed before the queue lock so digest reads do not nest it.
     free_idle = idle_free_model_nicks(home, now=now_f, live=live)
@@ -14828,6 +14944,11 @@ def offer_focus_top(
             # in seat-holds.json is never offered a second job.
             open_job = _seat_open_job_in(home, doc, me, now_f, live)
             if open_job:
+                note_offer_empty_skip(home, me, f"seat-open:{open_job}")
+                with contextlib.suppress(Exception):
+                    _log_queue_purge(
+                        f"INFO offer-empty seat={me} live_skip=seat-open:{open_job}"
+                    )
                 if purged:
                     try:
                         _write_queue(queue_path(home), doc)
@@ -15202,6 +15323,20 @@ def offer_focus_top(
                         _write_queue(queue_path(home), doc)
                     except OSError:
                         return "error", None
+                skip = _first_live_offer_skip(
+                    home,
+                    doc,
+                    me,
+                    now_f=now_f,
+                    live=live,
+                    ledger=ledger,
+                    open_dep_keys=open_dep_keys,
+                ) or "no-eligible"
+                note_offer_empty_skip(home, me, skip)
+                with contextlib.suppress(Exception):
+                    _log_queue_purge(
+                        f"INFO offer-empty seat={me} live_skip={skip}"
+                    )
                 return "empty", None
             prev_to = ""
             same = False
@@ -22252,6 +22387,39 @@ def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> 
         _report_holder_bored(nick, open_job)
     reset_holder_bored(home, nick)
     return open_job
+
+
+def bored_gate_busy_reason(
+    home: Path,
+    nick: str,
+    now: float,
+    *,
+    session_started: float | None = None,
+) -> str:
+    """FR #10339: name why ``bored_gate`` would return busy when ``seat_open_job`` is empty."""
+    if seat_is_out_of_fuel(home, nick, now):
+        return "out-of-fuel"
+    fuel = str(seat_fuel_pause_reason(home, nick, now) or "").strip()
+    if fuel:
+        return f"fuel:{fuel}"
+    pend = seat_pending_offer(home, nick, now)
+    if isinstance(pend, dict):
+        repo = str(pend.get("repo") or "").strip()
+        ident = str(pend.get("id") or "").strip()
+        task = str(pend.get("task") or "FR").strip().upper()
+        return f"pending-offer {repo}/{task}{ident}"
+    open_job = str(seat_open_job(home, nick, now) or "").strip()
+    if open_job and not open_job.startswith("accepted "):
+        return open_job
+    if _seat_has_accepted(home, nick):
+        return "accepted"
+    work = str(worker_working_on(home, nick) or "").strip()
+    if work:
+        return f"working_on:{work[:96]}"
+    if open_job:
+        return open_job
+    del session_started  # gate already reconciled session stale rows
+    return ""
 
 
 def bored_gate(
