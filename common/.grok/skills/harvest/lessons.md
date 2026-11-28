@@ -355,3 +355,5 @@ Generalised from 81 harvested lessons that never reached this book (audit for FR
 - FR #4419: flat scripts\Invoke-BobiverseHarvest.ps1 can lag common\scripts after dirty-ff; Sync-BobiverseHarvestScriptsFromOrigin Match requires Protect-HarvestBodyClosesKeywords; seats prefer common\scripts path or Sync -ComposeOnly / service restart so Protect runs (Closes #N/#M poison class of a-search #3376/#3386)
 - After moving harvest bullets to lessons.md, intake filter_new_lessons / lesson_sentence_already_in_book must read SKILL.md + lessons.md or archived lessons re-tip (FR #8310 / MRB #8311 / #8313)
 - FIX #8311 tip-region: keep thin harvest SKILL.md pointer; fold new main tip bullets into lessons.md --- never paste the full archive back into SKILL.md
+
+- A merge to main does not update bob.ntsa.uk/mcp. Fast-forward the catalog host skill checkout with git pull --ff-only origin main, then re-read get_skill. get_skill still returns only SKILL.md.
