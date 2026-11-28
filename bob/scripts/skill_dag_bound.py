@@ -365,8 +365,8 @@ def prepare_bound_agent_cwd(
 ) -> Path:
     """Build ``<run_dir>/bound-cwd`` outside the install tree with only skill-dag-core.
 
-    MCP config uses absolute paths into the real install so resolve/get_skill still
-    see the full skill trees. Harness project discovery stays on this cwd only.
+    MCP config is the public catalog ``https://bob.ntsa.uk/mcp`` (FR #10146).
+    Harness project discovery stays on this cwd only.
     """
     run = Path(run_dir)
     worker = Path(worker_dir).resolve()
@@ -386,20 +386,10 @@ def prepare_bound_agent_cwd(
         src = worker / name
         if src.is_file():
             shutil.copy2(src, bound / name)
-    script = Path(mcp_script) if mcp_script else (worker.parent / "common" / "scripts" / "skill_dag_mcp.py")
-    roots = list(mcp_roots or [])
-    if not roots:
-        for cand in (
-            worker / ".grok" / "skills",
-            worker.parent / ".grok" / "skills",
-            Path.home() / ".grok" / "skills",
-        ):
-            if cand.is_dir():
-                roots.append(cand)
+    del mcp_script, mcp_roots
     grok_dir = bound / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
-    # FR #7361 / #7446: pointer outside ``.grok`` and outside bound-cwd (Grok watches
-    # the whole workspace; in-tree pointer writes drop stdio MCP on assign).
+    # FR #7361 / #7446: pointer outside ``.grok`` and outside bound-cwd.
     ptr = bound.parent / "skill-dag-job-worktree"
     if not ptr.is_file():
         ptr.write_text("", encoding="utf-8")
@@ -409,16 +399,9 @@ def prepare_bound_agent_cwd(
             legacy.unlink()
         except OSError:
             pass
-    args = [script.as_posix()]
-    for r in roots:
-        args.extend(["--root", Path(r).resolve().as_posix()])
-    args.extend(["--job-worktree-file", ptr.as_posix()])
-    args.extend(["--seat-cwd", bound.as_posix()])
-    args_toml = ", ".join(json.dumps(a) for a in args)
     (grok_dir / "config.toml").write_text(
         "[mcp_servers.skill-dag]\n"
-        'command = "python"\n'
-        f"args = [{args_toml}]\n",
+        'url = "https://bob.ntsa.uk/mcp"\n',
         encoding="utf-8",
     )
     # Minimal git metadata helps some harness trust paths; trust file is authoritative.

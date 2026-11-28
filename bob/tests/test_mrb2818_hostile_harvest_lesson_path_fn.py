@@ -10,7 +10,7 @@ def _skill_path() -> Path:
         / ".grok"
         / "skills"
         / "bobiverse-bob-worker"
-        / "SKILL.md"
+        / "lessons.md"
     )
 
 

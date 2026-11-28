@@ -15,7 +15,7 @@ _REPO = _BOB.parent
 
 
 def test_mrb4450_worker_skill_pins_fuel_lesson_home():
-    text = (_BOB / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md").read_text(
+    text = (_BOB / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md").read_text(
         encoding="utf-8"
     )
     assert not text.startswith("\ufeff")

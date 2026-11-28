@@ -52,13 +52,7 @@ def test_fr6899_grok_and_cursor_mcp_args_include_seat_and_harvest_roots(tmp_path
         session_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     )
     for spec in (grok, cur):
-        args = spec.skill_dag_mcp_args
-        joined = " ".join(args)
-        assert "skill_dag_mcp.py" in joined
-        assert "--root" in args
-        assert t["seat"].as_posix() in args
-        assert t["bobpack"].as_posix() in args
-        assert t["harvest"].as_posix() in args
+        assert spec.skill_dag_mcp_args == []
 
 
 def test_fr6899_job_worktree_launch_adds_only_that_skills_root(tmp_path):
@@ -87,8 +81,8 @@ def test_fr6899_refresh_replaces_stale_skill_dag_args(tmp_path):
     bw.write_skill_dag_mcp_config(str(t["worker"]))
     body = cfg.read_text(encoding="utf-8")
     assert "old.py" not in body
-    assert "--root" in body
-    assert "skill_dag_mcp.py" in body
+    assert bw.BOB_SKILL_MCP_URL in body
+    assert "skill_dag_mcp.py" not in body
 
 def test_fr6899_grok_bound_cwd_mcp_uses_install_vision_roots(tmp_path):
     t = _tree(tmp_path)
@@ -105,6 +99,5 @@ def test_fr6899_grok_bound_cwd_mcp_uses_install_vision_roots(tmp_path):
     )
     cfg = Path(child["cwd"]) / ".grok" / "config.toml"
     body = cfg.read_text(encoding="utf-8").replace("\\", "/")
-    assert t["harvest"].as_posix() in body
-    assert t["bobpack"].as_posix() in body
-    assert "--root" in body
+    assert bw.BOB_SKILL_MCP_URL in body
+    assert "--root" not in body

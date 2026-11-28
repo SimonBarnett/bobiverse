@@ -18,7 +18,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/report` | Public fleet digest JSON (FR #9864: soft-degrade within `BOB_REPORT_BUILD_BUDGET_S`; may include `degraded` / `degraded_parts`). |
 | GET | `/bob/v1/digest` | Fast last-good / lightweight fleet JSON alias (FR #9864). IIS rewrites to backend digest (not a client 301 to report). |
 | POST | `/bob/v1/report` | TipForm / status callback (`op`: merge\|delete-worker\|worker-remove\|shop-down); **no secret; machine must be on the Jeeves roster**. **`delete-worker` / `worker-remove`:** HTTP **204** when a digest row changed (including `workers_last_good` snapshot cleanup), **200** when unchanged (FR #9145 / #9042). |
-| POST | `/bob/v1/git` | GitHub git webhook → digest queue |
+| POST | `/bob/v1/git` | GitHub git webhook → digest queue. Allow-list matches `New-BobGitWebhook.ps1`, including `workflow_run` and `pull_request_review` (FR #10007). |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
 | POST | `/bob/v1/hours` | Create a work-time entry (open or closed); needs `idempotency_key` — **open, no secret** (FR #3450) |
@@ -29,6 +29,10 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/bob/v1/models` | Fleet Weights JSON: nested `clis` (per-CLI model→context→efforts from `models-valid-combos.json`) + `agents` selections (BOB-01 / FR #8707 / FR #8819); **open, no secret** |
 | PUT | `/bob/v1/models` | Persist Weights full replace; agent `cli` read-only (FR #8819); IIS `BobModelsWebhook` forwards GET\|HEAD\|POST\|PUT (FR #9273); PATCH stays blocked at IIS |
+| GET | `/bob/v1/gitcust` | Priority customer and task catalog (`customers`, `tasks` with kind `sc`\|`so`\|`wbs`, free-text title, path). FR #9982. |
+| POST | `/bob/v1/gitcust` | Register a customer and/or task subfolder. 202. Secret-free JSON. FR #9982. Scanner (FR #9983) walks customer roots and SC/SO/WBS task folders; title comes from `title.txt` or the folder name and is never empty. Periodic catch-up `GITCUST_UPDATE_S` defaults to 3600 (minimum 60) and calls the same scanner (FR #9984). POST on create stays primary. |
+| GET | `/bob/v1/ask/health` | Ask webhook liveness: `{"ok":true,"service":"ask"}` (FR #10032 / digest #10031). Open. |
+| POST | `/bob/v1/ask` | Accept an ask envelope (`sc`, `correlation_id`, optional `text`). Fail closed unless `sc` is in `BOB_ASK_ALLOWLIST` (FR #10033): missing or empty allowlist returns 403 `not_allowed`. Success **202** echoes `correlation_id` and does not echo `sc`. Secret-shaped JSON keys return 400 `secret_field`. Do not log the body. Other verbs **405**. |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -276,6 +280,12 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 `Install-BobWebhooks.ps1` copies `jeeves-butler.ico` and `ntsa-gut-logo.png` to `<IIS physical>/jeeves/assets/`. The `BobJeevesAppliance` rewrite skips `/jeeves/assets/` so IIS serves those files (`.ico` / `.png` allowed). Login HTML uses prefix-aware `/jeeves/assets/...` when mounted at `/jeeves`. Packed installs also resolve the butler from `assets/jeeves-butler.ico`.
 
 ## Front-page HTML docs (FR #6453 / FR #8835)
+
+**FR #9774 sparse CI:** `.github/workflows/build-jeeves-webhooks.yml` checks out site-kit roots only (`jeeves/www`, `jeeves/assets`, the webhooks scripts, tray logos, `common/scripts`) plus the workflow file itself, and uploads artifact `jeeves-webhooks` (includes `MANIFEST.json`). It does not sparse-checkout `jeeves/**`.
+
+**FR #9776 !build:** `.bobiverse/build-webhooks.yml` (catalog seed `common/defaults/builds-catalog.example.json`, install `flamingo`) packs the site kit via `Pack-BobWebhooksSiteKit.ps1`. The artifact is `MANIFEST.json`. The recipe does not list `jeeves-*.msi` or `ergo.exe`.
+
+**FR #9778 pack:** `Pack-BobiverseRelease.ps1 -Product jeeves` (release, without `-SkipMsi`) copies `www` from `-WebhooksArtifactDir` or `BOB_WEBHOOKS_ARTIFACT_DIR` and requires `MANIFEST.json` there. It fails when that input is missing. `build-jeeves-msi.yml` builds the site kit and passes `-WebhooksArtifactDir`. `-SkipMsi` tests may still stage `jeeves\www`.
 
 Static pages under `jeeves/www/irc-ntsa/`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker), `https://bob.ntsa.uk/docs/webhooks/`, and `https://bob.ntsa.uk/downloads`.
 

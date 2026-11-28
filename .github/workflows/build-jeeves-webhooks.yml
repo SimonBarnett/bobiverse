@@ -16,6 +16,7 @@ on:
       - jeeves/tests/test_fr7460_webconfig_staticcontent.py
       - jeeves/tests/test_fr7517_webhooks_kit_assets.py
       - jeeves/tests/test_fr8887_webroot_backups.py
+      - jeeves/tests/test_fr9774_webhooks_sparse_ci.py
       - jeeves/scripts/Stamp-PriorityAgentDownloads.ps1
       - jeeves/scripts/Install-Jeeves.ps1
   push:
@@ -32,6 +33,7 @@ on:
       - jeeves/tests/test_fr7460_webconfig_staticcontent.py
       - jeeves/tests/test_fr7517_webhooks_kit_assets.py
       - jeeves/tests/test_fr8887_webroot_backups.py
+      - jeeves/tests/test_fr9774_webhooks_sparse_ci.py
       - jeeves/scripts/Stamp-PriorityAgentDownloads.ps1
       - jeeves/scripts/Install-Jeeves.ps1
 
@@ -49,6 +51,23 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          # FR #9774: site-kit roots only. Do not list jeeves/** (chair, IRCD, monitor).
+          sparse-checkout: |
+            .github/workflows/build-jeeves-webhooks.yml
+            jeeves/www
+            jeeves/assets
+            jeeves/scripts/Install-BobWebhooks.ps1
+            jeeves/scripts/jeeves_webhooks_ci.py
+            jeeves/scripts/Stamp-PriorityAgentDownloads.ps1
+            jeeves/scripts/Install-Jeeves.ps1
+            jeeves/tests/conftest.py
+            jeeves/tests/test_fr7517_webhooks_kit_assets.py
+            jeeves/tests/test_fr8887_webroot_backups.py
+            bob/tray/assets/ntsa-gut-logo.png
+            bob/tray/assets/bob-systray.ico
+            common/scripts
+            common/tests
+          sparse-checkout-cone-mode: false
 
       - uses: actions/setup-python@v5
         with:

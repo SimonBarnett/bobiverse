@@ -70,7 +70,8 @@ class CatalogUnavailable(Exception):
 
 
 # Agent / CLI pairs from Weights mock (BOB-01 placeholders for model/context/effort).
-# FR #9746: blank Copilot row last (empty model = omit / GitHub auto).
+# FR #9995: Copilot-MRB and Copilot-PR (cli Copilot). Empty model stays allowed.
+_COPILOT_KIND_AGENTS: tuple[str, ...] = ("Copilot-MRB", "Copilot-PR")
 _DEFAULT_ROWS: tuple[tuple[str, str], ...] = (
     ("Plan", "Grok"),
     ("Priority", "Grok"),
@@ -79,7 +80,8 @@ _DEFAULT_ROWS: tuple[tuple[str, str], ...] = (
     ("Cursor", "Cursor"),
     ("Opencode", "Opencode"),
     ("Opencode-Free", "Opencode"),
-    ("Copilot", "Copilot"),
+    ("Copilot-MRB", "Copilot"),
+    ("Copilot-PR", "Copilot"),
 )
 
 _ROW_KEYS = ("agent", "cli", "model", "context", "effort")
@@ -254,28 +256,50 @@ def agents_public_with_stale(
     return agents
 
 
-def _maybe_backfill_copilot_row(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """FR #9746: append blank Copilot when saved rows are the full pre-Copilot set.
-
-    Partial subsets stay as written (test_fr8707 one-row pin). Does not write disk.
-    """
-    if not rows:
-        return rows
-    names = {r["agent"] for r in rows}
-    if "Copilot" in names:
-        return rows
-    legacy = {agent for agent, _cli in _DEFAULT_ROWS if agent != "Copilot"}
-    if not legacy.issubset(names):
-        return rows
-    blank = {
-        "agent": "Copilot",
+def _blank_copilot_kind(agent: str, model: str = "") -> dict[str, str]:
+    return {
+        "agent": agent,
         "cli": "Copilot",
-        "model": "",
+        "model": model,
         "context": "",
         "effort": "",
     }
+
+
+def _expand_legacy_copilot(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """FR #9995: one saved Copilot row becomes Copilot-MRB and Copilot-PR."""
+    if not rows:
+        return rows
+    legacy = next((r for r in rows if r.get("agent") == "Copilot"), None)
+    if legacy is None:
+        return rows
+    model = str(legacy.get("model") or "")
+    kept = [r for r in rows if r.get("agent") != "Copilot"]
+    names = {r.get("agent") for r in kept}
+    for agent in _COPILOT_KIND_AGENTS:
+        if agent not in names:
+            kept.append(_blank_copilot_kind(agent, model))
+    return kept
+
+
+def _maybe_backfill_copilot_row(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Append blank Copilot-MRB/PR when saved rows are the full pre-Copilot set.
+
+    A lone Copilot row expands to both kind rows (same model). Partial subsets
+    stay as written. Does not write disk.
+    """
+    if not rows:
+        return rows
+    rows = _expand_legacy_copilot(rows)
+    names = {r["agent"] for r in rows}
+    if any(a in names for a in _COPILOT_KIND_AGENTS):
+        return rows
+    legacy = {agent for agent, _cli in _DEFAULT_ROWS if agent not in _COPILOT_KIND_AGENTS}
+    if not legacy.issubset(names):
+        return rows
     by_name = {r["agent"]: r for r in rows}
-    by_name["Copilot"] = blank
+    for agent in _COPILOT_KIND_AGENTS:
+        by_name[agent] = _blank_copilot_kind(agent)
     return [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
 
 
@@ -785,21 +809,34 @@ def validate_put_agents(raw: Any) -> tuple[list[dict[str, str]] | None, str]:
         row, why = validate_agent_row(item)
         if row is None:
             return None, why or "invalid agent row"
-        if row["agent"] not in _KNOWN_AGENTS:
-            return None, f"unknown agent {row['agent']}"
-        expected_cli = _AGENT_CLI.get(row["agent"])
-        if expected_cli is not None and row["cli"] != expected_cli:
-            # FR #8819: agent row cli is read-only (Weights binds dropdowns from clis[row.cli]).
-            return None, f"cli is read-only for {row['agent']}"
-        if row["agent"] in seen:
-            return None, f"duplicate agent {row['agent']}"
-        if _row_secretish(row):
-            return None, "malformed JSON"
-        seen.add(row["agent"])
-        out.append(row)
+        if row["agent"] == "Copilot":
+            # FR #9995: accept a legacy Copilot row and split before known-agent checks.
+            row = _blank_copilot_kind("Copilot", str(row.get("model") or ""))
+            row["context"] = str(item.get("context") or "") if isinstance(item, dict) else ""
+            row["effort"] = str(item.get("effort") or "") if isinstance(item, dict) else ""
+            pending = []
+            for agent in _COPILOT_KIND_AGENTS:
+                twin = dict(row)
+                twin["agent"] = agent
+                pending.append(twin)
+        else:
+            pending = [row]
+        for row in pending:
+            if row["agent"] not in _KNOWN_AGENTS:
+                return None, f"unknown agent {row['agent']}"
+            expected_cli = _AGENT_CLI.get(row["agent"])
+            if expected_cli is not None and row["cli"] != expected_cli:
+                # FR #8819: agent row cli is read-only (Weights binds dropdowns from clis[row.cli]).
+                return None, f"cli is read-only for {row['agent']}"
+            if row["agent"] in seen:
+                return None, f"duplicate agent {row['agent']}"
+            if _row_secretish(row):
+                return None, "malformed JSON"
+            seen.add(row["agent"])
+            out.append(row)
     missing = [a for a, _ in _DEFAULT_ROWS if a not in seen]
-    # FR #9746: legacy seven-row PUT may omit only Copilot (merged in replace).
-    if missing and missing != ["Copilot"]:
+    # Legacy PUT may omit only the Copilot kind rows (merged on replace).
+    if missing and missing != list(_COPILOT_KIND_AGENTS):
         return None, "missing agents: " + ",".join(missing)
     # Stable order matching defaults (Copilot may be absent until replace merge).
     by_name = {r["agent"]: r for r in out}
@@ -813,22 +850,16 @@ def _merge_omitted_copilot_row(
     doc: dict[str, Any],
 ) -> list[dict[str, str]]:
     """FR #9746: when PUT omits Copilot, keep stored row or blank default."""
+    rows = _expand_legacy_copilot(rows)
     names = {r["agent"] for r in rows}
-    if "Copilot" in names:
+    if any(a in names for a in _COPILOT_KIND_AGENTS):
         by_name = {r["agent"]: r for r in rows}
         return [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
-    stored = _rows_from_payload(doc)
-    copilot = next((r for r in stored if r.get("agent") == "Copilot"), None)
-    if copilot is None:
-        copilot = {
-            "agent": "Copilot",
-            "cli": "Copilot",
-            "model": "",
-            "context": "",
-            "effort": "",
-        }
+    stored = _expand_legacy_copilot(_rows_from_payload(doc))
     by_name = {r["agent"]: r for r in rows}
-    by_name["Copilot"] = copilot
+    for agent in _COPILOT_KIND_AGENTS:
+        found = next((r for r in stored if r.get("agent") == agent), None)
+        by_name[agent] = found if found is not None else _blank_copilot_kind(agent)
     return [by_name[a] for a, _ in _DEFAULT_ROWS if a in by_name]
 
 

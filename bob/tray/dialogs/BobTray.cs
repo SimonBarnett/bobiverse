@@ -2376,21 +2376,8 @@ namespace BobDialogs
             }
             else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot.Length == 0 || slot == "free" || slot == "paid"))
             {
-                // FR #8730 / BOB-27: free first; paid when free is exhausted. Explicit paid stays paid.
-                if (slot != "paid")
-                {
-                    string chosen = OpencodeFreeThenPaid.ChooseFile(root, Environment.GetEnvironmentVariable("BOB_OPENCODE_FUEL_FILE"));
-                    if (chosen == "paid")
-                    {
-                        slot = "paid";
-                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "paid", "reason", "free-exhausted");
-                    }
-                    else if (slot.Length == 0)
-                    {
-                        slot = "free";
-                        TrayLifecycle.Write("workers-opencode", "action", "slot", "slot", "free");
-                    }
-                }
+                // The free link and the paid link are the choice. Do not flip the slot from fuel.
+                if (slot != "free" && slot != "paid") return;
                 // FR #8732 / BOB-30 + FR #9586: free uses Opencode-Free; paid uses Opencode — live GET.
                 string rowAgent = slot == "free" ? "Opencode-Free" : "Opencode";
                 string webhook = WeightsLaunchField(rowAgent, "model");
@@ -2412,7 +2399,12 @@ namespace BobDialogs
                     rowAgent,
                     "slot",
                     slot);
-                string model = webhook.Length > 0 ? webhook : WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
+                if (webhook.Length == 0)
+                {
+                    TrayLifecycle.Write("workers-opencode", "action", "refuse", "reason", "weights-model-missing", "slot", slot);
+                    return;
+                }
+                string model = webhook;
                 Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
                 ApplyWeightsLaunchEnv(env, rowAgent, "BOB_OPENCODE_MODEL");
                 if (model.Length > 0) env["BOB_OPENCODE_MODEL"] = model;
@@ -2426,6 +2418,11 @@ namespace BobDialogs
             {
                 // FR #9586: Cursor Weights row from live GET.
                 string model = WeightsLaunchField("Cursor", "model");
+                if (model.Length == 0)
+                {
+                    TrayLifecycle.Write("workers-cursor", "action", "refuse", "reason", "weights-model-missing");
+                    return;
+                }
                 TrayLifecycle.Write(
                     "workers-cursor",
                     "action",

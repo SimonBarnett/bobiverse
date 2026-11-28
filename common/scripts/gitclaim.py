@@ -1051,6 +1051,30 @@ def _depend_row_label_names(row: dict) -> set[str]:
     return names
 
 
+def _depend_queue_state(doc: dict | None, repo: str, num: int) -> str:
+    """Lower-case queue state for a depend, including closed rows. Empty if absent."""
+    if not isinstance(doc, dict) or num < 1:
+        return ""
+    want = (_repo_key(repo), int(num))
+    for bucket in (
+        doc.get("unaccepted") or [],
+        doc.get("accepted") or [],
+        doc.get("done") or [],
+    ):
+        for row in bucket:
+            if not isinstance(row, dict):
+                continue
+            rkey = _repo_key(str(row.get("repo") or ""))
+            raw = str(row.get("id") or "").strip().lstrip("#")
+            try:
+                n = int(raw) if raw else 0
+            except ValueError:
+                continue
+            if (rkey, n) == want:
+                return str(row.get("state") or "").strip().lower()
+    return ""
+
+
 def find_open_fr_row(doc: dict | None, repo: str, num: int) -> dict | None:
     """Locate an open FR queue row by ``(repo, number)`` (BOB-G1 digest labels)."""
     if not isinstance(doc, dict) or num < 1:
@@ -1167,7 +1191,7 @@ def row_fr_depends_blocked_reason(
     FR #9455: pass ``issue_fetch`` so digests absent from the local queue still resolve
     (same as ``row_depends_open_reason`` / ``depends_gate_reason``).
     """
-    if _canon_task(row) != "FR":
+    if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
     body = str(row.get("body") or "")
@@ -1192,7 +1216,7 @@ def row_fr_depends_blocked_reason(
                 if g1 == DEPENDS_HELD_REASON:
                     return f"{DEPENDS_HELD_REASON}: {tok}"
                 if g1 == "ok-fr-digest":
-                    continue
+                    return f"depends-on open: {tok}"
                 if (repo, oid) in open_keys:
                     return (
                         f"depends-on open: {tok} "
@@ -1210,7 +1234,7 @@ def row_fr_depends_blocked_reason(
             if g1 == DEPENDS_HELD_REASON:
                 return f"{DEPENDS_HELD_REASON}: {tok}"
             if g1 == "ok-fr-digest":
-                continue
+                return f"depends-on open: {tok}"
             if pair in open_keys:
                 return f"depends-on open: {tok}"
             continue
@@ -1227,7 +1251,7 @@ def row_fr_depends_blocked_reason(
             if g1 == DEPENDS_HELD_REASON:
                 return f"{DEPENDS_HELD_REASON}: {tok}"
             if g1 == "ok-fr-digest":
-                continue
+                return f"depends-on open: {tok}"
             if pair in open_keys:
                 return f"depends-on open: {tok}"
     return None
@@ -1252,7 +1276,7 @@ def depends_gate_reason(
     ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
     digests were absent from the local queue).
     """
-    if _canon_task(row) != "FR":
+    if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     qdoc = doc if isinstance(doc, dict) else {}
     fetch = issue_fetch
@@ -1355,7 +1379,7 @@ def _row_depends_on_issue_refs(row: dict) -> list[tuple[str, int]]:
     ``row["repo"]``. Repo keys are lower-cased. Empty / ``(none)`` / malformed /
     self-reference yield no refs. Public parser/resolver: BOB-D1 / BOB-D2.
     """
-    if not isinstance(row, dict) or _canon_task(row) != "FR":
+    if not isinstance(row, dict) or _canon_task(row) not in ("FR", "FIX", "MRB"):
         return []
     home_repo = _repo_key(str(row.get("repo") or ""))
     self_num_raw = str(row.get("id") or "").strip().lstrip("#")
@@ -1402,7 +1426,7 @@ def _row_depends_on_has_bad_ref(row: dict) -> bool:
     without parentheses, or ``see digest``) are treated as notes - not
     ``depends-unresolved``. A line that is *only* junk still fails closed.
     """
-    if not isinstance(row, dict) or _canon_task(row) != "FR":
+    if not isinstance(row, dict) or _canon_task(row) not in ("FR", "FIX", "MRB"):
         return False
     home_repo = _repo_key(str(row.get("repo") or ""))
     self_num_raw = str(row.get("id") or "").strip().lstrip("#")
@@ -1513,7 +1537,7 @@ def row_depends_open_reason(
       short-circuit as ``depends-unresolved`` before G1 soft-allow (see
       ``_row_depends_on_has_bad_ref`` / ``bob_g1_depends_annotation_soft``).
     """
-    if _canon_task(row) != "FR":
+    if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     if _row_depends_on_has_bad_ref(row):
         return DEPENDS_UNRESOLVED_REASON
@@ -1543,6 +1567,7 @@ def row_depends_open_reason(
     refs = _row_depends_on_issue_refs(row)
     if not refs:
         return None
+    unknown = False
     for repo, num in refs:
         g1 = _bob_g1_digest_gate_for_pair(
             doc if isinstance(doc, dict) else {}, repo, str(num), issue_fetch=fetch
@@ -1550,18 +1575,23 @@ def row_depends_open_reason(
         if g1 == DEPENDS_HELD_REASON:
             return DEPENDS_HELD_REASON
         if g1 == "ok-fr-digest":
-            # Unheld digest (local queue or live GitHub) satisfies while OPEN.
-            continue
+            # FR #10059: an unheld OPEN digest still blocks dispatch.
+            return DEPENDS_OPEN_REASON
         dep = find_open_fr_row(doc, repo, num) if doc is not None else None
         if dep is not None:
             labs = _depend_row_label_names(dep)
             if "hold" in labs or "on-hold" in labs:
                 return DEPENDS_HELD_REASON
             if row_is_digest_issue(dep):
-                continue
+                return DEPENDS_OPEN_REASON
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
+        if _depend_queue_state(doc if isinstance(doc, dict) else {}, repo, num) == "closed":
+            continue
         if issue_open is None:
+            # FR #10059: no live checker and not a positive CLOSED is unknown.
+            # Keep scanning so a later ref that is positively OPEN still wins.
+            unknown = True
             continue
         try:
             if bool(issue_open(repo, str(num))):
@@ -1572,7 +1602,10 @@ def row_depends_open_reason(
                 return DEPENDS_OPEN_REASON
         except Exception:
             # Unknown / budget / network: fail closed (BOB-D5 / FR #8809).
-            return DEPENDS_UNRESOLVED_REASON
+            unknown = True
+            continue
+    if unknown:
+        return DEPENDS_UNRESOLVED_REASON
     return None
 
 
@@ -11017,6 +11050,13 @@ def offer_to_idle_seats(
     import time as _time
 
     now_f = _time.time() if now is None else float(now)
+    # Idle digest + a leftover accepted row is a stall. Release it before the
+    # free-seat filter, which treats any accepted nick as busy.
+    for idle_nick in digest_idle_ready_seats(home, now=now_f, live=live):
+        nick_i = str(idle_nick.get("nick") or "").strip()
+        if nick_i:
+            with contextlib.suppress(Exception):
+                release_stale_busy(home, nick_i, now_f, log=log)
     idle_rows = list_idle_after_empty(home, now=now_f, live=live)
     seen = {
         str(ent.get("nick") or "").strip().lower()
@@ -13172,31 +13212,52 @@ def _start_model_from_fields(fields: dict | None) -> str:
     return str(f.get("start_model") or f.get("model") or "").strip()
 
 
-def seat_started_on_free_model(home: Path, nick: str) -> bool:
-    """FR #7926: the model the seat started on, not the configured model.
+def opencode_unpaid_model(home: Path) -> str:
+    """Model id on the Weights Opencode-Free row (GET /bob/v1/models).
 
-    ``opencode/deepseek-v4.1-flash-free`` is free. Grok and
-    ``opencode-go/deepseek-v4-pro`` are not. An empty or ``$model`` start
-    model is not free.
+    That saved row is the only unpaid OpenCode model. Missing file or row
+    means nothing is unpaid.
     """
-    fields = _seat_digest_model_fields(home, nick)
-    model = str(fields.get("start_model") or "").strip()
-    if not model or "$" in model:
-        return False
     try:
-        import worker_start_model as wsm
+        import models_catalog as mc
 
-        if wsm.opencode_is_go_or_paid(model):
-            return False
+        path = mc.catalog_path(_root(home))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        low_paid = model.lower()
-        if low_paid.startswith("opencode-go/") or low_paid.endswith("-pro"):
-            return False
-    low = model.lower()
-    if low.endswith("-free") or low.startswith("opencode/"):
-        return True
-    tier = str(fields.get("cost_tier") or "").strip().lower()
-    return tier in ("free", "opencode-free")
+        return ""
+    agents = raw.get("agents") if isinstance(raw, dict) else None
+    if not isinstance(agents, list):
+        return ""
+    for row in agents:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("agent") or row.get("row") or "").strip()
+        if name != "Opencode-Free":
+            continue
+        return str(row.get("model") or "").strip()
+    return ""
+
+
+def _seat_kind_always_paid(kind: str) -> bool:
+    """Grok and Cursor are never free fuel. Only OpenCode can be unpaid."""
+    return (kind or "").strip().lower() in ("grok", "cursor")
+
+
+def seat_started_on_free_model(home: Path, nick: str) -> bool:
+    """True only for an OpenCode seat on the saved unpaid Weights model.
+
+    Grok and Cursor are always paid, even when start_model is empty or the
+    id looks free. Any other OpenCode model, including empty and ``$model``,
+    is paid.
+    """
+    if _seat_kind_always_paid(seat_agent_kind(home, nick)):
+        return False
+    if seat_agent_kind(home, nick) != "opencode":
+        return False
+    fields = _seat_digest_model_fields(home, nick)
+    model = str(fields.get("start_model") or fields.get("model") or "").strip()
+    unpaid = opencode_unpaid_model(home)
+    return bool(model) and bool(unpaid) and model == unpaid
 
 
 def idle_free_model_nicks(home: Path, *, now: float | None = None, live: set[str] | None = None) -> set[str]:
@@ -13370,34 +13431,12 @@ def mrb_yields_to_older_fr(
 
 
 def seat_is_free_fuel(home: Path, nick: str) -> bool:
-    """True when this seat must stay on FR/FIX (FR #7706 / #7888).
+    """True when this seat must stay on FR/FIX.
 
-    Eligibility follows the launched ``start_model``, not ``configured_model``
-    and not a free published ``cost_tier``. A paid OpenCode Go / pro id is not
-    free fuel even when kind is ``opencode`` or the configured model is free.
-    Missing, empty, or ``$model`` on an OpenCode seat fails safe to free.
-    A free model id is free even when the digest kind says grok.
+    Grok and Cursor are always paid. OpenCode is free only when ``start_model``
+    is the Opencode-Free model saved by the Weights form (GET /bob/v1/models).
     """
-    fields = _seat_digest_model_fields(home, nick)
-    model = _start_model_from_fields(fields)
-    try:
-        import worker_start_model as wsm
-
-        klass = wsm.start_model_review_class(model)
-    except Exception:
-        klass = "unknown" if (not model or "$" in model) else "other"
-    if klass == "paid":
-        return False
-    if klass == "free":
-        return True
-    if "$" in model or model.lower() == "unknown":
-        return True
-    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return True
-    tier = str(fields.get("cost_tier") or "").strip().lower()
-    if tier in ("free", "opencode-free"):
-        return True
-    return False
+    return seat_started_on_free_model(home, nick)
 
 
 def mrb_eligibility_reason(home: Path, nick: str) -> str:
@@ -13413,16 +13452,13 @@ def mrb_eligibility_reason(home: Path, nick: str) -> str:
     shown = model or "missing"
     if len(shown) > 80:
         shown = shown[:80]
+    kind = seat_agent_kind(home, nick)
+    if _seat_kind_always_paid(kind):
+        return f"paid kind {kind}"
+    if seat_is_free_fuel(home, nick):
+        return f"unpaid opencode model {shown}"
     if klass == "paid":
         return f"paid start_model {shown}"
-    if "$" in model:
-        return f"unknown start_model {shown}"
-    if klass == "free":
-        return f"free start_model {shown}"
-    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return "unknown start_model on opencode (fail safe FR-only)"
-    if seat_is_free_fuel(home, nick):
-        return f"free-fuel start_model {shown}"
     return f"mrb-eligible start_model {shown}"
 
 
@@ -13433,10 +13469,10 @@ def row_blocked_for_opencode_seat(
     *,
     kind: str | None = None,
 ) -> bool:
-    """True when a free or unknown start_model must not be offered this MRB/UAT row.
+    """True when this seat must not be offered this MRB/UAT row.
 
-    FR #6134 blocked every OpenCode seat. FR #7888 keeps that for a free or
-    missing start_model and allows a paid start_model (OpenCode Go / pro).
+    Grok and Cursor are always paid. OpenCode is blocked only when
+    ``start_model`` equals the saved Opencode-Free Weights model.
     Without a digest (``home is None``), kind ``opencode`` still fails safe.
     """
     task = str((row or {}).get("task") or "").upper()
@@ -19001,6 +19037,19 @@ def format_assign_refusal_log(
 
 
 
+
+def _depends_open_assign_reason(row: dict) -> str:
+    """Shop reason for !assign. irc_agent prefixes ``assign: refused - ``."""
+    refs = _row_depends_on_issue_refs(row)
+    if not refs:
+        return "depends-on open"
+    repo, num = refs[0]
+    home = str(row.get("repo") or "").strip()
+    if repo and home and repo.lower() != home.lower():
+        return "depends-on open %s#%s" % (repo, num)
+    return "depends-on open #%s" % num
+
+
 def assign_row(
     home: Path,
     nick: str,
@@ -19230,6 +19279,10 @@ def assign_row(
                 issue_fetch=depends_issue_fetch_checker(fetch_issue),
             )
             if live_dep:
+                if live_dep == DEPENDS_OPEN_REASON or str(live_dep).startswith(
+                    "depends-on open"
+                ):
+                    return "refused", _depends_open_assign_reason(cand)
                 return "refused", f"row blocked: {live_dep}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
@@ -22268,6 +22321,41 @@ def bored_gate(
 # nak-busying it forever stalls the whole fleet (2026-10-05: marchhare seats nak-busy 8h on
 # merged MRB #2349 / closed FR #2340 while every open MRB was ionos-authored).
 BUSY_STALE_S = 3600.0
+# Digest already says idle, but the accepted row is still young. !bored and
+# offer_to_idle must not wait out BUSY_STALE_S. 90s covers ACK-to-digest lag.
+IDLE_DIGEST_RELEASE_S = 90.0
+
+
+def _digest_seat_explicit_idle(home: Path, nick: str) -> bool:
+    """True only when this nick's digest row says state=idle.
+
+    Missing digest, empty state, or doing/offered is not idle. An explicit idle
+    row plus !bored means the accepted job is no longer on the seat.
+    """
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return False
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:  # noqa: BLE001
+        return False
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return False
+    want = (nick or "").strip().lower()
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != want:
+            continue
+        return str(row.get("state") or "").strip().lower() == "idle"
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    wrow = workers.get(str(pid))
+    if isinstance(wrow, dict):
+        return str(wrow.get("state") or "").strip().lower() == "idle"
+    return False
 
 
 def _accepted_row_age_s(row: dict, now: float) -> float:
@@ -22313,11 +22401,15 @@ def release_stale_busy(
 
     Stale when:
     * row age >= ``BUSY_STALE_S`` (FR #2369), or
+    * digest ``worker_list`` state is exactly ``idle`` and age >= ``IDLE_DIGEST_RELEASE_S``
+      (FR #10337 — do not wait out the hour while the seat is already idle), or
     * ``session_started`` is set and the row's accepted_ts is strictly before that
       session (FR #3742 - lost DONE across chair restart / IRC reconnect).
 
     A seat that ``!bored`` is claiming idle; do not heal a fresh ACK from *this*
-    session (accepted_ts >= session_started and age < BUSY_STALE_S).
+    session (accepted_ts >= session_started and age < IDLE_DIGEST_RELEASE_S)
+    when the digest does not already say idle. A digest state of doing/offered
+    keeps a young row. IDLE_DIGEST requeue does not set prior_holder.
     """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
@@ -22351,13 +22443,19 @@ def release_stale_busy(
             mine = [r for r in acc if _owner(r) == me]
             for r in mine:
                 age = _accepted_row_age_s(r, float(now))
+                epoch = _accepted_ts_epoch(r)
+                pre_session = session_started is not None and (
+                    epoch is None or epoch < float(session_started)
+                )
                 if age >= BUSY_STALE_S:
                     continue  # stale by age
-                if session_started is not None:
-                    epoch = _accepted_ts_epoch(r)
-                    # Missing/bad ts: treat as pre-session (same as age path).
-                    if epoch is None or epoch < float(session_started):
-                        continue  # stale by FR #3742 session boundary
+                if pre_session:
+                    continue  # stale by FR #3742 session boundary
+                if (
+                    _digest_seat_explicit_idle(home, nick)
+                    and age >= IDLE_DIGEST_RELEASE_S
+                ):
+                    continue  # digest idle while the chair still holds ACC
                 return False  # genuinely recent job in this session: honour busy
             if mine:
                 # FR #4422: never mark done without a merged PR or a closed issue.
@@ -22370,8 +22468,19 @@ def release_stale_busy(
                 for r in mine:
                     fin = dict(r)
                     age = _accepted_row_age_s(r, float(now))
+                    epoch = _accepted_ts_epoch(r)
+                    pre_session = session_started is not None and (
+                        epoch is None or epoch < float(session_started)
+                    )
                     if age >= BUSY_STALE_S:
                         reason = "STALE_BUSY"
+                    elif pre_session:
+                        reason = "LOST_DONE_RESTART"
+                    elif (
+                        _digest_seat_explicit_idle(home, nick)
+                        and age >= IDLE_DIGEST_RELEASE_S
+                    ):
+                        reason = "IDLE_DIGEST"
                     else:
                         reason = "LOST_DONE_RESTART"
                     github_done = ""
