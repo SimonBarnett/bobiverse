@@ -414,6 +414,147 @@ def log_install_root_guard(install_root: str | Path, log: Callable[[str], None] 
     return warn
 
 
+def _ps_single_quote(value: object) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _job_worktree_git_ok(wt: str | Path, run=subprocess.run) -> bool:
+    try:
+        r = run(
+            ["git", "-C", str(wt), "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return getattr(r, "returncode", 1) == 0
+
+
+def _resolve_job_worktree_ps1(name: str, *, explicit: str | Path | None = None) -> Path | None:
+    """Locate a fleet ``.ps1`` for job-worktree repair/intake (frozen-safe via ``resolve_fleet_ps1``)."""
+    if explicit is not None:
+        p = Path(explicit)
+        return p if p.is_file() else None
+    try:
+        found = resolve_fleet_ps1(name)
+        if found is not None and Path(found).is_file():
+            return Path(found)
+    except Exception:  # noqa: BLE001
+        pass
+    # Source/worktree fallback when resolve_fleet_ps1 is unavailable early in import.
+    cand = _common_scripts_dir() / name
+    return cand if cand.is_file() else None
+
+
+def repair_job_worktree_admin(
+    wt: str | Path,
+    *,
+    run=subprocess.run,
+    common_ps1: str | Path | None = None,
+) -> str:
+    """FR #10270: run ``Repair-BobiverseJobWorktreeAdmin`` (FR #10244) for one job tree.
+
+    Returns the helper's state token (``repaired``, ``ok``, ``branch-missing``,
+    ``git-still-broken``, ...) or ``helper-missing`` when Bobiverse-Common.ps1 or the
+    function is not present (for example before PR #10269 lands on main).
+    """
+    common = _resolve_job_worktree_ps1("Bobiverse-Common.ps1", explicit=common_ps1)
+    if common is None:
+        return "helper-missing"
+    cmd = (
+        f". {_ps_single_quote(common)}; "
+        "if (-not (Get-Command Repair-BobiverseJobWorktreeAdmin -ErrorAction SilentlyContinue)) "
+        "{ Write-Output 'helper-missing'; exit 0 }; "
+        f"Write-Output (Repair-BobiverseJobWorktreeAdmin -WorktreePath {_ps_single_quote(wt)})"
+    )
+    try:
+        r = run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return "helper-missing"
+    lines = [ln.strip() for ln in str(getattr(r, "stdout", "") or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else "helper-missing"
+
+
+def file_job_worktree_git_intake(
+    wt: str | Path,
+    state: str,
+    detail: str,
+    *,
+    run=subprocess.run,
+    log: Callable[[str], None] = print,
+) -> bool:
+    """FR #10270: file a SimonBarnett/bobiverse intake issue when a job tree's git stays broken."""
+    script = _resolve_job_worktree_ps1("Report-BobiverseIntakeIssue.ps1")
+    if script is None:
+        log("job-worktree: intake script missing; not filed")
+        return False
+    title = f"seat start: job worktree git broken ({state})"
+    body = (
+        f"Seat start could not run git in job worktree '{Path(str(wt)).name}' "
+        f"(state={state}, helper detail={detail}). Repair-BobiverseJobWorktreeAdmin (FR #10244) "
+        "was tried at seat start and did not restore git. Fix: call the repair from the seat start "
+        "path and keep the admin dir when the tree cannot be repaired."
+    )
+    argv = [
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+        "-Repo", "SimonBarnett/bobiverse", "-Kind", "issue", "-Title", title, "-Body", body,
+    ]
+    try:
+        r = run(argv, capture_output=True, text=True, timeout=120, check=False)
+    except Exception as e:  # noqa: BLE001
+        log(f"job-worktree: intake filing failed {type(e).__name__}")
+        return False
+    if getattr(r, "returncode", 1) != 0:
+        log(f"job-worktree: intake filing exit={getattr(r, 'returncode', '?')}")
+        return False
+    return True
+
+
+def verify_job_worktree_git(
+    wt: str | Path,
+    *,
+    run=subprocess.run,
+    repair=None,
+    intake=None,
+    log: Callable[[str], None] = print,
+) -> str:
+    """FR #10270: at seat start, check ``git`` works in the job worktree.
+
+    Broken git is repaired with the FR #10244 admin-dir helper. Anything still broken
+    after the repair (or when the helper is missing) files an intake issue. Returns
+    ``ok``, ``repaired``, ``no-worktree``, ``helper-missing`` or ``git-still-broken``.
+
+    Second ``git rev-parse`` is the success signal (helper token alone is not trusted).
+    """
+    path = str(wt or "").strip()
+    if not path or not Path(path).is_dir():
+        return "no-worktree"
+    if _job_worktree_git_ok(path, run):
+        return "ok"
+    fix = repair or (lambda p: repair_job_worktree_admin(p, run=run))
+    state = str(fix(path) or "")
+    if _job_worktree_git_ok(path, run):
+        # Helper may report repaired or ok; recheck decides success.
+        if state == "repaired":
+            log(f"job-worktree: git admin repaired at seat start ({Path(path).name})")
+            return "repaired"
+        log(f"job-worktree: git ok after helper at seat start ({Path(path).name}) helper={state or 'none'}")
+        return "ok"
+    final = "helper-missing" if state == "helper-missing" else "git-still-broken"
+    log(f"job-worktree: git broken at seat start ({Path(path).name}) helper={state or 'none'} -> {final}")
+    file_it = intake or (lambda p, s, d, **k: file_job_worktree_git_intake(p, s, d, run=run, log=log))
+    file_it(path, final, state or "none")
+    return final
+
+
 # Re-export for tests / playbooks (FR #4843).
 try:
     if str(_common_scripts_dir()) not in sys.path:
@@ -20018,6 +20159,14 @@ class Supervisor:
                     )
                 if prepared_mrb.get("nack"):
                     raise JobContextRefused(str(prepared_mrb["nack"]))
+                # FR #10270: Grok/Cursor MRB/FIX also verify git in the job worktree.
+                try:
+                    verify_job_worktree_git(
+                        str(prepared_mrb.get("path") or ""),
+                        log=self.log,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"job-worktree: git check skipped {type(e).__name__}")
                 sha_pre = ""
                 try:
                     stamp = Path(str(prepared_mrb.get("path") or "")) / ".bob" / "reviewed-sha"
@@ -20087,6 +20236,11 @@ class Supervisor:
                     clear_stale_job_index_lock(prepared["path"], log_fn=self.log)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: index.lock preflight skipped {type(e).__name__}")
+                # FR #10270: seat start verifies git in the job worktree (repair or intake).
+                try:
+                    verify_job_worktree_git(prepared["path"], log=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode-ready: job-worktree git check skipped {type(e).__name__}")
                 # FR #6898: OpenCode --dir loads project opencode.json from the job worktree.
                 try:
                     write_opencode_skill_dag_mcp_config(
