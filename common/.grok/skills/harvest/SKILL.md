@@ -551,3 +551,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
 - The same issue number in two repos is not a twin. Close only the repo the operator named.
 - When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.
+- MRB of skill resume tips: reopen not_planned Closes issues before merge; related broader reuse FR (#10241/#10266) is not an exact twin of empty-worktree FR
