@@ -56,6 +56,9 @@ def test_fr7997_classify_lock_retries_then_giveup():
     assert iso.classify_startup(banner, exit_code=-1, attempt=1) == "giveup"
     assert iso.classify_startup("skill-dag_list_catalog Unknown", exit_code=-1, attempt=0) == "continue"
     assert iso.classify_startup("", exit_code=1, attempt=0) == "retry"
+    leftover = "[?9001h[?1004h> build claude-haiku-5-5"
+    assert iso.handshake_only(leftover)
+    assert iso.classify_startup(leftover, exit_code=-1, attempt=0) == "retry"
 
 
 def test_fr7997_launcher_isolates_and_retries(tmp_path: Path, monkeypatch):
@@ -78,5 +81,9 @@ def test_fr7997_launcher_isolates_and_retries(tmp_path: Path, monkeypatch):
     assert "opencode-startup-failed" in ps1
     assert "ConvertTo-OpencodePlain" in ps1
     assert "opencode-startup-failed exit=" in ps1
+    assert "pythonw.exe" in ps1
+    assert "opencode-handshake: retry" in ps1
+    assert "else { '' }" not in ps1
+    assert "'--cwd', $ocDir" in ps1
     assert "opencode-data-dir.txt" in ps1
     assert "FR #7997" in ps1

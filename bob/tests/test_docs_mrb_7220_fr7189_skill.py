@@ -10,7 +10,7 @@ _THIS = Path(__file__).resolve()
 
 
 def test_docs_mrb_7220_fr7189_skill_phrases():
-    skill = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+    skill = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
     text = skill.read_text(encoding="utf-8")
     assert "FR #7189" in text
     assert "list-agents" in text

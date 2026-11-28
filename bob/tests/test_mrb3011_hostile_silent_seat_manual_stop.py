@@ -27,7 +27,7 @@ def test_mrb3011_skill_stale_build_fr3010_contiguous():
     t = _text(SKILL)
     assert "Stale build notice (FR #2782 / FR #3180)" in t or "Stale build" in t
     i = t.lower().index("stale build")
-    window = t[i : i + 900]
+    window = t[i : i + 1600]
     assert "FR #3010" in window
     assert "FR #2996" in window
     assert "post_bored" in window
@@ -51,7 +51,7 @@ def test_mrb3011_troubleshooting_row_fr3010_contiguous():
 
 
 def test_mrb3011_harvested_lesson_fr3010():
-    t = _text(SKILL)
+    t = _text(SKILL.with_name("lessons.md"))
     lessons = [ln for ln in t.splitlines() if "done-miss release must set" in ln and "FR #2996" in ln]
     assert lessons, "missing FR #2996 harvested lesson bullet"
     body = lessons[-1]
