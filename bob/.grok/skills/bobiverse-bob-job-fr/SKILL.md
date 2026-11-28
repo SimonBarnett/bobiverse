@@ -149,6 +149,21 @@ if ($st -ne 'OPEN') { throw 'issue closed; NACK instead of opening a PR' }
 
 If the issue is closed (duplicate, operator close, superseded), **do not** open or push a PR. Send `NACK FR owner/repo#N` (reason on a separate line, e.g. `issue closed upstream`) so the program releases `!bored`. A shop `CANCEL FR ... (closed by ...)` from Jeeves is the same stop: abandon, NACK, stop.
 
+## Reuse an existing PR on the branch (FR #10241)
+
+A resumed FR (same `fr-N` branch, new run) may already have an open PR from the earlier run (seen on FR #10105: branch `fr-10105` already had open PR #10240, so a second `gh pr create` would duplicate it). Before opening any PR, look up the head branch in all states:
+
+```powershell
+$prs = gh pr list --repo owner/name --head fr-N --state all --json number,url,state,isDraft | ConvertFrom-Json
+$open = @($prs | Where-Object { $_.state -eq 'OPEN' })
+```
+
+* **One or more OPEN PRs:** do **not** run `gh pr create`. Reuse the first open PR (`$open[0].url`): push any new commits to the branch, make sure its body has `Closes owner/repo#N` (edit with `gh pr edit <url> --body-file <file>`), run `gh pr ready <url>` if `isDraft` is true, then send DONE with that URL. Never open a second PR for the same branch.
+* **No OPEN PR, but a MERGED one:** the FR is already implemented. Verify the merged PR `Closes` the issue (see Verify the link) and DONE with its URL. Do not re-implement.
+* **Only CLOSED (unmerged) PRs:** the old PR is dead; open a new PR from the branch as normal (`gh pr create` below) and say in its body that it supersedes the closed PR.
+
+Never DONE with a URL you did not read from `gh pr list` / `gh pr create` in this run.
+
 ## DONE URL - capture `gh pr create` output (FR #108)
 
 Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns. Capture `$url` first; append DONE as **its own short command** afterward (FR #2876 — never check the outbox first).
