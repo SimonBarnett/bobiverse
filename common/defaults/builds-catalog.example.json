@@ -16,5 +16,23 @@
     "dep": ["bob-ear", "bob-tray", "bob-worker"],
     "version": "0.1.40",
     "ref": "main"
+  },
+  {
+    "name": "Bobiverse webhooks site kit",
+    "yml": "SimonBarnett/bobiverse:.bobiverse/build-webhooks.yml",
+    "output": "D:\\Temp\\bobiverse-webhooks",
+    "install": "flamingo",
+    "dep": ["webhooks"],
+    "version": "0.1.40",
+    "ref": "main"
+  },
+  {
+    "name": "Bobiverse Jeeves IRCD",
+    "yml": "SimonBarnett/bobiverse:.bobiverse/build-jeeves-ircd.yml",
+    "output": "D:\\Temp\\bobiverse-jeeves-ircd",
+    "install": "flamingo",
+    "dep": ["ircd"],
+    "version": "0.1.40",
+    "ref": "main"
   }
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SKILL = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+SKILL = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
 HARVEST = ROOT / "common" / ".grok" / "skills" / "harvest" / "SKILL.md"
 
 
