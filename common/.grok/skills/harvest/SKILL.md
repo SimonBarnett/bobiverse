@@ -535,6 +535,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When FIX CI is already pushed on the reviewed SHA, re-run the named failing test and DONE that PR URL if it passes; do not add an empty commit.
 <!-- harvest-tip:intake-in_1366c7119d3d4507 -->
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
+<!-- harvest-tip:intake-in_9075c3517b4d4e08 -->
+- Before tip scripts robocopy on bob installs, compare scripts/provenance.txt source_commit to clone HEAD; rebuild Install-BobEarExe when ARP VERSION > git VERSION.
 <!-- harvest-tip:intake-in_2f2ce3b2f9a4473f -->
 - Treat subprocess.TimeoutExpired on Clear like FR #8211 console-close: log skip, no runtime_failure
 <!-- harvest-tip:intake-in_ceb92a34bc124fb4 -->
