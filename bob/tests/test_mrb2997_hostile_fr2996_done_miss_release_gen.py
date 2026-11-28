@@ -49,7 +49,7 @@ def test_mrb2997_run_clamps_past_due_wait_contiguous():
 
 
 def test_mrb2997_skill_fr2996_contiguous():
-    t = _t(SKILL)
+    t = _t(SKILL) + "\n" + _t(SKILL.with_name("lessons.md"))
     assert "FR #2996" in t
     assert "_release_gen = _turn_gen" in t or "_release_gen = `_turn_gen`" in t or "_release_gen" in t
     assert "done-miss" in t

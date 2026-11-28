@@ -4,14 +4,17 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SKILL = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+BOOK = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker"
 
 
 def test_skill_pins_fr4732_turn_open_probe_and_giveup_grace():
-    raw = SKILL.read_bytes()
-    assert raw[:3] != b"\xef\xbb\xbf", "skill must be UTF-8 without BOM"
-    assert raw.endswith(b"\n"), "skill must end with LF"
-    text = raw.decode("utf-8").replace("\r\n", "\n")
+    parts = []
+    for name in ("SKILL.md", "lessons.md"):
+        raw = (BOOK / name).read_bytes()
+        assert raw[:3] != b"\xef\xbb\xbf", name
+        assert raw.endswith(b"\n"), name
+        parts.append(raw.decode("utf-8").replace("\r\n", "\n"))
+    text = "\n".join(parts)
     prior = (
         "bob-worker: FR #4730 --- after DONE/NACK/GIVEUP, a replayed ACK for that "
         "job is dropped before IRC and must not reopen busy; a fresh inject clears "
