@@ -537,6 +537,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-tip:intake-in_ens_01c2dc63c1b8 -->
 - When a linked worktree .git gitfile points at a missing admin dir, run job_worktree_gitlink.py --check first; --repair only with an explicit branch (the admin dir is rebuilt, the working tree is untouched).
+<!-- harvest-tip:intake-in_ens_0415dab42afc -->
+- summarize offerable vs live offer_focus_top: log live_skip; never fold to blocked_other without it; nak busy needs bored_gate_busy_reason when seat_open_job empty
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
