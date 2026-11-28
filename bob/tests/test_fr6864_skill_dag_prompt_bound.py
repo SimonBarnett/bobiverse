@@ -63,8 +63,8 @@ def test_prepare_bound_cwd_only_core_skill_and_mcp_absolute(tmp_path):
     assert skill_dirs == [bound.CORE_STUB_ID]
     cfg = (b / ".grok" / "config.toml").read_text(encoding="utf-8")
     assert "skill-dag" in cfg
-    assert mcp.as_posix() in cfg
-    assert (worker / ".grok" / "skills").resolve().as_posix() in cfg
+    assert "https://bob.ntsa.uk/mcp" in cfg
+    assert mcp.as_posix() not in cfg
     # Fat install skills stay on disk for MCP roots; bound cwd does not copy them in.
     assert (worker / ".grok" / "skills" / "bobiverse-bob" / "SKILL.md").is_file()
 

@@ -40,7 +40,8 @@ def test_cursor_launch_files_include_mcp_and_resolve(tmp_path):
     body = spec.files[mcp_path]
     data = json.loads(body)
     assert "skill-dag" in data.get("mcpServers", {})
-    assert "resolve" in spec.files[str(run / "prompt.txt")]
+    # Cursor seats use the remote skill-dag MCP (list_catalog / get_skill); see worker_prompt_template.txt
+    assert "list_catalog" in spec.files[str(run / "prompt.txt")]
     assert "get_skill" in spec.files[str(run / "prompt.txt")]
     assert spec.write_cursor_skill_dag_mcp is True
     # FR #8785 / #8846: prompt must not invent bob/bob/scripts; fail-closed GIVEUP named
@@ -154,7 +155,10 @@ def test_fr8785_flat_install_spaces_prompt_matches_mcp_and_once_resolve(
     mcp_key = str(worker / ".cursor" / "mcp.json")
     assert mcp_key in spec.files
     cfg = json.loads(spec.files[mcp_key])["mcpServers"]["skill-dag"]
-    args = list(cfg["args"])
+    assert cfg.get("url") == bw.BOB_SKILL_MCP_URL
+    assert "args" not in cfg
+    # Local script still resolves a job tree when invoked directly (path-with-spaces).
+    args = bw.skill_dag_mcp_launch_args(str(worker), job_worktree=job_wt)
     assert Path(args[0]).resolve() == flat_mcp.resolve()
     assert "--job-worktree-file" in args
     ptr_path = Path(args[args.index("--job-worktree-file") + 1])
@@ -163,7 +167,8 @@ def test_fr8785_flat_install_spaces_prompt_matches_mcp_and_once_resolve(
     assert "bob\\bob\\scripts" not in prompt_txt
     assert "bob/bob/scripts" not in prompt_txt
     assert ".cursor/mcp.json" in prompt_txt or ".cursor\\mcp.json" in prompt_txt
-    assert "job-worktree-file" in prompt_txt
+    assert "list_catalog" in prompt_txt
+    assert "skill-dag-mcp-down" in prompt_txt
 
     env = {k: v for k, v in os.environ.items() if k.upper() != "PYTHONPATH"}
     env["HOME"] = str(home)

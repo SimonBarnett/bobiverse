@@ -72,7 +72,16 @@ if (-not $SourceCommit) {
 }
 if (-not $SourceCommit) { $SourceCommit = 'unknown' }
 $SourceCommit = ($SourceCommit -replace '[^0-9a-fA-F]', '').ToLowerInvariant()
-if (-not $SourceCommit) { $SourceCommit = 'unknown' }
+if ($SourceCommit.Length -lt 7) {
+    $prevEapGit2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $gitOut2 = & git -C $RepoRoot rev-parse HEAD 2>$null
+    $gitCode2 = $LASTEXITCODE
+    $ErrorActionPreference = $prevEapGit2
+    if ($gitCode2 -eq 0 -and $gitOut2) {
+        $SourceCommit = (([string]$gitOut2).Trim() -replace '[^0-9a-fA-F]', '').ToLowerInvariant()
+    }
+}
+if (-not $SourceCommit -or $SourceCommit.Length -lt 7) { $SourceCommit = 'unknown' }
 # Co-located stub next to bob_worker.py wins PyInstaller analysis over --paths.
 # Overwrite that stub for the freeze, then restore (MRB #6352 / CodeRabbit Major).
 $metaLines = @(

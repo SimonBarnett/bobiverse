@@ -211,5 +211,8 @@ def test_fr8807_none_and_absent_do_not_block(home: Path):
     gitclaim.clear_seat_hold(home, me, repo=REPO, task="FR", ident=str(j1["id"]))
 
     st2, j2 = gitclaim.offer_focus_top(home, "marchhare-35601", "#marchhare")
-    assert st2 == "ok" and j2 is not None
-    assert {j1["id"], j2["id"]} == {"#11", "#12"}
+    # FR #10059: Depends-on #40404 is not in the queue and there is no checker,
+    # so the row fails closed and is not offered. (none) was the first offer.
+    assert j1["id"] == "#11"
+    assert st2 == "empty"
+    assert j2 is None

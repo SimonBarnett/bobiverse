@@ -77,13 +77,15 @@ def test_fr9434_depends_annotation_not_unresolved():
         doc={"unaccepted": [row], "accepted": []},
         issue_fetch=fetch,
     )
-    assert why is None
+    # FR #10059: an unheld OPEN digest still blocks. Annotation must not
+    # turn that into depends-unresolved.
+    assert why == gitclaim.DEPENDS_OPEN_REASON
 
 
 def test_fr9434_classify_unheld_digest_absent_not_depends_on_open(
     tmp_path: Path, monkeypatch
 ):
-    """Stuck classify must not mark tray children depends_on_open when G1 live-ok."""
+    """FR #10059: unheld OPEN digest is depends_on_open for stuck classify."""
     now = 1_700_000_000.0
     home = tmp_path
     child = _fr(
@@ -127,7 +129,8 @@ def test_fr9434_classify_unheld_digest_absent_not_depends_on_open(
         idle={"redqueen-1"},
         home=home,
     )
-    assert info.get("rule") != "depends_on_open"
+    # FR #10059: unheld OPEN digest is depends_on_open, not held or unresolved.
+    assert info.get("rule") == "depends_on_open"
     assert info.get("rule") != "depends_held"
     assert info.get("rule") != "depends_unresolved"
     # G1-ok child may still look starved while an eligible seat is idle — that
@@ -173,7 +176,7 @@ def test_fr9434_classify_without_fetch_still_depends_on_open_regression(
 
 
 def test_fr9434_stall_idle_with_work_sees_g1_ok_child():
-    """With issue_fetch, unheld absent digest is G1-ok so idle_with_work can fire."""
+    """FR #10059: unheld OPEN digest blocks, so idle_with_work does not fire."""
     now = 1_700_000_000.0
     child = _fr(
         num=9261,
@@ -199,8 +202,7 @@ def test_fr9434_stall_idle_with_work_sees_g1_ok_child():
         ),
     }
     found = sd.detect_idle_with_work(snap)
-    assert len(found) == 1
-    assert found[0]["id"] == sd.IDLE_WITH_WORK_ID
+    assert found == []
 
 
 def test_fr9434_stall_idle_with_work_still_skips_plain_open_depend():

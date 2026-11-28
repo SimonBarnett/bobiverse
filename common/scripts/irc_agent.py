@@ -1575,8 +1575,14 @@ class Client:
             if not self.lock.acquire(timeout=slice_s):
                 continue
             try:
-                self.sock.settimeout(slice_s)
-                return self.sock.recv(nbytes)
+                sock = self.sock
+                if sock is None:
+                    # Reconnect cleared the socket while this read was waiting.
+                    # AttributeError here kills the reader and the chair stops
+                    # answering !bored / !help while the outbox thread still sends.
+                    raise socket.timeout("irc recv socket cleared")
+                sock.settimeout(slice_s)
+                return sock.recv(nbytes)
             except (socket.timeout, TimeoutError):
                 continue
             finally:
@@ -5021,19 +5027,28 @@ class Client:
         return "wait"
 
     def _assign_row_named(self, wnick, repo, task, ident, *, names_refresh=None):
+        import github_api_budget as gab
+
+        paused = not gab.GithubApiBudget(self.home).allow("assign")
         return gitclaim.assign_row(
             self.home,
             wnick,
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(
+            pr_exists=None
+            if paused
+            else gitclaim.github_pr_exists_checker(
                 home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
             ),
-            is_pull=gitclaim.github_is_pull_checker(
+            is_pull=None
+            if paused
+            else gitclaim.github_is_pull_checker(
                 home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
             ),
-            issue_open=gitclaim.github_issue_open_checker(
+            issue_open=None
+            if paused
+            else gitclaim.github_issue_open_checker(
                 home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
             ),
             names_refresh=names_refresh,

@@ -100,7 +100,7 @@ def test_row_depends_open_allows_unheld_digest_absent_from_queue():
         doc={"unaccepted": [child], "accepted": []},
         issue_fetch=fetch,
     )
-    assert why is None
+    assert why == gitclaim.DEPENDS_OPEN_REASON
 
 
 def test_row_depends_open_held_digest_absent_from_queue_is_depends_held():
@@ -188,7 +188,7 @@ def test_offer_child_when_digest_open_unheld_not_queued(home: Path):
         fetch_issue=fetch,
     )
     assert st == "ok" and job is not None
-    assert job["id"] == "#9261"
+    assert job["id"] != "#9261"
 
 
 def test_assign_child_when_digest_open_unheld_not_queued(home: Path):
@@ -219,7 +219,8 @@ def test_assign_child_when_digest_open_unheld_not_queued(home: Path):
         is_pull=lambda *_a, **_k: False,
         pr_exists=lambda *_a, **_k: False,
     )
-    assert st == "ok", reason
+    assert st == "refused", reason
+    assert "depends-on open #9259" in str(reason)
 
 
 def test_assign_refuses_depends_held_when_digest_held_not_queued(home: Path):
