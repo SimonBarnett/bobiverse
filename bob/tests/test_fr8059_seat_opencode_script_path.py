@@ -34,7 +34,10 @@ def test_fr8059_writer_uses_install_script_not_job_worktree(tmp_path, monkeypatc
     body = cfg.read_text(encoding="utf-8")
     assert "fr-8008" not in body
     assert "skill_dag_mcp.py" not in body
-    assert "worktrees" not in body.lower()
+    # Forbid the job tree itself, not the literal "worktrees" substring: pytest
+    # tmp_path lives under the job worktree when this runs inside a job tree.
+    assert job.as_posix().lower() not in body.lower()
+    assert str(job).lower() not in body.lower()
     assert stable.is_file()
 
 
@@ -50,7 +53,8 @@ def test_fr8059_script_path_skips_linked_worktree_even_without_install_file(tmp_
     monkeypatch.setattr(bw, "__file__", str(job / "bob" / "scripts" / "bob_worker.py"))
     resolved = bw.skill_dag_mcp_script_path(str(worker))
     text = resolved.as_posix().lower()
-    assert "worktrees" not in text
+    assert job.as_posix().lower() not in text
+    assert str(job).lower() not in text
     assert "fr-8008" not in text
 
 
