@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_mrb2860_skill_cites_fr2834_turn_hold_max_contiguous():
-    text = (ROOT / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md").read_text(encoding="utf-8")
+    book = ROOT / ".grok" / "skills" / "bobiverse-bob-worker"
+    text = (book / "SKILL.md").read_text(encoding="utf-8") + "\n" + (book / "lessons.md").read_text(encoding="utf-8")
     assert "FR #2834" in text
     assert "BOB_WORKER_TURN_HOLD_MAX_S" in text
     assert "keep holding past `harvest_hold_s` until `turn_ended` or `BOB_WORKER_TURN_HOLD_MAX_S`" in text

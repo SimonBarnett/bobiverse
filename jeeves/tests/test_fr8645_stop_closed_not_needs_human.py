@@ -25,6 +25,9 @@ def test_stop_closed_script_does_not_switch_or_epipe_retry():
     src = bw.__file__
     text = open(src, encoding="utf-8").read()
     assert "$script:ocStopClosed = $false" in text
-    assert "if ($script:ocStopClosed) { return $false }" in text
+    assert "function Try-OpencodeSwitchToPaid" in text
+    switch_body = text.split("function Try-OpencodeSwitchToPaid", 1)[1].split("function ", 1)[0]
+    assert "return $false" in switch_body
+    assert "opencode switch-to-paid model=" not in switch_body
     assert "-not $script:ocStopClosed" in text
     assert "Write-OpencodeJobGiveup $jobKey 'process-exit:stop-closed'" in text

@@ -772,3 +772,9 @@ Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobivers
 
 For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `require_machine:` / `=` lines (and other title/body text cues). Pins require `needs-<machine>` / `require_machine:<machine>` labels, hard issue pins, or operator `!pin`. Body lines remain as ops notes. Supersedes earlier FR #4512 wording that dedicated body lines still pinned bobiverse (see also lines that document soft-cue vs dedicated-line for bobiverse).
 
+## 2026-11-28 - harvest #10102 (Digest #10078)
+
+Public Bob skill MCP (`https://bob.ntsa.uk/mcp`) matches plan.ntsa.uk: GET describes tools; POST `tools/call` `list_catalog` and `get_skill`; seat `Copy-BobProjectSkills` hydrates `~/.grok/skills` over HTTPS — no git clone of the skill book. Product stack #10092 catalog builder, #10093 POST /mcp, #10094 seat HTTPS loader.
+
+Books: bobiverse-worker-seat, bobiverse-bob-worker. Refs: SimonBarnett/bobiverse#10092 SimonBarnett/bobiverse#10093 SimonBarnett/bobiverse#10094 SimonBarnett/bobiverse#10102
+

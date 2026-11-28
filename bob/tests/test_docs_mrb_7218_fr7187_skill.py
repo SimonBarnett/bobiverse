@@ -5,7 +5,7 @@ from repo_layout import ROOT
 
 
 def test_docs_mrb_7218_fr7187_skill_phrases():
-    skill = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+    skill = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
     text = skill.read_text(encoding="utf-8")
     assert "FR #7187" in text
     assert "workerStartEffort" in text or "reasoning-effort" in text
