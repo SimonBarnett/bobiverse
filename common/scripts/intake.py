@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+
+import harvest_lesson_tip
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -3229,6 +3231,7 @@ def file_submission(
                 lesson_files = with_sv_skill_sources_dag(
                     repo, skill_path, lesson_files, filer=filer
                 )
+                harvest_lesson_tip.assert_lesson_files_allowlist(lesson_files)
                 lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
                     book=book,
@@ -3314,6 +3317,7 @@ def file_submission(
                         )
                         line = plain_harvest_lesson_line(title, raw_body)
                         lesson_files = [skill_source_lesson_file(book, iid, line)]
+                        harvest_lesson_tip.assert_lesson_files_allowlist(lesson_files)
                         lesson_title = build_lesson_pr_title(book, [line])
                         lesson_body = build_lesson_pr_body(
                             book=book,
