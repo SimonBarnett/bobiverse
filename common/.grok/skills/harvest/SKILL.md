@@ -537,6 +537,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-tip:intake-in_7d41adc9841e48ce -->
 - Fresh digest 0% or age<=120 beats TipForm snapshot; under-cap uses Get-BobTrayEmptyOnlineFillAgentChoice
+<!-- harvest-tip:intake-in_2f2ce3b2f9a4473f -->
+- Treat subprocess.TimeoutExpired on Clear like FR #8211 console-close: log skip, no runtime_failure
 <!-- harvest-tip:intake-in_ceb92a34bc124fb4 -->
 - Re-offered covered FR: re-ACK, verify gh pr closingIssuesReferences, DONE same PR URL; no second implement PR.
 <!-- harvest-tip:intake-in_b78238bf30b548b8 -->

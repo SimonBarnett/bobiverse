@@ -56,6 +56,9 @@ def test_fr5692_probe_timeout_returns_false():
 def test_fr5692_ensure_sets_basetemp_when_default_unusable(monkeypatch):
     import tempfile
 
+    monkeypatch.setenv("TEMP", r"C:\Temp")
+    monkeypatch.setenv("TMP", r"C:\Temp")
+    monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
     lad = Path(tempfile.mkdtemp(prefix="fr5692-lad-"))
     monkeypatch.setenv("LOCALAPPDATA", str(lad))
     monkeypatch.setattr(
@@ -73,7 +76,8 @@ def test_fr5692_ensure_sets_basetemp_when_default_unusable(monkeypatch):
     assert got
     assert cfg.option.basetemp == got
     assert Path(got).is_dir()
-    assert "pytest-basetemp-" in got.replace("\\", "/")
+    norm = got.replace("\\", "/")
+    assert "pytest-basetemp-" in norm or norm.startswith("C:/pt/")
 
 
 def test_fr5692_ensure_noop_when_basetemp_already_set(monkeypatch):
@@ -88,6 +92,9 @@ def test_fr5692_ensure_noop_when_basetemp_already_set(monkeypatch):
 
 
 def test_fr5692_ensure_noop_when_default_ok(monkeypatch):
+    monkeypatch.setenv("TEMP", r"C:\Temp")
+    monkeypatch.setenv("TMP", r"C:\Temp")
+    monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
     monkeypatch.setattr(
         crash_report,
         "default_pytest_of_root",

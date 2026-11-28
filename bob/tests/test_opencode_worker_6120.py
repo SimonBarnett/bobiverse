@@ -164,7 +164,8 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "Write-Output $outStr" not in script
     # FR #6156: idle/output heartbeat, not absolute WaitForExit($watchdogMs).
     assert "$proc.WaitForExit($watchdogMs)" not in script
-    assert "RedirectStandardOutput" in script
+    assert "$conptyPy" in script
+    assert "Read-OpencodeCapture" in script
     assert "$lastBeat" in script
     assert "$lastLen" in script
     assert "taskkill /T /F /PID $proc.Id" in script
@@ -179,9 +180,8 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "$ErrorActionPreference = 'Continue'" in script
     assert "$recordExit = $LASTEXITCODE" in script
     assert "record-pause helper failed" in script
-    # FR #7492: when worker_start_config has an OpenCode model, wrapper defaults the env
-    # instead of throw 'BOB_OPENCODE_MODEL is required'.
-    assert "$env:BOB_OPENCODE_MODEL =" in script
+    # FR #8220: model is stamped into child env before launch; wrapper reads $env only.
+    assert "$model = $env:BOB_OPENCODE_MODEL" in script
     assert "else { 'opencode-go/glm-5.3' }" not in script
     assert "Do work." in spec.files[prompt_key]
     # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
@@ -285,7 +285,7 @@ def test_fr6156_opencode_wrapper_uses_idle_watchdog_not_wall_clock(tmp_path: Pat
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "idle watchdog", OP, tmp_path)
     script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
     script = spec.files[script_key]
-    assert "RedirectStandardOutput" in script
+    assert "Read-OpencodeCapture" in script
     assert "$lastBeat" in script
     assert "idleMs" in script
     assert "$proc.WaitForExit($watchdogMs)" not in script
@@ -294,12 +294,14 @@ def test_fr6156_opencode_wrapper_uses_idle_watchdog_not_wall_clock(tmp_path: Pat
 
 
 def test_mrb6163_opencode_start_process_uses_argstr(tmp_path: Path):
-    """MRB #6163: Start-Process must take quoted $argStr (array ArgumentList splits prompts)."""
+    """MRB #6163: prompts with spaces must survive quoting via $argStr -> argv-file for ConPTY."""
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", 'Say "hi" please', OP, tmp_path)
     script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
-    assert "Start-Process -FilePath $exe -ArgumentList $argStr" in script
-    assert "Start-Process -FilePath $exe -ArgumentList $argList" not in script
     assert "$argStr =" in script
+    assert "ConvertTo-Json" in script
+    assert "$ptyArgv = @($exe) + @($argList)" in script
+    assert "Start-Process -FilePath $exe -ArgumentList $argStr" not in script
+    assert "Start-Process -FilePath $exe -ArgumentList $argList" not in script
 
 
 def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
@@ -703,13 +705,12 @@ def test_opencode_has_tokens_ignores_aggregate_when_per_model_exhausted():
 
 
 def test_build_launch_opencode_wrapper_defaults_configured_model(tmp_path: Path):
-    """FR #7492: wrapper defaults BOB_OPENCODE_MODEL from start config; never hard-code glm-5.3."""
+    """FR #8220: configured model is stamped in child env (describe_agent_child_launch), not baked in ps1."""
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
     script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
-    assert "$env:BOB_OPENCODE_MODEL =" in script
-    assert "if (-not $env:BOB_OPENCODE_MODEL)" in script
+    assert "$model = $env:BOB_OPENCODE_MODEL" in script
+    assert "if ($env:BOB_OPENCODE_MODEL) { $model = $env:BOB_OPENCODE_MODEL }" in script
     assert "else { 'opencode-go/glm-5.3' }" not in script
-    assert "opencode/deepseek" in script or "BOB_OPENCODE_MODEL =" in script
 
 
 def test_build_launch_opencode_wrapper_requires_model_when_config_empty(tmp_path: Path, monkeypatch):
@@ -724,6 +725,6 @@ def test_build_launch_opencode_wrapper_requires_model_when_config_empty(tmp_path
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
     script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
     assert "BOB_OPENCODE_MODEL is required" not in script
-    assert "opencode/deepseek-v4.1-flash-free" in script
+    assert "$model = $env:BOB_OPENCODE_MODEL" in script
     assert "else { 'opencode-go/glm-5.3' }" not in script
 
