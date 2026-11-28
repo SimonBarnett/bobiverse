@@ -1083,7 +1083,41 @@ function Invoke-ClearOneRepoRoot {
             }
         }
 
-        if ($counts.removed -gt 0 -or $Force) {
+        # FR #10244: repair broken git admin dirs of job trees on disk BEFORE prune. Prune drops any
+        # admin dir whose gitdir/HEAD is missing, which strands a live seat's tree (no git at all).
+        # If a tree cannot be repaired, keep the admin dir: skip prune for this pass.
+        $admSkipPrune = $false
+        if (Get-Command Repair-BobiverseJobWorktreeAdmin -ErrorAction SilentlyContinue) {
+            $admCandidates = New-Object System.Collections.Generic.List[string]
+            if ($KeepFull) { [void]$admCandidates.Add($KeepFull) }
+            $admBases = New-Object System.Collections.Generic.List[string]
+            try { [void]$admBases.Add([IO.Path]::GetFullPath((Get-BobiverseJobWorktreeBase)).TrimEnd('\')) } catch { }
+            $admBridge = [string]$env:BOB_BRIDGE_HOME
+            if ($admBridge -and $admBridge.Trim()) {
+                try { [void]$admBases.Add([IO.Path]::GetFullPath([IO.Path]::Combine($admBridge.TrimEnd('\'), 'worktrees')).TrimEnd('\')) } catch { }
+            }
+            foreach ($admBase in ($admBases | Select-Object -Unique)) {
+                if (-not $admBase -or -not (Test-Path -LiteralPath $admBase)) { continue }
+                Get-ChildItem -LiteralPath $admBase -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                    Get-ChildItem -LiteralPath $_.FullName -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                        if (Test-Path -LiteralPath (Join-Path $_.FullName '.git') -PathType Leaf) {
+                            [void]$admCandidates.Add($_.FullName)
+                        }
+                    }
+                }
+            }
+            foreach ($admPath in ($admCandidates | Select-Object -Unique)) {
+                $admState = Repair-BobiverseJobWorktreeAdmin -WorktreePath $admPath -WhatIf:$WhatIfPreference
+                if ($admState -eq 'repaired') {
+                    Write-Host ("FR #10244 repaired git admin dir for job tree {0}" -f $admPath)
+                } elseif ($admState -in @('branch-missing', 'git-still-broken', 'common-missing', 'admin-not-worktrees')) {
+                    Write-Warning ("FR #10244: job tree {0} admin unrepairable ({1}); keeping admin metadata, skipping git worktree prune" -f $admPath, $admState)
+                    $admSkipPrune = $true
+                }
+            }
+        }
+
+        if (($counts.removed -gt 0 -or $Force) -and -not $admSkipPrune) {
             if ($WhatIfPreference) {
                 Write-Host "WhatIf: git worktree prune"
             } else {

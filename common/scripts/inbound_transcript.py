@@ -207,6 +207,141 @@ def worker_filter_verdict(
     return "accept" if fn(src, target, text, own_nick) else "drop"
 
 
+_TRANSCRIPT_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s+(\S+)\s+(\S+)\s+(.*)$"
+)
+_WIRE_PREFIX_RE = re.compile(
+    r"(?i)^(?:ACK|DONE|NACK|GIVEUP)\s+(FR|MRB|UAT|FIX|BUILD|PR)\s+"
+)
+
+
+def parse_transcript_line(line: str) -> dict[str, str] | None:
+    """Parse one scrubbed inbound line into {ts, channel, nick, text}."""
+    m = _TRANSCRIPT_LINE_RE.match((line or "").strip())
+    if not m:
+        return None
+    return {
+        "ts": m.group(1),
+        "channel": m.group(2),
+        "nick": m.group(3),
+        "text": m.group(4).strip(),
+    }
+
+
+def read_recent_transcript_lines(
+    home: Path,
+    *,
+    max_lines: int = 400,
+    max_age_sec: float = 7200.0,
+) -> list[dict[str, str]]:
+    """Tail recent inbound-transcript rows (FR #10106 monitor fallback when /report 502)."""
+    from datetime import datetime, timezone
+
+    path = transcript_path(Path(home))
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    rows: list[dict[str, str]] = []
+    now = datetime.now(timezone.utc)
+    for raw in text.splitlines()[-max(1, int(max_lines)) :]:
+        parsed = parse_transcript_line(raw)
+        if not parsed:
+            continue
+        ts = parsed["ts"]
+        try:
+            when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        age = (now - when.astimezone(timezone.utc)).total_seconds()
+        if age > float(max_age_sec):
+            continue
+        rows.append(parsed)
+    return rows
+
+
+def summarize_inbound_monitor_fallback(
+    home: Path,
+    *,
+    max_age_sec: float = 7200.0,
+    max_lines: int = 400,
+) -> dict[str, object]:
+    """Shop-wire summary for monitor when live GET /bob/v1/report is down (FR #10106)."""
+    rows = read_recent_transcript_lines(
+        home, max_lines=max_lines, max_age_sec=max_age_sec
+    )
+    wire: list[dict[str, str]] = []
+    disk_giveups: list[dict[str, str]] = []
+    for row in rows:
+        text = row.get("text") or ""
+        nick = str(row.get("nick") or "")
+        if nick.lower() == "jeeves" or _WIRE_PREFIX_RE.match(text):
+            wire.append(
+                {
+                    "ts": row["ts"],
+                    "channel": row["channel"],
+                    "nick": nick,
+                    "text": text[:240],
+                }
+            )
+        if "GIVEUP" in text.upper() and re.search(
+            r"disk-low|worktree-create-failed:\s*disk|no space left",
+            text,
+            re.I,
+        ):
+            disk_giveups.append(
+                {
+                    "ts": row["ts"],
+                    "channel": row["channel"],
+                    "nick": nick,
+                    "text": text[:240],
+                }
+            )
+    return {
+        "transcript": str(transcript_path(Path(home))),
+        "lines": len(rows),
+        "wire_events": wire[-20:],
+        "disk_giveups": disk_giveups[-10:],
+        "max_age_sec": int(max_age_sec),
+    }
+
+
+def resolve_monitor_ear_home(
+    chair: Path,
+    digest: Path,
+    *,
+    env: dict | None = None,
+) -> Path | None:
+    """Best-effort ircBob home for inbound-transcript fallback (FR #10106)."""
+    import os
+
+    env = os.environ if env is None else env
+    for key in ("BOB_HOME", "BOB_EAR_HOME"):
+        raw = (env.get(key) or "").strip()
+        if raw:
+            p = Path(raw)
+            if transcript_path(p).is_file() or p.is_dir():
+                return p
+    for root in (
+        Path(env.get("BOB_INSTALL_ROOT") or "").expanduser(),
+        digest,
+        chair,
+        Path(env.get("USERPROFILE") or Path.home()) / ".bobiverse",
+    ):
+        if not str(root).strip():
+            continue
+        root = Path(root)
+        for rel in ("home", ""):
+            cand = root / rel if rel else root
+            if transcript_path(cand).is_file():
+                return cand
+    return None
+
+
 def record_ear_to_worker(
     home: Path,
     *,

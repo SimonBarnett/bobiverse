@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SKILL = Path(__file__).resolve().parents[1] / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+SKILL = Path(__file__).resolve().parents[1] / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
 
 
 def _bullet_7181(text: str) -> str:

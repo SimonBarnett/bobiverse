@@ -1,0 +1,58 @@
+# FR #9775: Ergo/BobIrcd payload. Not a chair MSI and not a www pack.
+name: build-jeeves-ircd
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-jeeves-ircd.yml
+      - common/scripts/Fetch-Ergo.ps1
+      - common/scripts/Bobiverse-FetchHelpers.ps1
+      - jeeves/scripts/Install-BobIrcd.ps1
+      - jeeves/tests/test_fr9775_ircd_sparse_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-jeeves-ircd.yml
+      - common/scripts/Fetch-Ergo.ps1
+      - common/scripts/Bobiverse-FetchHelpers.ps1
+      - jeeves/scripts/Install-BobIrcd.ps1
+      - jeeves/tests/test_fr9775_ircd_sparse_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-jeeves-ircd:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            common/scripts/Fetch-Ergo.ps1
+            common/scripts/Bobiverse-FetchHelpers.ps1
+            jeeves/scripts/Install-BobIrcd.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Stage Ergo payload (cached or fetched; do not compile)
+        run: |
+          $root = (Get-Location).Path
+          $out = Join-Path $env:RUNNER_TEMP "jeeves-ircd-artifact"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & "$root\common\scripts\Fetch-Ergo.ps1" -OutDir $out
+          if (-not (Test-Path -LiteralPath (Join-Path $out "ergo.exe"))) { throw "missing ergo.exe" }
+          $seed = Join-Path $out "default.yaml"
+          if (-not (Test-Path -LiteralPath $seed)) { throw "missing default.yaml seed" }
+          Copy-Item -LiteralPath "$root\jeeves\scripts\Install-BobIrcd.ps1" -Destination (Join-Path $out "Install-BobIrcd.ps1") -Force
+          if (Test-Path -LiteralPath (Join-Path $out "www")) { throw "IRCD artifact must not contain www" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jeeves-ircd
+          path: ${{ runner.temp }}/jeeves-ircd-artifact
+          if-no-files-found: error

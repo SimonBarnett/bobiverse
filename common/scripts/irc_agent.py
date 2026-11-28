@@ -1575,8 +1575,14 @@ class Client:
             if not self.lock.acquire(timeout=slice_s):
                 continue
             try:
-                self.sock.settimeout(slice_s)
-                return self.sock.recv(nbytes)
+                sock = self.sock
+                if sock is None:
+                    # Reconnect cleared the socket while this read was waiting.
+                    # AttributeError here kills the reader and the chair stops
+                    # answering !bored / !help while the outbox thread still sends.
+                    raise socket.timeout("irc recv socket cleared")
+                sock.settimeout(slice_s)
+                return sock.recv(nbytes)
             except (socket.timeout, TimeoutError):
                 continue
             finally:
@@ -5021,19 +5027,28 @@ class Client:
         return "wait"
 
     def _assign_row_named(self, wnick, repo, task, ident, *, names_refresh=None):
+        import github_api_budget as gab
+
+        paused = not gab.GithubApiBudget(self.home).allow("assign")
         return gitclaim.assign_row(
             self.home,
             wnick,
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(
+            pr_exists=None
+            if paused
+            else gitclaim.github_pr_exists_checker(
                 home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
             ),
-            is_pull=gitclaim.github_is_pull_checker(
+            is_pull=None
+            if paused
+            else gitclaim.github_is_pull_checker(
                 home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
             ),
-            issue_open=gitclaim.github_issue_open_checker(
+            issue_open=None
+            if paused
+            else gitclaim.github_issue_open_checker(
                 home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
             ),
             names_refresh=names_refresh,
@@ -5419,10 +5434,18 @@ class Client:
                     self._workers().on_done(src, target)
             else:
                 gitclaim.note_worker_activity(self.home, src, now)
-                # FR #4415: name seat + held/offered job so operators see why (not silent busy).
+                # FR #4415 / #10339: name seat + held/offered job (not silent busy).
                 _why = ""
                 with contextlib.suppress(Exception):
                     _why = gitclaim.seat_open_job(self.home, src, now) or ""
+                if not _why:
+                    with contextlib.suppress(Exception):
+                        _why = gitclaim.bored_gate_busy_reason(
+                            self.home,
+                            src,
+                            now,
+                            session_started=session_started,
+                        )
                 _nak = gitclaim.format_bored_busy_nak(src, _why)
                 self._git_say(target, _nak)
                 info(f"INFO git-claim bored nak busy nick={src} why={_why or '-'}")
@@ -5472,8 +5495,10 @@ class Client:
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
             try:
+                _live_skip = gitclaim.take_last_offer_empty_skip(self.home, src)
                 _empty_stats = gitclaim.clamp_empty_reply_stats(
-                    gitclaim.summarize_empty_offer(self.home, src)
+                    gitclaim.summarize_empty_offer(self.home, src),
+                    live_skip=_live_skip,
                 )
             except Exception:  # noqa: BLE001
                 _empty_stats = None

@@ -25,16 +25,16 @@ def _row(**extra):
 
 def test_http_201_without_task_id_does_not_accept(tmp_path):
     fi.handle_focus_cmd(tmp_path, f"high {REPO}")
-    # FR #7381 / #7371: remaining=0 + unlimited without overage_permitted is used-up
-    # (exhausted), which short-circuits before the missing-task-id path. Use a
-    # genuine unlimited fixture (overage_permitted=true) so dispatch still runs.
+    # FR #9986: remaining=0 is never dispatch fuel, even when unlimited and
+    # overage_permitted are set. Use a positive remaining so the POST runs and
+    # the missing-task-id path is what this test asserts.
     cd.refresh_allowance(
         tmp_path,
         fetch_user=lambda: {
             "quota_snapshots": {
                 "premium_interactions": {
                     "unlimited": True,
-                    "remaining": 0,
+                    "remaining": 5,
                     "percent_remaining": 100,
                     "overage_permitted": True,
                     "credits_used": 39,

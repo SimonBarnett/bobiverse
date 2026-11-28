@@ -2,7 +2,7 @@
 from repo_layout import REPO
 
 SEAT = REPO / "bob" / "agents" / "worker" / ".grok" / "skills" / "bobiverse-worker-seat" / "SKILL.md"
-WORKER = REPO / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+WORKER = REPO / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
 
 
 def test_handshake_fallback_is_once_cli_not_foreign_worktree():

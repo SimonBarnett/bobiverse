@@ -196,6 +196,10 @@ def list_live_irc_agent_seats(
             continue
         if str(data.get("mode") or "agent").lower() != "agent":
             continue
+        # FR #10049: marker kind/agent plan, jeeves, or priority is not a worker seat.
+        kind = str(data.get("agent") or data.get("kind") or "").strip().lower()
+        if kind in _NON_WORKER_AGENTS:
+            continue
         if mid and str(data.get("machine") or "").lower() != mid:
             continue
         try:
@@ -212,14 +216,21 @@ def list_live_irc_agent_seats(
     return out
 
 
+_NON_WORKER_AGENTS = ("plan", "jeeves", "priority")
+
+
 def _entry_mode(entry) -> str:
     """Optional 4th tuple field: mode name or full cmdline. Missing => unknown (not agent)."""
     if not isinstance(entry, (tuple, list)) or len(entry) < 4:
         return "unknown"
     raw = str(entry[3] or "").strip().lower()
-    if raw in ("agent", "plan", "monitor", "maintenance"):
+    # FR #10049: Plan, Jeeves, and Priority do not consume the worker cap,
+    # even when the process was started with --mode agent.
+    if re.search(r"--agent[=\s]+(plan|jeeves|priority)\b", raw):
+        return "excluded"
+    if raw in ("agent", "plan", "monitor", "maintenance", "jeeves"):
         return raw
-    m = re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance)", raw)
+    m = re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance|jeeves)", raw)
     return m.group(1) if m else "unknown"
 
 

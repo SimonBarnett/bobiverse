@@ -860,6 +860,47 @@ def _csv_env(name: str) -> set[str]:
     return {p.strip().lower() for p in (os.environ.get(name) or "").split(",") if p.strip()}
 
 
+COPILOT_FLAG = "copilot-dispatch.json"
+
+
+def copilot_enabled(home: Path) -> bool:
+    """FR #10063: missing file means dispatch is on."""
+    path = Path(home) / COPILOT_FLAG
+    if not path.is_file():
+        return True
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(doc, dict) or "enabled" not in doc:
+        return True
+    return bool(doc.get("enabled"))
+
+
+def set_copilot_enabled(home: Path, enabled: bool) -> None:
+    path = Path(home) / COPILOT_FLAG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"enabled": bool(enabled)}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def copilot_handoff_allowed(home: Path) -> bool:
+    """New Copilot handoff, offer, and copilot: assign lines."""
+    return copilot_enabled(home)
+
+
+def parse_copilot_cmd(body: str) -> str | None:
+    text = (body or "").strip()
+    if not text.lower().startswith("!copilot"):
+        return None
+    rest = text[len("!copilot") :].strip()
+    if rest.lower() in ("", "on", "off"):
+        return rest.lower()
+    return "bad"
+
+
 def may_mutate(nick: str, account: str | None) -> bool:
     """Owner SERVICES ACCOUNT, or an additive allowlist (gh-Jeeves #170 style).
 
@@ -915,4 +956,15 @@ def dispatch(
         if not ops_ok:
             return ["unignore: denied (simon or bob-* ops only)"]
         return handle_unignore_cmd(home, arg) if arg else ["unignore: usage !unignore {repo}"]
+    arg = parse_copilot_cmd(body)
+    if arg is not None:
+        if arg == "bad":
+            return ["copilot: usage !copilot on|off"]
+        if arg == "":
+            state = "on" if copilot_enabled(home) else "off"
+            return [f"copilot: {state}"]
+        if not foc_ok:
+            return ["copilot: denied (owner account required)"]
+        set_copilot_enabled(home, arg == "on")
+        return [f"copilot: {arg}"]
     return None
