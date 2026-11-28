@@ -24,8 +24,8 @@ def _script(tmp_path: Path) -> str:
 
 def test_fr9209_live_mirror_on_capture_growth(tmp_path: Path):
     ps1 = _script(tmp_path)
-    assert "RedirectStandardOutput" in ps1
-    assert "RedirectStandardError" in ps1
+    assert "opencode_conpty_run.py" in ps1
+    assert "--argv-file" in ps1
     # Live path on growth (not only seat-log when ocStdoutLog set).
     assert "[Console]::Out.Write($slice)" in ps1
     assert "[Console]::Out.Flush()" in ps1
@@ -47,13 +47,10 @@ def test_fr9209_no_full_outstr_dump_at_end(tmp_path: Path):
     assert "$scan = $outStr" in ps1
 
 
-def test_fr9209_keeps_no_newwindow_redirect_contract(tmp_path: Path):
-    """FR #8553: redirects without -NoNewWindow must remain."""
+def test_fr9209_conpty_not_file_redirect(tmp_path: Path):
+    """A file redirect makes the CLI buffer until the process exits."""
     ps1 = _script(tmp_path)
-    start_lines = [ln for ln in ps1.splitlines() if "Start-Process" in ln and "opencode" in ln.lower() or (
-        "Start-Process" in ln and "RedirectStandardOutput" in ln
-    )]
-    assert start_lines, "expected Start-Process redirect launch line"
-    for ln in start_lines:
-        assert "-NoNewWindow" not in ln
-    assert "RedirectStandardOutput $outFile" in ps1
+    assert "opencode_conpty_run.py" in ps1
+    assert "$ptyArgv = @($exe) + @($argList)" in ps1
+    assert "RedirectStandardOutput $outFile" not in ps1
+    assert "-NoNewWindow" not in ps1

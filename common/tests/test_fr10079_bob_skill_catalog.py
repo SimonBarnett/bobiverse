@@ -44,6 +44,19 @@ def test_secret_shaped_skill_is_omitted(tmp_path: Path):
     assert cat.load_skill([tmp_path], "leaky") is None
 
 
+def test_backtick_secret_example_stays_listed(tmp_path: Path):
+    skill = tmp_path / "docs" / "SKILL.md"
+    skill.parent.mkdir()
+    mentioned = "`" + "pass" + "word=" + "`"
+    skill.write_text(
+        "---\nname: docs\ndescription: names the hunter shape\n---\n\nsee " + mentioned + "\n",
+        encoding="utf-8",
+    )
+    names = {row["name"] for row in cat.build_catalog([tmp_path])["skills"]}
+    assert names == {"docs"}
+    assert cat.load_skill([tmp_path], "docs") is not None
+
+
 def test_repo_job_irc_skill_is_public():
     roots = [
         REPO / "bob" / ".grok" / "skills",
@@ -53,6 +66,8 @@ def test_repo_job_irc_skill_is_public():
     doc = cat.build_catalog(roots)
     names = {row["name"] for row in doc["skills"]}
     assert "bobiverse-bob-job-irc" in names
+    assert "bobiverse-bob-worker" in names
+    assert "bobiverse-bob-job-mrb" in names
     row = next(r for r in doc["skills"] if r["name"] == "bobiverse-bob-job-irc")
     assert row["title"]
     assert row["description"]

@@ -15,36 +15,61 @@ internal static class Program
     {
         InstallCrashHook();
 
-        if (args.Any(a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase)))
+        if (!CliArgs.TryParse(args, out var cli, out var parseError))
+        {
+            Console.Error.WriteLine("bob-worker-net: " + parseError);
+            return 64;
+        }
+
+        if (cli.Version)
         {
             Console.Out.WriteLine(SourceCommit);
             return 0;
         }
 
-        if (args.Any(a => string.Equals(a, "--help", StringComparison.OrdinalIgnoreCase)
-                       || string.Equals(a, "-h", StringComparison.OrdinalIgnoreCase)))
+        if (cli.Help)
         {
-            Console.Out.WriteLine("bob-worker-net (.NET 8, FR #9800 / #9804 / #9806)");
+            Console.Out.WriteLine("bob-worker-net (.NET 8, FR #9800 / #9801 / #9804 / #9806)");
+            Console.Out.WriteLine("Dual-build name bob-worker-net.exe until cutover (FR #9801).");
             Console.Out.WriteLine("  --version         print embedded source commit and exit 0");
             Console.Out.WriteLine("  --help            this text");
+            Console.Out.WriteLine("  --mode            agent | plan | monitor | maintenance | jeeves");
+            Console.Out.WriteLine("  --install-root    bob install root");
+            Console.Out.WriteLine("  --machine-id      shop machine id");
+            Console.Out.WriteLine("  --agent           grok | cursor | opencode");
+            Console.Out.WriteLine("  --list-agents     JSON agent rows and exit 0 (stub, starts nothing)");
+            Console.Out.WriteLine("  --dry-run         JSON selection and exit 0 (stub, starts nothing)");
+            Console.Out.WriteLine("  --echo            accepted; dry-run echoes the flag");
             Console.Out.WriteLine("  --self-test-irc   hermetic IrcSeat JOIN gate tests (no live Ergo)");
             Console.Out.WriteLine("  --selftest-spawn  FR #9806 assert_fresh + one-console spawn smoke");
             return 0;
         }
 
-        if (args.Any(a => string.Equals(a, "--self-test-irc", StringComparison.OrdinalIgnoreCase)))
+        if (cli.SelfTestIrc)
         {
             return RunIrcSelfTest();
         }
 
-        if (args.Any(a => string.Equals(a, "--selftest-spawn", StringComparison.OrdinalIgnoreCase)))
+        if (cli.SelftestSpawn)
         {
             return RunSelftestSpawn();
         }
 
+        if (cli.ListAgents)
+        {
+            Console.Out.WriteLine(CliArgs.ListAgentsJson());
+            return 0;
+        }
+
+        if (cli.DryRun)
+        {
+            Console.Out.WriteLine(CliArgs.DryRunJson(cli));
+            return 0;
+        }
+
         Console.Error.WriteLine(
-            "bob-worker-net: Phase 0/3 scaffold (FR #9800 / #9804 / #9806). " +
-            "CLI / fuel land in later FRs. Use --self-test-irc / --selftest-spawn.");
+            "bob-worker-net: parsed mode " + cli.Mode +
+            " (FR #9801). Seat loop is a later phase. Exits 64.");
         return 64;
     }
 

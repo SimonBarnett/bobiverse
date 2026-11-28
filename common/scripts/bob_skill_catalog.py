@@ -12,6 +12,16 @@ _SECRET = re.compile(
     r"(password\s*=|github_pat_|ghp_[A-Za-z0-9]|BEGIN OPENSSH|AKIA[0-9A-Z]{16})",
     re.I,
 )
+# Docs name the hunter shapes inside markdown code. Those spans are not stored credentials.
+_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+
+
+def prose_for_secret_scan(text: str) -> str:
+    return _CODE.sub(" ", text or "")
+
+
+def contains_secret(text: str) -> bool:
+    return _SECRET.search(prose_for_secret_scan(text)) is not None
 _FM = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 
 
@@ -55,7 +65,7 @@ def _title(meta: dict[str, str], body: str, folder: str) -> str:
 
 def skill_record(path: Path) -> dict | None:
     text = path.read_text(encoding="utf-8")
-    if _SECRET.search(text):
+    if contains_secret(text):
         return None
     meta, body = _frontmatter(text)
     name = (meta.get("name") or path.parent.name).strip()

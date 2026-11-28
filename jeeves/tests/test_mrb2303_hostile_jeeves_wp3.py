@@ -45,4 +45,5 @@ def test_mrb2303_install_cutover_unregisters_callback_when_exe_present():
     assert "Unregister-ScheduledTask" in text
     assert "BobCallback" in text
     assert "$useJeevesExe" in text
-    assert "--chair --http 127.0.0.1:7700" in text
+    assert "--chair-only" in text
+    assert "BobWebhooks" in text
