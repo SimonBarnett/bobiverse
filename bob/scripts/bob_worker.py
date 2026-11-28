@@ -14785,6 +14785,43 @@ def opencode_typed_delivery(
     )
 
 
+def opencode_worktree_prior_work(worktree: str | Path) -> bool | None:
+    """Issue #10249: True when the job worktree already holds work.
+
+    Work means uncommitted changes or commits ahead of ``origin/main``. Returns
+    False when the tree is clean with no commits ahead, and None when git cannot
+    tell (missing dir, git error, no origin/main), so the caller never claims
+    work it did not verify.
+    """
+    import subprocess as _sp
+
+    root = Path(worktree or "")
+    if not str(worktree or "").strip() or not root.is_dir():
+        return None
+    try:
+        por = _sp.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if por.returncode != 0:
+            return None
+        if (por.stdout or "").strip():
+            return True
+        ahead = _sp.run(
+            ["git", "-C", str(root), "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if ahead.returncode != 0:
+            return None
+        return int((ahead.stdout or "0").strip() or "0") > 0
+    except Exception:
+        return None
+
+
 def opencode_job_finish_steps(
     *,
     job_key: str,
@@ -14833,13 +14870,28 @@ def opencode_job_finish_steps(
             "FR #8022/#8286: quote gh pr view headRefOid (or git -C worktree rev-parse HEAD) "
             "on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         )
+    # Issue #10249: only claim prior work when git shows it (dirty tree or commits ahead of origin/main).
+    prior = opencode_worktree_prior_work(wt)
+    if prior is True:
+        work_line = f"Prior work is in the worktree ({wt}): uncommitted changes or commits ahead of origin/main. "
+    elif prior is False:
+        work_line = (
+            f"No prior work in the worktree ({wt}): it is clean with no commits ahead of origin/main. "
+            "Implement the issue from scratch. "
+        )
+    else:
+        work_line = (
+            f"Could not verify prior work in the worktree ({wt}); check git status and "
+            "git log origin/main..HEAD before assuming any work exists. "
+        )
     return (
-        f"FINISH {key}. Work so far is already in the worktree ({wt}). "
-        "This is a NEW opencode run (no --resume/--continue). "
+        f"FINISH {key}. " + work_line
+        + "This is a NEW opencode run (no --resume/--continue). "
         + sha_line
         + "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
+        "Search with the grep tool or Select-String: ripgrep (rg) may not be on PATH on this Windows seat. "
         + opencode_typed_delivery(
             key,
             branch=branch,
