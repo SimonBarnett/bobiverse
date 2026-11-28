@@ -1510,6 +1510,19 @@ def depends_issue_open_checker(issue_open=None):
         return None
 
 
+def _depend_fetched_closed(repo: str, num, issue_fetch) -> bool:
+    """True when ``issue_fetch`` positively reports the depend as CLOSED."""
+    if issue_fetch is None:
+        return False
+    try:
+        issue = issue_fetch(repo, str(num))
+    except Exception:
+        return False
+    if not isinstance(issue, dict):
+        return False
+    return str(issue.get("state") or "").strip().lower() == "closed"
+
+
 def row_depends_open_reason(
     row: dict,
     open_keys: set[tuple[str, int]] | None = None,
@@ -1587,6 +1600,10 @@ def row_depends_open_reason(
         if (repo, num) in keys:
             return DEPENDS_OPEN_REASON
         if _depend_queue_state(doc if isinstance(doc, dict) else {}, repo, num) == "closed":
+            continue
+        # FR #10105 (issue #10251): a parent positively CLOSED via issue_fetch (even
+        # with leftover hold/digest labels) clears the child; it is not an unknown.
+        if _depend_fetched_closed(repo, num, fetch):
             continue
         if issue_open is None:
             # FR #10059: no live checker and not a positive CLOSED is unknown.
