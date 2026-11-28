@@ -537,6 +537,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-tip:intake-in_7d41adc9841e48ce -->
 - Fresh digest 0% or age<=120 beats TipForm snapshot; under-cap uses Get-BobTrayEmptyOnlineFillAgentChoice
+<!-- harvest-tip:intake-in_0322043393ec48dd -->
+- Wire refuse cross-job GIVEUP/NACK in may_send_outbox; call drain_run_outbox_now after bored.turn_ended so DONE is not stranded after harvest !bored.
 <!-- harvest-tip:intake-in_7ae0b2cce9cb4c07 -->
 - When build-jeeves is red on every open PR, run the failing depends tests on origin/main before editing a product branch. FR #10059 blocks an unheld OPEN digest; update the older soft-allow asserts instead of reverting the gate.
 <!-- harvest-tip:intake-in_ens_01c2dc63c1b8 -->
