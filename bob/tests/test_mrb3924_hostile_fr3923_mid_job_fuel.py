@@ -37,7 +37,7 @@ def test_mrb3924_helpers_contiguous_in_bob_worker():
 
 
 def test_mrb3924_skill_troubleshoot_and_harvest_lesson():
-    text = _utf8_no_bom(SKILL)
+    text = _utf8_no_bom(SKILL) + "\n" + _utf8_no_bom(SKILL.with_name("lessons.md"))
     needle_row = (
         "Both Grok seats GIVEUP mid-job while credits remain (`creditUsagePercent` low) | "
         "Mid-job fuel poll treated **unknown**/timeout as exhausted (FR #3923)"

@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WK = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+LESSONS = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md"
 AUDIT = ROOT / "common" / "docs" / "harvest-lessons-audit-2026-10-06.md"
 
 
@@ -85,7 +86,7 @@ def test_mrb2723_digest_bullets_complete_lines():
 
 def test_mrb2723_harvested_lessons_fr_bullets_outside_digest_scan():
     """FR #6223: Harvested lessons may use `- **FR #` without digest closing paren."""
-    text = _utf8_no_bom(WK)
+    text = _utf8_no_bom(LESSONS)
     assert "## Harvested lessons (intake)" in text
     h_start = text.index("## Harvested lessons (intake)")
     # MRB #6224 / CodeRabbit: stop at next ## so a later section cannot satisfy the pin.

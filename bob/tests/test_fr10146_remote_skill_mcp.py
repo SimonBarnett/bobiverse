@@ -6,6 +6,13 @@ from pathlib import Path
 import bob_worker as bw
 
 
+def test_cursor_seat_launch_approves_mcp():
+    """Composer omits project HTTP MCP unless the process is started with --approve-mcps."""
+    src = Path(bw.__file__).read_text(encoding="utf-8")
+    assert "--trust --force --approve-mcps --workspace" in src
+    assert "--plan --approve-mcps --workspace" in src
+
+
 def test_fr10146_seat_configs_are_remote_url(tmp_path):
     worker = tmp_path / "worker"
     worker.mkdir()

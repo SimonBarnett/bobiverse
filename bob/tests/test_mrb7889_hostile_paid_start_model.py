@@ -58,9 +58,10 @@ def test_mrb7889_seat_is_free_fuel_ignores_cost_tier_when_paid(tmp_path, monkeyp
 
 
 def test_mrb7889_skills_cite_7888_paid_start_model():
-    worker = (ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    book = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-worker"
+    worker = (book / "SKILL.md").read_text(encoding="utf-8") + "\n" + (
+        book / "lessons.md"
+    ).read_text(encoding="utf-8")
     assert "FR #6134 / #7888" in worker
     assert "paid launched" in worker or "paid start_model" in worker.lower()
     # Old unconditional kind=opencode skip must not remain as the live rule.

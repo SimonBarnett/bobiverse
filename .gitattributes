@@ -1,4 +1,5 @@
 # FR #9915: concurrent harvest-lesson tip appends keep both sides (CHANGELOG-style).
 common/.grok/skills/harvest/SKILL.md merge=union
 common/.grok/skills/harvest/lessons.md merge=union
+bob/.grok/skills/bobiverse-bob-worker/lessons.md merge=union
 common/.grok/skills/harvest-agent-skills/SKILL.md merge=union
