@@ -1,13 +1,21 @@
 # Skill harvest log
 
 
+## 2026-11-28 - GHA pwsh quote Build-BobDialogs -Targets
+
+| Field | Value |
+|-------|-------|
+| Lesson | GitHub Actions pwsh: quote comma lists for `[string]$Targets` on Build-BobDialogs (`-Targets "tray,about"`). |
+| Evidence | MRB #10060 build-bob-tray failure; intake harvest #10100 |
+| Refs | Closes SimonBarnett/bobiverse#10100 |
+
 ## 2026-11-28 - Digest #9762 tray/status CI PR bases
 
 | Field | Value |
 |-------|-------|
 | Lesson | Status sparse CI (#9764) shares Build-BobDialogs -Targets with tray (#9763); stack status PR on the tray branch until tray merges; Closes auto-links only when PR base is main. |
 | Evidence | Digest #9762 children #10060/#10061/#10064; intake harvest #10099 |
-| Refs | Closes SimonBarnett/bobiverse#10099 |
+| Refs | Closes SimonBarnett/bobiverse#10099
 
 ## 2026-11-23 - FR #9344 monitor D3 release + paid OC pin + airc not-op
 
