@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Priority customer catalog — bob.ntsa.uk</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon"/>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem;display:flex;flex-wrap:wrap;align-items:center;gap:.75rem 1rem}
+h1{font-size:1.6rem;margin:0 0 .4rem;flex:1 1 100%}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+a.brand{display:inline-flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit}
+a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
+.brand-logo{display:block;flex:0 0 auto}
+.brand-text{display:flex;flex-direction:column;line-height:1.2;font-size:.92rem}
+.brand-text strong{font-size:1rem}
+@media (max-width:400px){header{gap:.5rem}.brand-text{font-size:.85rem}}
+</style>
+</head>
+<body>
+<header>
+<a class="brand" href="/"><img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" alt="NTSA" width="36" height="36"/><span class="brand-text"><strong>bob.ntsa.uk</strong><span>Webhooks</span></span></a> <span class="meta">· <a href="index.html">Webhooks</a> · Priority customer catalog</span>
+<h1>Priority customer catalog</h1>
+</header>
+<p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<section id="gitcust-get">
+<h2>Priority customer catalog <span class="badge">GET /bob/v1/gitcust</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Read the customer and task catalog (kind sc, so, or wbs, free-text title, path).</p>
+<p><strong>Who calls it:</strong> Operators and Priority customer tooling.</p>
+<p><strong>Auth (named only):</strong> None. Open GET.</p>
+<p><strong>Request schema:</strong> No body.</p>
+<p><strong>Response schema:</strong> JSON {&quot;customers&quot;:[...],&quot;tasks&quot;:[...]}. Empty lists when nothing is registered.</p>
+<p><strong>Status codes:</strong> 200 JSON.</p>
+<p><strong>Retry / idempotency:</strong> Safe GET.</p>
+<p><strong>Rate limits:</strong> Proxy only.</p>
+<p><strong>Reachability:</strong> Public Cloudflare. IIS BobGitcustWebhook rewrites to the chair.</p>
+<p><strong>Source:</strong> <code>common/scripts/gitcust.py, bobcallback.py</code> · <strong>Related:</strong> FR #9982</p>
+<p><strong>Redacted example</strong></p>
+<pre>GET https://bob.ntsa.uk/bob/v1/gitcust</pre>
+</section>
+
+<section id="gitcust-post">
+<h2>Register a customer or task <span class="badge">POST /bob/v1/gitcust</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Register a customer and/or a task subfolder. Metadata only; does not create folders.</p>
+<p><strong>Who calls it:</strong> Operators registering Priority customer or SC/SO/WBS task folders.</p>
+<p><strong>Auth (named only):</strong> None. Schema gate on the JSON body.</p>
+<p><strong>Request schema:</strong> JSON: customer (name), optional path, optional task {kind: sc|so|wbs, title, path, customer}.</p>
+<p><strong>Response schema:</strong> 202 or 200 JSON of the stored catalog. 400 on a bad body.</p>
+<p><strong>Status codes:</strong> 200 stored; 400 malformed or task_schema.</p>
+<p><strong>Retry / idempotency:</strong> Same customer name is not duplicated. Task identity is customer + path.</p>
+<p><strong>Rate limits:</strong> Same body cap as other BobCallback posts.</p>
+<p><strong>Reachability:</strong> Public Cloudflare. IIS BobGitcustWebhook.</p>
+<p><strong>Source:</strong> <code>common/scripts/gitcust.py, bobcallback.py</code> · <strong>Related:</strong> FR #9982</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://bob.ntsa.uk/bob/v1/gitcust
+Content-Type: application/json
+
+{&quot;customer&quot;:&quot;acme&quot;,&quot;task&quot;:{&quot;kind&quot;:&quot;sc&quot;,&quot;title&quot;:&quot;Service call&quot;,&quot;path&quot;:&quot;acme/sc/1&quot;}}</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>

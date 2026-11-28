@@ -105,6 +105,7 @@ def main() -> None:
         "docs/webhooks/intake.html": "Intake webhook",
         "docs/webhooks/jira.html": "Jira webhook",
         "docs/webhooks/git.html": "GitHub git webhook",
+        "docs/webhooks/gitcust.html": "Priority customer catalog",
         "docs/webhooks/models.html": "Models webhook",
         "docs/webhooks/builds.html": "Builds catalog",
         "docs/webhooks/digest-local.html": "Local digest alias",
