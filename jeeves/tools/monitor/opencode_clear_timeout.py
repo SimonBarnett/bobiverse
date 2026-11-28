@@ -9,7 +9,9 @@ from pathlib import Path
 
 FINGERPRINT = "opencode_clear_timeout_no_ack"
 
-_CLEAR = re.compile(r"opencode finish: Clear result=failed:TimeoutExpired")
+_CLEAR = re.compile(
+    r"opencode finish: Clear result=(?:failed:TimeoutExpired|skipped:timeout)"
+)
 _STALE = re.compile(r"relay: stale worktree offer .+no ACK yet", re.I)
 _LOG_NAMES = {"stdout.log", "cmd-trace.log", "opencode.log"}
 

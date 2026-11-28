@@ -1,13 +1,21 @@
 # Skill harvest log
 
 
+## 2026-11-28 - GHA pwsh quote Build-BobDialogs -Targets
+
+| Field | Value |
+|-------|-------|
+| Lesson | GitHub Actions pwsh: quote comma lists for `[string]$Targets` on Build-BobDialogs (`-Targets "tray,about"`). |
+| Evidence | MRB #10060 build-bob-tray failure; intake harvest #10100 |
+| Refs | Closes SimonBarnett/bobiverse#10100 |
+
 ## 2026-11-28 - Digest #9762 tray/status CI PR bases
 
 | Field | Value |
 |-------|-------|
 | Lesson | Status sparse CI (#9764) shares Build-BobDialogs -Targets with tray (#9763); stack status PR on the tray branch until tray merges; Closes auto-links only when PR base is main. |
 | Evidence | Digest #9762 children #10060/#10061/#10064; intake harvest #10099 |
-| Refs | Closes SimonBarnett/bobiverse#10099 |
+| Refs | Closes SimonBarnett/bobiverse#10099
 
 ## 2026-11-23 - FR #9344 monitor D3 release + paid OC pin + airc not-op
 
@@ -780,8 +788,11 @@ Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobivers
 
 For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `require_machine:` / `=` lines (and other title/body text cues). Pins require `needs-<machine>` / `require_machine:<machine>` labels, hard issue pins, or operator `!pin`. Body lines remain as ops notes. Supersedes earlier FR #4512 wording that dedicated body lines still pinned bobiverse (see also lines that document soft-cue vs dedicated-line for bobiverse).
 
-## 2026-11-28 digest #9991 IIS web.config heal (FR #9992 harvest #10101)
+## 2026-11-28 digest #10019 MRB auto-merge refuse (harvest #10104)
 
+Digest #10019 MRB batch: child PRs #10067-#10075. When `gh pr merge --auto` fails with GraphQL `enablePullRequestAutoMerge` (unstable / not clean), comment `merge-on-green pending` with the PASS head SHA and finish the MRB without polling CI (FR #3948). Jeeves merge-on-green owns the merge.
+Books: bobiverse-bob-job-mrb. Refs: SimonBarnett/bobiverse#10019 SimonBarnett/bobiverse#10104
+## 2026-11-28 digest #9991 IIS web.config heal (FR #9992 harvest #10101)
 Digest #9991 children landed in product PRs #10083-#10090. Live IIS `web.config` forward (BobModelsWebhook PUT) is walrus operator redeploy via `Install-BobWebhooks.ps1`, not FR-seat production PUT. Workers ship the `models_put_forward` probe classifier and pytest; PR body tells owner to redeploy.
 Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#9991 SimonBarnett/bobiverse#9992 SimonBarnett/bobiverse#10101
 ## 2026-11-28 - harvest #10102 (Digest #10078)

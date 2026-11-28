@@ -15728,6 +15728,12 @@ def opencode_cleanup_extra_worktrees(
                     )
                 except Exception:
                     pass
+    except _sp.TimeoutExpired:
+        # FR #10037: Clear over the subprocess cap is a slow-disk hygiene miss,
+        # not a Clear script defect — do not file fleet-ps1-clear-failed (#5050).
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:timeout")
+        return removed
     except Exception as e:  # noqa: BLE001
         if log_fn:
             log_fn(f"opencode finish: Clear result=failed:{type(e).__name__}")

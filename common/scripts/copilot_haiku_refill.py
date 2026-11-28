@@ -1,7 +1,11 @@
-"""FR #9846: Haiku CCA refill fail-loop must not starve tip allowlist.
+"""FR #9846 / #9884: Haiku CCA refill helpers.
 
-``SKIP_FAILED_LOOP`` (>= ``min_fails`` failed CCA tasks per FR in ``window_hours``)
-must not combine with soft-exhausted digest fuel to leave zero tip-allowlist slots.
+FR #9846: ``SKIP_FAILED_LOOP`` (>= ``min_fails`` failed CCA tasks per FR in
+``window_hours``) must not combine with soft-exhausted digest fuel to leave zero
+tip-allowlist slots.
+
+FR #9884: when public digest Copilot fuel is soft/hard exhausted, refill must
+emit ``NO_FUEL`` and perform zero CCA POSTs (do not burn fail-loop budget).
 
 Rules:
 1. Infra soft fails (``missing_conclusion`` / conclusion-unavailable) do not count
@@ -17,6 +21,30 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 FR_IN_PROMPT = re.compile(r"FR\s*#(\d+)", re.I)
+
+REFILL_NO_FUEL = "NO_FUEL"
+
+_DIGEST_EXHAUST_STATES = frozenset({"exhausted", "quota_exhausted", "failed"})
+
+
+def digest_blocks_cca_refill(copilot: Mapping[str, Any] | None) -> str | None:
+    """FR #9884: block Haiku refill when digest Copilot fuel cannot spend.
+
+    Returns ``REFILL_NO_FUEL`` when soft/hard digest exhaust or pool rules deny
+    dispatch; otherwise ``None`` (refill may continue to inflight/fail-loop logic).
+    """
+    if not isinstance(copilot, Mapping):
+        return REFILL_NO_FUEL
+    state = str(copilot.get("state") or "").strip().lower()
+    if state in _DIGEST_EXHAUST_STATES:
+        return REFILL_NO_FUEL
+    if copilot.get("exhausted") or copilot.get("tasks_exhausted"):
+        return REFILL_NO_FUEL
+    import copilot_dispatch as cd
+
+    if not cd.allowance_from_pool(dict(copilot)):
+        return REFILL_NO_FUEL
+    return None
 
 # Session / task error text that is infra soft-fail (FR #9782), not a real agent fail.
 _INFRA_MARKERS = (

@@ -1277,6 +1277,35 @@ def depends_gate_reason(
     ``row_fr_depends_blocked_reason`` separately (those two used to disagree when
     digests were absent from the local queue).
     """
+    # FR #10055 / #10057: finished FIX rows and rows outside the operator wave.
+    # The offer path reads the queue: done FIX ids and doc["operator_wave_open"].
+    try:
+        import digest_offer_gate as _wave
+
+        view = dict(row) if isinstance(row, dict) else {}
+        qdoc = doc if isinstance(doc, dict) else {}
+        if "recent_done_keys" not in view:
+            done_keys = []
+            for item in qdoc.get("done") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("task") or "").strip().upper() != "FIX":
+                    continue
+                repo_s = str(item.get("repo") or "").strip()
+                num_s = str(item.get("id") or "").strip().lstrip("#")
+                if repo_s and num_s:
+                    done_keys.append("%s#%s" % (repo_s, num_s))
+            view["recent_done_keys"] = done_keys
+        if "operator_wave_open" not in view and qdoc.get("operator_wave_open"):
+            view["operator_wave_open"] = qdoc.get("operator_wave_open")
+        why_fix = _wave.finished_fix_reoffer_reason(view)
+        if why_fix:
+            return why_fix
+        why_wave = _wave.outside_operator_wave_reason(view)
+        if why_wave:
+            return why_wave
+    except Exception:
+        pass
     if _canon_task(row) not in ("FR", "FIX", "MRB"):
         return None
     qdoc = doc if isinstance(doc, dict) else {}
@@ -1590,6 +1619,10 @@ def row_depends_open_reason(
             return DEPENDS_HELD_REASON
         if g1 == "ok-fr-digest":
             # FR #10059: an unheld OPEN digest still blocks dispatch.
+            import digest_offer_gate as _wave
+
+            if _wave.open_depend_blocks("open", ["fr-digest"]):
+                return DEPENDS_OPEN_REASON
             return DEPENDS_OPEN_REASON
         dep = find_open_fr_row(doc, repo, num) if doc is not None else None
         if dep is not None:
@@ -3491,6 +3524,9 @@ _REQUIRE_MACHINE_BOBIVERSE_CHAIR_HOST_CUES: tuple[tuple[re.Pattern[str], str], .
     (re.compile(r"(?i)\b(?:server|host)\s+from\s+config\b.{0,80}\bBOB_CHAIR_MACHINE\b"), "walrus"),
     (re.compile(r"(?i)\bBOB_CHAIR_MACHINE\b.{0,80}\b(?:chair|Ergo|needs-walrus)\b"), "walrus"),
     (re.compile(r"(?i)\bneeds-walrus\s+alias\b"), "walrus"),
+    # FR #10327 / class #10119: jeeves.exe umbrella titles are chair-host ops; body
+    # ``require_machine: ionos`` alone still does not pin (FR #9637).
+    (re.compile(r"(?i)^jeeves\.exe\s*:"), "walrus"),
 )
 # FR #10200: title-only chair-host ops for bobiverse. Intake / BobCallback / ARR 502
 # outages run on the chair host (FR #1899), so a live-webhook 502 title must not be
@@ -4629,19 +4665,23 @@ def closed_unmerged_ref_skip_reason(doc: dict, repo: str, ident: str) -> str | N
         return f"requeue skip ref {shown}: not an issue number"
     if not _done_has_fr(doc, repo, ident):
         return f"requeue skip ref {shown}: not in done"
-    is_pull = github_is_pull_checker()
-    issue_open = github_issue_open_checker()
-    if is_pull is None or issue_open is None:
-        return f"requeue skip ref {shown}: lookup unavailable"
-    try:
-        if bool(is_pull(repo, num)):
-            return f"requeue skip ref {shown}: pull request"
-        if not bool(issue_open(repo, num)):
-            return f"requeue skip ref {shown}: issue closed"
-    except GitHubLookupUnknown:
-        return f"requeue skip ref {shown}: lookup unknown"
-    except Exception:
-        return f"requeue skip ref {shown}: lookup unknown"
+    # FR #10009: stamped closed/merged/pull only. No live issue_open / is_pull.
+    row = None
+    for item in doc.get("done") or []:
+        if isinstance(item, dict) and _same(item, repo, "FR", ident):
+            row = item
+            break
+    if row is None:
+        return f"requeue skip ref {shown}: not in done"
+    state = str(row.get("state") or "").strip().lower()
+    if row.get("merged") or state == "merged":
+        return f"requeue skip ref {shown}: merged"
+    if state == "closed":
+        return f"requeue skip ref {shown}: issue closed"
+    event = str(row.get("event") or "").strip().lower()
+    url = str(row.get("url") or "")
+    if event == "pull_request" or "/pull/" in url:
+        return f"requeue skip ref {shown}: pull request"
     return None
 
 
@@ -6325,6 +6365,60 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
     return changed
 
 
+def _sweep_closed_pr_digest_doing(home: Path, repo: str, ident: str) -> int:
+    """FR #10110: idle every digest seat still doing MRB/FIX for a closed PR.
+
+    The done-row loop in ``apply_queue_event`` only reaches seats named by a
+    matching ``done`` row, so a seat whose accepted row was already gone, or a
+    closed PR with no queue row (``noop``), kept ``doing`` and nak-busied !bored.
+    This sweep matches digest work text by task, PR number and repo short name
+    (``bobiverse MRB #N``). Other tasks, other PR numbers, other repos and
+    ``offered`` rows (Jeeves' own pending offer) are never touched.
+    """
+    num = str(ident or "").strip().lstrip("#")
+    short = str(repo or "").rsplit("/", 1)[-1].strip().lower()
+    if not num.isdigit() or not short:
+        return 0
+    rx = re.compile(rf"\b(?:mrb|fix)\s+#?{num}(?!\d)", re.IGNORECASE)
+
+    def _busy_match(text: str) -> bool:
+        low = (text or "").lower()
+        return short in low and bool(rx.search(text or ""))
+
+    try:
+        doc = bobreport.load_digest(home)
+    except Exception:
+        return 0
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    targets: list[str] = []
+    for mid, ent in machines.items():
+        if not isinstance(ent, dict):
+            continue
+        for row in ent.get("worker_list") or []:
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("state") or "").strip().lower()
+            if state == "offered":
+                continue
+            work = str(row.get("work") or row.get("working_on") or "")
+            nick = str(row.get("nick") or "").strip()
+            if nick and _busy_match(work):
+                targets.append(nick)
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for pid, w in workers.items():
+            if not isinstance(w, dict):
+                continue
+            if _busy_match(str(w.get("working_on") or "")):
+                targets.append(f"{mid}-{pid}")
+    cleared = 0
+    for nick in dict.fromkeys(targets):
+        with contextlib.suppress(Exception):
+            out = bobreport.clear_seat_doing(home, nick, only_if_work_contains=num)
+            if getattr(out, "ok", False):
+                cleared += 1
+    return cleared
+
+
 def apply_queue_event(home: Path, claim: GitClaim) -> str:
     """Apply one deterministic queue transition.
 
@@ -6370,6 +6464,10 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 dirty = True
 
             if not dirty:
+                if claim.event == "pull_request" and claim.action == "closed":
+                    # FR #10110: a closed PR with no queue row still idles stale digest seats.
+                    with contextlib.suppress(Exception):
+                        _sweep_closed_pr_digest_doing(home, claim.repo, claim.id)
                 return changed
             try:
                 _write_queue(queue_path(home), doc)
@@ -6413,6 +6511,9 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 bobreport.clear_seat_doing(
                                     home, seat, only_if_work_contains=ident
                                 )
+                # FR #10110: also idle seats whose done/accepted row is gone.
+                with contextlib.suppress(Exception):
+                    _sweep_closed_pr_digest_doing(home, claim.repo, claim.id)
             elif claim.event == "issues" and claim.action == "closed":
                 # FR #4415: same for closed issues (FR/PR rows dropped).
                 with contextlib.suppress(Exception):
@@ -19505,12 +19606,8 @@ def assign_row(
                     "refused",
                     f"{_assign_skip} (not shop FR; FR #9411/#9827)",
                 )
-            # FR #9411: unbudgeted closed check when caller omitted issue_open.
-            _fr_open = (
-                issue_open
-                if issue_open is not None
-                else depends_issue_open_checker(None)
-            )
+            # FR #10009: omitted checkers stay offline. Stamped state is the gate.
+            _fr_open = issue_open
             if task_u == "FR" and not fr_row_offerable(
                 cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=_fr_open
             ):
