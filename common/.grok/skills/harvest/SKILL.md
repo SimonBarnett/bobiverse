@@ -583,6 +583,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When fr tip branch merged main, MRB diff vs main is the acceptance signal; re-offer still needs pytest + Closes verify.
 <!-- harvest-tip:intake-in_ens_12802ed399b2 -->
 - Always append DONE as isolated outbox call before long merge/harvest chains; turn-end watchdog fires on missing DONE.
+<!-- harvest-tip:intake-in_ens_598f595650f2 -->
+- Harvest conflict-FIX: merge origin/main on intake branch, keep tip anchor, push; check_conflict_markers on skill path only.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
