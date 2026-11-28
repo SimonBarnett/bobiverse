@@ -13212,31 +13212,52 @@ def _start_model_from_fields(fields: dict | None) -> str:
     return str(f.get("start_model") or f.get("model") or "").strip()
 
 
-def seat_started_on_free_model(home: Path, nick: str) -> bool:
-    """FR #7926: the model the seat started on, not the configured model.
+def opencode_unpaid_model(home: Path) -> str:
+    """Model id on the Weights Opencode-Free row (GET /bob/v1/models).
 
-    ``opencode/deepseek-v4.1-flash-free`` is free. Grok and
-    ``opencode-go/deepseek-v4-pro`` are not. An empty or ``$model`` start
-    model is not free.
+    That saved row is the only unpaid OpenCode model. Missing file or row
+    means nothing is unpaid.
     """
-    fields = _seat_digest_model_fields(home, nick)
-    model = str(fields.get("start_model") or "").strip()
-    if not model or "$" in model:
-        return False
     try:
-        import worker_start_model as wsm
+        import models_catalog as mc
 
-        if wsm.opencode_is_go_or_paid(model):
-            return False
+        path = mc.catalog_path(_root(home))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        low_paid = model.lower()
-        if low_paid.startswith("opencode-go/") or low_paid.endswith("-pro"):
-            return False
-    low = model.lower()
-    if low.endswith("-free") or low.startswith("opencode/"):
-        return True
-    tier = str(fields.get("cost_tier") or "").strip().lower()
-    return tier in ("free", "opencode-free")
+        return ""
+    agents = raw.get("agents") if isinstance(raw, dict) else None
+    if not isinstance(agents, list):
+        return ""
+    for row in agents:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("agent") or row.get("row") or "").strip()
+        if name != "Opencode-Free":
+            continue
+        return str(row.get("model") or "").strip()
+    return ""
+
+
+def _seat_kind_always_paid(kind: str) -> bool:
+    """Grok and Cursor are never free fuel. Only OpenCode can be unpaid."""
+    return (kind or "").strip().lower() in ("grok", "cursor")
+
+
+def seat_started_on_free_model(home: Path, nick: str) -> bool:
+    """True only for an OpenCode seat on the saved unpaid Weights model.
+
+    Grok and Cursor are always paid, even when start_model is empty or the
+    id looks free. Any other OpenCode model, including empty and ``$model``,
+    is paid.
+    """
+    if _seat_kind_always_paid(seat_agent_kind(home, nick)):
+        return False
+    if seat_agent_kind(home, nick) != "opencode":
+        return False
+    fields = _seat_digest_model_fields(home, nick)
+    model = str(fields.get("start_model") or fields.get("model") or "").strip()
+    unpaid = opencode_unpaid_model(home)
+    return bool(model) and bool(unpaid) and model == unpaid
 
 
 def idle_free_model_nicks(home: Path, *, now: float | None = None, live: set[str] | None = None) -> set[str]:
@@ -13410,34 +13431,12 @@ def mrb_yields_to_older_fr(
 
 
 def seat_is_free_fuel(home: Path, nick: str) -> bool:
-    """True when this seat must stay on FR/FIX (FR #7706 / #7888).
+    """True when this seat must stay on FR/FIX.
 
-    Eligibility follows the launched ``start_model``, not ``configured_model``
-    and not a free published ``cost_tier``. A paid OpenCode Go / pro id is not
-    free fuel even when kind is ``opencode`` or the configured model is free.
-    Missing, empty, or ``$model`` on an OpenCode seat fails safe to free.
-    A free model id is free even when the digest kind says grok.
+    Grok and Cursor are always paid. OpenCode is free only when ``start_model``
+    is the Opencode-Free model saved by the Weights form (GET /bob/v1/models).
     """
-    fields = _seat_digest_model_fields(home, nick)
-    model = _start_model_from_fields(fields)
-    try:
-        import worker_start_model as wsm
-
-        klass = wsm.start_model_review_class(model)
-    except Exception:
-        klass = "unknown" if (not model or "$" in model) else "other"
-    if klass == "paid":
-        return False
-    if klass == "free":
-        return True
-    if "$" in model or model.lower() == "unknown":
-        return True
-    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return True
-    tier = str(fields.get("cost_tier") or "").strip().lower()
-    if tier in ("free", "opencode-free"):
-        return True
-    return False
+    return seat_started_on_free_model(home, nick)
 
 
 def mrb_eligibility_reason(home: Path, nick: str) -> str:
@@ -13453,16 +13452,13 @@ def mrb_eligibility_reason(home: Path, nick: str) -> str:
     shown = model or "missing"
     if len(shown) > 80:
         shown = shown[:80]
+    kind = seat_agent_kind(home, nick)
+    if _seat_kind_always_paid(kind):
+        return f"paid kind {kind}"
+    if seat_is_free_fuel(home, nick):
+        return f"unpaid opencode model {shown}"
     if klass == "paid":
         return f"paid start_model {shown}"
-    if "$" in model:
-        return f"unknown start_model {shown}"
-    if klass == "free":
-        return f"free start_model {shown}"
-    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return "unknown start_model on opencode (fail safe FR-only)"
-    if seat_is_free_fuel(home, nick):
-        return f"free-fuel start_model {shown}"
     return f"mrb-eligible start_model {shown}"
 
 
@@ -13473,10 +13469,10 @@ def row_blocked_for_opencode_seat(
     *,
     kind: str | None = None,
 ) -> bool:
-    """True when a free or unknown start_model must not be offered this MRB/UAT row.
+    """True when this seat must not be offered this MRB/UAT row.
 
-    FR #6134 blocked every OpenCode seat. FR #7888 keeps that for a free or
-    missing start_model and allows a paid start_model (OpenCode Go / pro).
+    Grok and Cursor are always paid. OpenCode is blocked only when
+    ``start_model`` equals the saved Opencode-Free Weights model.
     Without a digest (``home is None``), kind ``opencode`` still fails safe.
     """
     task = str((row or {}).get("task") or "").upper()
