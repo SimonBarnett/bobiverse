@@ -1241,6 +1241,29 @@ def depends_issue_fetch_checker(fetch_issue=None):
     return lambda repo, num: fetch_github_issue_dict(repo, num)
 
 
+def _depend_fetched_state(issue_fetch, repo: str, oid: str) -> str:
+    """FR #10105: ``"closed"`` / ``"open"`` / ``""`` from an optional issue_fetch lookup.
+
+    Lookup failures return ``""`` (unknown) so the caller keeps its fail-closed path.
+    """
+    if issue_fetch is None:
+        return ""
+    raw = str(oid or "").strip().lstrip("#")
+    try:
+        num = int(raw) if raw else 0
+    except ValueError:
+        return ""
+    if num < 1:
+        return ""
+    try:
+        issue = issue_fetch(repo, str(num))
+    except Exception:
+        return ""
+    if not isinstance(issue, dict):
+        return ""
+    return str(issue.get("state") or "").strip().lower()
+
+
 def _bob_g1_digest_gate_for_pair(
     doc: dict, repo: str, oid: str, *, issue_fetch=None
 ) -> str | None:
