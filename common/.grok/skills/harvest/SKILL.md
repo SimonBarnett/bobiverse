@@ -535,6 +535,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When FIX CI is already pushed on the reviewed SHA, re-run the named failing test and DONE that PR URL if it passes; do not add an empty commit.
 <!-- harvest-tip:intake-in_1366c7119d3d4507 -->
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
+<!-- harvest-tip:intake-in_01fd445291d84d82 -->
+- Read require_machine in FR body before worktree: jeeves.exe WP4 cutover is ionos-only; ACK+GIVEUP from wrong shop.
 <!-- harvest-tip:intake-in_8f2c478e5b574eb8 -->
 - When live_report_gateway_down, intervene_assign must not emit blind !assign from stale queue---skip with inbound_transcript fallback until walrus heals report.
 <!-- harvest-tip:intake-in_3079f4050b984b97 -->
