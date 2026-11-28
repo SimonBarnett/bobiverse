@@ -73,4 +73,20 @@ def test_fr9919_outbox_free_refuse_reason_unit():
 def test_fr9919_supervisor_drain_run_outbox_now_wired():
     src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
     assert "def drain_run_outbox_now" in src
-    assert 'drain_run_outbox_now("turn_ended")' in src
+    needle = 'drain_run_outbox_now("turn_ended")'
+    assert src.count(needle) == 3
+    cursor_block = src.split("def _start_cursor_turn_watcher", 1)[1].split(
+        "def _start_aider_turn_watcher", 1
+    )[0]
+    aider_block = src.split("def _start_aider_turn_watcher", 1)[1].split(
+        "def _start_turn_watcher", 1
+    )[0]
+    grok_block = src.split("def _start_turn_watcher", 1)[1].split(
+        "def drain_run_outbox_now", 1
+    )[0]
+    for label, block in (
+        ("cursor", cursor_block),
+        ("aider", aider_block),
+        ("grok", grok_block),
+    ):
+        assert needle in block, label
