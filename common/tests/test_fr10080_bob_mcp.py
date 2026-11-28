@@ -30,6 +30,18 @@ def test_get_describes_without_a_token():
     assert "token" not in json.dumps(doc).lower()
 
 
+def test_default_roots_reads_bob_repo_root(tmp_path: Path, monkeypatch):
+    book = tmp_path / "bob" / ".grok" / "skills" / "demo"
+    book.mkdir(parents=True)
+    (book / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: from the checkout\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_REPO_ROOT", str(tmp_path))
+    roots = bob_mcp.default_roots()
+    assert any((root / "demo" / "SKILL.md").is_file() for root in roots)
+
+
 def test_post_list_and_get(tmp_path: Path):
     roots = _roots(tmp_path)
     req = {
@@ -48,6 +60,21 @@ def test_post_list_and_get(tmp_path: Path):
     skill = json.loads(json.loads(body)["result"]["content"][0]["text"])
     assert "hello" in skill["skillMd"]
     assert "github_pat_" not in body.decode()
+    req["id"] = 3
+    req["params"] = {"name": "get_skill", "arguments": {"skill": "bob-shop"}}
+    code, body = bob_mcp.handle_mcp("POST", json.dumps(req).encode(), roots)
+    assert code == 200
+    by_skill = json.loads(json.loads(body)["result"]["content"][0]["text"])
+    assert by_skill["name"] == "bob-shop"
+    req["id"] = 4
+    req["params"] = {
+        "name": "get_skill",
+        "arguments": {"path": "bob/.grok/skills/bob-shop/SKILL.md"},
+    }
+    code, body = bob_mcp.handle_mcp("POST", json.dumps(req).encode(), roots)
+    assert code == 200
+    by_path = json.loads(json.loads(body)["result"]["content"][0]["text"])
+    assert "hello" in by_path["skillMd"]
 
 
 def test_callback_routes_mcp_and_home_card(tmp_path: Path):

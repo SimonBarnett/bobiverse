@@ -1063,6 +1063,19 @@ def handle_request(
     stash_response_headers([])
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    # FR #10032: ask.ntsa.uk health and ask. Does not log the body.
+    if route in ("/bob/v1/ask/health", "/bob/v1/ask"):
+        import ask_webhook
+
+        if route == ask_webhook.HEALTH_PATH and verb in ("GET", "HEAD"):
+            code, payload = ask_webhook.health()
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, b"" if verb == "HEAD" else payload
+        if route == ask_webhook.ASK_PATH and verb == "POST":
+            code, payload = ask_webhook.handle_post(body if isinstance(body, (bytes, str)) else b"")
+            stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+            return code, payload
+        return 405, b""
     if route == "/bob/v1/gitcust":
         import gitcust
 

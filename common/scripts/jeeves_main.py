@@ -845,6 +845,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--http-only", action="store_true", help="BobCallback listener only")
     p.add_argument("--chair", action="store_true", help="run irc_agent --chair after HTTP")
     p.add_argument(
+        "--chair-only",
+        action="store_true",
+        help="FR #10096: IRC chair without binding :7700 (BobWebhooks owns the listener)",
+    )
+    p.add_argument(
         "--http",
         default="",
         help="with --chair: HOST:PORT for in-process BobCallback (e.g. 127.0.0.1:7700)",
@@ -880,7 +885,9 @@ def main(argv: list[str] | None = None) -> int:
     # FR #2524: bare jeeves.exe (no mode) must fail-fast exit 2 without grabbing
     # the instance mutex - NSSM AppExit Restart otherwise loops and fills stderr
     # during cutover when AppParameters are empty/missing.
-    has_mode = bool(args.self_test or args.heal or args.http_only or (args.chair and args.http))
+    has_mode = bool(
+        args.self_test or args.heal or args.http_only or args.chair_only or (args.chair and args.http)
+    )
     if not has_mode:
         msg = (
             "jeeves.exe: error: specify --self-test, --heal, --http-only, "
@@ -890,7 +897,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # FR #6947: refuse --chair on non-walrus before mutex / :7700 bind.
-    if args.chair:
+    if args.chair or args.chair_only:
         import jeeves_chair_host
 
         if not jeeves_chair_host.chair_host_allowed():
@@ -937,6 +944,33 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        if args.chair_only and not (args.http_only or args.http):
+            os.environ["BOB_DIGEST_HOME"] = str(home)
+            if args.home:
+                os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
+            chair_argv = [
+                "--chair",
+                "--nick",
+                args.nick,
+                "--home",
+                str(Path(args.home).expanduser() if args.home else home),
+            ] + list(unknown)
+            try:
+                irc_agent = import_heavy("irc_agent")
+            except MemoryError as exc:
+                safe_print(
+                    f"ERROR FR #9242 MemoryError loading irc_agent: {exc}",
+                    flush=True,
+                )
+                return 1
+            old = sys.argv
+            try:
+                sys.argv = ["irc_agent"] + chair_argv
+                irc_agent.main()
+            finally:
+                sys.argv = old
+            return 0
+
         if args.http_only or (args.chair and args.http):
             host, port = (args.bind, int(args.port))
             if args.http:

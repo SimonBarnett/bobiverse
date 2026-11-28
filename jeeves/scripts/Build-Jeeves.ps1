@@ -52,7 +52,9 @@ $hidden = @(
     # FR #8770: chair_commands imports builds_catalog for BUILD_USAGE_LINES.
     # BOB-01/03 / FR #8707 / #8710: models Weights GET + validate combo catalogue.
     # FR #9224 / #8820: POST /bob/v1/models/refresh must ship inside frozen jeeves.exe.
-    'models_catalog', 'models_refresh', 'builds_catalog'
+    'models_catalog', 'models_refresh', 'builds_catalog',
+    # FR #10080: /mcp imports these inside handle_request. Freeze them explicitly.
+    'bob_mcp', 'bob_skill_catalog'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 # FR #6487: pull PyYAML package data/extensions into the freeze when installed on the build host.

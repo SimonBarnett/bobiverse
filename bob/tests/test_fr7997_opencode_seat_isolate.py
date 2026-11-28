@@ -50,6 +50,12 @@ def test_fr7997_classify_lock_retries_then_giveup():
     assert iso.classify_startup("rate limit", exit_code=1, attempt=0) == "continue"
     assert iso.classify_startup("database is locked", exit_code=0, attempt=0) == "continue"
     assert iso.classify_startup("task failed", exit_code=1, attempt=0) == "continue"
+    banner = "\x1b[2J\x1b]0;opencode.exe\x07> build \u00b7 claude-haiku-5-5"
+    assert iso.handshake_only(banner)
+    assert iso.classify_startup(banner, exit_code=-1, attempt=0) == "retry"
+    assert iso.classify_startup(banner, exit_code=-1, attempt=1) == "giveup"
+    assert iso.classify_startup("skill-dag_list_catalog Unknown", exit_code=-1, attempt=0) == "continue"
+    assert iso.classify_startup("", exit_code=1, attempt=0) == "retry"
 
 
 def test_fr7997_launcher_isolates_and_retries(tmp_path: Path, monkeypatch):
@@ -70,5 +76,7 @@ def test_fr7997_launcher_isolates_and_retries(tmp_path: Path, monkeypatch):
     assert "OPENCODE_DB" in ps1
     assert "classify" in ps1
     assert "opencode-startup-failed" in ps1
+    assert "ConvertTo-OpencodePlain" in ps1
+    assert "opencode-startup-failed exit=" in ps1
     assert "opencode-data-dir.txt" in ps1
     assert "FR #7997" in ps1

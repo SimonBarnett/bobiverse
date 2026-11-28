@@ -2163,8 +2163,45 @@ def opencode_job_context_nack_ready(
     )["nack"]
 
 
+_GIT_PAT = Path(r"C:\passwords\gitPAT.txt")
+
+
+def prime_gh_auth_from_password_file(run, log=None) -> bool:
+    """Log gh in from ``C:\\passwords\\gitPAT.txt`` when that file exists.
+
+    The token is passed on stdin to ``gh auth login --with-token``. It is not
+    logged and not returned. A missing file is a no-op.
+    """
+    path = _GIT_PAT
+    try:
+        if not path.is_file():
+            return False
+        token = path.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return False
+    if not token or any(ch.isspace() for ch in token):
+        return False
+    try:
+        proc = run(
+            ["gh", "auth", "login", "--hostname", "github.com", "--with-token"],
+            input=token,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return False
+    ok = int(getattr(proc, "returncode", 1) or 0) == 0
+    if log is not None:
+        try:
+            log("opencode: gh auth login from C:\\passwords\\gitPAT.txt ok=%s" % ok)
+        except Exception:
+            pass
+    return ok
+
+
 def probe_gh_auth(run) -> tuple[bool, str]:
-    """Run ``gh auth status`` via ``run``. Never reads hosts.yml or token files."""
+    """Run ``gh auth status`` via ``run``. Never reads hosts.yml."""
     try:
         proc = run(
             ["gh", "auth", "status"],

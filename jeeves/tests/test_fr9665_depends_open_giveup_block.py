@@ -63,11 +63,12 @@ def test_depends_open_block_bypasses_unheld_digest_soft_allow():
     }
     doc = {"unaccepted": [digest, child], "accepted": [], "done": []}
     open_keys = {(REPO, 9653), (REPO, 9622)}
-    # Without depends_open, soft-allow would skip digest.
+    # FR #10059: unheld OPEN digest blocks even without a depends_open stamp.
     soft = dict(child)
     soft.pop("depends_open", None)
     assert (
-        gitclaim.row_depends_open_reason(soft, open_keys, doc=doc) is None
+        gitclaim.row_depends_open_reason(soft, open_keys, doc=doc)
+        == gitclaim.DEPENDS_OPEN_REASON
     )
     # With depends_open stamp: hard block.
     why = gitclaim.row_depends_open_reason(child, open_keys, doc=doc)
@@ -86,10 +87,9 @@ def test_depends_open_clears_when_depend_closed():
         "labels": [],
         "depends_open": ["#9653"],
     }
-    # Depend absent from open_keys => CLOSED for queue purposes.
+    # FR #10059: no checker and the depend is not positively closed => unresolved.
     why = gitclaim.row_depends_open_reason(row, set(), doc={"unaccepted": [row]})
-    assert why is None
-    assert not row.get("depends_open")
+    assert why == gitclaim.DEPENDS_UNRESOLVED_REASON
 
 
 def test_shop_giveup_depends_open_skips_reoffer(tmp_path: Path, monkeypatch):
