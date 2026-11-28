@@ -772,3 +772,9 @@ Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobivers
 
 For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `require_machine:` / `=` lines (and other title/body text cues). Pins require `needs-<machine>` / `require_machine:<machine>` labels, hard issue pins, or operator `!pin`. Body lines remain as ops notes. Supersedes earlier FR #4512 wording that dedicated body lines still pinned bobiverse (see also lines that document soft-cue vs dedicated-line for bobiverse).
 
+## 2026-11-28 digest #10019 MRB auto-merge refuse (harvest #10104)
+
+Digest #10019 MRB batch: child PRs #10067-#10075. When `gh pr merge --auto` fails with GraphQL `enablePullRequestAutoMerge` (unstable / not clean), comment `merge-on-green pending` with the PASS head SHA and finish the MRB without polling CI (FR #3948). Jeeves merge-on-green owns the merge.
+
+Books: bobiverse-bob-job-mrb. Refs: SimonBarnett/bobiverse#10019 SimonBarnett/bobiverse#10104
+
