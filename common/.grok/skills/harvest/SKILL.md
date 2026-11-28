@@ -587,6 +587,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Harvest conflict-FIX: merge origin/main on intake branch, keep tip anchor, push; check_conflict_markers on skill path only.
 <!-- harvest-tip:intake-in_ens_2528ce37722c -->
 - FR #10009 skip stamps need done row state/event/url in tests; webhook count tracks registry pages
+<!-- harvest-tip:intake-in_ens_d75f7ef4b232 -->
+- Stamp done[] rows (state/event/url) for closed_unmerged_ref_skip_reason when tests use stamp-only checkers.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
