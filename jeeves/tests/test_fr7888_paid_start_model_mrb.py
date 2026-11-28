@@ -1,5 +1,7 @@
-"""FR #7888: MRB eligibility follows the launched start_model."""
+"""FR #7888: MRB eligibility follows kind and the saved unpaid OpenCode model."""
 from __future__ import annotations
+
+import json
 
 import bobreport
 import focus_ignore as fi
@@ -7,11 +9,32 @@ import gitclaim
 import registered_machines
 
 
+UNPAID = "opencode/deepseek-v4.1-flash-free"
+
+
+def _catalog(home, model=UNPAID):
+    (home / "models-catalog.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "agent": "Opencode-Free",
+                        "cli": "Opencode",
+                        "model": model,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     monkeypatch.setenv("JEEVES_OWNER_ACCOUNT", "simon")
     registered_machines.save_registered(tmp_path, {"redqueen", "marchhare"})
     bobreport._SEAT_ROSTER_CACHE["key"] = None
+    _catalog(tmp_path)
     return tmp_path
 
 
@@ -77,7 +100,43 @@ def test_paid_start_model_gets_mrb_when_configured_is_free(tmp_path, monkeypatch
     assert any("mrb-eligibility offer" in n and "paid start_model" in n for n in notes)
 
 
-def test_free_start_model_never_gets_mrb(tmp_path, monkeypatch):
+def test_grok_is_paid_even_when_start_model_matches_unpaid(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    notes = []
+    monkeypatch.setattr(gitclaim, "_log_queue_purge", lambda msg, log=None: notes.append(msg))
+    _queue(home, [_row("SimonBarnett/bobiverse", "MRB", 7870, 1)])
+    fi.handle_focus_cmd(home, "hi bobiverse")
+    nick = _seed(
+        home,
+        "redqueen",
+        "1",
+        kind="grok",
+        start_model=UNPAID,
+        configured_model="opencode-go/deepseek-v4-pro",
+        cost_tier="max",
+    )
+    st, job = gitclaim.offer_focus_top(home, nick, "#redqueen")
+    assert st == "ok"
+    assert job is not None
+    assert str(job.get("task")).upper() == "MRB"
+    assert any("paid kind grok" in n for n in notes)
+
+
+def test_opencode_dollar_and_empty_are_paid(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    _queue(home, [_row("SimonBarnett/bobiverse", "MRB", 7870, 1)])
+    fi.handle_focus_cmd(home, "hi bobiverse")
+    nick = _seed(home, "redqueen", "2", start_model="$model", configured_model="opencode-go/deepseek-v4-pro")
+    st, job = gitclaim.offer_focus_top(home, nick, "#redqueen")
+    assert st == "ok"
+    assert str(job.get("task")).upper() == "MRB"
+    nick2 = _seed(home, "redqueen", "3", start_model="", configured_model="opencode-go/deepseek-v4-pro")
+    st2, job2 = gitclaim.offer_focus_top(home, nick2, "#redqueen")
+    assert st2 == "ok"
+    assert str(job2.get("task")).upper() == "MRB"
+
+
+def test_opencode_matching_saved_unpaid_model_skips_mrb(tmp_path, monkeypatch):
     home = _home(tmp_path, monkeypatch)
     notes = []
     monkeypatch.setattr(gitclaim, "_log_queue_purge", lambda msg, log=None: notes.append(msg))
@@ -89,33 +148,11 @@ def test_free_start_model_never_gets_mrb(tmp_path, monkeypatch):
         ],
     )
     fi.handle_focus_cmd(home, "hi bobiverse")
-    nick = _seed(
-        home,
-        "redqueen",
-        "1",
-        kind="grok",
-        start_model="opencode/deepseek-v4.1-flash-free",
-        configured_model="opencode-go/deepseek-v4-pro",
-        cost_tier="max",
-    )
-    st, job = gitclaim.offer_focus_top(home, nick, "#redqueen")
+    nick = _seed(home, "marchhare", "9", kind="opencode", start_model=UNPAID)
+    st, job = gitclaim.offer_focus_top(home, nick, "#marchhare")
     assert st == "ok"
-    assert job is not None
     assert str(job.get("task")).upper() == "FR"
-    assert any("free start_model" in n for n in notes)
-
-
-def test_unknown_and_dollar_start_model_are_free(tmp_path, monkeypatch):
-    home = _home(tmp_path, monkeypatch)
-    _queue(home, [_row("SimonBarnett/bobiverse", "MRB", 7870, 1)])
-    fi.handle_focus_cmd(home, "hi bobiverse")
-    nick = _seed(home, "redqueen", "2", start_model="$model", configured_model="opencode-go/deepseek-v4-pro")
-    st, job = gitclaim.offer_focus_top(home, nick, "#redqueen")
-    assert job is None or str((job or {}).get("task")).upper() != "MRB"
-    assert st != "ok" or job is None
-    nick2 = _seed(home, "redqueen", "3", start_model="", configured_model="opencode-go/deepseek-v4-pro")
-    st2, job2 = gitclaim.offer_focus_top(home, nick2, "#redqueen")
-    assert job2 is None or str((job2 or {}).get("task")).upper() != "MRB"
+    assert any("unpaid opencode model" in n for n in notes)
 
 
 def test_author_seat_is_not_offered_its_mrb(tmp_path, monkeypatch):
