@@ -14796,10 +14796,6 @@ def offer_focus_top(
         heal_mrb_reviewer_deadlock(home, idle=free, live=live, now=now_f)
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
-    # FR #10339 / #10337: digest-idle !bored must release young ACC before the open-job gate.
-    if _digest_seat_explicit_idle(home, me):
-        with contextlib.suppress(Exception):
-            release_stale_busy(home, me, now_f)
     ledger = ledger_load(home)
     # FR #7926: computed before the queue lock so digest reads do not nest it.
     free_idle = idle_free_model_nicks(home, now=now_f, live=live)
