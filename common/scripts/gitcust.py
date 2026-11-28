@@ -12,7 +12,7 @@ _TITLE = re.compile(r"^[\s\S]{1,240}$")
 
 
 def _empty() -> dict:
-    return {"customers": [], "tasks": []}
+    return {"customers": []}
 
 
 def store_path(home: Path) -> Path:
@@ -29,9 +29,7 @@ def load_store(home: Path) -> dict:
         return _empty()
     if not isinstance(doc, dict):
         return _empty()
-    customers = [c for c in (doc.get("customers") or []) if isinstance(c, dict)]
-    tasks = [t for t in (doc.get("tasks") or []) if isinstance(t, dict)]
-    return {"customers": customers, "tasks": tasks}
+    return _normalize(doc)
 
 
 def save_store(home: Path, doc: dict) -> None:
@@ -52,6 +50,64 @@ def _customer_name(raw) -> str:
     return name
 
 
+def _task_row(raw: dict, owner: str) -> dict | None:
+    kind = str(raw.get("kind") or "").strip().lower()
+    title = str(raw.get("title") or "").strip()
+    path = str(raw.get("path") or "").strip()
+    if not _KIND.match(kind) or not title or not _TITLE.match(title) or not path:
+        return None
+    return {"kind": kind, "title": title, "path": path}
+
+
+def _ensure_customer(by_name: dict, order: list, name: str, path: str | None) -> dict:
+    node = by_name.get(name)
+    if node is None:
+        node = {"name": name, "path": path or name, "tasks": []}
+        by_name[name] = node
+        order.append(name)
+    elif path:
+        node["path"] = path
+    return node
+
+
+def _add_task(node: dict, row: dict) -> None:
+    if any(t.get("path") == row["path"] and t.get("kind") == row["kind"] for t in node["tasks"]):
+        return
+    node["tasks"].append(row)
+
+
+def _normalize(doc: dict) -> dict:
+    """Customers own their tasks. A flat top-level tasks list is folded in on read."""
+    if not isinstance(doc, dict):
+        return _empty()
+    by_name: dict = {}
+    order: list = []
+    for cust in doc.get("customers") or []:
+        if not isinstance(cust, dict):
+            continue
+        name = _customer_name(cust.get("name"))
+        if not name:
+            continue
+        node = _ensure_customer(by_name, order, name, str(cust.get("path") or name))
+        for raw in cust.get("tasks") or []:
+            if not isinstance(raw, dict):
+                continue
+            row = _task_row(raw, name)
+            if row:
+                _add_task(node, row)
+    for raw in doc.get("tasks") or []:
+        if not isinstance(raw, dict):
+            continue
+        owner = _customer_name(raw.get("customer"))
+        if not owner:
+            continue
+        node = _ensure_customer(by_name, order, owner, owner)
+        row = _task_row(raw, owner)
+        if row:
+            _add_task(node, row)
+    return {"customers": [by_name[name] for name in order]}
+
+
 def register(home: Path, raw) -> tuple[int, bytes]:
     if isinstance(raw, (bytes, str)):
         try:
@@ -70,21 +126,18 @@ def register(home: Path, raw) -> tuple[int, bytes]:
         return 400, json.dumps({"error": "customer_or_task"}).encode("utf-8")
     doc = load_store(home)
     if name and not any(str(c.get("name")) == name for c in doc["customers"]):
-        doc["customers"].append({"name": name, "path": str(payload.get("path") or name)})
+        doc["customers"].append({"name": name, "path": str(payload.get("path") or name), "tasks": []})
     if task is not None:
-        kind = str(task.get("kind") or "").strip().lower()
-        title = str(task.get("title") or "").strip()
-        path = str(task.get("path") or "").strip()
-        if not _KIND.match(kind) or not title or not _TITLE.match(title) or not path:
-            return 400, json.dumps({"error": "task_schema"}).encode("utf-8")
         owner = _customer_name(task.get("customer") or name)
-        if not owner:
-            return 400, json.dumps({"error": "customer_or_task"}).encode("utf-8")
-        if not any(str(c.get("name")) == owner for c in doc["customers"]):
-            doc["customers"].append({"name": owner, "path": owner})
-        row = {"customer": owner, "kind": kind, "title": title, "path": path}
-        if not any(t.get("path") == path and t.get("kind") == kind for t in doc["tasks"]):
-            doc["tasks"].append(row)
+        row = _task_row(task, owner)
+        if not owner or row is None:
+            return 400, json.dumps({"error": "task_schema" if owner else "customer_or_task"}).encode("utf-8")
+        node = next((c for c in doc["customers"] if str(c.get("name")) == owner), None)
+        if node is None:
+            node = {"name": owner, "path": owner, "tasks": []}
+            doc["customers"].append(node)
+        node.setdefault("tasks", [])
+        _add_task(node, row)
     save_store(home, doc)
     return 202, json.dumps({"ok": True}).encode("utf-8")
 
@@ -118,38 +171,35 @@ def scan_tree(root: Path) -> dict:
     """Scan customer roots. Task folders are SC/SO/WBS children. Title is never empty."""
     root = Path(root)
     customers = []
-    tasks = []
     if not root.is_dir():
-        return {"customers": customers, "tasks": tasks}
+        return {"customers": customers}
     for cust in sorted(p for p in root.iterdir() if p.is_dir()):
-        customers.append({"name": cust.name, "path": cust.name})
+        node = {"name": cust.name, "path": cust.name, "tasks": []}
         for child in sorted(p for p in cust.iterdir() if p.is_dir()):
             kind = classify_folder(child.name)
             if not kind:
                 continue
-            title = folder_title(child)
-            if not title:
-                title = child.name
-            tasks.append(
-                {
-                    "customer": cust.name,
-                    "kind": kind,
-                    "title": title,
-                    "path": f"{cust.name}/{child.name}",
-                }
+            title = folder_title(child) or child.name
+            node["tasks"].append(
+                {"kind": kind, "title": title, "path": f"{cust.name}/{child.name}"}
             )
-    return {"customers": customers, "tasks": tasks}
+        customers.append(node)
+    return {"customers": customers}
 
 
 def merge_scan(home: Path, root: Path) -> dict:
     found = scan_tree(root)
     doc = load_store(home)
     for cust in found["customers"]:
-        if not any(c.get("name") == cust["name"] for c in doc["customers"]):
-            doc["customers"].append(cust)
-    for task in found["tasks"]:
-        if not any(t.get("path") == task["path"] and t.get("kind") == task["kind"] for t in doc["tasks"]):
-            doc["tasks"].append(task)
+        node = next((c for c in doc["customers"] if c.get("name") == cust["name"]), None)
+        if node is None:
+            doc["customers"].append(
+                {"name": cust["name"], "path": cust.get("path") or cust["name"], "tasks": list(cust.get("tasks") or [])}
+            )
+            continue
+        node.setdefault("tasks", [])
+        for task in cust.get("tasks") or []:
+            _add_task(node, task)
     save_store(home, doc)
     return doc
 

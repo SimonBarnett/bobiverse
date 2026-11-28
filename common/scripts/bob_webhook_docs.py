@@ -151,7 +151,10 @@ def _inbound() -> list[DocEntry]:
             callers="Operators and Priority customer tooling.",
             auth="None. Open GET.",
             request_schema="No body.",
-            response_schema='JSON {"customers":[...],"tasks":[...]}. Empty lists when nothing is registered.',
+            response_schema=(
+                'JSON {"customers":[{"name","path","tasks":[{"kind":"sc|so|wbs","title","path"}]}]}. '
+                "Tasks are nested on the customer. No top-level tasks array."
+            ),
             example_request="GET https://bob.ntsa.uk/bob/v1/gitcust",
             status_codes="200 JSON.",
             retry_idempotency="Safe GET.",

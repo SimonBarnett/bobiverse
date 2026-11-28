@@ -16,9 +16,11 @@ def test_fr9983_scan_titles(tmp_path):
     (cust / "notes").mkdir()
     doc = gitcust.merge_scan(tmp_path / "home", tmp_path)
     assert any(c["name"] == "Northwind" for c in doc["customers"])
-    rows = [t for t in doc["tasks"] if t["kind"] == "sc"]
+    north = next(c for c in doc["customers"] if c["name"] == "Northwind")
+    rows = [t for t in north["tasks"] if t["kind"] == "sc"]
     assert rows
     assert rows[0]["title"]
     assert "Boiler" in rows[0]["title"]
     served = gitcust.load_store(tmp_path / "home")
-    assert served["tasks"][0]["title"]
+    assert served["customers"][0]["tasks"][0]["title"]
+    assert "tasks" not in served
