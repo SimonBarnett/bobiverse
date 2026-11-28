@@ -7,9 +7,12 @@ when a live PR changed paths outside that set.
 from __future__ import annotations
 
 SKILL_PREFIX = "common/.grok/skills/"
+GROK_SKILL_PREFIX = ".grok/skills/"
 INTAKE_HARVEST_PREFIX = "docs/intake-harvest/"
+SKILL_SOURCES_PREFIX = "docs/skill-sources/"
+MCP_CATALOG_PREFIX = "apps/mcp-catalog/catalog/"
 HARVEST_LOG_PATH = "common/docs/skill-harvest-log.md"
-MAX_CHANGED_PATHS = 8
+MAX_CHANGED_PATHS = 12
 
 
 def _norm_path(path: str) -> str:
@@ -25,10 +28,18 @@ def harvest_lesson_path_allowed(path: str) -> bool:
         return True
     if p == HARVEST_LOG_PATH:
         return True
-    if not p.startswith(SKILL_PREFIX):
-        return False
-    if p.endswith("/SKILL.md") or p.endswith("/lessons.md"):
+    if p.startswith(SKILL_SOURCES_PREFIX) and ".." not in p:
         return True
+    if p.startswith(MCP_CATALOG_PREFIX) and ".." not in p:
+        tail = p[len(MCP_CATALOG_PREFIX) :]
+        return tail.endswith("/SKILL.md") or tail.endswith("/meta.json")
+    skill_tail = None
+    if p.startswith(SKILL_PREFIX):
+        skill_tail = p[len(SKILL_PREFIX) :]
+    elif p.startswith(GROK_SKILL_PREFIX):
+        skill_tail = p[len(GROK_SKILL_PREFIX) :]
+    if skill_tail is not None:
+        return skill_tail.endswith("/SKILL.md") or skill_tail.endswith("/lessons.md")
     return False
 
 

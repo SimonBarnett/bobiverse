@@ -3317,6 +3317,7 @@ def file_submission(
                         )
                         line = plain_harvest_lesson_line(title, raw_body)
                         lesson_files = [skill_source_lesson_file(book, iid, line)]
+                        harvest_lesson_tip.assert_lesson_files_allowlist(lesson_files)
                         lesson_title = build_lesson_pr_title(book, [line])
                         lesson_body = build_lesson_pr_body(
                             book=book,
