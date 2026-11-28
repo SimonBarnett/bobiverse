@@ -575,6 +575,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When verify_job_worktree_git can block ~180s, park like FR #6328 create --- bind opencode_verify_job_worktree on Relay and strip sync verify from _inject_line opencode-ready
 <!-- harvest-tip:intake-in_ens_2a2b9c9d09dd -->
 - OpenCode existing-tree assign: Relay git-prep thread before inject; 6328 ACK wait 5s can be tight on slow Windows git worktree add.
+<!-- harvest-tip:intake-in_979589a3b19b4a11 -->
+- Monitor multi-route 502 BobCallback filings stamp ionos; non-chair seats GIVEUP and comment walrus heal playbook (#9260 probe).
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
