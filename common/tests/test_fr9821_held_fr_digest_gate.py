@@ -114,8 +114,8 @@ def test_fr9821_held_digest_child_not_offered(home: Path):
     assert why == gitclaim.DEPENDS_HELD_REASON
 
 
-def test_fr9821_unheld_digest_child_offered(home: Path):
-    """Unhold releases children while digest stays OPEN."""
+def test_fr9821_unheld_open_digest_child_still_blocked(home: Path):
+    """FR #10059: an unheld OPEN digest still blocks its children (depends-open)."""
     me = "marchhare-35600"
     digest = _row(
         9795,
@@ -134,9 +134,10 @@ def test_fr9821_unheld_digest_child_offered(home: Path):
     fi.handle_focus_cmd(home, REPO)
 
     st, job = gitclaim.offer_focus_top(home, me, "#marchhare")
-    assert st == "ok" and job is not None
-    assert job["id"] == "#9803"
-    assert gitclaim.depends_gate_reason(child, gitclaim.load_queue(home)) is None
+    assert job is None or job["id"] != "#9803"
+    assert gitclaim.depends_gate_reason(child, gitclaim.load_queue(home)) == (
+        gitclaim.DEPENDS_OPEN_REASON
+    )
 
 
 def test_fr9821_offerable_count_skips_held_digest_child(home: Path):

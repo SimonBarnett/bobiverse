@@ -65,6 +65,7 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP "bob-tray-out"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           # Quote the comma list. pwsh otherwise binds tray,about as [string[]].
+          # FR #10100: pwsh binds unquoted tray,about as [string[]]; -Targets is [string].
           & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $out -Targets "tray,about"
           if ($LASTEXITCODE -ne 0) { throw "Build-BobDialogs.ps1 exit $LASTEXITCODE" }
           $trayExes = @("bob-tray.exe", "bob-about.exe")
