@@ -1577,6 +1577,20 @@ def resolve_opencode_model(
     except Exception:
         pass
 
+    env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
+    pinned = seat_model_pinned(env) and bool(env_model)
+    # FR #8321 / #10313: tray click restore must honour the saved weight only
+    # (no free-first fallthrough). Automatic seats still free-first (#8454).
+    if pinned:
+        chosen = env_model
+        line = f"opencode model={chosen or '-'} source=env skipped=-"
+        if log_fn is not None:
+            try:
+                log_fn(line)
+            except Exception:  # noqa: BLE001
+                pass
+        return chosen
+
     def _paused(model_id: str) -> bool:
         if not opencode_fuel:
             return False
@@ -1596,13 +1610,100 @@ def resolve_opencode_model(
             return True
         return False
 
-    # The free link and the paid link each pass one model. Do not pick another.
-    selected = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
-    if not selected and env is not None:
-        selected = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
-    source = "env" if selected else ""
-    chosen: Optional[str] = selected or None
-    line = f"opencode model={chosen or '-'} source={source or '-'} skipped=-"
+    skipped: list[str] = []
+    candidates: list[tuple[str, str]] = []
+
+    try:
+        import worker_start_model as wsm
+
+        start_cfg = wsm.load_worker_start_config(env=env)
+        start_model = str((start_cfg.get("workerStartModels") or {}).get("opencode") or "").strip()
+        start_free = wsm.default_opencode_free_model(start_cfg)
+        start_paid = wsm.default_opencode_paid_model(start_cfg)
+    except Exception:
+        start_cfg = {}
+        start_model = ""
+        start_free = "opencode/deepseek-v4.1-flash-free"
+        start_paid = "opencode-go/deepseek-v4-pro"
+
+    # FR #8454: free remaining > 0 or unknown starts on a free id even when the
+    # tray/env pin is paid. Paid slot only when free is known 0 and paid > 0.
+    free_known_zero = _opencode_free_known_zero(fuel)
+    # FR #8555: a free-pool pause means free is exhausted even when catalogue
+    # still reports 100 — try paid instead of dying with model=-.
+    if not free_known_zero and opencode_fuel is not None:
+        try:
+            if opencode_fuel.is_opencode_model_paused(
+                "opencode-free", state_dir, now=now
+            ):
+                free_known_zero = True
+        except Exception:
+            pass
+
+    def _is_paid(mid: str) -> bool:
+        try:
+            import worker_start_model as wsm
+
+            return bool(wsm.opencode_is_go_or_paid(mid))
+        except Exception:
+            low = str(mid or "").lower()
+            return low.startswith("opencode-go/") or low.endswith("-pro")
+
+    if not free_known_zero:
+        # FR #6363: worker export in os.environ is not an operator override.
+        if env_model and _is_paid(env_model):
+            skipped.append(f"env:{env_model}:free-first")
+        elif env_model:
+            candidates.append(("env", env_model))
+
+        if start_model and _is_paid(start_model):
+            skipped.append(f"start:{start_model}:free-first")
+        elif start_model:
+            candidates.append(("tray", start_model))
+
+        cfg_model = read_opencode_config_model(env)
+        if cfg_model and _is_paid(cfg_model):
+            skipped.append(f"config:{cfg_model}:free-first")
+        elif cfg_model:
+            candidates.append(("config", cfg_model))
+
+        if start_free:
+            candidates.append(("start", start_free))
+
+        for free_id in fuel.opencode_free_model_ids or ():
+            fid = str(free_id or "").strip()
+            if fid and not _is_paid(fid):
+                candidates.append(("fuel", fid))
+
+        fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
+        if fuel_model and not _is_paid(fuel_model):
+            candidates.append(("fuel", fuel_model))
+    else:
+        if env_model and not _is_paid(env_model):
+            skipped.append(f"env:{env_model}:free-exhausted")
+        # FR #8541: free known 0 + go unknown must still try the paid tray slot.
+        if start_paid and (
+            _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel)
+        ):
+            candidates.append(("paid", start_paid))
+        elif start_paid:
+            skipped.append(f"paid:{start_paid}:exhausted")
+
+    chosen: Optional[str] = None
+    source = ""
+    for src, mid in candidates:
+        if _paused(mid):
+            skipped.append(f"{src}:{mid}:paused")
+            continue
+        if _opencode_model_known_capped(mid, fuel):
+            skipped.append(f"{src}:{mid}:capped")
+            continue
+        chosen = mid
+        source = src
+        break
+
+    skip_s = ",".join(skipped) if skipped else "-"
+    line = f"opencode model={chosen or '-'} source={source or '-'} skipped={skip_s}"
     if log_fn is not None:
         try:
             log_fn(line)
@@ -4576,6 +4677,11 @@ def report_opencode_model_refusal(
         reason = (
             "opencode: no usable model (free empty, go fuel unknown - "
             "not capped/paused; FR #8541)"
+        )
+    elif fuel is not None and fuel.opencode_free is not None and int(fuel.opencode_free) > 0:
+        reason = (
+            "opencode: no resolvable model (free=%s but every candidate paused/capped)"
+            % fuel.opencode_free
         )
     else:
         reason = "opencode: no usable model (capped/paused)"
