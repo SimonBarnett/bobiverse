@@ -13374,6 +13374,10 @@ def mrb_yields_to_older_fr(
     """
     if free_idle:
         return False
+    # Grok and Cursor are paid hostile-review seats. Do not park their MRB
+    # behind an older FR/FIX (#8138). That yield left cursor seats on FIX/FR.
+    if _seat_kind_always_paid(seat_agent_kind(home, nick)):
+        return False
     task = str((cand or {}).get("task") or "").upper()
     if task != "MRB":
         return False
