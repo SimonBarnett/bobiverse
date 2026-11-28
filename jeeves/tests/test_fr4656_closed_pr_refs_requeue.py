@@ -67,9 +67,11 @@ def _fr_ids(doc):
 def test_closed_unmerged_ref_that_is_a_pull_adds_no_fr(tmp_path, monkeypatch, capsys):
     home = _home(tmp_path, monkeypatch)
     _checkers(monkeypatch, is_pull=True, issue_open=False)
+    done = _done_fr("#3015")
+    done["event"] = "pull_request"
     gitclaim._write_queue(
         gitclaim.queue_path(home),
-        {"v": 1, "unaccepted": [], "accepted": [], "done": [_done_fr("#3015")]},
+        {"v": 1, "unaccepted": [], "accepted": [], "done": [done]},
     )
     gitclaim.apply_queue_event(home, _close_pr(("#3015",)))
     doc = gitclaim._load_queue_unlocked(home)
@@ -82,9 +84,11 @@ def test_closed_unmerged_ref_that_is_a_pull_adds_no_fr(tmp_path, monkeypatch, ca
 def test_closed_unmerged_ref_that_is_a_closed_issue_adds_no_fr(tmp_path, monkeypatch, capsys):
     home = _home(tmp_path, monkeypatch)
     _checkers(monkeypatch, is_pull=False, issue_open=False)
+    done = _done_fr("#3016")
+    done["state"] = "closed"
     gitclaim._write_queue(
         gitclaim.queue_path(home),
-        {"v": 1, "unaccepted": [], "accepted": [], "done": [_done_fr("#3016")]},
+        {"v": 1, "unaccepted": [], "accepted": [], "done": [done]},
     )
     gitclaim.apply_queue_event(home, _close_pr(("#3016",)))
     doc = gitclaim._load_queue_unlocked(home)
