@@ -537,6 +537,10 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - PowerShell 5.1 Start-Process -ArgumentList rejects an empty string. An OpenCode standing prompt has no job directory, so passing an empty --cwd throws before CreateProcess. The wrapper then records exit -1 and bytes=165, which is CRLF plus the ArgumentList parameter error, not a TUI handshake. Omit --cwd when there is no job directory.
 <!-- harvest-tip:intake-in_63e8cb6fb54b48ba -->
 - mrb_already_done returns False for _mrb_pass_awaiting_merge; refuse draft and merge-conflicting in mrb_row_not_offerable_reason
+<!-- harvest-tip:intake-in_7d41adc9841e48ce -->
+- Fresh digest 0% or age<=120 beats TipForm snapshot; under-cap uses Get-BobTrayEmptyOnlineFillAgentChoice
+<!-- harvest-tip:intake-in_9075c3517b4d4e08 -->
+- Before tip scripts robocopy on bob installs, compare scripts/provenance.txt source_commit to clone HEAD; rebuild Install-BobEarExe when ARP VERSION > git VERSION.
 <!-- harvest-tip:intake-in_2f2ce3b2f9a4473f -->
 - Treat subprocess.TimeoutExpired on Clear like FR #8211 console-close: log skip, no runtime_failure
 <!-- harvest-tip:intake-in_ceb92a34bc124fb4 -->
@@ -581,6 +585,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
 - The same issue number in two repos is not a twin. Close only the repo the operator named.
 - When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.
+- MRB of skill resume tips: reopen not_planned Closes issues before merge; related broader reuse FR (#10241/#10266) is not an exact twin of empty-worktree FR
 - Digest completeness gate: harvest digest bullets starting - ** must end with ) or lessons:/held; append (FR #N) when a CAST IRON bullet would otherwise fail test_mrb2718_digest_bullets_complete_lines
 - OpenCode launch-opencode.ps1 pins seat cwd via opencode run --dir and ConPTY --cwd, not Start-Process -WorkingDirectory; stale WorkingDirectory asserts FAIL on main
 - FR #8865 tip overlay: worker_prompt tests must use tmp_path; ignore install tips that still say MCP resolve then get_skill (public MCP has list_catalog/get_skill only).

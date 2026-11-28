@@ -1,11 +1,4 @@
-"""MRB #8191 hostile pin: done[] hold must block a second seat after purge restore.
-
-PR #8191 refreshed FR #1323 for FR #8137 (mrb_done at MERGED). Offer of a
-phantom unaccepted while done[] holds purges the row (already_done). A second
-seat assertion must restore unaccepted + done[] so it exercises the hold, not
-an empty queue. MERGED ledger stamp via process_pending is covered by
-test_fr8137_pass_clean_waiting_merge_then_stamp_on_merged.
-"""
+"""MRB #8191 / FR #9885: PASS seat blocked; second seat may take merge-wait MRB."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -66,15 +59,29 @@ def test_mrb8191_done_hold_blocks_second_seat_after_restore(tmp_path, monkeypatc
 
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
-        {"v": 1, "unaccepted": [_mrb(10)], "accepted": [], "done": done_rows},
+        {
+            "v": 1,
+            "unaccepted": [_mrb(10, mergeable=True, mergeable_state="clean")],
+            "accepted": [],
+            "done": done_rows,
+        },
     )
     assert gitclaim.offer_focus_top(tmp_path, "marchhare-41928", "#marchhare")[0] == "empty"
-    assert gitclaim.load_unaccepted(tmp_path) == []
 
-    # Restore phantom so flamingo exercises done[] hold, not an empty queue.
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
-        {"v": 1, "unaccepted": [_mrb(10)], "accepted": [], "done": done_rows},
+        {
+            "v": 1,
+            "unaccepted": [_mrb(10, mergeable=True, mergeable_state="clean")],
+            "accepted": [],
+            "done": done_rows,
+        },
     )
-    assert gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")[0] == "empty"
-    assert gitclaim.load_unaccepted(tmp_path) == []
+    def pr_open(repo: str, num: str) -> bool:
+        return repo == REPO and str(num).lstrip("#") == "10"
+
+    assert (
+        gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo", pr_exists=pr_open)[0]
+        == "ok"
+    )
+    assert len(gitclaim.load_unaccepted(tmp_path)) == 1

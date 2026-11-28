@@ -14,7 +14,9 @@ def test_fr2333_clamp_empty_reply_zeros_offerable():
         "ledger": 0,
         "sticky_offered": 0,
     }
-    clamped = gitclaim.clamp_empty_reply_stats(stats)
+    clamped = gitclaim.clamp_empty_reply_stats(
+        stats, live_skip="FR SimonBarnett/bobiverse#1:cooldown"
+    )
     assert clamped["offerable"] == 0
     assert clamped["blocked_other"] == 1
     line = gitclaim.format_empty_offer_detail("win-mpre8vi4u6u-14452", clamped)

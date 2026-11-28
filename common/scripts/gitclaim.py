@@ -107,6 +107,24 @@ NAK_BORED_WAIT = "NAK !BORED wait"
 NAK_BORED_BUSY = "NAK !BORED busy"
 NO_JOBS = "no jobs"
 
+_LAST_OFFER_EMPTY_SKIP: dict[str, str] = {}
+
+
+def _offer_empty_skip_key(home: Path, nick: str) -> str:
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    return f"{_root(home)!s}|{me}"
+
+
+def note_offer_empty_skip(home: Path, nick: str, reason: str) -> None:
+    """FR #10339: last live skip for clamp_empty_reply_stats after offer_focus_top empty."""
+    why = str(reason or "").strip()
+    if why:
+        _LAST_OFFER_EMPTY_SKIP[_offer_empty_skip_key(home, nick)] = why
+
+
+def take_last_offer_empty_skip(home: Path, nick: str) -> str:
+    return _LAST_OFFER_EMPTY_SKIP.pop(_offer_empty_skip_key(home, nick), "")
+
 
 def format_bored_busy_nak(nick: str, open_job: str = "") -> str:
     """FR #4415: busy NAK names the seat and held/offered job (operators + seat logs).
@@ -469,6 +487,120 @@ def row_fr_park_only_reason(row: dict) -> str | None:
 def row_fr_skip_offer_reason(row: dict) -> str | None:
     """FR #4009 + #8741: hold or park-only reason to skip offering an FR row."""
     return row_fr_hold_reason(row) or row_fr_park_only_reason(row)
+
+
+# FR #10234: a twin FR restating a defect whose fix PR already merged must not be offered.
+# Cue = the FR itself says it is a twin / already fixed; the cited PR must be MERGED.
+TWIN_MERGED_CUE_RE = re.compile(
+    r"(?i)\btwin\b|\bduplicate of\b|\balready\s+(?:merged|fixed|landed)\b"
+)
+TWIN_CITED_PR_RE = re.compile(r"(?i)\bPR\s*#(\d+)\b|/pull/(\d+)\b")
+
+
+def fr_twin_cited_merged_pr_reason(
+    title: str = "",
+    body: str = "",
+    repo: str = "",
+    *,
+    is_merged=None,
+) -> str | None:
+    """FR #10234: reason when a twin/already-fixed FR cites a MERGED PR, else None.
+
+    ``is_merged(repo, num)`` -> True when the PR is merged. Lookup errors fail open
+    (the FR stays offerable). Without a cue or without a cited PR, returns None.
+    """
+    if is_merged is None:
+        return None
+    blob = f"{title or ''}\n{body or ''}"
+    if not TWIN_MERGED_CUE_RE.search(blob):
+        return None
+    nums: list[str] = []
+    for m in TWIN_CITED_PR_RE.finditer(blob):
+        n = m.group(1) or m.group(2) or ""
+        if n and n not in nums:
+            nums.append(n)
+    for n in nums:
+        try:
+            if bool(is_merged(repo, n)):
+                return f"twin-merged-pr: PR #{n} already merged"
+        except Exception:
+            continue
+    return None
+
+
+def row_fr_twin_merged_reason(row: dict, *, pr_merged=None) -> str | None:
+    """FR #10234: twin-of-merged-PR skip reason for an FR queue row (None otherwise).
+
+    The GitHub merged lookup runs only for FR rows that carry a twin cue, so normal
+    FRs cost no API calls. ``pr_merged`` is an injectable ``is_merged(repo, num)``.
+    """
+    if _canon_task(row) != "FR":
+        return None
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    body = str(row.get("body") or "")
+    if not TWIN_MERGED_CUE_RE.search(f"{title}\n{body}"):
+        return None
+    checker = pr_merged if pr_merged is not None else github_pr_merged_checker()
+    return fr_twin_cited_merged_pr_reason(
+        title, body, str(row.get("repo") or "").strip(), is_merged=checker
+    )
+
+
+def github_pr_merged_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``is_merged(repo, num)`` -> True only when the pull is MERGED (FR #10234).
+
+    Returns None when offline / no token. 404/410 -> False; other failures raise
+    ``GitHubLookupUnknown`` (callers fail open).
+    """
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else {}
+
+    def _check(repo: str, num: str) -> bool:
+        key = f"is_merged:{repo}#{num}"
+        if key in store:
+            return bool(store[key])
+        api = f"https://api.github.com/repos/{repo}/pulls/{num}"
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-gitclaim",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8") or "{}")
+                merged = bool(isinstance(data, dict) and data.get("merged_at"))
+                store[key] = merged
+                return merged
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (404, 410):
+                store[key] = False
+                return False
+            _log_github_lookup_failure("is_merged", repo, num, code=code, exc=e)
+            raise GitHubLookupUnknown(f"is_merged {repo}#{num} http={code}") from e
+        except Exception as e:
+            _log_github_lookup_failure("is_merged", repo, num, exc=e)
+            raise GitHubLookupUnknown(f"is_merged {repo}#{num} {type(e).__name__}") from e
+
+    return _check
 
 
 # BOB-G3 / FR #9108: Digest flag - issues only (never title heuristics alone).
@@ -1125,6 +1257,29 @@ def depends_issue_fetch_checker(fetch_issue=None):
     if fetch_issue is not None and getattr(fetch_issue, "budget", None) is None:
         return fetch_issue
     return lambda repo, num: fetch_github_issue_dict(repo, num)
+
+
+def _depend_fetched_state(issue_fetch, repo: str, oid: str) -> str:
+    """FR #10105: ``"closed"`` / ``"open"`` / ``""`` from an optional issue_fetch lookup.
+
+    Lookup failures return ``""`` (unknown) so the caller keeps its fail-closed path.
+    """
+    if issue_fetch is None:
+        return ""
+    raw = str(oid or "").strip().lstrip("#")
+    try:
+        num = int(raw) if raw else 0
+    except ValueError:
+        return ""
+    if num < 1:
+        return ""
+    try:
+        issue = issue_fetch(repo, str(num))
+    except Exception:
+        return ""
+    if not isinstance(issue, dict):
+        return ""
+    return str(issue.get("state") or "").strip().lower()
 
 
 def _bob_g1_digest_gate_for_pair(
@@ -8798,6 +8953,10 @@ def mrb_already_done(
     want = ident if ident.startswith("#") else f"#{ident.lstrip('#')}"
     # Finished review wins over GitHub-open (ci-wait). Check before pr_exists.
     if _mrb_review_finished(doc, home, repo, want):
+        # FR #9885: open clean mergeable tip stays offerable until merged (FR #4661
+        # still blocks the seat that PASSed).
+        if _mrb_pass_awaiting_merge(doc, row, home=home, pr_exists=pr_exists):
+            return False
         return True
     if pr_exists is not None:
         try:
@@ -8848,6 +9007,100 @@ def mrb_row_should_survive_resync(
     return False
 
 
+def _mrb_row_merge_state(row: dict) -> tuple[Any, str]:
+    """Mergeable + merge_state fields stamped on queue rows (resync / precompute)."""
+    mergeable = row.get("mergeable")
+    merge_state = str(
+        row.get("mergeable_state")
+        or row.get("merge_state_status")
+        or row.get("mergeStateStatus")
+        or ""
+    )
+    return mergeable, merge_state
+
+
+def _mrb_row_merge_conflict_reason(row: dict) -> str | None:
+    """FR #9885: DIRTY/CONFLICTING open PRs are FIX-first, not MRB."""
+    try:
+        import mrb_merge_on_green as _mog
+    except ImportError:
+        return None
+    mergeable, merge_state = _mrb_row_merge_state(row)
+    return _mog.merge_attempt_conflict_reason(
+        mergeable=mergeable, merge_state=merge_state
+    )
+
+
+def _mrb_pass_verdict_on_record(
+    doc: dict | None, home: Path | None, repo: str, ident: str
+) -> bool:
+    """True when a PASS verdict (not mere FAIL) is on record for this MRB."""
+    want = _norm_row_id(ident)
+    if not want or not str(repo or "").strip():
+        return False
+    repo_raw = str(repo or "").strip()
+    repo_c = canonical_queue_repo(repo_raw) or repo_raw
+    if isinstance(doc, dict):
+        for r in doc.get("done") or []:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("task") or "").upper() != "MRB":
+                continue
+            r_repo = str(r.get("repo") or "").strip()
+            if not r_repo:
+                continue
+            if (canonical_queue_repo(r_repo) or r_repo) != repo_c and r_repo != repo_raw:
+                continue
+            if _norm_row_id(r.get("id")) != want:
+                continue
+            result = str(r.get("result") or "").strip().upper()
+            if result == "PASS":
+                return True
+    if home is not None:
+        try:
+            num = int(str(ident).lstrip("#"))
+        except (TypeError, ValueError):
+            num = 0
+        if num:
+            with contextlib.suppress(Exception):
+                if str(_merge_on_green_pass_sha(home, repo_raw, num) or "").strip():
+                    return True
+    return False
+
+
+def _mrb_pass_awaiting_merge(
+    doc: dict,
+    row: dict,
+    *,
+    home: Path | None = None,
+    pr_exists=None,
+) -> bool:
+    """FR #9885: PASS on an open clean MERGEABLE tip MRB stays offerable until merge."""
+    if _canon_task(row) != "MRB":
+        return False
+    repo = str(row.get("repo") or "").strip()
+    ident = _norm_row_id(str(row.get("id") or ""))
+    if not repo or not ident:
+        return False
+    if not _mrb_pass_verdict_on_record(doc, home, repo, ident):
+        return False
+    if row.get("draft") in (True, "true", "1", 1):
+        return False
+    if _mrb_row_merge_conflict_reason(row):
+        return False
+    if row.get("merged") in (True, "true", "1", 1):
+        return False
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return False
+    if pr_exists is not None:
+        try:
+            if not bool(pr_exists(repo, ident.lstrip("#"))):
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def mrb_row_not_offerable_reason(
     row: dict,
     *,
@@ -8864,6 +9117,11 @@ def mrb_row_not_offerable_reason(
         return "merged"
     if str(row.get("state") or "").strip().lower() == "closed":
         return "state=closed"
+    if row.get("draft") in (True, "true", "1", 1):
+        return "draft"
+    conflict = _mrb_row_merge_conflict_reason(row)
+    if conflict:
+        return f"merge-{conflict}"
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
     if is_mrb_fix_pr_title(titleish) and not _mrb_fix_offer_stamped(row):
         # FR #2375: stacked parent-branch fixes are not MRB.
@@ -10956,12 +11214,13 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
 
 
 
-def clamp_empty_reply_stats(stats: dict | None) -> dict:
+def clamp_empty_reply_stats(stats: dict | None, *, live_skip: str | None = None) -> dict:
     """FR #2333: empty bored reply must never claim N>0 offerable for this seat.
 
     `summarize_empty_offer` can still count a row the live `offer_focus_top` path
     skipped (cooldown, awaits_mrb1, sticky_skip edge, PR checker, …). When the shop
-    already returned empty for this nick, fold leftover offerable into `blocked_other`.
+    already returned empty for this nick, fold leftover offerable into `blocked_other`
+    only when ``live_skip`` names the first live ineligible reason (FR #10339).
     """
     out = dict(stats or {})
     try:
@@ -10969,12 +11228,19 @@ def clamp_empty_reply_stats(stats: dict | None) -> dict:
     except (TypeError, ValueError):
         off = 0
     if off > 0:
-        try:
-            prev = int(out.get("blocked_other") or 0)
-        except (TypeError, ValueError):
-            prev = 0
-        out["blocked_other"] = prev + off
-        out["offerable"] = 0
+        why = str(live_skip or out.get("live_skip") or "").strip()
+        if why:
+            try:
+                prev = int(out.get("blocked_other") or 0)
+            except (TypeError, ValueError):
+                prev = 0
+            out["blocked_other"] = prev + off
+            out["live_skip"] = why
+            out["offerable"] = 0
+        else:
+            # FR #10339: do not hide summarize/live drift behind opaque blocked_other.
+            out["offerable_live_mismatch"] = off
+            out["offerable"] = 0
     return out
 
 
@@ -11688,6 +11954,15 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
             extra.append(f"coderabbit_hold={coderabbit_hold}")
     if blocked_other:
         extra.append(f"blocked_other={blocked_other}")
+    try:
+        mismatch = int(stats.get("offerable_live_mismatch") or 0)
+    except (TypeError, ValueError):
+        mismatch = 0
+    if mismatch:
+        extra.append(f"offerable_live_mismatch={mismatch}")
+    live_skip = str(stats.get("live_skip") or "").strip()
+    if live_skip:
+        extra.append(f"live_skip={live_skip}")
     skip_bits = []
     for item in (stats.get("skips") or [])[:8]:
         if not isinstance(item, dict):
@@ -14912,6 +15187,81 @@ def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
         return ""
 
 
+def _first_live_offer_skip(
+    home: Path,
+    doc: dict,
+    me: str,
+    *,
+    now_f: float,
+    live,
+    ledger,
+    open_dep_keys,
+) -> str:
+    """First ineligible row on the live !bored path (FR #10339)."""
+    import focus_ignore
+
+    def _key(row: dict) -> str:
+        task = str(row.get("task") or "FR").strip().upper() or "FR"
+        repo_s = str(row.get("repo") or "").strip()
+        ident = str(row.get("id") or "").strip()
+        if ident and not ident.startswith("#"):
+            ident = "#" + ident
+        return f"{task} {repo_s}{ident}".strip()
+
+    order = ordered_unaccepted(home, doc.get("unaccepted") or [])
+    for cand in order:
+        if not isinstance(cand, dict):
+            continue
+        key = _key(cand)
+        repo = str(cand.get("repo") or "")
+        if focus_ignore.is_ignored(home, repo):
+            return f"{key}:repo-ignored"
+        try:
+            import dispatch_lock as _dl
+
+            blk = _dl.row_blocked_reason(home, cand)
+            if blk:
+                return f"{key}:{blk}"
+        except Exception:
+            pass
+        if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
+            return f"{key}:cooldown"
+        skip_why = row_skip_fr_reason(cand)
+        if skip_why:
+            return f"{key}:{skip_why}"
+        if digest_issue_reason(cand):
+            return f"{key}:digest-gate"
+        skip_why = row_fr_skip_offer_reason(cand)
+        if skip_why:
+            return f"{key}:{skip_why}"
+        if depends_gate_reason(
+            cand,
+            doc,
+            open_keys=open_dep_keys,
+            issue_open=None,
+            issue_fetch=None,
+        ):
+            return f"{key}:depends"
+        if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
+            return f"{key}:machine"
+        if ledger_blocks(ledger, cand, me, live):
+            return f"{key}:ledger"
+        to = str(cand.get("offered_to") or "").strip()
+        if to:
+            them = (canonical_worker_nick(to) or to).strip().lower()
+            me_l = (canonical_worker_nick(me) or me).strip().lower()
+            if them and them != me_l:
+                return f"{key}:sticky-other"
+        row = dict(cand)
+        _stamp_require_machine(row)
+        if row_blocked_for_machine(row, me):
+            return f"{key}:require_machine"
+        if not _seat_model_allows_row(home, me, row):
+            return f"{key}:model"
+        return ""
+    return "no-eligible-rows"
+
+
 def offer_focus_top(
     home: Path,
     nick: str,
@@ -14923,6 +15273,7 @@ def offer_focus_top(
     issue_open=None,
     fetch_issue=None,
     offered_via: str | None = None,
+    pr_merged=None,
     merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
@@ -14946,8 +15297,10 @@ def offer_focus_top(
     now_f = _time.time() if now is None else float(now)
     # FR #4181: never stamp an offer onto a seat still marked out-of-fuel.
     if seat_is_out_of_fuel(home, nick, now_f):
+        note_offer_empty_skip(home, nick, "out-of-fuel")
         return "empty", None
     if seat_fuel_pause_reason(home, nick, now_f):
+        note_offer_empty_skip(home, nick, "fuel-pause")
         return "empty", None
     live = live_seat_nicks(home)
     free = free_seat_nicks(home, live)
@@ -15099,6 +15452,11 @@ def offer_focus_top(
             # in seat-holds.json is never offered a second job.
             open_job = _seat_open_job_in(home, doc, me, now_f, live)
             if open_job:
+                note_offer_empty_skip(home, me, f"seat-open:{open_job}")
+                with contextlib.suppress(Exception):
+                    _log_queue_purge(
+                        f"INFO offer-empty seat={me} live_skip=seat-open:{open_job}"
+                    )
                 if purged:
                     try:
                         _write_queue(queue_path(home), doc)
@@ -15158,6 +15516,14 @@ def offer_focus_top(
                     ):
                         purged = True
                     return None
+                # FR #10234: twin FR whose cited fix PR already merged - never offer.
+                twin_why = row_fr_twin_merged_reason(cand, pr_merged=pr_merged)
+                if twin_why:
+                    if _drop_unaccepted_row(
+                        doc, cand, kind="fr-twin-merged", reason=twin_why, home=home
+                    ):
+                        purged = True
+                    return None
                 # BOB-D6 / FR #8810: empty queue body → fetch issue body before Depends-on parse
                 # (fail-when: silent offer with empty body). Persist stamp when filled.
                 if _canon_task(cand) == "FR":
@@ -15204,6 +15570,10 @@ def offer_focus_top(
                 # FR #4718: do not hand the same MRB head back to the seat that FAILed it.
                 if mrb_fail_same_head_for_seat(cand, me):
                     return None
+                if _canon_task(cand) == "MRB" and _nick_done_mrb_pass_in_doc(
+                    doc, me, str(cand.get("repo") or ""), str(cand.get("id") or "")
+                ):
+                    return None  # FR #4661: same seat does not re-review after PASS
                 if ledger_blocks(ledger, cand, me, live):
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
@@ -15474,6 +15844,20 @@ def offer_focus_top(
                         _write_queue(queue_path(home), doc)
                     except OSError:
                         return "error", None
+                skip = _first_live_offer_skip(
+                    home,
+                    doc,
+                    me,
+                    now_f=now_f,
+                    live=live,
+                    ledger=ledger,
+                    open_dep_keys=open_dep_keys,
+                ) or "no-eligible"
+                note_offer_empty_skip(home, me, skip)
+                with contextlib.suppress(Exception):
+                    _log_queue_purge(
+                        f"INFO offer-empty seat={me} live_skip={skip}"
+                    )
                 return "empty", None
             prev_to = ""
             same = False
@@ -15563,6 +15947,7 @@ def offer_top(
     is_pull=None,
     issue_open=None,
     fetch_issue=None,
+    pr_merged=None,
     merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
@@ -15650,6 +16035,16 @@ def offer_top(
                     kind = "fr-park-only" if skip_why.startswith("park-only") else "fr-hold"
                     if _drop_unaccepted_row(
                         doc, row, kind=kind, reason=skip_why, home=home
+                    ):
+                        purged = True
+                        continue
+                    i += 1
+                    continue
+                # FR #10234: twin FR whose cited fix PR already merged - never offer.
+                twin_why = row_fr_twin_merged_reason(row, pr_merged=pr_merged)
+                if twin_why:
+                    if _drop_unaccepted_row(
+                        doc, row, kind="fr-twin-merged", reason=twin_why, home=home
                     ):
                         purged = True
                         continue
@@ -22524,6 +22919,39 @@ def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> 
         _report_holder_bored(nick, open_job)
     reset_holder_bored(home, nick)
     return open_job
+
+
+def bored_gate_busy_reason(
+    home: Path,
+    nick: str,
+    now: float,
+    *,
+    session_started: float | None = None,
+) -> str:
+    """FR #10339: name why ``bored_gate`` would return busy when ``seat_open_job`` is empty."""
+    if seat_is_out_of_fuel(home, nick, now):
+        return "out-of-fuel"
+    fuel = str(seat_fuel_pause_reason(home, nick, now) or "").strip()
+    if fuel:
+        return f"fuel:{fuel}"
+    pend = seat_pending_offer(home, nick, now)
+    if isinstance(pend, dict):
+        repo = str(pend.get("repo") or "").strip()
+        ident = str(pend.get("id") or "").strip()
+        task = str(pend.get("task") or "FR").strip().upper()
+        return f"pending-offer {repo}/{task}{ident}"
+    open_job = str(seat_open_job(home, nick, now) or "").strip()
+    if open_job and not open_job.startswith("accepted "):
+        return open_job
+    if _seat_has_accepted(home, nick):
+        return "accepted"
+    work = str(worker_working_on(home, nick) or "").strip()
+    if work:
+        return f"working_on:{work[:96]}"
+    if open_job:
+        return open_job
+    del session_started  # gate already reconciled session stale rows
+    return ""
 
 
 def bored_gate(
