@@ -123,8 +123,8 @@ def _save_pair(home, *, free_state="idle", free_work=""):
     bobreport.save_digest(home, doc)
 
 
-def test_only_grok_older_fr_before_newer_mrb(_home):
-    # Toray-shaped: FR #8 queued (seq 1) then MRB #10/#11 (seq 2/3). Focus may rank MRB first.
+def test_grok_and_cursor_take_mrb_ahead_of_older_fr(_home):
+    # Older FR must not hide the MRB from a Grok or Cursor seat.
     _queue(
         _home,
         [
@@ -138,8 +138,20 @@ def test_only_grok_older_fr_before_newer_mrb(_home):
     st, job = gitclaim.offer_focus_top(_home, "flamingo-18800", "#flamingo")
     assert st == "ok"
     assert job is not None
-    assert str(job.get("task")).upper() == "FR"
-    assert str(job.get("id")) == "#8"
+    assert str(job.get("task")).upper() == "MRB"
+    assert str(job.get("id")) == "#10"
+
+
+def test_cursor_does_not_yield_mrb_to_older_fr(_home):
+    doc = bobreport.empty_digest()
+    doc["machines"] = {}
+    _put_seat(doc, "redqueen", "11760", kind="cursor", start_model="composer-2.5")
+    bobreport.save_digest(_home, doc)
+    older = _row("SimonBarnett/bobiverse", "FR", 8, 1)
+    mrb = _row("SimonBarnett/bobiverse", "MRB", 10, 2)
+    assert gitclaim.mrb_yields_to_older_fr(
+        _home, mrb, "redqueen-11760", 0, {"redqueen-11760"}, {}, set(), [older, mrb]
+    ) is False
 
 
 def test_free_idle_fr_to_free_mrb_to_grok(_home):

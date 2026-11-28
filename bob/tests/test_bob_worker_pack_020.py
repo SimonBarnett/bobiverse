@@ -235,7 +235,7 @@ def bob_stage(tmp_path_factory):
     # mid Analysis) and is unrelated to the pack_020 gates.
     run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                           str(ROOT / "scripts" / "Pack-BobiverseRelease.ps1"), "-Product", "bob", "-SkipMsi", "-KeepStage",
-                          "-SkipWorkerExe", "-SkipEarExe", "-SkipPlanAgentExe", "-SkipPriorityExe",
+                          "-SkipWorkerExe", "-SkipEarExe", "-SkipWatcherExe", "-SkipPlanAgentExe", "-SkipPriorityExe",
                           "-OutDir", str(out)], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stdout[-1500:] + run.stderr[-1500:]
     ver = (ROOT / "src" / "VERSION").read_text().strip()

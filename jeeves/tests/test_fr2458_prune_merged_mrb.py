@@ -115,15 +115,15 @@ def test_resync_drops_merged_mrb_absent_from_open_pulls(tmp_path, monkeypatch):
     assert "#99" in ids
 
 
-def test_public_queue_purges_via_pr_exists(tmp_path, monkeypatch):
+def test_public_queue_does_not_call_github(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _queue(tmp_path, unaccepted=[_mrb(2455), _mrb(99)])
 
-    def fake_checker(home=None, cache=None):
-        return lambda repo, num: str(num).lstrip("#") == "99"
+    def boom(**_k):
+        raise AssertionError("report GET must not build a GitHub checker")
 
-    monkeypatch.setattr(gitclaim, "github_pr_exists_checker", fake_checker)
+    monkeypatch.setattr(gitclaim, "github_pr_exists_checker", boom)
     q = bobreport._public_queue(tmp_path)
     ids = {gitclaim._norm_row_id(r.get("id")) for r in q["unaccepted"]}
-    assert "#2455" not in ids
+    assert "#2455" in ids
     assert "#99" in ids

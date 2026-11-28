@@ -167,6 +167,7 @@ def test_fr8785_flat_install_spaces_prompt_matches_mcp_and_once_resolve(
     assert "bob\\bob\\scripts" not in prompt_txt
     assert "bob/bob/scripts" not in prompt_txt
     assert ".cursor/mcp.json" in prompt_txt or ".cursor\\mcp.json" in prompt_txt
+    assert "get_skill" in prompt_txt
     assert "list_catalog" in prompt_txt
     assert "skill-dag-mcp-down" in prompt_txt
 
