@@ -28,6 +28,12 @@ You may run chair commands, including `!assign`, when a live idle seat is not re
 
 Every such intervention needs a product pull request in the same turn so ircJeeves performs that step without an operator. The command is only the bridge.
 
+## CAST IRON — idle seats, then monitor
+
+Do not end the turn while any live seat is idle and ungated work is still in the queue. Intervene in that same turn. An idle seat with offerable work is a failure.
+
+Start the quiet monitor only after no seat is idle. If a seat is idle, do not sit out the timer. Stop the watch and feed the seat. After the seats are busy, run the monitor for the operator's window (default 600 seconds), then harvest.
+
 ## Do not
 
 - Publish the expected hand-out list, the chair log, or per-tick counts.
