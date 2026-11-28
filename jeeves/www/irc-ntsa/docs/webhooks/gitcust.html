@@ -37,7 +37,18 @@ a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
 <p><strong>Who calls it:</strong> Operators and Priority customer tooling.</p>
 <p><strong>Auth (named only):</strong> None. Open GET.</p>
 <p><strong>Request schema:</strong> No body.</p>
-<p><strong>Response schema:</strong> JSON {&quot;customers&quot;:[...],&quot;tasks&quot;:[...]}. Empty lists when nothing is registered.</p>
+<p><strong>Response schema:</strong> JSON {&quot;customers&quot;:[{&quot;name&quot;,&quot;path&quot;,&quot;tasks&quot;:[{&quot;kind&quot;:&quot;sc|so|wbs&quot;,&quot;title&quot;,&quot;path&quot;}]}]}. Tasks are nested on the customer. No top-level tasks array.</p>
+<pre>{
+  &quot;customers&quot;: [
+    {
+      &quot;name&quot;: &quot;rees&quot;,
+      &quot;path&quot;: &quot;rees&quot;,
+      &quot;tasks&quot;: [
+        {&quot;kind&quot;: &quot;sc&quot;, &quot;title&quot;: &quot;SC263182&quot;, &quot;path&quot;: &quot;rees/SC263182&quot;}
+      ]
+    }
+  ]
+}</pre>
 <p><strong>Status codes:</strong> 200 JSON.</p>
 <p><strong>Retry / idempotency:</strong> Safe GET.</p>
 <p><strong>Rate limits:</strong> Proxy only.</p>

@@ -18,6 +18,10 @@ def test_fr9984_updater_interval_and_scan(tmp_path, monkeypatch):
     (tmp_path / "Acme" / "WBS-9 roof").mkdir(parents=True)
     home = tmp_path / "home"
     doc = gitcust.run_updater(home, tmp_path)
-    assert any(t["kind"] == "wbs" and t["title"] for t in doc["tasks"])
+    assert any(
+        t["kind"] == "wbs" and t["title"]
+        for c in doc["customers"]
+        for t in c.get("tasks") or []
+    )
     docs = (ROOT / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8")
     assert "GITCUST_UPDATE_S" in docs
