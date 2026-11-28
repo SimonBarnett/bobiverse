@@ -788,3 +788,15 @@ Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#9991 SimonBarnett/bobivers
 Public Bob skill MCP (`https://bob.ntsa.uk/mcp`) matches plan.ntsa.uk: GET describes tools; POST `tools/call` `list_catalog` and `get_skill`; seat `Copy-BobProjectSkills` hydrates `~/.grok/skills` over HTTPS — no git clone of the skill book. Product stack #10092 catalog builder, #10093 POST /mcp, #10094 seat HTTPS loader.
 Books: bobiverse-worker-seat, bobiverse-bob-worker. Refs: SimonBarnett/bobiverse#10092 SimonBarnett/bobiverse#10093 SimonBarnett/bobiverse#10094 SimonBarnett/bobiverse#10102
 
+## 2026-11-28 FR #10106 /report 502 monitor transcript fallback
+
+Public `GET /bob/v1/report` 502 drops fleet digest JSON; monitor uses `probe_live_report` (HTTP status visible) and tails `inbound-transcript.log` for shop ACK/DONE/GIVEUP while walrus heals BobCallback/IIS. Chair `webhook-health` still announces public down.
+
+Books: bobiverse-jeeves-monitor, inbound_transcript. Refs: SimonBarnett/bobiverse#10106
+
+## 2026-11-28 FR #10107 skip blind intervene_assign when report gateway down
+
+While `GET /bob/v1/report` returns 502, `intervene_assign` exits OK with `skipped: report_gateway_down` (no stale local-queue `!assign`); optional `BOB_MONITOR_SKIP_OPENCODE_SEATS` and `skip_opencode_seats` avoid OpenCode seats when partial queue data remains. Walrus still heals BobCallback/IIS; twin #9246 same title.
+
+Books: bobiverse-jeeves-monitor, intervene_assign. Refs: SimonBarnett/bobiverse#10107 SimonBarnett/bobiverse#10106
+
