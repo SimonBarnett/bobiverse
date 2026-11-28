@@ -1575,8 +1575,14 @@ class Client:
             if not self.lock.acquire(timeout=slice_s):
                 continue
             try:
-                self.sock.settimeout(slice_s)
-                return self.sock.recv(nbytes)
+                sock = self.sock
+                if sock is None:
+                    # Reconnect cleared the socket while this read was waiting.
+                    # AttributeError here kills the reader and the chair stops
+                    # answering !bored / !help while the outbox thread still sends.
+                    raise socket.timeout("irc recv socket cleared")
+                sock.settimeout(slice_s)
+                return sock.recv(nbytes)
             except (socket.timeout, TimeoutError):
                 continue
             finally:
