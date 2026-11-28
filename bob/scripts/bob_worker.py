@@ -18852,6 +18852,11 @@ class Supervisor:
                 pw = getattr(self, "_prompt_watch", None)
                 if pw is not None:
                     pw.note_activity()
+            # FR #9919: flush before turn_ended. The release path arms !bored on the
+            # bored thread as soon as the lock is handed off (monotonic clock is already
+            # past the same-tick _arm_skip window), so a flush after turn_ended loses.
+            with contextlib.suppress(Exception):
+                self.drain_run_outbox_now("turn_ended")
             if self.bored:
                 # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
                 self.bored.turn_ended(
@@ -18861,9 +18866,6 @@ class Supervisor:
                     error_class=error_class,
                     error_line=error_line,
                 )
-            # FR #9919: agent may append DONE after turn_ended; flush before !bored harvest fire.
-            with contextlib.suppress(Exception):
-                self.drain_run_outbox_now("turn_ended")
             # FR #2884: first turn_ended after spawn can end the startup inject/!bored hold.
             try:
                 self._maybe_ready_on_first_turn_ended(sid)
