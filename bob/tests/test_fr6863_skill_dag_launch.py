@@ -1,4 +1,4 @@
-"""FR #6863: worker launch uses skill-dag resolve/get_skill; MCP config on worker cwd only."""
+"""FR #6863 / #10268: worker launch prompts name remote list_catalog + get_skill."""
 from __future__ import annotations
 
 import os
@@ -7,17 +7,22 @@ from pathlib import Path
 import bob_worker as bw
 
 
-def test_s5_worker_prompt_names_resolve_and_get_skill():
-    text = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\run", "flamingo", "flamingo-1")
-    assert "resolve" in text
+def test_s5_worker_prompt_names_list_catalog_and_get_skill(tmp_path: Path):
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    text = bw.worker_prompt(str(worker), str(tmp_path / "run"), "flamingo", "flamingo-1")
+    assert "list_catalog" in text
     assert "get_skill" in text
+    assert "(resolve, then get_skill)" not in text
+    assert "MCP resolve then get_skill" not in text
     assert "FIRST read the skills in" not in text
 
 
-def test_s5_rules_text_agent_names_resolve_and_get_skill():
+def test_s5_rules_text_agent_names_list_catalog_and_get_skill():
     text = bw.rules_text(r"C:\ai\bob\worker", "agent")
-    assert "resolve" in text
+    assert "list_catalog" in text
     assert "get_skill" in text
+    assert "(resolve, then get_skill)" not in text
     assert "Read the skills in" not in text
 
 
