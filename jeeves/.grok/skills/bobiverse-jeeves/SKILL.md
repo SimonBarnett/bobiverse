@@ -121,6 +121,7 @@ Do this on **walrus** (not ionos).
 
 ## Harvested lessons (intake)
 
+- Grok and Cursor are always paid fuel. OpenCode is free only when start_model equals the Opencode-Free model saved in models-catalog.json (Weights form, GET /bob/v1/models). Empty or $model OpenCode is paid and may take MRB.
 - **FR #9382 CAST IRON:** enqueue/offer/`!assign` UAT #0 only for repos with a release to build (`uat_release.repo_has_release_to_build`: built-in allowlist + `PRODUCT_UAT_RELEASE` + chair `uat_release_repos.txt` / `BOB_UAT_RELEASE_REPOS`). Skip/purge with reason `no-release-to-build`. Customer/plan-only repos (wetherby, obw, ce-priority, …) never get UAT; `!ignore` remains an ops override. Do not park under harvest/SKILL.md.
 - **FR #8835:** every `/bob/v1/*` BobCallback route (plus local health/digest and outbound stall/wake) needs a home Webhooks & API card, a `docs/webhooks/*.html` page, and a hub index row. Registry `common/scripts/bob_webhook_docs.py`; inventory `bob_route_inventory.py`; CI `test_fr8835_webhook_docs_route_coverage.py`. Coming ops use `DocEntry.status="coming"`. Publish HTML with static copy of `jeeves/www/irc-ntsa/**` excluding `web.config`, `*.bak`, and `_backup-*` --- never re-run `Install-BobWebhooks.ps1` for content-only (#8803).
 - **FR #8887:** Install-BobWebhooks backups go under `-BackupRoot\_backup-www-<leaf>` (Install-Jeeves passes install root). Shipped web.config denies `.bak` / `_backup-` / `.bak/`. Never leave publish backups inside the IIS web root.
