@@ -15556,6 +15556,21 @@ def _warn_fleet_ps1_mismatch_once(
         pass
 
 
+def _clear_failure_context(
+    job_root: Path, *, exc_name: str = "", exit_code: Optional[int] = None
+) -> dict:
+    """FR #10048: seat evidence attached to a fleet-ps1-clear-failed intake."""
+    ctx = {
+        "kind": "opencode-clear",
+        "nick": (os.environ.get("BOB_NICK") or os.environ.get("BOB_AGENT_NICK") or "").strip(),
+        "job": Path(job_root).name,
+        "exception": exc_name,
+    }
+    if exit_code is not None:
+        ctx["exit"] = str(exit_code)
+    return ctx
+
+
 def opencode_cleanup_extra_worktrees(
     job_worktree: str | Path,
     *,
@@ -15707,6 +15722,9 @@ def opencode_cleanup_extra_worktrees(
                         "bob-worker",
                         f"Clear-BobiverseJobWorktrees exit={code}",
                         site="fleet-ps1-clear-failed",
+                        context=_clear_failure_context(
+                            root, exc_name="ExitCode", exit_code=code
+                        ),
                     )
                 except Exception:
                     pass
@@ -15720,6 +15738,7 @@ def opencode_cleanup_extra_worktrees(
                 "bob-worker",
                 f"Clear-BobiverseJobWorktrees failed {type(e).__name__}",
                 site="fleet-ps1-clear-failed",
+                context=_clear_failure_context(root, exc_name=type(e).__name__),
             )
         except Exception:
             pass
