@@ -4629,19 +4629,23 @@ def closed_unmerged_ref_skip_reason(doc: dict, repo: str, ident: str) -> str | N
         return f"requeue skip ref {shown}: not an issue number"
     if not _done_has_fr(doc, repo, ident):
         return f"requeue skip ref {shown}: not in done"
-    is_pull = github_is_pull_checker()
-    issue_open = github_issue_open_checker()
-    if is_pull is None or issue_open is None:
-        return f"requeue skip ref {shown}: lookup unavailable"
-    try:
-        if bool(is_pull(repo, num)):
-            return f"requeue skip ref {shown}: pull request"
-        if not bool(issue_open(repo, num)):
-            return f"requeue skip ref {shown}: issue closed"
-    except GitHubLookupUnknown:
-        return f"requeue skip ref {shown}: lookup unknown"
-    except Exception:
-        return f"requeue skip ref {shown}: lookup unknown"
+    # FR #10009: stamped closed/merged/pull only. No live issue_open / is_pull.
+    row = None
+    for item in doc.get("done") or []:
+        if isinstance(item, dict) and _same(item, repo, "FR", ident):
+            row = item
+            break
+    if row is None:
+        return f"requeue skip ref {shown}: not in done"
+    state = str(row.get("state") or "").strip().lower()
+    if row.get("merged") or state == "merged":
+        return f"requeue skip ref {shown}: merged"
+    if state == "closed":
+        return f"requeue skip ref {shown}: issue closed"
+    event = str(row.get("event") or "").strip().lower()
+    url = str(row.get("url") or "")
+    if event == "pull_request" or "/pull/" in url:
+        return f"requeue skip ref {shown}: pull request"
     return None
 
 
@@ -19505,12 +19509,8 @@ def assign_row(
                     "refused",
                     f"{_assign_skip} (not shop FR; FR #9411/#9827)",
                 )
-            # FR #9411: unbudgeted closed check when caller omitted issue_open.
-            _fr_open = (
-                issue_open
-                if issue_open is not None
-                else depends_issue_open_checker(None)
-            )
+            # FR #10009: omitted checkers stay offline. Stamped state is the gate.
+            _fr_open = issue_open
             if task_u == "FR" and not fr_row_offerable(
                 cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=_fr_open
             ):
