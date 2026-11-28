@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""FR #8278: DONE PASS must not re-offer the same MRB while PR is still open (ci-wait).
+"""FR #8278 / FR #9885: PASS on open clean mergeable MRBs keep queue + mrb_done until merge.
 
 Customer repos with allow_auto_merge=false (e.g. toray#28) stay open after DONE PASS.
-Clearing mrb_done under FR #1585 then letting done[] rotate bounced the same head
-back onto !bored after merge. A recorded PASS / merge-on-green PASS must keep the hold.
+Rows with mergeable_state clean stay in unaccepted for other seats (FR #9885); the
+seat that PASSed is blocked by FR #4661. mrb_done stamp still survives resync ci-wait.
 """
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ def _mrb(num=28, repo=TORAY, **extra):
         "ts": "t",
         "line": f"MRB {repo}#{num}",
         "url": f"https://github.com/{repo}/pull/{num}",
+        "mergeable": True,
+        "mergeable_state": "clean",
     }
     row.update(extra)
     return row
@@ -44,11 +46,11 @@ def test_fr8278_pass_blocks_reoffer_while_pr_still_open(tmp_path, monkeypatch):
     assert gitclaim._mrb_review_finished(doc, tmp_path, TORAY, "#28") is True
     assert (
         gitclaim.mrb_already_done(doc, doc["unaccepted"][0], home=tmp_path, pr_exists=pr_open)
-        is True
+        is False
     )
     n = gitclaim._purge_dead_mrb_unaccepted(doc, pr_exists=pr_open, home=tmp_path)
-    assert n == 1
-    assert doc["unaccepted"] == []
+    assert n == 0
+    assert len(doc["unaccepted"]) == 1
     # Stamp must survive the open-PR clear path.
     assert gitclaim.mrb_ledger_done_hold(tmp_path, TORAY, "#28") is True
 
@@ -89,11 +91,11 @@ def test_fr8278_bored_path_skips_after_pass_even_without_pr_exists(tmp_path, mon
     }
     assert (
         gitclaim.mrb_already_done(doc, doc["unaccepted"][0], home=tmp_path, pr_exists=None)
-        is True
+        is False
     )
     n = gitclaim._purge_dead_mrb_unaccepted(doc, pr_exists=None, home=tmp_path)
-    assert n == 1
-    assert doc["unaccepted"] == []
+    assert n == 0
+    assert len(doc["unaccepted"]) == 1
 
 
 def test_fr8278_resync_keeps_mrb_done_when_pass_recorded(tmp_path, monkeypatch):

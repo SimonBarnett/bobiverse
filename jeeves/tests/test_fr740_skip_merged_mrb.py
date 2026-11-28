@@ -62,12 +62,18 @@ def test_mrb_already_done_detects_prior_pass_or_fail(tmp_path, monkeypatch):
         ],
     )
     doc = gitclaim._load_queue_unlocked(tmp_path)
-    assert gitclaim.mrb_already_done(doc, _mrb_row(656))
+    row = _mrb_row(656, mergeable=True, mergeable_state="clean")
+
+    def pr_open(repo: str, num: str) -> bool:
+        return repo == REPO and str(num).lstrip("#") == "656"
+
+    assert not gitclaim.mrb_already_done(doc, row, pr_exists=pr_open)
+    assert gitclaim.mrb_already_done(doc, row, pr_exists=lambda r, n: False)
     assert not gitclaim.mrb_already_done(doc, _mrb_row(999))
 
 
 def test_offer_skips_mrb_already_in_done_even_without_pr_exists(tmp_path, monkeypatch):
-    """FR #740: after DONE PASS, do not re-offer the same MRB (no GitHub token needed)."""
+    """FR #740 / #9885: other seats may re-offer clean mergeable MRB after PASS."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
@@ -78,22 +84,26 @@ def test_offer_skips_mrb_already_in_done_even_without_pr_exists(tmp_path, monkey
     bobreport.save_digest(tmp_path, digest)
     _queue(
         tmp_path,
-        unaccepted=[_mrb_row(656)],
+        unaccepted=[_mrb_row(656, mergeable=True, mergeable_state="clean")],
         done=[
             {
                 "repo": REPO,
                 "task": "MRB",
                 "id": "#656",
                 "nick": "marchhare-41928",
-                "result": "PASS https://github.com/{}/pull/656".format(REPO),
+                "result": "PASS",
             }
         ],
     )
-    st, job = gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")
-    assert st == "empty"
-    # leftover unaccepted row purged
+    def pr_open(repo: str, num: str) -> bool:
+        return repo == REPO and str(num).lstrip("#") == "656"
+
+    st, job = gitclaim.offer_focus_top(
+        tmp_path, "flamingo-9", "#flamingo", pr_exists=pr_open
+    )
+    assert st == "ok"
     left = [r for r in gitclaim.load_unaccepted(tmp_path) if r.get("task") == "MRB"]
-    assert left == []
+    assert len(left) == 1
 
 
 def test_offer_skips_closed_fail_mrb_via_pr_exists(tmp_path, monkeypatch):
@@ -238,16 +248,18 @@ def test_github_pr_exists_checker_requires_open_state():
             sys.modules["gh_filer"] = prev
 
 
-def test_assign_row_refuses_mrb_already_done(tmp_path, monkeypatch):
-    """MRB #747 hostile: !assign must not revive a DONE MRB (same as offer)."""
+def test_assign_row_allows_merge_wait_mrb_for_other_seat(tmp_path, monkeypatch):
+    """MRB #747 / FR #9885: !assign may hand merge-wait MRB to a seat that did not PASS."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
-    registered_machines.save_registered(tmp_path, {"marchhare"})
-    monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda home: {"marchhare-35600"})
+    registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
+    monkeypatch.setattr(
+        gitclaim, "live_seat_nicks", lambda home: {"marchhare-41928", "flamingo-9"}
+    )
     monkeypatch.setattr(gitclaim, "ledger_load", lambda home: {})
     monkeypatch.setattr(gitclaim, "worker_working_on", lambda h, n: "")
     _queue(
         tmp_path,
-        unaccepted=[_mrb_row(656)],
+        unaccepted=[_mrb_row(656, mergeable=True, mergeable_state="clean")],
         done=[
             {
                 "repo": REPO,
@@ -259,6 +271,11 @@ def test_assign_row_refuses_mrb_already_done(tmp_path, monkeypatch):
             }
         ],
     )
-    st, why = gitclaim.assign_row(tmp_path, "marchhare-35600", REPO, "MRB", "#656")
-    assert st == "refused"
-    assert "DONE" in str(why) or "740" in str(why)
+
+    def pr_open(repo: str, num: str) -> bool:
+        return repo == REPO and str(num).lstrip("#") == "656"
+
+    st_other, _ = gitclaim.assign_row(
+        tmp_path, "flamingo-9", REPO, "MRB", "#656", pr_exists=pr_open
+    )
+    assert st_other == "ok"
