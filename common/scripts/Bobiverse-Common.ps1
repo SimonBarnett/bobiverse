@@ -1817,6 +1817,70 @@ function Get-BobiverseJobScratchPath {
     return $full.TrimEnd('\')
 }
 
+function Repair-BobiverseJobWorktreeAdmin {
+    <#
+      FR #10244: a live job worktree whose `.git` gitfile points at an admin dir that lost
+      `gitdir` / `commondir` / `HEAD` makes every git command fail ("gitfile does not point to a
+      valid repository"). `git worktree prune` then drops that admin dir and the tree is stranded.
+      Rebuild only the missing files (never overwrite a complete admin dir), then verify git works.
+      Returns: no-path | no-gitfile | bad-gitfile | admin-not-worktrees | common-missing |
+      branch-missing | ok | repaired | git-still-broken.
+    #>
+    param(
+        [AllowNull()][AllowEmptyString()][string]$WorktreePath,
+        [switch]$WhatIf
+    )
+    if ([string]::IsNullOrWhiteSpace($WorktreePath)) { return 'no-path' }
+    $wt = [IO.Path]::GetFullPath($WorktreePath.Trim()).TrimEnd('\')
+    $gitFile = Join-Path $wt '.git'
+    if (-not (Test-Path -LiteralPath $gitFile -PathType Leaf)) { return 'no-gitfile' }
+    $raw = Get-Content -LiteralPath $gitFile -Raw -ErrorAction SilentlyContinue
+    if ($raw -notmatch 'gitdir:\s*(.+)') { return 'bad-gitfile' }
+    $admin = [IO.Path]::GetFullPath(($Matches[1].Trim() -replace '/', '\')).TrimEnd('\')
+    $worktreesDir = Split-Path -Parent $admin
+    if ((Split-Path -Leaf $worktreesDir) -ne 'worktrees') { return 'admin-not-worktrees' }
+    $common = Split-Path -Parent $worktreesDir
+    if (-not (Test-Path -LiteralPath (Join-Path $common 'HEAD') -PathType Leaf)) { return 'common-missing' }
+    $leaf = Split-Path -Leaf $admin
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $gitdirFile = Join-Path $admin 'gitdir'
+    $commondirFile = Join-Path $admin 'commondir'
+    $headFile = Join-Path $admin 'HEAD'
+    $complete = (Test-Path -LiteralPath $gitdirFile -PathType Leaf) -and
+        (Test-Path -LiteralPath $commondirFile -PathType Leaf) -and
+        (Test-Path -LiteralPath $headFile -PathType Leaf)
+    if (-not $complete) {
+        $branchRef = "refs/heads/$leaf"
+        $branchOk = (Test-Path -LiteralPath (Join-Path $common ($branchRef -replace '/', '\')) -PathType Leaf)
+        if (-not $branchOk -and (Test-Path -LiteralPath (Join-Path $common 'packed-refs') -PathType Leaf)) {
+            $branchOk = [bool](Select-String -LiteralPath (Join-Path $common 'packed-refs') -SimpleMatch -Pattern " $branchRef" -Quiet)
+        }
+        if (-not $branchOk -and -not (Test-Path -LiteralPath $headFile -PathType Leaf)) { return 'branch-missing' }
+        if ($WhatIf) { return 'repaired' }
+        if (-not (Test-Path -LiteralPath $admin -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $admin | Out-Null
+        }
+        if (-not (Test-Path -LiteralPath $gitdirFile -PathType Leaf)) {
+            [IO.File]::WriteAllText($gitdirFile, (($gitFile -replace '\\', '/') + "`n"), $utf8)
+        }
+        if (-not (Test-Path -LiteralPath $commondirFile -PathType Leaf)) {
+            [IO.File]::WriteAllText($commondirFile, "../..`n", $utf8)
+        }
+        if (-not (Test-Path -LiteralPath $headFile -PathType Leaf)) {
+            [IO.File]::WriteAllText($headFile, ("ref: $branchRef" + "`n"), $utf8)
+        }
+        $gitOut = & git -C $wt rev-parse --git-dir 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning ("FR #10244: git still fails in {0} after admin repair: {1}" -f $wt, ($gitOut -join ' '))
+            return 'git-still-broken'
+        }
+        return 'repaired'
+    }
+    $gitOk = & git -C $wt rev-parse --git-dir 2>$null
+    if ($LASTEXITCODE -ne 0) { return 'git-still-broken' }
+    return 'ok'
+}
+
 function Assert-BobiverseJobWorktreePath {
     <#
       FR #8852: refuse empty / relative / install-relative job-wt before `git worktree add`.
