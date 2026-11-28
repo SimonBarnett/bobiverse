@@ -1,6 +1,8 @@
 """FR #8138: when only Grok seats are up, older FR beats a newer MRB for that seat."""
 from __future__ import annotations
 
+import json
+
 import bobreport
 import focus_ignore as fi
 import gitclaim
@@ -18,6 +20,20 @@ def _home(tmp_path, monkeypatch):
         tmp_path, {"redqueen", "marchhare", "flamingo", "win-mpre8vi4u6u"}
     )
     bobreport._SEAT_ROSTER_CACHE["key"] = None
+    (tmp_path / "models-catalog.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "agent": "Opencode-Free",
+                        "cli": "Opencode",
+                        "model": "opencode/deepseek-v4.1-flash-free",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     return tmp_path
 
 
