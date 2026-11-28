@@ -1241,6 +1241,27 @@ function Get-BobTrayGrokFuelRemaining {
         }
         catch { }
     }
+    # FR #9942: live digest machines.<id>.xai_weekly beats stale tray-digest-pools /
+    # TipForm paint. Fresh 0% must not lose to a cached 94% heading row.
+    if (Get-Command Get-BobTrayMachineXaiWeekly -ErrorAction SilentlyContinue) {
+        try {
+            $xw = Get-BobTrayMachineXaiWeekly
+            if ($xw -and $null -ne $xw.remaining_pct -and [string]$xw.remaining_pct -ne '') {
+                try {
+                    $digestRemain = [int]$xw.remaining_pct
+                    $fresh = $false
+                    try { if ($xw.fresh -eq $true) { $fresh = $true } } catch { }
+                    $age = 999999
+                    try {
+                        if ($null -ne $xw.age_s -and [string]$xw.age_s -ne '') { $age = [int]$xw.age_s }
+                    } catch { }
+                    if ($fresh -or $age -le 120 -or $digestRemain -le 0) {
+                        return $digestRemain
+                    }
+                } catch { }
+            }
+        } catch { }
+    }
     $snap = $script:lastFuelSnapshot
     $mid = Get-BobTrayFuelLocalMachineId
     if ($snap) {
@@ -5783,12 +5804,28 @@ $startWorkerTimer.Add_Tick({
                                 $offerable = [int](Get-BobTrayCachedOfferableCount)
                                 $under = Get-BobTrayUnderCapFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers) -Offerable $offerable -Disabled $emptyDisabled
                                 if ($under -gt 0) {
+                                    $choice = [pscustomobject]@{ agent = ''; slot = ''; skip = $false; reason = '' }
+                                    if (Get-Command Get-BobTrayEmptyOnlineFillAgentChoice -ErrorAction SilentlyContinue) {
+                                        try { $choice = Get-BobTrayEmptyOnlineFillAgentChoice -Root $RepoRoot } catch { }
+                                    }
+                                    if ($choice.skip) {
+                                        Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                        $why = if ($choice.reason) { [string]$choice.reason } else { 'no-fuel' }
+                                        Write-TrayLog ('under-cap skip: {0}' -f $why)
+                                    } else {
                                     $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
                                     $rid = 'undercap-{0}' -f $now
-                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    $bodyHash = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) }
+                                    if ($choice.agent) {
+                                        $bodyHash.agent = [string]$choice.agent
+                                        if ($choice.slot) { $bodyHash.slot = [string]$choice.slot }
+                                    }
+                                    $body = $bodyHash | ConvertTo-Json -Compress
                                     Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
                                     Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
-                                    Write-TrayLog ('under-cap fill live={0} offerable={1}' -f $liveN, $offerable)
+                                    $agentLog = if ($choice.agent) { [string]$choice.agent } else { 'auto' }
+                                    Write-TrayLog ('under-cap fill live={0} offerable={1} agent={2}' -f $liveN, $offerable, $agentLog)
+                                    }
                                 }
                             }
                         }
