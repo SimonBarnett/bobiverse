@@ -69,7 +69,7 @@ $r = & .\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -K
 
 - If `$r.number` is null and `$r.queued` / `$r.queued_local` is true: the issue is **unresolved**. Poll `GET /bob/v1/intake/<intake_id>` or flush the local outbox; do **not** claim the Digest is wired.
 - If `$r.action` is `commented` or `reopened`: inspect the existing issue; preserve its body and dependencies before adding `Depends-on`.
-- Wire order: file parent -> add `fr-digest` + `hold` with `gh` (intake does not add labels; FR #10105) → prepend `Depends-on: #<digest>` on each child → update parent child list → verify labels and both link directions.
+- Wire order: file parent -> add `fr-digest` + `hold` with `gh` (intake does not add labels; FR #10105) -> prepend `Depends-on: #<digest>` on each child -> update parent child list -> verify labels and both link directions.
 
 ## needs-walrus split — CAST IRON (FR #9669)
 
