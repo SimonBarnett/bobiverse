@@ -579,6 +579,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Unhold of an fr-digest does not offer the digest row (skip:label:fr-digest). A child that still Depends-on another OPEN issue stays depends_held. Offer order is MRB, then UAT, then FIX, then FR, lowest number first.
 - The same issue number in two repos is not a twin. Close only the repo the operator named.
 - When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.
+- MRB of skill resume tips: reopen not_planned Closes issues before merge; related broader reuse FR (#10241/#10266) is not an exact twin of empty-worktree FR
 - Digest completeness gate: harvest digest bullets starting - ** must end with ) or lessons:/held; append (FR #N) when a CAST IRON bullet would otherwise fail test_mrb2718_digest_bullets_complete_lines
 - OpenCode launch-opencode.ps1 pins seat cwd via opencode run --dir and ConPTY --cwd, not Start-Process -WorkingDirectory; stale WorkingDirectory asserts FAIL on main
 - FR #8865 tip overlay: worker_prompt tests must use tmp_path; ignore install tips that still say MCP resolve then get_skill (public MCP has list_catalog/get_skill only).
