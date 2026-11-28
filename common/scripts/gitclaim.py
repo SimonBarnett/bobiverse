@@ -11050,6 +11050,13 @@ def offer_to_idle_seats(
     import time as _time
 
     now_f = _time.time() if now is None else float(now)
+    # Idle digest + a leftover accepted row is a stall. Release it before the
+    # free-seat filter, which treats any accepted nick as busy.
+    for idle_nick in digest_idle_ready_seats(home, now=now_f, live=live):
+        nick_i = str(idle_nick.get("nick") or "").strip()
+        if nick_i:
+            with contextlib.suppress(Exception):
+                release_stale_busy(home, nick_i, now_f, log=log)
     idle_rows = list_idle_after_empty(home, now=now_f, live=live)
     seen = {
         str(ent.get("nick") or "").strip().lower()
@@ -22318,6 +22325,41 @@ def bored_gate(
 # nak-busying it forever stalls the whole fleet (2026-10-05: marchhare seats nak-busy 8h on
 # merged MRB #2349 / closed FR #2340 while every open MRB was ionos-authored).
 BUSY_STALE_S = 3600.0
+# Digest already says idle, but the accepted row is still young. !bored and
+# offer_to_idle must not wait out BUSY_STALE_S. 90s covers ACK-to-digest lag.
+IDLE_DIGEST_RELEASE_S = 90.0
+
+
+def _digest_seat_explicit_idle(home: Path, nick: str) -> bool:
+    """True only when this nick's digest row says state=idle.
+
+    Missing digest, empty state, or doing/offered is not idle. An explicit idle
+    row plus !bored means the accepted job is no longer on the seat.
+    """
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return False
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:  # noqa: BLE001
+        return False
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return False
+    want = (nick or "").strip().lower()
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != want:
+            continue
+        return str(row.get("state") or "").strip().lower() == "idle"
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    wrow = workers.get(str(pid))
+    if isinstance(wrow, dict):
+        return str(wrow.get("state") or "").strip().lower() == "idle"
+    return False
 
 
 def _accepted_row_age_s(row: dict, now: float) -> float:
@@ -22363,11 +22405,15 @@ def release_stale_busy(
 
     Stale when:
     * row age >= ``BUSY_STALE_S`` (FR #2369), or
+    * digest ``worker_list`` state is exactly ``idle`` and age >= ``IDLE_DIGEST_RELEASE_S``
+      (FR #10337 — do not wait out the hour while the seat is already idle), or
     * ``session_started`` is set and the row's accepted_ts is strictly before that
       session (FR #3742 - lost DONE across chair restart / IRC reconnect).
 
     A seat that ``!bored`` is claiming idle; do not heal a fresh ACK from *this*
-    session (accepted_ts >= session_started and age < BUSY_STALE_S).
+    session (accepted_ts >= session_started and age < IDLE_DIGEST_RELEASE_S)
+    when the digest does not already say idle. A digest state of doing/offered
+    keeps a young row. IDLE_DIGEST requeue does not set prior_holder.
     """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
@@ -22403,6 +22449,11 @@ def release_stale_busy(
                 age = _accepted_row_age_s(r, float(now))
                 if age >= BUSY_STALE_S:
                     continue  # stale by age
+                if (
+                    _digest_seat_explicit_idle(home, nick)
+                    and age >= IDLE_DIGEST_RELEASE_S
+                ):
+                    continue  # digest idle while the chair still holds ACC
                 if session_started is not None:
                     epoch = _accepted_ts_epoch(r)
                     # Missing/bad ts: treat as pre-session (same as age path).
@@ -22422,6 +22473,11 @@ def release_stale_busy(
                     age = _accepted_row_age_s(r, float(now))
                     if age >= BUSY_STALE_S:
                         reason = "STALE_BUSY"
+                    elif (
+                        _digest_seat_explicit_idle(home, nick)
+                        and age >= IDLE_DIGEST_RELEASE_S
+                    ):
+                        reason = "IDLE_DIGEST"
                     else:
                         reason = "LOST_DONE_RESTART"
                     github_done = ""
