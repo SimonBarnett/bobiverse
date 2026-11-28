@@ -31,12 +31,11 @@ def test_fr6889_written_configs_point_at_existing_script(tmp_path):
 
     grok_cfg = bw.write_skill_dag_mcp_config(str(worker))
     body = grok_cfg.read_text(encoding="utf-8")
-    assert want in body.replace("\\", "/")
-    assert "common/scripts/skill_dag_mcp.py" not in body.replace("\\", "/")
+    assert bw.BOB_SKILL_MCP_URL in body
+    assert "skill_dag_mcp.py" not in body.replace("\\", "/")
+    assert want  # script still exists for the path helper; seats do not launch it
 
     doc = bw.cursor_skill_dag_mcp_document(str(worker))
-    args = doc["mcpServers"]["skill-dag"]["args"]
-    # FR #6922: #6899 added --root packs after the script; this pin is path-exists only.
-    assert args, args
-    assert Path(args[0]).resolve() == script.resolve()
-    assert Path(args[0]).is_file()
+    entry = doc["mcpServers"]["skill-dag"]
+    assert entry.get("url") == bw.BOB_SKILL_MCP_URL
+    assert "command" not in entry

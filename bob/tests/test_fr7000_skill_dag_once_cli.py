@@ -62,24 +62,12 @@ def test_fr7000_once_resolve_and_get_skill(tmp_path: Path):
 
 
 def test_fr7000_worker_prompt_documents_once_fallback():
-    """FR #8785 / #8846: rendered prompt uses .cursor/mcp.json; never constructs bob\\bob\\scripts."""
+    """Seats must use https://bob.ntsa.uk/mcp and must not launch the local CLI."""
     prompt = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\ai\bob\home", "marchhare", "marchhare-1")
-    assert "FR #7000" in prompt
-    assert "--once resolve" in prompt
-    assert "--once get_skill" in prompt
-    assert ".cursor/mcp.json" in prompt or ".cursor\\mcp.json" in prompt
-    assert "args" in prompt  # use all args from config
-    assert "job-worktree-file" in prompt
+    assert "https://bob.ntsa.uk/mcp" in prompt
+    assert "do not run skill_dag_mcp.py" in prompt.lower()
+    assert "--once resolve" not in prompt
+    assert "ConvertFrom-Json" not in prompt
     assert "bob\\bob\\scripts" not in prompt
     assert "bob/bob/scripts" not in prompt
-    # No constructed <worker-parent>\bob\scripts\skill_dag_mcp.py
-    assert r"C:\ai\bob\bob\scripts\skill_dag_mcp.py" not in prompt
-    assert r"C:\ai\bob\worker\..\bob\scripts" not in prompt.replace("/", "\\")
-    # Must not tell the agent to pass --job-worktree instead of --job-worktree-file
-    # (bare --job-worktree may still appear only as the forbidden wording; assert file form wins)
-    assert "--job-worktree-file" in prompt
-    # Forbid instructing bare --job-worktree as the config arg (old defective prompt)
-    assert "`--root` / `--job-worktree` args" not in prompt
-    assert "Do not invent skill bodies" in prompt
-    assert "ConvertFrom-Json" in prompt or "@($cfg.args)" in prompt
     assert "skill-dag-mcp-down" in prompt

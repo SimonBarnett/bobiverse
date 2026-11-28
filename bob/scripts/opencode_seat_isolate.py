@@ -15,6 +15,11 @@ from pathlib import Path
 
 LOCK_CUES = ("database is locked", "sqlite_busy", "database is busy")
 STARTUP_CUES = ("unexpected error",)
+# ConPTY announces itself with CSI/OSC (including ESC[2J, which clears the
+# seat console). A run that dies on that banner never produced a turn.
+_VT_RE = re.compile(
+    r"\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-9;?]*[A-Za-z]|[=>])"
+)
 RATE_CUES = (
     "payment required",
     "too many requests",
@@ -109,6 +114,30 @@ def prepare_seat_data(env: dict[str, str] | None = None) -> tuple[Path, Path, Pa
     return root, data, db
 
 
+def plain_console(text: str) -> str:
+    """Drop ConPTY/VT codes so a clear-screen banner is not the seat transcript."""
+    return _VT_RE.sub("", text or "")
+
+
+def handshake_only(text: str) -> bool:
+    """True when the capture is empty or only the OpenCode TUI header.
+
+    Live seat redqueen-1920 (issue #10171) exited -1 after ~165 bytes:
+    the ConPTY handshake plus ``> build`` and the model name. That is not
+    a finished turn. A later tool line (``skill-dag_...``) is real output.
+    """
+    vis = plain_console(text).replace("\x00", "")
+    lines = [ln.strip() for ln in vis.splitlines() if ln.strip()]
+    if not lines:
+        return True
+    blob = re.sub(r"\s+", " ", " ".join(lines)).strip()
+    if len(blob) > 240:
+        return False
+    if "skill-dag" in blob.lower():
+        return False
+    return bool(re.match(r"^> build\b", blob)) and len(lines) <= 2
+
+
 def classify_startup(
     text: str,
     *,
@@ -141,6 +170,13 @@ def classify_startup(
     if locked and int(attempt) < int(max_retries):
         return "retry"
     if locked or any(c in low for c in STARTUP_CUES):
+        return "giveup"
+    # Issue #10171: nonzero exit on the ConPTY/TUI handshake is a failed
+    # start. One retry, then giveup. ``continue`` left the seat on ReadLine
+    # with no error line, which looks hung.
+    if code not in (None, 0) and handshake_only(text):
+        if int(attempt) < 1:
+            return "retry"
         return "giveup"
     return "continue"
 

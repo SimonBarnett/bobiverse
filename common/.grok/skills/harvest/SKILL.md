@@ -521,6 +521,18 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A WinRM Invoke-Command Start-Process is inside the WinRM job and dies when the session ends. A durable extra seat needs a detached start. BOB_WORKER_MAX above 2 is not a bypass and a silent death is not a logged cap refusal.
 <!-- harvest-tip:intake-in_fbe27d53477c4614 -->
 - When a FIX CI log is unavailable because gh is rate-limited, do not push a blind main fold. NACK after recording which step failed and which targeted pytest already passed.
+<!-- harvest-tip:intake-in_dec9651161834c6f -->
+- When a gate change reverses unheld-digest soft-allow, update test_fr9859 nested parallel and ordered sibling tests in the same PR or gitclaim CI fails after merge.
+<!-- harvest-tip:intake-in_874090e130744661 -->
+- A pin that forbids a path string must not put that path in comments inside the file under test.
+<!-- harvest-tip:intake-in_4a0f9f2e66b64fdf -->
+- An offer-gate helper that is not called from depends_gate_reason does not implement the FR. MRB FAIL that PR and put the wire-up in one fix PR.
+<!-- harvest-tip:intake-in_498d3fffee264d85 -->
+- Worker Grok, Cursor, and OpenCode MCP entries are the public catalog URL. Do not put skill_dag_mcp.py --root in the seat config, and do not git-overlay .grok/skills between jobs.
+<!-- harvest-tip:intake-in_984804423c7c4843 -->
+- After FR #9986, unlimited plus remaining=0 must not clear tasks_exhausted; only remaining greater than 0 does. Update the FR #9733 pin instead of folding main.
+<!-- harvest-tip:intake-in_6aecf60597f74258 -->
+- When FIX CI is already pushed on the reviewed SHA, re-run the named failing test and DONE that PR URL if it passes; do not add an empty commit.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.

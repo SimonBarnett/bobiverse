@@ -60,7 +60,8 @@ def test_fr2301_install_nssm_cutover_and_no_second_callback():
     text = INSTALL.read_text(encoding="utf-8")
     assert r"jeeves\jeeves.exe" in text or "jeeves\\jeeves.exe" in text
     assert "$useJeevesExe" in text
-    assert "--chair --http 127.0.0.1:7700" in text
+    assert "--chair-only" in text
+    assert "BobWebhooks" in text
     assert "--digest-home" in text
     assert "skipping Python BobCallback" in text or "skipping Python BobCallback task" in text
     assert "Start-Jeeves.ps1" in text  # legacy path kept

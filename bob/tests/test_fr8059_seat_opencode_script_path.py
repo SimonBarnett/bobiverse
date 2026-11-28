@@ -29,12 +29,13 @@ def test_fr8059_writer_uses_install_script_not_job_worktree(tmp_path, monkeypatc
     monkeypatch.setattr(bw, "__file__", str(job / "bob" / "scripts" / "bob_worker.py"))
     cfg = bw.write_opencode_skill_dag_mcp_config(worker, worker_cwd=str(worker))
     doc = json.loads(cfg.read_text(encoding="utf-8"))
-    command = doc["mcp"]["skill-dag"]["command"]
-    script = command[1].replace("\\", "/")
-    assert script == stable.resolve().as_posix()
-    assert "fr-8008" not in script
-    assert job_script.resolve().as_posix() not in script
-    assert "worktrees" not in script.lower()
+    entry = doc["mcp"]["skill-dag"]
+    assert entry["url"] == bw.BOB_SKILL_MCP_URL
+    body = cfg.read_text(encoding="utf-8")
+    assert "fr-8008" not in body
+    assert "skill_dag_mcp.py" not in body
+    assert "worktrees" not in body.lower()
+    assert stable.is_file()
 
 
 def test_fr8059_script_path_skips_linked_worktree_even_without_install_file(tmp_path, monkeypatch):
