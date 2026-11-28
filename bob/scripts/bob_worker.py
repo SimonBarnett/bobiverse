@@ -6025,18 +6025,30 @@ def opencode_skill_dag_mcp_document(
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with the public skill-dag MCP (FR #6898 / #10146)."""
-    del worker_cwd
+    """Project ``opencode.json`` fragment with the public skill-dag MCP (FR #6898 / #10146).
+
+    FR #7909 / #10163: when ``worker_cwd`` is given, the skill-root read allows and edit
+    denies from ``opencode_skill_read_permission_block`` are written too. Without them the
+    job config never grants skill/fleet-script reads and ``report_opencode_skill_read_gaps``
+    files ``opencode-skill-read-allow`` on every config write.
+    """
     perm: dict = {}
+    ext_allow: dict = {}
+    edit_deny: dict = {}
+    if worker_cwd:
+        skill_perm = opencode_skill_read_permission_block(worker_cwd)
+        ext_allow.update(skill_perm.get("external_directory") or {})
+        edit_deny.update(skill_perm.get("edit") or {})
     if job_worktree:
-        allow: dict = {}
         for key in opencode_job_worktree_read_patterns(job_worktree):
-            allow[key] = "allow"
+            ext_allow[key] = "allow"
         # FR #8572: linked worktree gitdir (index.lock) is outside the job cwd.
         for key in opencode_job_gitdir_read_patterns(job_worktree):
-            allow[key] = "allow"
-        if allow:
-            perm["external_directory"] = allow
+            ext_allow[key] = "allow"
+    if ext_allow:
+        perm["external_directory"] = ext_allow
+    if edit_deny:
+        perm["edit"] = edit_deny
     doc = {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
