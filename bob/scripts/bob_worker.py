@@ -18758,6 +18758,9 @@ class Supervisor:
                     error_class=error_class,
                     error_line=error_line,
                 )
+            # FR #9919 / #10362: agent may append DONE after turn_ended; flush before !bored harvest fire.
+            with contextlib.suppress(Exception):
+                self.drain_run_outbox_now("turn_ended")
             try:
                 n = self.relay.release_held_assigns()
                 if n and self.bored:
@@ -18797,6 +18800,9 @@ class Supervisor:
         def _on_ended(turn: Optional[int], wall: float, **_k) -> None:
             if self.bored:
                 self.bored.turn_ended(turn=turn, sid=None)
+            # FR #9919 / #10362: agent may append DONE after turn_ended; flush before !bored harvest fire.
+            with contextlib.suppress(Exception):
+                self.drain_run_outbox_now("turn_ended")
             try:
                 n = self.relay.release_held_assigns()
                 if n and self.bored:

@@ -471,6 +471,120 @@ def row_fr_skip_offer_reason(row: dict) -> str | None:
     return row_fr_hold_reason(row) or row_fr_park_only_reason(row)
 
 
+# FR #10234: a twin FR restating a defect whose fix PR already merged must not be offered.
+# Cue = the FR itself says it is a twin / already fixed; the cited PR must be MERGED.
+TWIN_MERGED_CUE_RE = re.compile(
+    r"(?i)\btwin\b|\bduplicate of\b|\balready\s+(?:merged|fixed|landed)\b"
+)
+TWIN_CITED_PR_RE = re.compile(r"(?i)\bPR\s*#(\d+)\b|/pull/(\d+)\b")
+
+
+def fr_twin_cited_merged_pr_reason(
+    title: str = "",
+    body: str = "",
+    repo: str = "",
+    *,
+    is_merged=None,
+) -> str | None:
+    """FR #10234: reason when a twin/already-fixed FR cites a MERGED PR, else None.
+
+    ``is_merged(repo, num)`` -> True when the PR is merged. Lookup errors fail open
+    (the FR stays offerable). Without a cue or without a cited PR, returns None.
+    """
+    if is_merged is None:
+        return None
+    blob = f"{title or ''}\n{body or ''}"
+    if not TWIN_MERGED_CUE_RE.search(blob):
+        return None
+    nums: list[str] = []
+    for m in TWIN_CITED_PR_RE.finditer(blob):
+        n = m.group(1) or m.group(2) or ""
+        if n and n not in nums:
+            nums.append(n)
+    for n in nums:
+        try:
+            if bool(is_merged(repo, n)):
+                return f"twin-merged-pr: PR #{n} already merged"
+        except Exception:
+            continue
+    return None
+
+
+def row_fr_twin_merged_reason(row: dict, *, pr_merged=None) -> str | None:
+    """FR #10234: twin-of-merged-PR skip reason for an FR queue row (None otherwise).
+
+    The GitHub merged lookup runs only for FR rows that carry a twin cue, so normal
+    FRs cost no API calls. ``pr_merged`` is an injectable ``is_merged(repo, num)``.
+    """
+    if _canon_task(row) != "FR":
+        return None
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    body = str(row.get("body") or "")
+    if not TWIN_MERGED_CUE_RE.search(f"{title}\n{body}"):
+        return None
+    checker = pr_merged if pr_merged is not None else github_pr_merged_checker()
+    return fr_twin_cited_merged_pr_reason(
+        title, body, str(row.get("repo") or "").strip(), is_merged=checker
+    )
+
+
+def github_pr_merged_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``is_merged(repo, num)`` -> True only when the pull is MERGED (FR #10234).
+
+    Returns None when offline / no token. 404/410 -> False; other failures raise
+    ``GitHubLookupUnknown`` (callers fail open).
+    """
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else {}
+
+    def _check(repo: str, num: str) -> bool:
+        key = f"is_merged:{repo}#{num}"
+        if key in store:
+            return bool(store[key])
+        api = f"https://api.github.com/repos/{repo}/pulls/{num}"
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-gitclaim",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8") or "{}")
+                merged = bool(isinstance(data, dict) and data.get("merged_at"))
+                store[key] = merged
+                return merged
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (404, 410):
+                store[key] = False
+                return False
+            _log_github_lookup_failure("is_merged", repo, num, code=code, exc=e)
+            raise GitHubLookupUnknown(f"is_merged {repo}#{num} http={code}") from e
+        except Exception as e:
+            _log_github_lookup_failure("is_merged", repo, num, exc=e)
+            raise GitHubLookupUnknown(f"is_merged {repo}#{num} {type(e).__name__}") from e
+
+    return _check
+
+
 # BOB-G3 / FR #9108: Digest flag - issues only (never title heuristics alone).
 DIGEST_ISSUE_LABELS = frozenset({"digest", "fr-digest"})
 # Forbidden on pull_request targets (intake/plan must strip; distinct from hold).
@@ -1125,6 +1239,29 @@ def depends_issue_fetch_checker(fetch_issue=None):
     if fetch_issue is not None and getattr(fetch_issue, "budget", None) is None:
         return fetch_issue
     return lambda repo, num: fetch_github_issue_dict(repo, num)
+
+
+def _depend_fetched_state(issue_fetch, repo: str, oid: str) -> str:
+    """FR #10105: ``"closed"`` / ``"open"`` / ``""`` from an optional issue_fetch lookup.
+
+    Lookup failures return ``""`` (unknown) so the caller keeps its fail-closed path.
+    """
+    if issue_fetch is None:
+        return ""
+    raw = str(oid or "").strip().lstrip("#")
+    try:
+        num = int(raw) if raw else 0
+    except ValueError:
+        return ""
+    if num < 1:
+        return ""
+    try:
+        issue = issue_fetch(repo, str(num))
+    except Exception:
+        return ""
+    if not isinstance(issue, dict):
+        return ""
+    return str(issue.get("state") or "").strip().lower()
 
 
 def _bob_g1_digest_gate_for_pair(
@@ -14923,6 +15060,7 @@ def offer_focus_top(
     issue_open=None,
     fetch_issue=None,
     offered_via: str | None = None,
+    pr_merged=None,
     merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
@@ -15155,6 +15293,14 @@ def offer_focus_top(
                     kind = "fr-park-only" if skip_why.startswith("park-only") else "fr-hold"
                     if _drop_unaccepted_row(
                         doc, cand, kind=kind, reason=skip_why, home=home
+                    ):
+                        purged = True
+                    return None
+                # FR #10234: twin FR whose cited fix PR already merged - never offer.
+                twin_why = row_fr_twin_merged_reason(cand, pr_merged=pr_merged)
+                if twin_why:
+                    if _drop_unaccepted_row(
+                        doc, cand, kind="fr-twin-merged", reason=twin_why, home=home
                     ):
                         purged = True
                     return None
@@ -15563,6 +15709,7 @@ def offer_top(
     is_pull=None,
     issue_open=None,
     fetch_issue=None,
+    pr_merged=None,
     merged_twin=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
@@ -15650,6 +15797,16 @@ def offer_top(
                     kind = "fr-park-only" if skip_why.startswith("park-only") else "fr-hold"
                     if _drop_unaccepted_row(
                         doc, row, kind=kind, reason=skip_why, home=home
+                    ):
+                        purged = True
+                        continue
+                    i += 1
+                    continue
+                # FR #10234: twin FR whose cited fix PR already merged - never offer.
+                twin_why = row_fr_twin_merged_reason(row, pr_merged=pr_merged)
+                if twin_why:
+                    if _drop_unaccepted_row(
+                        doc, row, kind="fr-twin-merged", reason=twin_why, home=home
                     ):
                         purged = True
                         continue

@@ -48,7 +48,7 @@ Omnibus FRs. Filing the same thing twice because a search was too narrow.
 
 **When filing multiple related FRs in one turn/batch there MUST be a Digest parent.** Never leave a multi-FR batch as free-floating issues.
 
-1. File (or reuse) parent first: Title `Digest: <batch>`; labels `feature-request` + `fr-digest` (add `hold` only to park the whole batch).
+1. File (or reuse) parent first: Title `Digest: <batch>`; labels `feature-request` + `fr-digest` + `hold`. Digests are created **held by default** (FR #10105): unhold is what releases the children, so a new digest never starts unheld.
 2. List every child in the digest body; last-child close closes the digest (#9552).
 3. Each **parked** child body starts with plain `Depends-on: #<digest>`.
 4. Digests stay **useful when unheld** (released drain). Unheld means the batch drains; it does not mean skip the digest.
@@ -69,7 +69,7 @@ $r = & .\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -K
 
 - If `$r.number` is null and `$r.queued` / `$r.queued_local` is true: the issue is **unresolved**. Poll `GET /bob/v1/intake/<intake_id>` or flush the local outbox; do **not** claim the Digest is wired.
 - If `$r.action` is `commented` or `reopened`: inspect the existing issue; preserve its body and dependencies before adding `Depends-on`.
-- Wire order: file parent → add `fr-digest` with `gh` (intake does not add it) → prepend `Depends-on: #<digest>` on each child → update parent child list → verify labels and both link directions.
+- Wire order: file parent -> add `fr-digest` + `hold` with `gh` (intake does not add labels; FR #10105) -> prepend `Depends-on: #<digest>` on each child -> update parent child list -> verify labels and both link directions.
 
 ## needs-walrus split — CAST IRON (FR #9669)
 
