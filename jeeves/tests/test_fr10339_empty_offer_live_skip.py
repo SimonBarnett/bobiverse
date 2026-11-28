@@ -94,4 +94,5 @@ def test_offer_empty_notes_first_live_skip(tmp_path, monkeypatch):
     assert st == "empty"
     assert job is None
     skip = gitclaim.take_last_offer_empty_skip(home, "marchhare-1")
-    assert ":require_machine" in skip
+    assert "SimonBarnett/bobiverse#10339" in skip
+    assert skip.endswith(":machine")
