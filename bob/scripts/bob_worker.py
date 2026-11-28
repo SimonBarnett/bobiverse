@@ -6163,8 +6163,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-cursor.ps1")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
-        agent_line = (f"& '{esc(exe)}' --plan --workspace '{esc(cwd)}' $prompt" if mode == "plan"
-                      else f"& '{esc(exe)}' --trust --force --workspace '{esc(cwd)}' -- $prompt")
+        # --approve-mcps: composer sessions drop an approved project HTTP MCP
+        # (agent mcp list can still say ready). redqueen-12460, 2026-11-28.
+        agent_line = (f"& '{esc(exe)}' --plan --approve-mcps --workspace '{esc(cwd)}' $prompt" if mode == "plan"
+                      else f"& '{esc(exe)}' --trust --force --approve-mcps --workspace '{esc(cwd)}' -- $prompt")
         try:
             import worker_start_model as wsm
 
