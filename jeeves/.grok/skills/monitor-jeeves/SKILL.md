@@ -16,11 +16,11 @@ Count only the live chair queue. Drop every FR whose labels include `hold` or `o
 
 ## During the window
 
-When the operator sets a timer, watch for that long. You may start `ircJeeves` if it is stopped. Do not start or edit BobIrcd or Ergo.
+**CAST IRON — minimum tokens.** The watch is `tools/monitor/monitor_jeeves_dispatch.py`. Run it. Do not read the chair log, the queue, or the script output until it exits. Do not paste ticks into the chat. The script prints one line: `OK`, or `STOP #N`. Your reply is that line plus one short sentence. Compare the order you worked out only inside the script. Never print that order.
 
-Read the live queue and the chair log. Compare each offer and each new accepted row with the order you worked out.
+When the operator sets a timer, pass that many seconds. You may start `ircJeeves` if it is stopped. Do not start or edit BobIrcd or Ergo. Start the read at the end of the log. Old offer lines are not a new dispatch.
 
-Stop `ircJeeves` immediately if it offers or accepts a held FR or a dependant of one. Say that you stopped it and name the issue number. Do not restart it until the operator says so.
+On `STOP #N`, leave the service stopped and name that issue. Do not restart it until the operator says so.
 
 ## Keep the queue moving
 
@@ -30,7 +30,7 @@ Every such intervention needs a product pull request in the same turn so ircJeev
 
 ## Do not
 
-- Publish the expected hand-out list.
+- Publish the expected hand-out list, the chair log, or per-tick counts.
 - Merge, stamp UAT, or bump VERSION.
 - Edit `queue.json` by hand.
 - Print tokens, passwords, or NickServ secrets.
