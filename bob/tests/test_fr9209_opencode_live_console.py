@@ -51,5 +51,6 @@ def test_fr9209_conpty_not_file_redirect(tmp_path: Path):
     """A file redirect makes the CLI buffer until the process exits."""
     ps1 = _script(tmp_path)
     assert "opencode_conpty_run.py" in ps1
+    assert "$ptyArgv = @($exe) + @($argList)" in ps1
     assert "RedirectStandardOutput $outFile" not in ps1
     assert "-NoNewWindow" not in ps1

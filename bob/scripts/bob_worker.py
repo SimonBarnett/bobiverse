@@ -6552,7 +6552,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # ConPTY so the CLI treats stdout as a console and flushes each chunk.
             # The capture file grows as bytes arrive; the loop below mirrors them.
             r"        $argvFile = Join-Path $capDir ('bob-oc-argv-' + [guid]::NewGuid().ToString('n') + '.json')",
-            r"        [IO.File]::WriteAllText($argvFile, ($argList | ConvertTo-Json -Compress -Depth 4))",
+            # $argList is flags only. The ConPTY child is CreateProcess of that list,
+            # so the opencode exe has to be argv[0] or Windows starts a command named "run".
+            r"        $ptyArgv = @($exe) + @($argList)",
+            r"        [IO.File]::WriteAllText($argvFile, ($ptyArgv | ConvertTo-Json -Compress -Depth 4))",
             r"        $pyPty = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"        if (-not $pyPty) { $pyPty = 'python.exe' }",
             r"        $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--cwd', $(if ($ocDir) { $ocDir } else { '' }), '--argv-file', $argvFile)",
@@ -6791,8 +6794,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $stderr = Read-OpencodeCapture $errFile",
             r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
             r"    } catch {",
-            r"        $stdout = ''",
-            r"        $stderr = $_",
+            r"        $stdout = [string]$stdout",
+            r"        $stderr = [string]$_",
             r"        $exitCode = -1",
             r"    } finally {",
             r"        if ($proc -and -not $proc.HasExited) { try { $proc.WaitForExit(5000) | Out-Null } catch { } }",
@@ -6800,6 +6803,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            foreach ($f in @($outFile, $errFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
             r"        }",
             r"    }",
+            r"    $stdout = [string]$stdout",
+            r"    $stderr = [string]$stderr",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             # FR #9209: fuel/scan uses $outStr from capture files. Live text already flushed to
             # the success stream; do not dump the full blob again (operator hate).
@@ -7005,7 +7010,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        return",
             r"    }",
             r"    # FR #8645: a stop-closed kill can surface node EPIPE. Do not retry or switch model.",
-            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and -not $script:ocStopClosed -and (($stderr + [Environment]::NewLine + $stdout) -match 'EPIPE|broken pipe'))",
+            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and -not $script:ocStopClosed -and (([string]$stderr + [Environment]::NewLine + [string]$stdout) -match 'EPIPE|broken pipe'))",
             r"    if ($epipeHit -and [int]$script:ocEpipeTries -lt 1) {",
             r"        $wtOk = (-not $ocDir) -or (Test-Path -LiteralPath $ocDir -PathType Container)",
             r"        if ($wtOk) {",
