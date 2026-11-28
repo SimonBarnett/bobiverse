@@ -20,8 +20,9 @@ def test_fr8133_no_turn_or_ceiling_without_job(tmp_path: Path):
     assert "if ($script:ocHasJob -and $stallMs -ge $hardCeilingMs)" in text
     assert "if ($script:ocHasJob -and $idleMs -ge $watchdogMs)" in text
     assert "if ($script:ocHasJob -and $env:BOB_OPENCODE_STDOUT_LOG" in text
-    assert "Invoke-OpencodeRun $prompt '' ''" not in text
-    assert "opencode-ready: idle (FR #8133" in text
+    assert "Invoke-OpencodeRun $prompt '' ''" in text
+    assert "opencode-ready: prompt (skill-dag MCP + seat prompt)" in text
+    assert "opencode-ready: idle (FR #8133" not in text
     # Job inject still starts a watched run from the inject time.
     assert "Invoke-OpencodeRun $frame.line $frame.key $frame.dir" in text
 
