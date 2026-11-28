@@ -551,6 +551,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When a linked worktree .git gitfile points at a missing admin dir, run job_worktree_gitlink.py --check first; --repair only with an explicit branch (the admin dir is rebuilt, the working tree is untouched).
 <!-- harvest-tip:intake-in_ens_0415dab42afc -->
 - summarize offerable vs live offer_focus_top: log live_skip; never fold to blocked_other without it; nak busy needs bored_gate_busy_reason when seat_open_job empty
+<!-- harvest-tip:intake-in_e55e3ba66cf7471e -->
+- bob-tray engine update-hover-engine: LocalOnly hover inside 45s step; full grok/peer belongs off hot path
 <!-- harvest-tip:intake-in_92d9faddbf0147df -->
 - jeeves source tests: assert OpenCode launcher strings from repo_layout REPO path, not bob.scripts import __file__.
 <!-- harvest-lessons-eof -->
