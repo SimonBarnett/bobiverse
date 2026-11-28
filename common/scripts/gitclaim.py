@@ -8650,6 +8650,10 @@ def mrb_already_done(
     want = ident if ident.startswith("#") else f"#{ident.lstrip('#')}"
     # Finished review wins over GitHub-open (ci-wait). Check before pr_exists.
     if _mrb_review_finished(doc, home, repo, want):
+        # FR #9885: open clean mergeable tip stays offerable until merged (FR #4661
+        # still blocks the seat that PASSed).
+        if _mrb_pass_awaiting_merge(doc, row, home=home, pr_exists=pr_exists):
+            return False
         return True
     if pr_exists is not None:
         try:
@@ -8700,6 +8704,100 @@ def mrb_row_should_survive_resync(
     return False
 
 
+def _mrb_row_merge_state(row: dict) -> tuple[Any, str]:
+    """Mergeable + merge_state fields stamped on queue rows (resync / precompute)."""
+    mergeable = row.get("mergeable")
+    merge_state = str(
+        row.get("mergeable_state")
+        or row.get("merge_state_status")
+        or row.get("mergeStateStatus")
+        or ""
+    )
+    return mergeable, merge_state
+
+
+def _mrb_row_merge_conflict_reason(row: dict) -> str | None:
+    """FR #9885: DIRTY/CONFLICTING open PRs are FIX-first, not MRB."""
+    try:
+        import mrb_merge_on_green as _mog
+    except ImportError:
+        return None
+    mergeable, merge_state = _mrb_row_merge_state(row)
+    return _mog.merge_attempt_conflict_reason(
+        mergeable=mergeable, merge_state=merge_state
+    )
+
+
+def _mrb_pass_verdict_on_record(
+    doc: dict | None, home: Path | None, repo: str, ident: str
+) -> bool:
+    """True when a PASS verdict (not mere FAIL) is on record for this MRB."""
+    want = _norm_row_id(ident)
+    if not want or not str(repo or "").strip():
+        return False
+    repo_raw = str(repo or "").strip()
+    repo_c = canonical_queue_repo(repo_raw) or repo_raw
+    if isinstance(doc, dict):
+        for r in doc.get("done") or []:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("task") or "").upper() != "MRB":
+                continue
+            r_repo = str(r.get("repo") or "").strip()
+            if not r_repo:
+                continue
+            if (canonical_queue_repo(r_repo) or r_repo) != repo_c and r_repo != repo_raw:
+                continue
+            if _norm_row_id(r.get("id")) != want:
+                continue
+            result = str(r.get("result") or "").strip().upper()
+            if result == "PASS":
+                return True
+    if home is not None:
+        try:
+            num = int(str(ident).lstrip("#"))
+        except (TypeError, ValueError):
+            num = 0
+        if num:
+            with contextlib.suppress(Exception):
+                if str(_merge_on_green_pass_sha(home, repo_raw, num) or "").strip():
+                    return True
+    return False
+
+
+def _mrb_pass_awaiting_merge(
+    doc: dict,
+    row: dict,
+    *,
+    home: Path | None = None,
+    pr_exists=None,
+) -> bool:
+    """FR #9885: PASS on an open clean MERGEABLE tip MRB stays offerable until merge."""
+    if _canon_task(row) != "MRB":
+        return False
+    repo = str(row.get("repo") or "").strip()
+    ident = _norm_row_id(str(row.get("id") or ""))
+    if not repo or not ident:
+        return False
+    if not _mrb_pass_verdict_on_record(doc, home, repo, ident):
+        return False
+    if row.get("draft") in (True, "true", "1", 1):
+        return False
+    if _mrb_row_merge_conflict_reason(row):
+        return False
+    if row.get("merged") in (True, "true", "1", 1):
+        return False
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return False
+    if pr_exists is not None:
+        try:
+            if not bool(pr_exists(repo, ident.lstrip("#"))):
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def mrb_row_not_offerable_reason(
     row: dict,
     *,
@@ -8716,6 +8814,11 @@ def mrb_row_not_offerable_reason(
         return "merged"
     if str(row.get("state") or "").strip().lower() == "closed":
         return "state=closed"
+    if row.get("draft") in (True, "true", "1", 1):
+        return "draft"
+    conflict = _mrb_row_merge_conflict_reason(row)
+    if conflict:
+        return f"merge-{conflict}"
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
     if is_mrb_fix_pr_title(titleish) and not _mrb_fix_offer_stamped(row):
         # FR #2375: stacked parent-branch fixes are not MRB.
@@ -14926,6 +15029,10 @@ def offer_focus_top(
                 # FR #4718: do not hand the same MRB head back to the seat that FAILed it.
                 if mrb_fail_same_head_for_seat(cand, me):
                     return None
+                if _canon_task(cand) == "MRB" and _nick_done_mrb_pass_in_doc(
+                    doc, me, str(cand.get("repo") or ""), str(cand.get("id") or "")
+                ):
+                    return None  # FR #4661: same seat does not re-review after PASS
                 if ledger_blocks(ledger, cand, me, live):
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
