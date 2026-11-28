@@ -5,6 +5,7 @@ FR/MRB trees that include ``common/scripts`` (but omit ``common/tests``) still c
 FR #5422: wrap pytest cleanup_dead_symlinks so WinError 5 on pytest-current is not a session fail.
 FR #5692: when default ``%TEMP%/pytest-of-<user>`` is Access-denied or hangs, set an isolated
 ``basetemp`` under ``%LOCALAPPDATA%\\Temp\\pytest-basetemp-<user>`` (see pytest-windows skill).
+FR #10294: same redirect on Windows when TEMP/pytest-of paths are long (use ``C:\\pt`` basetemp).
 """
 import sys
 from pathlib import Path

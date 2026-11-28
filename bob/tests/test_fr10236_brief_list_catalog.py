@@ -21,7 +21,8 @@ def _finish_text(tmp_path: Path) -> str:
 
 def test_fr10236_finish_brief_names_list_catalog_then_get_skill(tmp_path):
     text = _finish_text(tmp_path)
-    assert "skill-dag MCP list_catalog then get_skill" in text
+    assert "skill-dag MCP get_skill (list_catalog optional)" in text
+    assert "list_catalog" in text
     assert "skill-dag MCP resolve then get_skill" not in text
 
 

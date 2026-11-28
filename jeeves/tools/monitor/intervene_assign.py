@@ -19,7 +19,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from _common import EXIT_ERROR, EXIT_FINDING, EXIT_OK, build_parser, resolve_homes
+from _common import (
+    EXIT_ERROR,
+    EXIT_FINDING,
+    EXIT_OK,
+    build_parser,
+    is_opencode_seat,
+    live_report_gateway_down,
+    resolve_homes,
+)
 
 _SHOP_NICK_RX = re.compile(r"^[a-z0-9][a-z0-9_.-]*-\d+$", re.I)
 _TASKS = frozenset({"FR", "MRB", "UAT", "FIX", "PR", "BUILD"})
@@ -225,8 +233,15 @@ def plan_assigns(
                         cross.append(seat)
                 if cross:
                     seats_ordered = cross + same
+        skip_opencode = bool(
+            (idle_seats and idle_seats[0].get("_skip_opencode_seats"))
+            or os.environ.get("BOB_MONITOR_SKIP_OPENCODE_SEATS", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
         for seat in seats_ordered:
             nick = str(seat.get("nick") or "").strip()
+            if skip_opencode and is_opencode_seat(seat):
+                continue
             key = nick.lower()
             if not nick or key in used_nicks:
                 continue
@@ -358,6 +373,7 @@ def intervene_from_report(
     prefer_shop_wire_on_mute: bool = False,
     force_shop_wire: bool = False,
     cmd_trace_mute_s: float | None = None,
+    skip_opencode_seats: bool = False,
 ) -> dict[str, Any]:
     """Ear-relay !assign, or FR #9878 shop-wire when cmd-trace mute / forced."""
     use_shop = bool(force_shop_wire)
@@ -397,6 +413,8 @@ def intervene_from_report(
         return payload
 
     idle = idle_from_report(report)
+    if skip_opencode_seats:
+        idle = [s for s in idle if not is_opencode_seat(s)]
     rows = rows_from_report(report)
     planned = plan_assigns(
         idle,
@@ -423,6 +441,8 @@ def intervene_from_report(
     }
     if mute_snap is not None:
         payload["cmd_trace_mute"] = mute_snap
+    if skip_opencode_seats:
+        payload["skip_opencode_seats"] = True
     if truncate and not dry_run:
         payload["truncate"] = truncate_drained_outbox(outbox)
     return payload
@@ -473,9 +493,36 @@ def check(args: argparse.Namespace):
     """CLI check entry: plan/write assigns from idle_seats report or --fixture."""
     findings: list[str] = []
     fixture = getattr(args, "fixture", "") or ""
+    gateway = None
     if fixture:
         report = json.loads(Path(fixture).read_text(encoding="utf-8-sig"))
     else:
+        gateway = live_report_gateway_down()
+        if gateway.get("gateway_down"):
+            fb = None
+            try:
+                from _common import inbound_transcript_fallback
+
+                chair, digest = resolve_homes(args)
+                fb = inbound_transcript_fallback(chair, digest)
+            except Exception:
+                fb = None
+            return (
+                {
+                    "ok": True,
+                    "skipped": "report_gateway_down",
+                    "report_http_status": int(gateway.get("status") or 0),
+                    "report_error": gateway.get("error") or "",
+                    "findings": [
+                        "FR #10107: skip intervene_assign while public /bob/v1/report gateway is down"
+                    ],
+                    "remediation": (
+                        "heal BobCallback/IIS on walrus; prefer Grok seats when report returns"
+                    ),
+                    "inbound_transcript": fb,
+                },
+                EXIT_OK,
+            )
         import idle_seats as _is
 
         report, code = _is.check(args)
@@ -539,6 +586,7 @@ def check(args: argparse.Namespace):
         prefer_shop_wire_on_mute=bool(getattr(args, "prefer_shop_wire_on_mute", False)),
         force_shop_wire=bool(getattr(args, "shop_wire", False)),
         cmd_trace_mute_s=mute_s if mute_s > 0 else None,
+        skip_opencode_seats=False,
     )
     idle_n = len(idle_from_report(report))
     try:
