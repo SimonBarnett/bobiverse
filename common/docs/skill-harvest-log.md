@@ -1,6 +1,14 @@
 # Skill harvest log
 
 
+## 2026-11-28 - Digest #9762 tray/status CI PR bases
+
+| Field | Value |
+|-------|-------|
+| Lesson | Status sparse CI (#9764) shares Build-BobDialogs -Targets with tray (#9763); stack status PR on the tray branch until tray merges; Closes auto-links only when PR base is main. |
+| Evidence | Digest #9762 children #10060/#10061/#10064; intake harvest #10099 |
+| Refs | Closes SimonBarnett/bobiverse#10099 |
+
 ## 2026-11-23 - FR #9344 monitor D3 release + paid OC pin + airc not-op
 
 | Field | Value |
@@ -775,6 +783,11 @@ For `SimonBarnett/bobiverse`, `infer_require_machine` ignores dedicated body `re
 ## 2026-11-28 - harvest #10103 (build-bob-tray sparse VERSION)
 
 Sparse GHA checkout for tray/status CI must include `common/VERSION` when scripts call `Get-BobiverseRepoPath`; without it `Test-BobiverseSplitRepo` is false and `Build-BobDialogs.ps1` looked under legacy flat `dialogs` paths.
-
 Books: bobiverse-fleet-ops, bob-tray-dialogs. Refs: SimonBarnett/bobiverse#10103
+## 2026-11-28 digest #9991 IIS web.config heal (FR #9992 harvest #10101)
+Digest #9991 children landed in product PRs #10083-#10090. Live IIS `web.config` forward (BobModelsWebhook PUT) is walrus operator redeploy via `Install-BobWebhooks.ps1`, not FR-seat production PUT. Workers ship the `models_put_forward` probe classifier and pytest; PR body tells owner to redeploy.
+Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#9991 SimonBarnett/bobiverse#9992 SimonBarnett/bobiverse#10101
+## 2026-11-28 - harvest #10102 (Digest #10078)
+Public Bob skill MCP (`https://bob.ntsa.uk/mcp`) matches plan.ntsa.uk: GET describes tools; POST `tools/call` `list_catalog` and `get_skill`; seat `Copy-BobProjectSkills` hydrates `~/.grok/skills` over HTTPS — no git clone of the skill book. Product stack #10092 catalog builder, #10093 POST /mcp, #10094 seat HTTPS loader.
+Books: bobiverse-worker-seat, bobiverse-bob-worker. Refs: SimonBarnett/bobiverse#10092 SimonBarnett/bobiverse#10093 SimonBarnett/bobiverse#10094 SimonBarnett/bobiverse#10102
 

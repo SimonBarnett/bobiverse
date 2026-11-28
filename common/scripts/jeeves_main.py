@@ -939,8 +939,20 @@ def main(argv: list[str] | None = None) -> int:
     # Wire gitclaim in-proc path
     import_heavy("gitclaim")  # noqa: F401 — import after enable so _lock sees RLock
 
-    if not jeeves_locks.try_acquire_instance_mutex(home):
-        _print_json({"ok": False, "err": "already_running", "fr": 1993})
+    mutex_role = jeeves_locks.resolve_instance_mutex_role(
+        http_only=bool(args.http_only),
+        chair=bool(args.chair),
+        chair_only=bool(args.chair_only),
+    )
+    if not jeeves_locks.try_acquire_instance_mutex(home, mutex_role):
+        _print_json(
+            {
+                "ok": False,
+                "err": "already_running",
+                "fr": 1993,
+                "role": mutex_role,
+            }
+        )
         return 2
 
     try:
