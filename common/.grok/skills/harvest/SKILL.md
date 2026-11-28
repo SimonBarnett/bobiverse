@@ -515,6 +515,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - OpenCode no-jobs twin of Cursor #10019: file product Clear-ACK (#10038) and gh_auth_missing (#10039) plus monitor fingerprints (#10040/#10041) as Depends-on digest children same turn --- do not leave (owe) rows.
 <!-- harvest-tip:intake-in_657cab73ea2f41cb -->
 - When chair GH 429s: compare New-BobGitWebhook subscribed events vs bobcallback.GIT_EVENTS allow-list before adding more polls; dropped workflow_run forces REST. File anti-omnibus FR-W0 accept-events first, then kill poll cadences.
+<!-- harvest-tip:intake-in_0f5cdea9b9804cf3 -->
+- Harvest promote that documents existing GHA sparse paths: pin with test_fr* reading workflows; workflow path filter-only diffs may need OAuth scope to touch .github.
 <!-- harvest-tip:intake-in_789cef4c2f0a4929 -->
 - When folding a CONFLICTING FIX tip, keep a single allowlist entry if both sides added the same field with different comments; push onto the existing PR branch and do not open a second pull request.
 <!-- harvest-tip:intake-in_99a865ea9aed4c13 -->
