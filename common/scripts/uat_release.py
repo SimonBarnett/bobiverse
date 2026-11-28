@@ -14,22 +14,24 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-# owner/name lower -> product title used in GitHub release name
+# owner/name lower -> product title used in GitHub release name (FR #7122).
+# FR #9416: this map is title/tag metadata only — it does **not** grant UAT
+# enqueue/offer. Priority Agent / priority-customer products stay off the
+# default offer allowlist until an operator opts in via env or chair file.
 PRODUCT_UAT_RELEASE: dict[str, str] = {
     "simonbarnett/priority-mcp": "Priority Agent",
     "simonbarnett/agentic_fomprep": "Priority Agent",
 }
 
-# FR #9382 CAST IRON: only these repos (plus PRODUCT_UAT_RELEASE keys, env, and
-# optional chair-home uat_release_repos.txt) may enqueue / offer / assign UAT #0.
-# Customer / plan-only repos (wetherby, obw, ce-priority, …) stay out.
+# FR #9382 CAST IRON + FR #9416: only these fleet repos (plus env and optional
+# chair-home uat_release_repos.txt) may enqueue / offer / assign UAT #0.
+# Customer / plan-only / priority-customer repos (wetherby, obw, ce-priority,
+# priority-mcp, …) stay out of the default set.
 DEFAULT_UAT_RELEASE_REPOS: frozenset[str] = frozenset(
     {
         "simonbarnett/bobiverse",
         "simonbarnett/a-search",
         "simonbarnett/skills-visionary",
-        "simonbarnett/priority-mcp",
-        "simonbarnett/agentic_fomprep",
     }
 )
 
@@ -115,9 +117,12 @@ def _parse_repo_lines(text: str) -> set[str]:
 
 
 def load_uat_release_repos(*, home: Path | None = None) -> frozenset[str]:
-    """Built-in allowlist + PRODUCT_UAT_RELEASE + env + optional chair file (FR #9382)."""
+    """Built-in allowlist + env + optional chair file (FR #9382 / #9416).
+
+    ``PRODUCT_UAT_RELEASE`` is **not** merged here (FR #9416): product title
+    rows must not auto-enable UAT offer for priority-customer repos.
+    """
     names: set[str] = set(DEFAULT_UAT_RELEASE_REPOS)
-    names.update(PRODUCT_UAT_RELEASE.keys())
     import os
 
     env_raw = (os.environ.get(UAT_RELEASE_REPOS_ENV) or "").strip()
