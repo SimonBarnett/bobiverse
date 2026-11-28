@@ -203,13 +203,15 @@ def test_closed_unmerged_pr_ref_requeue_also_clears_fr_done(tmp_path, monkeypatc
         "github_issue_open_checker",
         lambda **_k: (lambda _repo, _num: True),
     )
+    done_row = _done_fr(ident="#3017")
+    done_row["url"] = f"https://github.com/{REPO}/issues/3017"
     gitclaim._write_queue(
         gitclaim.queue_path(home),
         {
             "v": 1,
             "unaccepted": [],
             "accepted": [],
-            "done": [_done_fr(ident="#3017")],
+            "done": [done_row],
         },
     )
     claim = gitclaim.GitClaim(

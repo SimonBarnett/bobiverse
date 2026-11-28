@@ -26,5 +26,8 @@ def test_fr10009_stamped_closed_skips_offline(tmp_path, monkeypatch):
     why = gitclaim.closed_unmerged_ref_skip_reason(doc, "SimonBarnett/bobiverse", "9")
     assert why and "closed" in why
     src = (ROOT / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
-    assert "pr_exists=None" in src
-    assert "github_pr_exists_checker" not in src.split("def _assign_row_named")[1].split("def _finish_assign_result")[0]
+    assign_body = src.split("def _assign_row_named", 1)[1].split("def _finish_assign_result", 1)[0]
+    assert "pr_exists=None" in assign_body
+    assert "if paused" in assign_body
+    assert "github_pr_exists_checker" in assign_body
+    assert "PR_EXISTS_SHARED_CACHE" in assign_body

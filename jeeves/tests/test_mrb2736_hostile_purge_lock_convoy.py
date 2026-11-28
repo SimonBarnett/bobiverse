@@ -43,11 +43,13 @@ def test_mrb2736_report_passes_short_lock_wait_and_shared_cache():
     text = _utf8_no_bom(BOBREPORT)
     assert "REPORT_PURGE_LOCK_WAIT_S" in text
     assert "0.2" in text
-    assert "PR_EXISTS_SHARED_CACHE" in text
-    assert "lock_timeout=" in text
     src = inspect.getsource(bobreport._public_queue)
-    assert "PR_EXISTS_SHARED_CACHE" in src
-    assert "lock_timeout" in src
+    # FR #10010: GET /bob/v1/report is read-only; purge stays off the report path.
+    assert "FR #10010" in src or "read-only" in src.lower()
+    assert "PR_EXISTS_SHARED_CACHE" not in src
+    agent_src = (REPO / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
+    assign_body = agent_src.split("def _assign_row_named", 1)[1].split("def _finish_assign_result", 1)[0]
+    assert "PR_EXISTS_SHARED_CACHE" in assign_body
 
 
 def test_mrb2736_product_tests_pin_lock_free_and_row_survive():
