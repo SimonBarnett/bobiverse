@@ -16,7 +16,7 @@ Count only the live chair queue. Drop every FR whose labels include `hold` or `o
 
 ## During the window
 
-**CAST IRON — minimum tokens.** The watch is `tools/monitor/monitor_jeeves_dispatch.py`. Run it. Do not read the chair log, the queue, or the script output until it exits. Do not paste ticks into the chat. The script prints one line: `OK`, or `STOP #N`. Your reply is that line plus one short sentence. Compare the order you worked out only inside the script. Never print that order.
+**CAST IRON — minimum tokens.** The watch is `jeeves/scripts/monitor_jeeves_dispatch.py`. Run it. Do not read the chair log, the queue, or the script output until it exits. Do not paste ticks into the chat. The script prints one line: `OK`, or `STOP #N`. Your reply is that line plus one short sentence. Compare the order you worked out only inside the script. Never print that order.
 
 When the operator sets a timer, pass that many seconds. You may start `ircJeeves` if it is stopped. Do not start or edit BobIrcd or Ergo. Start the read at the end of the log. Old offer lines are not a new dispatch.
 
