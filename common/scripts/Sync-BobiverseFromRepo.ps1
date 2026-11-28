@@ -51,6 +51,8 @@ param(
     [string]$Branch = 'main',
     [switch]$DryRun,
     [switch]$ComposeOnly,
+    # FR #10023: allow flat scripts\ robocopy when frozen bob-ear.exe source_commit lags tip.
+    [switch]$AllowFrozenEarScriptsCompose,
     # Test hook (FR #1565): pretend ARP DisplayVersion is this value (skip registry).
     [string]$ArpVersionOverride = ''
 )
@@ -371,8 +373,35 @@ if ($viaWorkTree -and -not $ComposeOnly) {
     }
 }
 
+# FR #10023: tip flat scripts\ beside a stale frozen bob-ear.exe can exit-2 loop.
+$skipFrozenEarScripts = $false
+if ($Product -eq 'bob' -and -not $AllowFrozenEarScriptsCompose -and -not $skipStaleCompose) {
+    $gatePy = Join-Path $PSScriptRoot 'sync_frozen_ear_compose_gate.py'
+    if (Test-Path -LiteralPath $gatePy) {
+        try {
+            $gateJson = & python $gatePy --install $InstallRoot --clone $clone 2>&1 | Out-String
+            $gateJson = $gateJson.Trim()
+            if ($gateJson.StartsWith('{')) {
+                $gate = $gateJson | ConvertFrom-Json
+                if ($gate.blocked) {
+                    $skipFrozenEarScripts = $true
+                    $line = [string]$gate.line
+                    if ($line) { Write-Host ("WARN {0}" -f $line) }
+                    else { Write-Host 'WARN sync-skip-frozen-ear-scripts ear lags tip - rebuild bob-ear.exe first (FR #10023)' }
+                }
+            }
+        } catch {
+            Write-Host ("WARN sync-frozen-ear-gate failed: {0}" -f $_.Exception.Message)
+        }
+    }
+}
+
 if (-not $skipStaleCompose) {
 foreach ($d in @('scripts', 'third_party')) {
+    if ($d -eq 'scripts' -and $skipFrozenEarScripts) {
+        Write-Host 'INFO sync-skip-frozen-ear-scripts keeping installed scripts\ (skills/common/docs overlays may still run)'
+        continue
+    }
     $t = Join-Path $InstallRoot $d
     foreach ($s in @(Get-BobiverseRepoDirs -Root $clone -Sub $d)) {
         # FR #269: never /XO on scripts - git checkout mtimes are often older than the flat copy from a

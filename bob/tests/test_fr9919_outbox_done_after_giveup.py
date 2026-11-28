@@ -71,6 +71,29 @@ def test_fr9919_outbox_free_refuse_reason_unit():
 
 
 def test_fr9919_supervisor_drain_run_outbox_now_wired():
+    """Grok/opencode flush before turn_ended (FR #9919 / #10368).
+
+    Cursor and Aider also flush (FR #10362). Those watchers drain after
+    turn_ended so a DONE written on turn_ended still reaches IRC before the
+    harvest !bored fire.
+    """
     src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
     assert "def drain_run_outbox_now" in src
-    assert 'drain_run_outbox_now("turn_ended")' in src
+    needle = 'self.drain_run_outbox_now("turn_ended")'
+    assert src.count(needle) == 3
+    cursor_block = src.split("def _start_cursor_turn_watcher", 1)[1].split(
+        "def _start_aider_turn_watcher", 1
+    )[0]
+    aider_block = src.split("def _start_aider_turn_watcher", 1)[1].split(
+        "def _start_turn_watcher", 1
+    )[0]
+    assert needle in cursor_block
+    assert needle in aider_block
+    assert cursor_block.find("self.bored.turn_ended(") < cursor_block.find(needle)
+    assert aider_block.find("self.bored.turn_ended(") < aider_block.find(needle)
+    start = src.split("def _start_turn_watcher", 1)[1]
+    block = start.split("def _on_inject", 1)[0]
+    drain_at = block.find(needle)
+    ended_at = block.find("self.bored.turn_ended(")
+    assert drain_at != -1 and ended_at != -1
+    assert drain_at < ended_at

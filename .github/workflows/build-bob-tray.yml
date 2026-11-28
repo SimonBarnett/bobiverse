@@ -13,6 +13,7 @@ on:
       - bob/scripts/Write-BobTrayDeployedIdentity.ps1
       - bob/scripts/bob_tray_version.py
       - bob/tests/test_fr6285_tray_build_ci.py
+      - bob/tests/test_fr10103_harvest_tray_sparse_common_version.py
       - bob/tests/test_fr6924_tray_version_label.py
       - bob/scripts/Stage-BobTrayHotpatchArtifact.ps1
       - bob/scripts/Install-BobTrayHotpatch.ps1
@@ -26,6 +27,7 @@ on:
       - bob/scripts/Write-BobTrayDeployedIdentity.ps1
       - bob/scripts/bob_tray_version.py
       - bob/tests/test_fr6285_tray_build_ci.py
+      - bob/tests/test_fr10103_harvest_tray_sparse_common_version.py
       - bob/tests/test_fr6924_tray_version_label.py
       - bob/scripts/Stage-BobTrayHotpatchArtifact.ps1
       - bob/scripts/Install-BobTrayHotpatch.ps1

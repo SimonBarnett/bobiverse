@@ -5434,10 +5434,18 @@ class Client:
                     self._workers().on_done(src, target)
             else:
                 gitclaim.note_worker_activity(self.home, src, now)
-                # FR #4415: name seat + held/offered job so operators see why (not silent busy).
+                # FR #4415 / #10339: name seat + held/offered job (not silent busy).
                 _why = ""
                 with contextlib.suppress(Exception):
                     _why = gitclaim.seat_open_job(self.home, src, now) or ""
+                if not _why:
+                    with contextlib.suppress(Exception):
+                        _why = gitclaim.bored_gate_busy_reason(
+                            self.home,
+                            src,
+                            now,
+                            session_started=session_started,
+                        )
                 _nak = gitclaim.format_bored_busy_nak(src, _why)
                 self._git_say(target, _nak)
                 info(f"INFO git-claim bored nak busy nick={src} why={_why or '-'}")
@@ -5487,8 +5495,10 @@ class Client:
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
             try:
+                _live_skip = gitclaim.take_last_offer_empty_skip(self.home, src)
                 _empty_stats = gitclaim.clamp_empty_reply_stats(
-                    gitclaim.summarize_empty_offer(self.home, src)
+                    gitclaim.summarize_empty_offer(self.home, src),
+                    live_skip=_live_skip,
                 )
             except Exception:  # noqa: BLE001
                 _empty_stats = None

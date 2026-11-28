@@ -28,7 +28,7 @@ if (-not $SourceDir) {
     $SourceDir = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\dialogs'   # alias -> bob\tray\dialogs in the split repo
     if (-not (Test-Path -LiteralPath $SourceDir)) { $SourceDir = Join-Path $RepoRoot 'dialogs' }
 }
-# Sparse CI does not checkout common\VERSION, so the split-repo alias does not run.
+# FR #10103: sparse CI must checkout common\VERSION (Test-BobiverseSplitRepo). Belt: bob\tray\dialogs when legacy alias misses.
 $splitDialogs = Join-Path $RepoRoot 'bob\tray\dialogs'
 if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'BobDialogsCommon.cs')) -and (Test-Path -LiteralPath (Join-Path $splitDialogs 'BobDialogsCommon.cs'))) {
     $SourceDir = $splitDialogs
