@@ -48,6 +48,7 @@ $rules = @(
     @{ Name = 'BobReportWebhook'; Match = '^bob/v1/report$'; Url = "$Backend/bob/v1/report" },
     @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = "$Backend/bob/v1/digest" },
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
+    @{ Name = 'BobGitcustWebhook'; Match = '^bob/v1/gitcust$'; Url = "$Backend/bob/v1/gitcust" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
     @{ Name = 'BobHoursWebhook'; Match = '^bob/v1/hours'; Url = "$Backend/bob/v1/hours" },
@@ -73,6 +74,10 @@ $rewriteXml = @"
         <rule name="BobGitWebhook" stopProcessing="true">
           <match url="^bob/v1/git$" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/git" />
+        </rule>
+        <rule name="BobGitcustWebhook" stopProcessing="true">
+          <match url="^bob/v1/gitcust$" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/gitcust" />
         </rule>
         <rule name="BobIntakeWebhook" stopProcessing="true">
           <match url="^bob/v1/intake(.*)" ignoreCase="true" />
@@ -341,6 +346,14 @@ function Get-BobOwnedRuleXml {
         </rule>
 "@
         }
+        'BobGitcustWebhook' {
+            return @"
+        <rule name="BobGitcustWebhook" stopProcessing="true">
+          <match url="^bob/v1/gitcust$" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/gitcust" />
+        </rule>
+"@
+        }
         'BobIntakeWebhook' {
             return @"
         <rule name="BobIntakeWebhook" stopProcessing="true">
@@ -467,6 +480,7 @@ $script:BobOwnedRuleNames = @(
     'BobReportWebhook',
     'BobDigestWebhook',
     'BobGitWebhook',
+    'BobGitcustWebhook',
     'BobIntakeWebhook',
     'BobJiraWebhook',
     'BobHoursWebhook',
