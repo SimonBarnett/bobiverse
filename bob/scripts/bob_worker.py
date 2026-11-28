@@ -3834,7 +3834,7 @@ def rules_text(folder: str, kind: str) -> str:
     else:
         skill_line = (
             f"Read {folder}\\AGENTS.md. CAST IRON: every CLI loads Bob skills only from https://bob.ntsa.uk/mcp "
-            f"(resolve, then get_skill). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
+            f"(list_catalog, then get_skill; resolve only if the MCP lists it). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
             f"If that MCP is down, GIVEUP skill-dag-mcp-down — never continue FR/MRB/UAT from disk. "
         )
     return (f"{head}{skill_line}"
@@ -14729,7 +14729,7 @@ def opencode_job_finish_steps(
         f"FINISH {key}. Work so far is already in the worktree ({wt}). "
         "This is a NEW opencode run (no --resume/--continue). "
         + sha_line
-        + "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
+        + "Per job call skill-dag MCP list_catalog then get_skill (resolve only if the MCP lists it); file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
         + opencode_typed_delivery(
