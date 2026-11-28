@@ -40,6 +40,7 @@ def test_cursor_launch_files_include_mcp_and_resolve(tmp_path):
     body = spec.files[mcp_path]
     data = json.loads(body)
     assert "skill-dag" in data.get("mcpServers", {})
+    # Cursor seats use the remote skill-dag MCP (list_catalog / get_skill); see worker_prompt_template.txt
     assert "list_catalog" in spec.files[str(run / "prompt.txt")]
     assert "get_skill" in spec.files[str(run / "prompt.txt")]
     assert spec.write_cursor_skill_dag_mcp is True
@@ -167,6 +168,8 @@ def test_fr8785_flat_install_spaces_prompt_matches_mcp_and_once_resolve(
     assert "bob/bob/scripts" not in prompt_txt
     assert ".cursor/mcp.json" in prompt_txt or ".cursor\\mcp.json" in prompt_txt
     assert "get_skill" in prompt_txt
+    assert "list_catalog" in prompt_txt
+    assert "skill-dag-mcp-down" in prompt_txt
 
     env = {k: v for k, v in os.environ.items() if k.upper() != "PYTHONPATH"}
     env["HOME"] = str(home)
