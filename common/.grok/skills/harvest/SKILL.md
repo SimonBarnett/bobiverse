@@ -579,6 +579,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Monitor multi-route 502 BobCallback filings stamp ionos; non-chair seats GIVEUP and comment walrus heal playbook (#9260 probe).
 <!-- harvest-tip:intake-in_ens_67034eb0c315 -->
 - When fr tip branch merged main, MRB diff vs main is the acceptance signal; re-offer still needs pytest + Closes verify.
+<!-- harvest-tip:intake-in_ens_12802ed399b2 -->
+- Always append DONE as isolated outbox call before long merge/harvest chains; turn-end watchdog fires on missing DONE.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
