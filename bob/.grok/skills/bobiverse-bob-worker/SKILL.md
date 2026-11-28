@@ -234,3 +234,9 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 ## Intake lesson archive
 
 Intake bullets for this book are the second lesson, `lessons.md`, beside this file. `get_skill` returns this file only. OpenCode drops a tool result over 50 KiB, so this file stays the operating manual and new intake bullets append in `lessons.md`. Do not paste that archive back into this file.
+
+## Harvested lessons (intake)
+
+<!-- harvest-tip:intake-in_74aef7c4163b48a8 -->
+- Cursor composer does not attach an approved project HTTP MCP unless the agent process is started with --approve-mcps. agent mcp list ready is not evidence the seat can call the server.
+<!-- harvest-lessons-eof -->
