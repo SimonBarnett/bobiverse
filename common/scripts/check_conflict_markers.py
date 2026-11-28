@@ -13,6 +13,7 @@ Used by CI and as the CAST IRON pre-merge gate for MRB seats.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +31,9 @@ SKIP_DIR_NAMES = {
     "dist",
     "build",
     ".tox",
+    ".cursor",
+    "worktrees",
+    "agent-tools",
 }
 
 # Binary / generated extensions we never treat as source.
@@ -118,7 +122,40 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
     return out
 
 
+def iter_git_tracked_files(root: Path) -> list[Path] | None:
+    """When cwd is a git worktree, scan only tracked paths (fast; FR #10309)."""
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        return None
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    files: list[Path] = []
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", errors="replace")
+        p = root / rel
+        try:
+            rel_path = p.relative_to(root)
+        except ValueError:
+            rel_path = p
+        if _is_skipped_path(rel_path):
+            continue
+        if p.is_file():
+            files.append(p)
+    return files
+
+
 def iter_files(root: Path, paths: list[Path] | None) -> list[Path]:
+    if not paths:
+        tracked = iter_git_tracked_files(root)
+        if tracked is not None:
+            return tracked
     if paths:
         files: list[Path] = []
         for p in paths:

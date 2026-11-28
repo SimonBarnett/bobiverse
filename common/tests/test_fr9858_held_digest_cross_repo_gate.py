@@ -102,8 +102,8 @@ def test_fr9858_foreign_held_via_issue_fetch_is_depends_held(home: Path):
     assert why == gitclaim.DEPENDS_HELD_REASON, why
 
 
-def test_fr9858_foreign_unheld_open_digest_still_blocks(home: Path):
-    """FR #10059: an unheld OPEN foreign digest still blocks the child (no hold needed)."""
+def test_fr9858_foreign_unheld_open_digest_blocks(home: Path):
+    """FR #10059: an unheld OPEN foreign digest still blocks (depends-open)."""
     child = _fr(REPO, 9858, f"Depends-on: {OTHER}#{FOREIGN_DIGEST}\n")
     _queue(home, [child])
     doc = gitclaim._load_queue_unlocked(home)
@@ -114,7 +114,7 @@ def test_fr9858_foreign_unheld_open_digest_still_blocks(home: Path):
         issue_fetch=_unheld_foreign_issue,
         issue_open=lambda r, n: False,
     )
-    assert why == "depends-open", why
+    assert why == gitclaim.DEPENDS_OPEN_REASON, why
 
 
 def test_fr9858_fail_when_child_offered_while_foreign_digest_held(home: Path):

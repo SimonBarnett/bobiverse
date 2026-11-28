@@ -179,8 +179,9 @@ def test_failed_send_is_retried_later_not_in_a_tight_loop():
     assert 1 <= len(calls) <= 5, calls
 
 
-def test_fr1611_done_holds_bored_until_harvest_window_ends():
+def test_fr1611_done_holds_bored_until_harvest_window_ends(monkeypatch):
     """FR #1611: DONE must not !bored immediately; agent harvests first."""
+    monkeypatch.setenv("BOB_WORKER_BORED_ON_TURN_END", "0")
     sent: list = []
     logs: list = []
     hold = 0.45
@@ -203,7 +204,8 @@ def test_fr1611_done_holds_bored_until_harvest_window_ends():
     e.stop()
 
 
-def test_fr1611_outbox_during_harvest_extends_hold():
+def test_fr1611_outbox_during_harvest_extends_hold(monkeypatch):
+    monkeypatch.setenv("BOB_WORKER_BORED_ON_TURN_END", "0")
     sent: list = []
     hold = 0.35
     e = bw.BoredEmitter(

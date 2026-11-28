@@ -1,4 +1,4 @@
-# FR #9846: tip-allowlist bypass for SKIP_FAILED_LOOP; infra missing_conclusion
+﻿# FR #9846: tip-allowlist bypass for SKIP_FAILED_LOOP; infra missing_conclusion
 # does not burn the fail-loop budget (ties #9782). Pure helpers live in
 # common/scripts/copilot_haiku_refill.py (tests: test_fr9846_tip_allowlist_fail_loop.py).
 param(
@@ -85,6 +85,55 @@ function Get-FailedLoopIds {
   $skip = @($failed.GetEnumerator() | Where-Object { $_.Value -ge 2 } | ForEach-Object { [int]$_.Key })
   if ($skip.Count -gt 0) { Write-Host ("SKIP_FAILED_LOOP issues={0}" -f ($skip -join ',')) }
   return [int[]]@($skip)
+}
+
+function Invoke-RefillFuelGate {
+  param([object]$Copilot)
+  if (-not $Copilot) {
+    return [pscustomobject]@{ Blocked = $true; Reason = 'NO_FUEL' }
+  }
+  if (Test-Path -LiteralPath $script:HaikuRefillPy) {
+    $tmpIn = $null
+    $tmpPy = $null
+    try {
+      $cop = @{}
+      if ($Copilot -is [hashtable]) { $cop = $Copilot }
+      else {
+        $Copilot.PSObject.Properties | ForEach-Object { $cop[$_.Name] = $_.Value }
+      }
+      $tmpIn = Join-Path $env:TEMP ("haiku-refill-gate-{0}.json" -f [guid]::NewGuid().ToString('N'))
+      $tmpPy = Join-Path $env:TEMP ("haiku-refill-gate-{0}.py" -f [guid]::NewGuid().ToString('N'))
+      [IO.File]::WriteAllText($tmpIn, ($cop | ConvertTo-Json -Compress), $utf8)
+      $pyBody = @(
+        'import json, sys'
+        'from copilot_haiku_refill import digest_blocks_cca_refill, REFILL_NO_FUEL'
+        'doc = json.load(open(sys.argv[1], encoding="utf-8"))'
+        'reason = digest_blocks_cca_refill(doc)'
+        'json.dump({"reason": reason or "", "blocked": reason == REFILL_NO_FUEL}, sys.stdout)'
+      ) -join "`n"
+      [IO.File]::WriteAllText($tmpPy, $pyBody, $utf8)
+      $env:PYTHONPATH = [string]$PSScriptRoot
+      $out = & python $tmpPy $tmpIn 2>&1 | Out-String
+      $out = $out.Trim()
+      if ($out.StartsWith('{')) {
+        $doc = $out | ConvertFrom-Json
+        return [pscustomobject]@{
+          Blocked = [bool]$doc.blocked
+          Reason = $(if ($doc.reason) { [string]$doc.reason } else { $null })
+        }
+      }
+    } catch {
+      Write-Host ("WARN fuel-gate python failed: {0}" -f $_.Exception.Message)
+    } finally {
+      if ($tmpIn) { Remove-Item -LiteralPath $tmpIn -Force -ErrorAction SilentlyContinue }
+      if ($tmpPy) { Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue }
+    }
+  }
+  $st = [string]$Copilot.state
+  if ($st -eq 'exhausted' -or $st -eq 'quota_exhausted' -or $st -eq 'failed') {
+    return [pscustomobject]@{ Blocked = $true; Reason = 'NO_FUEL' }
+  }
+  return [pscustomobject]@{ Blocked = $false; Reason = $null }
 }
 
 function Invoke-TipAllowlistFailLoopBypass {
@@ -309,12 +358,23 @@ try {
   if ($haiku.Count -ge $TargetHaiku) { Write-Output 'OK at target'; exit 0 }
 
   $fuelState = ''
+  $copilotBlock = $null
   try {
     $rep = Invoke-RestMethod -Uri 'https://bob.ntsa.uk/bob/v1/report' -TimeoutSec 30
-    if ($rep.copilot) { $fuelState = [string]$rep.copilot.state }
+    if ($rep.copilot) {
+      $copilotBlock = $rep.copilot
+      $fuelState = [string]$rep.copilot.state
+    }
   } catch {}
   Write-Output ("copilot_state={0}" -f $(if ($fuelState) { $fuelState } else { 'unknown' }))
-  # Soft pause on digest exhausted: still try refill unless POST fails (false exhaust #9781).
+  # FR #9884: hard pause on digest soft/hard exhaust — zero CCA POSTs, no fail-loop burn.
+  if ($copilotBlock) {
+    $fuelGate = Invoke-RefillFuelGate -Copilot $copilotBlock
+    if ($fuelGate.Blocked) {
+      Write-Output ($fuelGate.Reason)
+      exit 0
+    }
+  }
 
   $failedSkip = [int[]]@(Get-FailedLoopIds)
   # FR #9846: tip-allowlist bypass when fail-loop would zero every open tip FR.

@@ -79,6 +79,10 @@ $fetchErgo = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Ergo.ps1
 $null = & $fetchNssm -OutDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64') -CacheDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm')
 
 if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
+if ($SkipMsi -and $SkipWorkerExe -and -not $SkipWatcherExe) {
+    $SkipWatcherExe = $true
+    Write-Host 'WARN bob pack: -SkipWorkerExe implies -SkipWatcherExe (test stage)'
+}
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 if ($SkipPlanAgentExe -and -not $SkipMsi) { throw '-SkipPlanAgentExe is only allowed together with -SkipMsi (an MSI without PlanAgent.exe must never ship; FR #9354)' }
 if ($SkipPriorityExe -and -not $SkipMsi) { throw '-SkipPriorityExe is only allowed together with -SkipMsi (an MSI without PriorityAgent.exe must never ship; FR #8701)' }

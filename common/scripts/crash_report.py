@@ -391,8 +391,56 @@ def default_pytest_of_root() -> Path:
     return temproot / f"pytest-of-{user}"
 
 
+def pytest_basetemp_needs_short_windows_path(config: Any) -> bool:
+    """FR #10294: long TEMP / pytest-of roots break Cursor MCP approval mkdir on ``tmp_path``."""
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return False
+    root = getattr(config, "rootpath", None)
+    if root is not None:
+        rp = os.path.normpath(str(root)).lower().replace("\\", "/")
+        if "/worktrees/" in rp or len(rp) >= 72:
+            return True
+    limit = 72
+    for key in ("TEMP", "TMP", "PYTEST_DEBUG_TEMPROOT"):
+        val = (os.environ.get(key) or "").strip()
+        if not val:
+            continue
+        norm = os.path.normpath(val)
+        if len(norm) >= limit:
+            return True
+        lower = norm.lower()
+        if ".bob\\tmp" in lower or ".bob/tmp" in lower or "\\worktrees\\" in lower:
+            return True
+    default_root = default_pytest_of_root()
+    norm = os.path.normpath(str(default_root))
+    return len(norm) >= 92 or "\\worktrees\\" in norm.lower()
+
+
+def isolated_pytest_basetemp_parent(*, short: bool) -> Path:
+    """Pick a session parent directory for redirected pytest ``basetemp``."""
+    import getpass
+    import sys
+
+    if short and sys.platform.startswith("win"):
+        for base in (Path(r"C:\pt"), Path((os.environ.get("LOCALAPPDATA") or "").strip() or ".") / "pt"):
+            try:
+                base.mkdir(parents=True, exist_ok=True)
+                return base
+            except OSError:
+                continue
+    user = getpass.getuser() or "unknown"
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    parent = Path(local) / "Temp" if local else Path(tempfile_gettempdir()) / "pytest-basetemp"
+    return parent / f"pytest-basetemp-{user}"
+
+
 def ensure_writable_pytest_basetemp(config: Any, *, timeout_s: float = 2.0) -> str | None:
     """FR #5692: when default ``pytest-of-*`` is unusable, set ``config.option.basetemp``.
+
+    FR #10294: on Windows also redirect when TEMP or the repo root is long enough that
+    ``tmp_path`` + ``~/.cursor/projects/<slug>`` can exceed MAX_PATH.
 
     Returns the path set, or None when the default root is fine / already overridden.
     Prefer ``%LOCALAPPDATA%\\Temp\\pytest-basetemp-<user>\\pytest-<pid>`` over a
@@ -405,16 +453,13 @@ def ensure_writable_pytest_basetemp(config: Any, *, timeout_s: float = 2.0) -> s
     if existing:
         return None
     default_root = default_pytest_of_root()
-    if pytest_temp_root_is_usable(default_root, timeout_s=timeout_s):
+    need_short = pytest_basetemp_needs_short_windows_path(config)
+    if pytest_temp_root_is_usable(default_root, timeout_s=timeout_s) and not need_short:
         return None
-    import getpass
-
-    user = getpass.getuser() or "unknown"
-    local = (os.environ.get("LOCALAPPDATA") or "").strip()
-    parent = Path(local) / "Temp" if local else Path(tempfile_gettempdir()) / "pytest-basetemp"
-    parent = parent / f"pytest-basetemp-{user}"
+    parent = isolated_pytest_basetemp_parent(short=need_short)
     parent.mkdir(parents=True, exist_ok=True)
-    session = parent / f"pytest-{os.getpid()}"
+    leaf = f"p{os.getpid()}" if need_short else f"pytest-{os.getpid()}"
+    session = parent / leaf
     session.mkdir(parents=True, exist_ok=True)
     opt.basetemp = str(session)
     # Child xdist / nested pytest: keep TEMP away from the locked tree.
