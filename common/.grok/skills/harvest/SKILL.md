@@ -513,6 +513,8 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Harvest-lesson tips that append the same SKILL.md trailing hunk: set merge=union in .gitattributes (git add -f under install exclude /*) and insert before - Harvest-lesson tips are documentation; they do not require CI --- light triage then gh pr merge --admin --squash (fold CONFLICTING same-SKILL appends onto tip first)
 <!-- harvest-tip:intake-in_657cab73ea2f41cb -->
 - When chair GH 429s: compare New-BobGitWebhook subscribed events vs bobcallback.GIT_EVENTS allow-list before adding more polls; dropped workflow_run forces REST. File anti-omnibus FR-W0 accept-events first, then kill poll cadences.
+<!-- harvest-tip:intake-in_0f5cdea9b9804cf3 -->
+- Harvest promote that documents existing GHA sparse paths: pin with test_fr* reading workflows; workflow path filter-only diffs may need OAuth scope to touch .github.
 <!-- harvest-lessons-eof -->
  with unique tip_anchor (FR #9915)
 - When fr-digest gains hold via labeled webhook, clear_offers_for_held_digest_children immediately (unaccepted sticky + accepted soft-release) and queue a stand_down notice for #bobiverse.
