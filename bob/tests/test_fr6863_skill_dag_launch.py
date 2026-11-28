@@ -7,11 +7,14 @@ from pathlib import Path
 import bob_worker as bw
 
 
-def test_s5_worker_prompt_names_list_catalog_and_get_skill():
-    text = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\run", "flamingo", "flamingo-1")
+def test_s5_worker_prompt_names_list_catalog_and_get_skill(tmp_path: Path):
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    text = bw.worker_prompt(str(worker), str(tmp_path / "run"), "flamingo", "flamingo-1")
     assert "list_catalog" in text
     assert "get_skill" in text
     assert "(resolve, then get_skill)" not in text
+    assert "MCP resolve then get_skill" not in text
     assert "FIRST read the skills in" not in text
 
 
