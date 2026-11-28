@@ -1230,11 +1230,13 @@ function Get-BobiverseChairHost {
     <#
       FR #6947: configured chair host. Default walrus. Env JEEVES_CHAIR_HOST only
       (no seat CLI --chair-host).
+      FR #9945: never assign to $host/$Host (PS automatic read-only InternalHost);
+      that throw made Install-Jeeves treat the chair as non-chair and Disable ircJeeves.
     #>
     $raw = [string]$env:JEEVES_CHAIR_HOST
-    $host = ($raw.ToLowerInvariant() -replace '[^a-z0-9_-]', '-').Trim('-_')
-    if (-not $host) { $host = 'walrus' }
-    return $host
+    $chairHost = ($raw.ToLowerInvariant() -replace '[^a-z0-9_-]', '-').Trim('-_')
+    if (-not $chairHost) { $chairHost = 'walrus' }
+    return $chairHost
 }
 
 function Test-BobiverseIsChairHost {
@@ -4491,14 +4493,15 @@ function Assert-BobiversePlanCastIronSkillsVisionary {
 function Copy-BobTrayVendorExes {
     <#
     .SYNOPSIS
-      FR #9468 / #9598: mirror Plan/Priority MSI payloads into tray vendor\ paths.
+      FR #9468 / #9598 / #9689: mirror Plan/Priority/Jeeves MSI payloads into tray vendor\ paths.
     .DESCRIPTION
       TipForm Agents > Plan starts vendor\plan\PlanAgent.exe (FR #9605 / #9641); Priority starts
-      vendor\priority\PriorityAgent.exe. Pack stages plan\PlanAgent.exe and priority\PriorityAgent.exe
-      (FR #9354). This helper mirrors those into vendor\ (PlanAgent.exe only - never bob-plan.exe;
+      vendor\priority\PriorityAgent.exe; Jeeves starts vendor\jeeves\JeevesAgent.exe (FR #9689).
+      Pack stages plan\PlanAgent.exe, priority\PriorityAgent.exe, and jeeves\JeevesAgent.exe
+      (FR #9354 / #9689). This helper mirrors those into vendor\ (PlanAgent.exe only - never bob-plan.exe;
       FR #9598) plus MANIFEST/sha256 sidecars documenting skills-visionary plan-* / priority-mcp
-      launcher-* tags. -Require throws when sources are missing (pack/MSI). FR #9641: never stage
-      bob-worker.exe bytes as PlanAgent.exe (hash must differ when both exist).
+      launcher-* / jeeves-mcp launcher-* tags. -Require throws when sources are missing (pack/MSI).
+      FR #9641: never stage bob-worker.exe bytes as PlanAgent.exe (hash must differ when both exist).
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -4507,8 +4510,10 @@ function Copy-BobTrayVendorExes {
     $Root = [string](Resolve-Path -LiteralPath $Root).Path
     $planSrc = Join-Path $Root 'plan\PlanAgent.exe'
     $priSrc = Join-Path $Root 'priority\PriorityAgent.exe'
+    $jeevesSrc = Join-Path $Root 'jeeves\JeevesAgent.exe'
     $vendorPlan = Join-Path $Root 'vendor\plan'
     $vendorPri = Join-Path $Root 'vendor\priority'
+    $vendorJeeves = Join-Path $Root 'vendor\jeeves'
     $missing = New-Object System.Collections.Generic.List[string]
 
     # Self-contained sha (Sync loads Common only; Pack also has FetchHelpers Get-BobiverseFileSha256).
@@ -4567,8 +4572,26 @@ function Copy-BobTrayVendorExes {
         [void]$missing.Add('priority\PriorityAgent.exe')
     }
 
+    if (Test-Path -LiteralPath $jeevesSrc -PathType Leaf) {
+        New-Item -ItemType Directory -Force -Path $vendorJeeves | Out-Null
+        Copy-Item -LiteralPath $jeevesSrc -Destination (Join-Path $vendorJeeves 'JeevesAgent.exe') -Force
+        $jeevesMan = Join-Path $Root 'jeeves\JeevesAgent.MANIFEST.json'
+        if (Test-Path -LiteralPath $jeevesMan -PathType Leaf) {
+            Copy-Item -LiteralPath $jeevesMan -Destination (Join-Path $vendorJeeves 'JeevesAgent.MANIFEST.json') -Force
+        }
+        $sha = & $shaOf (Join-Path $vendorJeeves 'JeevesAgent.exe')
+        [IO.File]::WriteAllText(
+            (Join-Path $vendorJeeves 'JeevesAgent.exe.sha256'),
+            ($sha + '  JeevesAgent.exe' + [Environment]::NewLine),
+            (New-Object System.Text.UTF8Encoding $false)
+        )
+        Write-Host ('INFO FR #9689 staged vendor\jeeves\JeevesAgent.exe sha256={0}' -f $sha)
+    } else {
+        [void]$missing.Add('jeeves\JeevesAgent.exe')
+    }
+
     if ($missing.Count -gt 0) {
-        $msg = 'FR #9468 vendor tray exes missing sources: ' + ($missing -join ', ')
+        $msg = 'FR #9468/#9689 vendor tray exes missing sources: ' + ($missing -join ', ')
         if ($Require) { throw $msg }
         Write-Host ('WARN ' + $msg)
         return @{ ok = $false; missing = @($missing) }

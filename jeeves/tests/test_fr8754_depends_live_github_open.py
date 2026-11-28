@@ -129,7 +129,11 @@ def test_assign_refuses_when_depend_open_on_github_not_in_queue(home: Path):
         home, me, REPO, "FR", "10", issue_open=issue_open
     )
     assert st == "refused"
-    assert "depends-open" in str(why) or "blocked" in str(why).lower()
+    assert (
+        "depends-open" in str(why)
+        or "depends-on open" in str(why)
+        or "blocked" in str(why).lower()
+    )
 
 
 def test_offer_allows_when_depend_closed_on_github(home: Path):

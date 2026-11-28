@@ -192,24 +192,27 @@ def resolve_install_root(raw: str | None = None) -> str:
     return _default_install_root()
 
 
+# FR #10146: worker seats call the public skill catalog. Do not launch a local stdio MCP.
+BOB_SKILL_MCP_URL = "https://bob.ntsa.uk/mcp"
+
+
+def skill_dag_remote_mcp_entry() -> dict:
+    """HTTP skill-dag entry shared by Cursor and OpenCode seat configs (FR #10146)."""
+    return {"url": BOB_SKILL_MCP_URL}
+
+
+def skill_dag_remote_mcp_toml_block() -> str:
+    return "[mcp_servers.skill-dag]\n" f'url = "{BOB_SKILL_MCP_URL}"\n'
+
+
 def maybe_sync_install_skills(*, install_root: str | None = None, job_busy: bool = False) -> dict:
-    """FR #7238: overlay origin `.grok/skills` between jobs (never mid-ACK)."""
-    root = str(install_root or os.environ.get("BOB_INSTALL_ROOT") or "").strip()
-    if not root:
-        return {"ok": False, "reason": "no-install", "sha": ""}
-    try:
-        import sync_install_skills as sis
-    except ImportError:
-        scripts = _common_scripts_dir()
-        sys.path.insert(0, str(scripts))
-        try:
-            import sync_install_skills as sis  # type: ignore
-        except ImportError:
-            return {"ok": False, "reason": "no-helper", "sha": ""}
-    try:
-        return sis.sync_install_skills_from_origin(root, job_busy=job_busy)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "reason": type(exc).__name__, "sha": ""}
+    """FR #10146: do not git-overlay `.grok/skills` between jobs.
+
+    The seat book is ``https://bob.ntsa.uk/mcp`` (``list_catalog`` / ``get_skill``).
+    ``install_root`` and ``job_busy`` are kept so existing callers stay valid.
+    """
+    del install_root, job_busy
+    return {"ok": True, "reason": "remote-mcp", "sha": ""}
 
 
 def _common_scripts_dir() -> Path:
@@ -1574,6 +1577,20 @@ def resolve_opencode_model(
     except Exception:
         pass
 
+    env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
+    pinned = seat_model_pinned(env) and bool(env_model)
+    # FR #8321 / #10313: tray click restore must honour the saved weight only
+    # (no free-first fallthrough). Automatic seats still free-first (#8454).
+    if pinned:
+        chosen = env_model
+        line = f"opencode model={chosen or '-'} source=env skipped=-"
+        if log_fn is not None:
+            try:
+                log_fn(line)
+            except Exception:  # noqa: BLE001
+                pass
+        return chosen
+
     def _paused(model_id: str) -> bool:
         if not opencode_fuel:
             return False
@@ -1611,14 +1628,9 @@ def resolve_opencode_model(
 
     # FR #8454: free remaining > 0 or unknown starts on a free id even when the
     # tray/env pin is paid. Paid slot only when free is known 0 and paid > 0.
-    # FR #6363: a free operator env / config still beats the tray free slot.
-    env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
-    pinned = seat_model_pinned(env) and bool(env_model)
     free_known_zero = _opencode_free_known_zero(fuel)
-    # FR #8555: a free-pool pause (seat-start app-log scan or a prior refusal)
-    # means free is exhausted even when the catalogue still reports 100. Fold it
-    # into the branch choice so the paid slot is tried instead of every free
-    # candidate being skipped as paused and the seat dying with model=-.
+    # FR #8555: a free-pool pause means free is exhausted even when catalogue
+    # still reports 100 — try paid instead of dying with model=-.
     if not free_known_zero and opencode_fuel is not None:
         try:
             if opencode_fuel.is_opencode_model_paused(
@@ -1638,11 +1650,8 @@ def resolve_opencode_model(
             return low.startswith("opencode-go/") or low.endswith("-pro")
 
     if not free_known_zero:
-        if pinned and _is_paid(env_model):
-            skipped.append(f"pin:{env_model}:free-first")
-        elif pinned and env_model:
-            candidates.append(("pin", env_model))
-        elif env_model and _is_paid(env_model):
+        # FR #6363: worker export in os.environ is not an operator override.
+        if env_model and _is_paid(env_model):
             skipped.append(f"env:{env_model}:free-first")
         elif env_model:
             candidates.append(("env", env_model))
@@ -1665,13 +1674,14 @@ def resolve_opencode_model(
             fid = str(free_id or "").strip()
             if fid and not _is_paid(fid):
                 candidates.append(("fuel", fid))
+
+        fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
+        if fuel_model and not _is_paid(fuel_model):
+            candidates.append(("fuel", fuel_model))
     else:
-        if pinned and env_model and not _is_paid(env_model):
-            skipped.append(f"pin:{env_model}:free-exhausted")
-        elif env_model and not _is_paid(env_model):
+        if env_model and not _is_paid(env_model):
             skipped.append(f"env:{env_model}:free-exhausted")
-        # FR #8541: free known 0 + go unknown must still try the paid tray slot
-        # (do not skip as exhausted / report capped-paused).
+        # FR #8541: free known 0 + go unknown must still try the paid tray slot.
         if start_paid and (
             _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel)
         ):
@@ -3689,19 +3699,16 @@ def _worker_prompt_builtin(worker_dir: str, home: str, machine: str, nick: str) 
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
-        f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
-        f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
-        f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"FR #7000 / #8785 / #8846 (Cursor): if the skill-dag MCP namespace is missing from dynamic tools, use the one-shot CLI from "
-        f"`{worker_dir}\\.cursor\\mcp.json` -> mcpServers.skill-dag only: run its `command` with **all** `args` unchanged "
-        f"(script is args[0]; keep every `--root` and `--job-worktree-file`), then append "
-        f"`--once resolve --seed <job-type token>` (e.g. FR or MRB) and `--once get_skill --path <matched[].path>` "
-        f"(JSON on stdout). Check the JSON result (unresolved can exit 0). Do not guess a script path. "
-        f"PowerShell: `$cfg=(Get-Content -Raw .cursor\\mcp.json|ConvertFrom-Json).mcpServers.'skill-dag'; "
-        f"& $cfg.command @($cfg.args) --once resolve --seed MRB`. Do not invent skill bodies. "
-        f"CAST IRON (FR #8846): a missing or dead skill-dag MCP is never fixed by grepping job skills from disk. "
-        f"If mcp.json is missing, MCP unreachable, and the mcp.json --once CLI also fails, ACK then GIVEUP with reason "
-        f"`skill-dag-mcp-down` (optional diagnostic only on that GIVEUP line). Do not continue the FR/MRB/UAT job. "
+        f"Your working folder is {worker_dir}. FIRST use the MCP server skill-dag at https://bob.ntsa.uk/mcp. "
+        f"Its tools are list_catalog and get_skill. get_skill accepts name, skill, or a SKILL.md path. "
+        f"On Cursor, skill-dag joins the dynamic MCP catalog a few seconds after the session starts. "
+        f"If GetDynamicTools does not list the skill-dag namespace yet, wait and call GetDynamicTools again "
+        f"before treating the MCP as down. Do not POST or Invoke-RestMethod that URL. "
+        f"Do not read a process-local skill-dag-core stub. Do not WebFetch that URL. "
+        f"Do not run skill_dag_mcp.py, do not run a command from .cursor\\mcp.json, "
+        f"and do not read {worker_dir}\\.grok\\skills. "
+        f"If that MCP is missing or dead, ACK then GIVEUP with reason skill-dag-mcp-down. "
+        f"Do not invent skill bodies. Do not continue the FR/MRB/UAT job. "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -3927,10 +3934,9 @@ def rules_text(folder: str, kind: str) -> str:
         skill_line = f"Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
     else:
         skill_line = (
-            f"Read {folder}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
-            f"(do not read every skill in {folder}\\.grok\\skills). "
-            f"FR #8846: if skill-dag MCP and the mcp.json --once CLI both fail, GIVEUP skill-dag-mcp-down — "
-            f"never continue FR/MRB/UAT by reading job skills from disk. "
+            f"Read {folder}\\AGENTS.md. CAST IRON: every CLI loads Bob skills only from https://bob.ntsa.uk/mcp "
+            f"(list_catalog, then get_skill; resolve only if the MCP lists it). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
+            f"If that MCP is down, GIVEUP skill-dag-mcp-down — never continue FR/MRB/UAT from disk. "
         )
     return (f"{head}{skill_line}"
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
@@ -4157,19 +4163,17 @@ def write_skill_dag_mcp_config(
     *,
     vision_cwd: str | Path | None = None,
 ) -> Path:
-    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#6899).
+    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#10146).
 
-    ``vision_cwd`` is the install worker tree used for ``--root`` packs. Bound grok
-    seats pass the install worker here so rewrite does not take roots from bound-cwd.
+    The entry is the public HTTP catalog (``list_catalog`` / ``get_skill``). It does
+    not launch ``skill_dag_mcp.py --root``. ``vision_cwd`` is unused for the URL.
     """
+    del vision_cwd
     grok_dir = Path(worker_cwd) / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
     cfg = grok_dir / "config.toml"
-    roots_from = str(vision_cwd or worker_cwd)
     write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
-    block = _skill_dag_toml_block(
-        skill_dag_mcp_launch_args(roots_from, job_worktree=None, pointer_cwd=worker_cwd)
-    )
+    block = skill_dag_remote_mcp_toml_block()
     text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
     new = _upsert_skill_dag_toml(text, block)
     if text != new:
@@ -4196,29 +4200,75 @@ def cursor_skill_catalog_process_local_drop() -> Optional[str]:
     return None
 
 
+def cursor_git_project_root(cwd: str | Path) -> str:
+    """Cursor reads ``.cursor/mcp.json`` from the git toplevel, not a nested seat cwd."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return os.path.normpath(str(cwd))
+    top = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not top:
+        return os.path.normpath(str(cwd))
+    return os.path.normpath(top)
+
+
+def cursor_project_slug(project_root: str | Path) -> str:
+    text = os.path.normpath(str(project_root))
+    return text.replace(":", "").replace("\\", "-").replace("/", "-")
+
+
+def cursor_mcp_approval_id(project_root: str | Path, server: dict, name: str = "skill-dag") -> str:
+    """Same id Cursor writes on ``agent mcp enable`` (sha256 of path + server, 16 hex)."""
+    payload = json.dumps(
+        {"path": os.path.normpath(str(project_root)), "server": server},
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"{name}-{digest}"
+
+
+def approve_cursor_mcp_server(
+    project_root: str | Path,
+    server: dict,
+    name: str = "skill-dag",
+    *,
+    home: str | Path | None = None,
+) -> Path:
+    """Project mcp.json servers stay unloaded until this approval id exists."""
+    root = os.path.normpath(str(project_root))
+    base = Path(home) if home else Path.home()
+    path = base / ".cursor" / "projects" / cursor_project_slug(root) / "mcp-approvals.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current: list[str] = []
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                current = [str(item) for item in loaded]
+        except json.JSONDecodeError:
+            current = []
+    ident = cursor_mcp_approval_id(root, server, name)
+    if ident not in current:
+        current.append(ident)
+        path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def cursor_skill_dag_mcp_document(
     worker_cwd: str,
     job_worktree: str | Path | None = None,
 ) -> dict:
     write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
-    return {
-        "mcpServers": {
-            "skill-dag": {
-                "command": "python",
-                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=None),
-            }
-        }
-    }
+    return {"mcpServers": {"skill-dag": skill_dag_remote_mcp_entry()}}
 
 
-def write_cursor_skill_dag_mcp_config(
-    worker_cwd: str,
-    job_worktree: str | Path | None = None,
-) -> Path:
-    """Write skill-dag into the seat cwd ``.cursor/mcp.json`` only (FR #6865)."""
-    cfg = Path(worker_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
+def _write_cursor_mcp_json(cfg: Path, incoming: dict) -> None:
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    incoming = cursor_skill_dag_mcp_document(worker_cwd, job_worktree=job_worktree)
     data: dict = {"mcpServers": {}}
     if cfg.is_file():
         try:
@@ -4235,6 +4285,27 @@ def write_cursor_skill_dag_mcp_config(
     new = json.dumps(data, indent=2) + "\n"
     if not cfg.is_file() or cfg.read_text(encoding="utf-8") != new:
         cfg.write_text(new, encoding="utf-8")
+
+
+def write_cursor_skill_dag_mcp_config(
+    worker_cwd: str,
+    job_worktree: str | Path | None = None,
+    *,
+    home: str | Path | None = None,
+) -> Path:
+    """Write skill-dag where Cursor loads it: the git toplevel ``.cursor/mcp.json``.
+
+    A seat cwd of ``<repo>\\worker`` is not the project root. Cursor ignores
+    ``worker\\.cursor\\mcp.json``. The server also stays unloaded until approved.
+    """
+    incoming = cursor_skill_dag_mcp_document(worker_cwd, job_worktree=job_worktree)
+    project = cursor_git_project_root(worker_cwd)
+    cfg = Path(project) / CURSOR_SKILL_DAG_MCP_RELPATH
+    _write_cursor_mcp_json(cfg, incoming)
+    seat_cfg = Path(worker_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
+    if seat_cfg.resolve() != cfg.resolve():
+        _write_cursor_mcp_json(seat_cfg, incoming)
+    approve_cursor_mcp_server(project, incoming["mcpServers"]["skill-dag"], home=home)
     return cfg
 
 
@@ -4606,6 +4677,11 @@ def report_opencode_model_refusal(
         reason = (
             "opencode: no usable model (free empty, go fuel unknown - "
             "not capped/paused; FR #8541)"
+        )
+    elif fuel is not None and fuel.opencode_free is not None and int(fuel.opencode_free) > 0:
+        reason = (
+            "opencode: no resolvable model (free=%s but every candidate paused/capped)"
+            % fuel.opencode_free
         )
     else:
         reason = "opencode: no usable model (capped/paused)"
@@ -6055,25 +6131,42 @@ def opencode_skill_dag_mcp_document(
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898 / #7196)."""
-    perm = opencode_skill_read_permission_block(worker_cwd)
+    """Project ``opencode.json`` fragment with the public skill-dag MCP (FR #6898 / #10146).
+
+    FR #7909 / #10163: when ``worker_cwd`` is given, the skill-root read allows and edit
+    denies from ``opencode_skill_read_permission_block`` are written too. Without them the
+    job config never grants skill/fleet-script reads and ``report_opencode_skill_read_gaps``
+    files ``opencode-skill-read-allow`` on every config write.
+    """
+    perm: dict = {}
+    ext_allow: dict = {}
+    edit_deny: dict = {}
+    if worker_cwd:
+        skill_perm = opencode_skill_read_permission_block(worker_cwd)
+        ext_allow.update(skill_perm.get("external_directory") or {})
+        edit_deny.update(skill_perm.get("edit") or {})
     if job_worktree:
-        allow = perm.setdefault("external_directory", {})
         for key in opencode_job_worktree_read_patterns(job_worktree):
-            allow[key] = "allow"
+            ext_allow[key] = "allow"
         # FR #8572: linked worktree gitdir (index.lock) is outside the job cwd.
         for key in opencode_job_gitdir_read_patterns(job_worktree):
-            allow[key] = "allow"
-    return {
+            ext_allow[key] = "allow"
+    if ext_allow:
+        perm["external_directory"] = ext_allow
+    if edit_deny:
+        perm["edit"] = edit_deny
+    doc = {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
             "skill-dag": {
-                "type": "local",
-                "command": skill_dag_mcp_argv(worker_cwd, job_worktree=job_worktree),
+                "type": "remote",
+                "url": BOB_SKILL_MCP_URL,
             }
         },
-        "permission": perm,
     }
+    if perm:
+        doc["permission"] = perm
+    return doc
 
 
 def write_opencode_skill_dag_mcp_config(
@@ -6155,9 +6248,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
     rules = rules_text(cwd, mode)
     files: dict = {}
     job_wt = (os.environ.get("BOB_JOB_WORKTREE") or "").strip() or None
+    # FR #10146: seat MCP is the public URL written into config files, not a stdio argv.
     mcp_args: list = []
-    if str(mode).strip().lower() == "agent" and str(kind).strip().lower() in ("grok", "cursor"):
-        mcp_args = skill_dag_mcp_launch_args(cwd, job_worktree=job_wt)
     if kind == "grok":
         # FR #2699: every grok seat (agent/plan/monitor/maintenance) shares the same
         # --no-auto-update + --no-alt-screen prefix so Plan cannot self-update mid-session.
@@ -6192,8 +6284,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-cursor.ps1")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
-        agent_line = (f"& '{esc(exe)}' --plan --model auto --workspace '{esc(cwd)}' $prompt" if mode == "plan"
-                      else f"& '{esc(exe)}' --trust --force --workspace '{esc(cwd)}' -- $prompt")
+        # --approve-mcps: composer sessions drop an approved project HTTP MCP
+        # (agent mcp list can still say ready). redqueen-12460, 2026-11-28.
+        agent_line = (f"& '{esc(exe)}' --plan --approve-mcps --workspace '{esc(cwd)}' $prompt" if mode == "plan"
+                      else f"& '{esc(exe)}' --trust --force --approve-mcps --workspace '{esc(cwd)}' -- $prompt")
         try:
             import worker_start_model as wsm
 
@@ -6260,6 +6354,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "opencode_stdout_log.py", cwd=cwd, install_root=install_root
         )
         log_path = log_resolved or (Path(__file__).resolve().parent / "opencode_stdout_log.py")
+        pty_resolved = _resolve_installed_worker_script(
+            "opencode_conpty_run.py", cwd=cwd, install_root=install_root
+        )
+        pty_path = pty_resolved or (Path(__file__).resolve().parent / "opencode_conpty_run.py")
         # FR #8150: peek OpenCode app log for ERROR Free usage / rate-limit (stdout may be silent).
         pes_resolved = _resolve_installed_worker_script(
             "provider_error_source.py", cwd=cwd, install_root=install_root
@@ -6277,21 +6375,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         try:
             import worker_start_model as wsm
 
-            _oc_cfg = wsm.load_worker_start_config()
-            oc_cfg_model = wsm.launch_selected_model("opencode", _oc_cfg, env=os.environ)
-            if not oc_cfg_model:
-                oc_cfg_model = wsm.default_opencode_free_model(_oc_cfg)
-            oc_paid_model = wsm.default_opencode_paid_model(_oc_cfg)
+            oc_cfg_model = wsm.env_model_pin("opencode", os.environ)
+            oc_paid_model = ""
         except Exception:
             oc_cfg_model = ""
             oc_paid_model = ""
-        if not oc_cfg_model:
-            oc_cfg_model = "opencode/deepseek-v4.1-flash-free"
-        if not oc_paid_model:
-            oc_paid_model = "opencode-go/deepseek-v4-pro"
-        oc_fallback = (
-            f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
-        )
+        # Weights row is the model. Do not fill a free or paid default.
+        oc_fallback = ""
         # FR #9211: pin OpenCode favicon on the launch-opencode PowerShell console (Win11 AUMID + WM_SETICON).
         oc_ico_path = find_window_icon(Path(install_root) if install_root else None, kind="opencode")
         oc_ico_lit = esc(str(oc_ico_path)) if oc_ico_path else ""
@@ -6353,10 +6443,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$wedgePy = '{esc(wedge_text)}'",
             f"$isolatePy = '{esc(str(iso_path))}'",
             f"$stdoutLogPy = '{esc(str(log_path))}'",
+            f"$conptyPy = '{esc(str(pty_path))}'",
             f"$providerErrPy = '{esc(str(pes_path))}'",
             r"$script:ocStdoutLog = ''",
             r"$script:ocDagRetries = 1",
             r"$script:ocDbLockTries = 0",
+            r"$script:ocHandshakeTries = 0",
             r"$script:ocWedgeTicks = 0",
             r"$script:ocWedgeAction = ''",
             r"$script:ocEpipeTries = 0",
@@ -6443,19 +6535,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    } catch { return $true }",
             r"}",
             r"function Try-OpencodeSwitchToPaid([string]$Current, [string]$Reason) {",
+            # FR #8645: stop-closed must not switch the seat onto a paid model.
             r"    if ($script:ocStopClosed) { return $false }",
-            r"    if ($script:ocPaidSwitched) { return $false }",
-            r"    if (-not (Test-OpencodeModelIsFree $Current)) { return $false }",
-            r"    if (-not $script:ocPaidModel) { return $false }",
-            r"    if (-not (Test-OpencodePaidPoolRemains)) { return $false }",
-            r"    $script:ocPaidSwitched = $true",
-            r"    $script:ocSwitchPaid = $true",
-            r"    $script:model = $script:ocPaidModel",
-            r"    $env:BOB_OPENCODE_MODEL = $script:ocPaidModel",
-            r"    Write-Output ('opencode switch-to-paid model=' + $script:ocPaidModel + ' reason=' + $Reason)",
-            r"    return $true",
+            r"    return $false",
             r"}",
             # FR #7899: ReadAllText throws when OpenCode still holds bob-oc-out exclusive.
+            r"function ConvertTo-OpencodePlain([string]$Text) {",
+            r"    if (-not $Text) { return '' }",
+            # Issue #10171: ESC[2J in the ConPTY handshake blanks the seat.
+            r"    $esc = [char]27",
+            r"    $bel = [char]7",
+            r"    $t = [regex]::Replace($Text, ($esc + '\][^' + $bel + ']*(?:' + $bel + '|' + $esc + '\\)'), '')",
+            r"    $t = [regex]::Replace($t, ($esc + '\[[0-9;?]*[A-Za-z]'), '')",
+            r"    $t = [regex]::Replace($t, ($esc + '[=>]'), '')",
+            r"    return $t",
+            r"}",
             r"function Read-OpencodeCapture([string]$Path) {",
             r"    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }",
             r"    try {",
@@ -6534,18 +6628,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    $script:ocTurnN++",
             # FR #7952: once per job, before the run. Never changes $model mid-turn.
-            r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
-            r"        $pyResume = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
-            r"        if (-not $pyResume) { $pyResume = 'python.exe' }",
-            r"        $nextModel = ''",
-            r"        try { $nextModel = (& $pyResume $pyHelper next-model --dir $pauseStateDir --configured $env:BOB_OPENCODE_CONFIGURED_MODEL --current $model 2>$null | Select-Object -Last 1) } catch { $nextModel = '' }",
-            r"        $nextModel = ([string]$nextModel).Trim()",
-            r"        if ($nextModel -and $nextModel -ne $model) {",
-            r"            $model = $nextModel",
-            r"            $env:BOB_OPENCODE_MODEL = $model",
-            r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
-            r"        }",
-            r"    }",
+            r"    # Weights model stays. Do not swap it for another id.",
             # FR #8734 / BOB-29: $argList is built after the pause-return model update
             # so -m, the seat line and the job header name the same model.
             r"    if ($ocDir) {",
@@ -6567,6 +6650,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $stdout = ''",
             r"    $stderr = ''",
             r"    $outFile = $null",
+            r"    $pyErrFile = $null",
             r"    $errFile = $null",
             r"    $timedOut = $false",
             r"    $fuelHitLive = $false",
@@ -6602,7 +6686,29 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
             # FR #8734 / BOB-29: stdout tee into seat-<nick>.log names the launched model.
             r"        Write-Output ('opencode-run model=' + $model + ' job=' + [string]$jobKey)",
-            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
+            # ConPTY so the CLI treats stdout as a console and flushes each chunk.
+            # The capture file grows as bytes arrive; the loop below mirrors them.
+            r"        $argvFile = Join-Path $capDir ('bob-oc-argv-' + [guid]::NewGuid().ToString('n') + '.json')",
+            # $argList is flags only. The ConPTY child is CreateProcess of that list,
+            # so the opencode exe has to be argv[0] or Windows starts a command named "run".
+            r"        $ptyArgv = @($exe) + @($argList)",
+            r"        [IO.File]::WriteAllText($argvFile, ($ptyArgv | ConvertTo-Json -Compress -Depth 4))",
+            r"        $pyPty = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $pyPty) { $pyPty = 'python.exe' }",
+            # A console-subsystem python.exe steals the child's stdout. Wait on pythonw.
+            r"        $pywPty = Join-Path (Split-Path -Parent $pyPty) 'pythonw.exe'",
+            r"        if (Test-Path -LiteralPath $pywPty) { $pyPty = $pywPty }",
+            r"        $pyErrFile = Join-Path $capDir ('bob-oc-pyerr-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            # PS 5.1 Start-Process -ArgumentList rejects an empty element. The standing
+            # prompt has no job dir, so '--cwd', '' threw before CreateProcess. The catch
+            # recorded exit -1 and bytes=165 (CRLF + the parameter error). Omit --cwd
+            # then; opencode_conpty_run defaults it and the child inherits this process cwd.
+            r"        if ($ocDir) {",
+            r"            $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--cwd', $ocDir, '--argv-file', $argvFile)",
+            r"        } else {",
+            r"            $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--argv-file', $argvFile)",
+            r"        }",
+            r"        $proc = Start-Process -FilePath $pyPty -ArgumentList $ptyArgs -PassThru -WindowStyle Hidden -RedirectStandardError $pyErrFile",
             r"        $timedOut = $false",
             r"        $killReason = ''",
             r"        $fuelHitLive = $false",
@@ -6665,9 +6771,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    $cap = Read-OpencodeCapture $pair[0]",
             r"                    $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
             r"                    if ($cap.Length -gt $pos) {",
-            r"                        $slice = $cap.Substring($pos)",
+            r"                        $slice = ConvertTo-OpencodePlain $cap.Substring($pos)",
             r"                        Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
-            r"                        try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            r"                        if ($slice) { try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } } }",
             r"                        if ($script:ocStdoutLog -and $pyLog -and $stdoutLogPy) {",
             r"                            $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"                            try {",
@@ -6681,6 +6787,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $peek = (Read-OpencodeCapture $outFile) + [Environment]::NewLine + (Read-OpencodeCapture $errFile)",
             r"                if ($line) { $peek = $peek.Replace([string]$line, ' ') }",
             r"                $peek = [regex]::Replace($peek, '`[^`]*`', ' ')",
+            r"                $peek = ([regex]::Replace((ConvertTo-OpencodePlain $peek), '\s+', ' ')).Trim()",
+            # Issue #10171: the TUI banner is not fuel. Do not taskkill it.
+            r"                if ($peek.Length -lt 240 -and $peek -notmatch 'skill-dag') { $peek = '' }",
             # FR #8151 / #8207: never treat tool/PR/gh echo as live fuel.
             r"                $isToolNoise = ($peek -match $toolNoisePattern)",
             r"                $isFreePhrase = ($peek -match 'Free usage limit|subscribe to OpenCode Go')",
@@ -6822,10 +6931,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $cap = Read-OpencodeCapture $pair[0]",
             r"            $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
             r"            if ($cap.Length -gt $pos) {",
-            r"                $slice = $cap.Substring($pos)",
+            r"                $slice = ConvertTo-OpencodePlain $cap.Substring($pos)",
             r"                Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
             # FR #9209: remainder once (live loop already mirrored prior slices).
-            r"                try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } }",
+            # Issue #10171: strip CSI (ESC[2J clears the seat) before the write.
+            r"                if ($slice) { try { [Console]::Out.Write($slice); [Console]::Out.Flush() } catch { try { Write-Host -NoNewline $slice } catch { } } }",
             r"                if ($pyLogEnd) {",
             r"                    $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"                    try { [IO.File]::WriteAllText($sliceFile, $slice); & $pyLogEnd $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
@@ -6834,22 +6944,36 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            }",
             r"        }",
             r"        $stdout = Read-OpencodeCapture $outFile",
-            r"        $stderr = Read-OpencodeCapture $errFile",
+            r"        $stderr = (Read-OpencodeCapture $errFile) + [Environment]::NewLine + (Read-OpencodeCapture $pyErrFile)",
             r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
             r"    } catch {",
-            r"        $stdout = ''",
-            r"        $stderr = $_",
+            r"        $stdout = [string]$stdout",
+            r"        $stderr = [string]$_",
             r"        $exitCode = -1",
             r"    } finally {",
             r"        if ($proc -and -not $proc.HasExited) { try { $proc.WaitForExit(5000) | Out-Null } catch { } }",
             r"        if (-not $proc -or $proc.HasExited) {",
-            r"            foreach ($f in @($outFile, $errFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
+            r"            foreach ($f in @($outFile, $errFile, $pyErrFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
             r"        }",
             r"    }",
+            r"    $stdout = [string]$stdout",
+            r"    $stderr = [string]$stderr",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             # FR #9209: fuel/scan uses $outStr from capture files. Live text already flushed to
             # the success stream; do not dump the full blob again (operator hate).
             r"    Write-Output ('opencode-capture-done exit=' + [string]$exitCode + ' bytes=' + [string]$outStr.Length)",
+            # Issue #10171: exit -1 with only the banner must retry before ReadLine.
+            r"    $plainCap = ([regex]::Replace((ConvertTo-OpencodePlain $outStr), '\s+', ' ')).Trim()",
+            r"    $handshakeFail = ($exitCode -ne 0 -and $plainCap -notmatch 'skill-dag' -and $plainCap.Length -lt 400 -and (($exitCode -lt 0) -or ($plainCap -match '> build') -or ($plainCap -match 'opencode.exe') -or ($plainCap.Length -eq 0)))",
+            r"    if ($handshakeFail -and [int]$script:ocHandshakeTries -lt 1) {",
+            r"        $script:ocHandshakeTries = [int]$script:ocHandshakeTries + 1",
+            r"        Write-Output ('opencode-handshake: retry ' + $script:ocHandshakeTries + '/1 exit=' + [string]$exitCode)",
+            r"        Invoke-OpencodeRun $line $jobKey $ocDir",
+            r"        return",
+            r"    }",
+            r"    if ($handshakeFail) {",
+            r"        Write-Output ('opencode-startup-failed exit=' + [string]$exitCode + ' text=' + $plainCap)",
+            r"    }",
             r"    # Drop the prompt echo and markdown quotations before the fuel match.",
             r"    # The seat prompt documents `402 Payment Required`; that is not a provider 402.",
             r"    $scan = $outStr",
@@ -6967,7 +7091,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $clsExit = ''",
             r"        if ($null -ne $exitCode -and ([string]$exitCode).Trim() -ne '') { try { $clsExit = [string][int]$exitCode } catch { $clsExit = '' } }",
             r"        $clsArgs = @('--attempt', ([string]$script:ocDbLockTries), '--max', ([string]$maxLock))",
-            r"        if ($clsExit -ne '') { $clsArgs += '--exit'; $clsArgs += $clsExit }",
+            r"        if ($clsExit -ne '') { $clsArgs += ('--exit=' + $clsExit) }",
             r"        if ($clsDone) { $clsArgs += '--done' }",
             r"        $dbAction = ''",
             r"        try { $dbAction = ($scan | & $pyDb $isolatePy classify @clsArgs | Select-Object -Last 1) } catch { $dbAction = '' }",
@@ -6981,9 +7105,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $wait = [Math]::Min(8, [int][Math]::Pow(2, $script:ocDbLockTries - 1))",
             r"            Write-Output ('opencode-db-lock: retry ' + $script:ocDbLockTries + '/' + $maxLock + ' in ' + $wait + 's')",
             r"            Start-Sleep -Seconds $wait",
-            r"        } elseif ($dbAction -eq 'giveup' -and $jobKey) {",
+            r"        } elseif ($dbAction -eq 'giveup') {",
             r"            $script:ocDbLockTries = 0",
-            r"            Write-OpencodeJobGiveup $jobKey 'opencode-startup-failed'",
+            # Issue #10171: a handshake-only exit has no job key on the standing
+            # prompt. Still print the failure. GIVEUP only when a job is in hand.
+            r"            Write-Output ('opencode-startup-failed exit=' + [string]$exitCode)",
+            r"            if ($jobKey) { Write-OpencodeJobGiveup $jobKey 'opencode-startup-failed' }",
             r"        }",
             r"    }",
             r"    if ($proc -and $proc.HasExited) { try { $proc.Dispose() } catch { } }",
@@ -7051,7 +7178,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        return",
             r"    }",
             r"    # FR #8645: a stop-closed kill can surface node EPIPE. Do not retry or switch model.",
-            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and -not $script:ocStopClosed -and (($stderr + [Environment]::NewLine + $stdout) -match 'EPIPE|broken pipe'))",
+            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and -not $script:ocStopClosed -and (([string]$stderr + [Environment]::NewLine + [string]$stdout) -match 'EPIPE|broken pipe'))",
             r"    if ($epipeHit -and [int]$script:ocEpipeTries -lt 1) {",
             r"        $wtOk = (-not $ocDir) -or (Test-Path -LiteralPath $ocDir -PathType Container)",
             r"        if ($wtOk) {",
@@ -7119,9 +7246,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    Invoke-OpencodeRun $raw '' ''",
             r"}",
-            # FR #8133: do not run the standing prompt as a watched turn. Idle seats
-            # wait on ReadLine; the first job inject starts turn_started and the ceiling.
-            r"Write-Output 'opencode-ready: idle (FR #8133; first turn is the first job inject)'",
+            # Same as Grok and Cursor: the seat prompt (MCP skill-dag, then the
+            # worker briefing) is the first OpenCode run. It is not a job, so
+            # FR #8133 still leaves the hard ceiling off until a @@BOBJOB1 inject.
+            r"Write-Output 'opencode-ready: prompt (skill-dag MCP + seat prompt)'",
+            r"Invoke-OpencodeRun $prompt '' ''",
             r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-OpencodeInbound $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
             r"exit 0",
         ])
@@ -14668,6 +14797,43 @@ def opencode_typed_delivery(
     )
 
 
+def opencode_worktree_prior_work(worktree: str | Path) -> bool | None:
+    """Issue #10249: True when the job worktree already holds work.
+
+    Work means uncommitted changes or commits ahead of ``origin/main``. Returns
+    False when the tree is clean with no commits ahead, and None when git cannot
+    tell (missing dir, git error, no origin/main), so the caller never claims
+    work it did not verify.
+    """
+    import subprocess as _sp
+
+    root = Path(worktree or "")
+    if not str(worktree or "").strip() or not root.is_dir():
+        return None
+    try:
+        por = _sp.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if por.returncode != 0:
+            return None
+        if (por.stdout or "").strip():
+            return True
+        ahead = _sp.run(
+            ["git", "-C", str(root), "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if ahead.returncode != 0:
+            return None
+        return int((ahead.stdout or "0").strip() or "0") > 0
+    except Exception:
+        return None
+
+
 def opencode_job_finish_steps(
     *,
     job_key: str,
@@ -14716,13 +14882,28 @@ def opencode_job_finish_steps(
             "FR #8022/#8286: quote gh pr view headRefOid (or git -C worktree rev-parse HEAD) "
             "on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         )
+    # Issue #10249: only claim prior work when git shows it (dirty tree or commits ahead of origin/main).
+    prior = opencode_worktree_prior_work(wt)
+    if prior is True:
+        work_line = f"Prior work is in the worktree ({wt}): uncommitted changes or commits ahead of origin/main. "
+    elif prior is False:
+        work_line = (
+            f"No prior work in the worktree ({wt}): it is clean with no commits ahead of origin/main. "
+            "Implement the issue from scratch. "
+        )
+    else:
+        work_line = (
+            f"Could not verify prior work in the worktree ({wt}); check git status and "
+            "git log origin/main..HEAD before assuming any work exists. "
+        )
     return (
-        f"FINISH {key}. Work so far is already in the worktree ({wt}). "
-        "This is a NEW opencode run (no --resume/--continue). "
+        f"FINISH {key}. " + work_line
+        + "This is a NEW opencode run (no --resume/--continue). "
         + sha_line
-        + "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
+        + "Per job call skill-dag MCP list_catalog then get_skill (resolve only if the MCP lists it); file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
+        "Search with the grep tool or Select-String: ripgrep (rg) may not be on PATH on this Windows seat. "
         + opencode_typed_delivery(
             key,
             branch=branch,
@@ -15869,6 +16050,28 @@ class BoredEmitter:
             if job and self._ack_open and self._ack_job_key and job != self._ack_job_key:
                 return f"busy holding {self._ack_job_key}"
             return None
+
+    def outbox_free_refuse_reason(self, payload: str) -> Optional[str]:
+        """FR #9919 / #1732: drop cross-job NACK/GIVEUP on the wire while another ACK is open.
+
+        ``on_outbox`` still ignores the line for busy/harvest state; refuse here so IRC
+        never sees a spurious free-rx and ``turn_ended`` does not post ``!bored`` early
+        while a real DONE for the open job is still in the outbox.
+        """
+        p = (payload or "").strip()
+        if not _OUT_FREE_RX.match(p):
+            return None
+        job = outbox_job_key(p)
+        verb = (p.split(None, 1)[0] if p else "FREE").upper()
+        with self._cv:
+            if (
+                job
+                and self._ack_open
+                and self._ack_job_key
+                and job != self._ack_job_key
+            ):
+                return f"cross-job {verb} holding {self._ack_job_key}"
+        return None
 
     def should_forward_outbox(self, payload: str) -> bool:
         """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd.
@@ -17201,14 +17404,21 @@ class BoredEmitter:
             self._fire_seat_release_giveup("no-terminal-reply")
         elif reason == "ack-stale":
             self._fire_seat_release_giveup(reason)
-        # FR #7238: pull merged skills between jobs (this send is idle).
+        # FR #10022: send !bored before skill sync or worktree prune. A busy
+        # sync lock or Clear/prune must not hold this tick.
+        ok = False
+        try:
+            ok = bool(self.send())
+        except Exception as e:
+            self.log(f"bored: send error {type(e).__name__}")
         try:
             sk = maybe_sync_install_skills(job_busy=False)
             if sk.get("sha"):
                 self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
+            elif sk.get("reason") in ("skills-sync-busy", "busy"):
+                self.log(f"skills-sync skipped reason={sk.get('reason')}")
         except Exception:
             pass
-        # FR #9183: while idle / after terminal job lines, retry locked removes + sweep extras.
         if reason in ("idle", "start", "done", "free", "turn"):
             sweep = getattr(self, "idle_worktree_sweep_fn", None)
             if sweep is not None:
@@ -17216,11 +17426,6 @@ class BoredEmitter:
                     sweep(reason)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"job-wt-sweep: failed:{type(e).__name__}")
-        ok = False
-        try:
-            ok = bool(self.send())
-        except Exception as e:
-            self.log(f"bored: send error {type(e).__name__}")
         if not ok:
             self._retry_at = now + self.retry_s
             self.log(f"bored: not sent ({reason}) - retry in {self.retry_s:.0f}s")
@@ -18511,6 +18716,9 @@ class Supervisor:
                     error_class=error_class,
                     error_line=error_line,
                 )
+            # FR #9919: agent may append DONE after turn_ended; flush before !bored harvest fire.
+            with contextlib.suppress(Exception):
+                self.drain_run_outbox_now("turn_ended")
             # FR #2884: first turn_ended after spawn can end the startup inject/!bored hold.
             try:
                 self._maybe_ready_on_first_turn_ended(sid)
@@ -18586,6 +18794,12 @@ class Supervisor:
             return True
         if reason:
             return (False, reason)
+        try:
+            free_reason = self.bored.outbox_free_refuse_reason(payload)
+        except Exception:
+            free_reason = None
+        if free_reason:
+            return (False, free_reason)
         return True
 
     def may_send_job_outbox(self, payload: str):
@@ -18613,7 +18827,48 @@ class Supervisor:
             ack_reason = None
         if ack_reason:
             return (False, ack_reason)
+        try:
+            free_reason = self.bored.outbox_free_refuse_reason(payload)
+        except Exception:
+            free_reason = None
+        if free_reason:
+            return (False, free_reason)
         return True
+
+    def drain_run_outbox_now(self, tag: str = "") -> int:
+        """FR #9919: synchronous outbox drain (outbox loop also polls every 0.5s)."""
+        if self.irc is None or self.run_dir is None:
+            return 0
+        ob = Path(self.run_dir) / "outbox.txt"
+        n = 0
+        try:
+            n += drain_outbox(
+                ob,
+                self.irc,
+                self.log,
+                self.on_outbox_wire,
+                self.may_send_outbox,
+                enrich_line=self.enrich_done_line,
+            )
+            for extra in self.opencode_extra_outbox_paths():
+                ep = Path(extra)
+                if not ep.is_file() or ep.resolve() == ob.resolve():
+                    continue
+                n += drain_outbox(
+                    ep,
+                    self.irc,
+                    self.log,
+                    self.on_outbox_wire,
+                    self.may_send_job_outbox,
+                    enrich_line=self.enrich_done_line,
+                )
+        except Exception as e:  # pragma: no cover
+            self.log(
+                f"outbox: drain_now{(' ' + tag) if tag else ''} {type(e).__name__}"
+            )
+        if n and tag:
+            self.log(f"outbox: drain_now {tag} sent={n}")
+        return n
 
     def opencode_extra_outbox_paths(self) -> list:
         """FR #6333: active OpenCode job ``.bob/outbox.txt`` for the outbox loop."""
@@ -18916,10 +19171,7 @@ class Supervisor:
                             f"opencode: seat-start-refusal report failed {type(e).__name__}"
                         )
                     return False
-            blocked, msg = probe_gh_auth(subprocess.run)
-            if blocked:
-                self.log(msg)
-                return False
+            # Grok and Cursor start without a gh auth status gate. OpenCode does too.
         with self._lock:
             if self._shutting:
                 return False
@@ -19734,12 +19986,9 @@ class Supervisor:
             )
             # Soft-cap extras via existing Clear helper when a job tree (or install) is known.
             anchor = keep or install
+            # FR #10022: Clear/prune on the idle path is OpenCode only. Cursor
+            # !bored must not wait on worktree prune.
             if anchor and (self.kind or "").strip().lower() == "opencode":
-                try:
-                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
-                except Exception as e:  # noqa: BLE001
-                    self.log(f"job-wt-sweep: clear failed {type(e).__name__}")
-            elif anchor and install:
                 try:
                     opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
                 except Exception as e:  # noqa: BLE001
@@ -20692,10 +20941,16 @@ class Supervisor:
         # Sweep remaining extras; prefer install root as KeepPath so finished wt is gone.
         anchor = install or wt
         if (self.kind or "").strip().lower() == "opencode" and anchor:
-            try:
-                opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
-            except Exception as e:  # noqa: BLE001
-                self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+            # FR #10038: Clear must not block ACK/inject. Run it off the seat
+            # thread. TimeoutExpired is logged inside the helper and does not
+            # starve the job path.
+            def _clear() -> None:
+                try:
+                    opencode_cleanup_extra_worktrees(anchor, log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+
+            threading.Thread(target=_clear, name="oc-clear", daemon=True).start()
         self._clear_per_job_seat_state(job)
 
     def _opencode_finish_decide(self, job_key: str) -> str:
@@ -21103,13 +21358,19 @@ class Supervisor:
             self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
             return
         with self._lock:
-            if self._irc_reconnecting:
-                return
+            # FR #10021: a second write loss after a reconnect (or during the
+            # flush that follows it) must log grace again. Ignoring the loss
+            # while _irc_reconnecting is still true left the seat deaf.
+            already = bool(self._irc_reconnecting)
             self._irc_reconnecting = True
             self._irc_lost_at = self.clock()
         self.log(
             f"irc: lost ({why}); reconnect grace {self.reconnect_grace_s:.0f}s - keeping agent"
         )
+        if already:
+            th_live = self._reconnect_thread
+            if th_live is not None and th_live.is_alive():
+                return
         th = threading.Thread(
             target=self._reconnect_loop, args=(why,), name="irc-reconnect", daemon=True
         )
@@ -21138,11 +21399,14 @@ class Supervisor:
                 try:
                     self.irc.prepare_reconnect()
                     self.irc.connect_with_retries(attempts=1, timeout=20.0, backoff_s=(0.0,))
-                    self.log("irc: reconnected; flushing outbox and re-ACK")
-                    self._after_irc_reconnect()
+                    # FR #10021: clear the reconnecting flag and rebind on_lost
+                    # before any further say, so the next SSLEOFError starts grace.
                     with self._lock:
                         self._irc_reconnecting = False
                         self._irc_lost_at = None
+                    self.irc.on_lost = self._on_irc_lost
+                    self.log("irc: reconnected; flushing outbox and re-ACK")
+                    self._after_irc_reconnect()
                     return
                 except Exception as e:
                     self.log(
@@ -21164,6 +21428,13 @@ class Supervisor:
             self.irc.on_nak = self.bored.nak
             self.irc.on_nak_line = self._replay_done_on_busy_hold  # FR #4642
         ob = self.run_dir / "outbox.txt"
+        # FR #10021: a missing outbox after reconnect is an empty file, not FileNotFoundError.
+        try:
+            if not ob.exists():
+                ob.parent.mkdir(parents=True, exist_ok=True)
+                ob.write_text("", encoding="utf-8")
+        except OSError as e:
+            self.log(f"irc: post-reconnect outbox create {type(e).__name__}")
         try:
             drain_outbox(
                 ob,
@@ -22421,6 +22692,10 @@ def run_agent(args, log: Log) -> int:
         actual = wsm.concrete_model_id(child_env.get(wsm.ENV_ACTUAL_MODEL))
         if not actual:
             actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
+        if not actual and kind == "cursor":
+            actual = wsm.concrete_model_id(wsm.cursor_cli_selected_model(env=child_env or os.environ))
+        if not actual and kind == "grok":
+            actual = wsm.concrete_model_id((child_env or os.environ).get("BOB_GROK_MODEL"))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
         _cfg = wsm.load_worker_start_config(env=child_env or os.environ)
         cfg_model = wsm.launch_selected_model(kind, _cfg, env=child_env or os.environ)
@@ -22995,6 +23270,23 @@ def main(argv: Optional[list] = None) -> int:
         except ValueError:
             args.startup_grace_s = 60.0
     log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
+    # FR #10050: seat marker before the shipped-scripts hash walk.
+    try:
+        stamp = _state_root() / "starting"
+        stamp.mkdir(parents=True, exist_ok=True)
+        name = "seat-%d.json" % os.getpid()
+        (stamp / name).write_text(
+            json.dumps({
+                "pid": os.getpid(),
+                "mode": args.mode,
+                "agent": getattr(args, "agent", "") or "",
+                "phase": "before-shipped-scripts",
+            }),
+            encoding="utf-8",
+        )
+        log("worker: seat marker %s phase=before-shipped-scripts" % name)
+    except Exception as e:
+        log("worker: seat marker failed %s" % type(e).__name__)
     # FR #2522 / Simon: ONLY mode=agent is capped. Plan + maintenance (+ monitor) start freely on top of 2 workers.
     if args.mode in CAPPED_MODES:
         refusal = worker_cap_refusal(snapshot_procs(), os.getpid(), for_mode=args.mode)

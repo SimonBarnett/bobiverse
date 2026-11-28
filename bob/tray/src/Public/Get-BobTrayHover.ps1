@@ -79,7 +79,7 @@ function Get-ContextWindowTokens {
         if (-not (Test-Path $p)) { return 500000 }
         $d = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
         $m = $d.models
-        foreach ($name in @('grok-4.6', 'grok-4.5', 'grok-4')) {
+        foreach ($name in @('grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4')) {
             if ($m.$name -and $m.$name.info -and $m.$name.info.context_window) {
                 return [int]$m.$name.info.context_window
             }
@@ -648,20 +648,7 @@ function Format-BobTrayXaiWeeklyRow {
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
         $parts += [string]$resetLabel
     }
-    # FR #7907: machine-local Cursor CLI identity after the reset. Absent params keep the heading.
-    $cursorBound = $PSBoundParameters.ContainsKey('CursorAccount') -or $PSBoundParameters.ContainsKey('CursorAccountUser') -or $PSBoundParameters.ContainsKey('CursorAccountSource')
-    if ($cursorBound) {
-        $cursorSuffix = ''
-        if ([string]$CursorAccountSource -eq 'api_key') {
-            $cursorSuffix = 'cursor api_key'
-        }
-        elseif ($PSBoundParameters.ContainsKey('CursorAccount') -and -not [string]::IsNullOrWhiteSpace([string]$CursorAccount)) {
-            $who = [string]$CursorAccountUser
-            if ($who) { $cursorSuffix = ('cursor {0} ({1})' -f [string]$CursorAccount, $who) }
-            else { $cursorSuffix = ('cursor {0}' -f [string]$CursorAccount) }
-        }
-        if ($cursorSuffix) { $parts += $cursorSuffix }
-    }
+    # FR #10002: do not append a Cursor account or api_key suffix. Grok account above stays.
     return [pscustomobject]@{
         heading       = ($parts -join '  ')
         remaining_pct = $pct
@@ -3203,7 +3190,8 @@ function Get-BobTrayTitle {
     }
     if (-not $mid -and $env:BOB_MACHINE_ID) { $mid = [string]$env:BOB_MACHINE_ID }
     if (-not $mid) { $mid = 'this-machine' }
-    return ('#Bobiverse ({0})' -f $mid)
+    # FR #10003: top title is Bobiverse #<machine>, not #Bobiverse (mid).
+    return ('Bobiverse #{0}' -f $mid)
 }
 
 function Test-BobLiveGrokIsFleetSeat {

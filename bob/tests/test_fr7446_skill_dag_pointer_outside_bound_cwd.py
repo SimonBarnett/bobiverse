@@ -53,8 +53,8 @@ def test_fr7446_refresh_does_not_touch_bound_cwd_tree(tmp_path: Path):
     assert legacy.read_text(encoding="utf-8") == "stale-while-agent-up\n"
     ptr = run / "skill-dag-job-worktree"
     assert job.as_posix() in ptr.read_text(encoding="utf-8").replace("\\", "/")
-    assert "--seat-cwd" in cfg_text
-    assert grok_bound.as_posix() in cfg_text.replace("\\", "/")
+    assert bw.BOB_SKILL_MCP_URL in cfg_text
+    assert "skill_dag_mcp.py" not in cfg_text
 
 
 def test_fr7446_launch_args_include_seat_cwd_marker(tmp_path: Path):
@@ -88,5 +88,5 @@ def test_fr7446_bound_prepare_pointer_outside_workspace(tmp_path: Path):
     ptr = run / "skill-dag-job-worktree"
     assert ptr.is_file()
     toml = (b / ".grok" / "config.toml").read_text(encoding="utf-8")
-    assert ptr.as_posix() in toml.replace("\\", "/")
-    assert "--seat-cwd" in toml
+    assert "https://bob.ntsa.uk/mcp" in toml
+    assert "skill_dag_mcp.py" not in toml

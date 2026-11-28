@@ -97,7 +97,8 @@ def test_fr1993_parse_http_bind():
 
 
 def test_fr1993_mutex_name_stable(tmp_path):
-    a = jeeves_locks.mutex_name_for_home(tmp_path)
-    b = jeeves_locks.mutex_name_for_home(tmp_path)
+    a = jeeves_locks.mutex_name_for_home(tmp_path, "chair")
+    b = jeeves_locks.mutex_name_for_home(tmp_path, "chair")
     assert a == b
     assert a.startswith("Global\\BobiverseJeeves-")
+    assert a.endswith("-chair")

@@ -707,16 +707,16 @@ def resolved_start_settings(
     efforts = (c or {}).get("workerStartEffort") or {}
     contexts = (c or {}).get("workerStartContext") or {}
     sources = (c or {}).get("settings_source") or {}
+    e = os.environ if env is None else env
+    effort = str((e or {}).get("BOB_WORKER_START_EFFORT") or (e or {}).get("BOB_GROK_EFFORT") or "").strip()
+    context = str((e or {}).get("BOB_WORKER_START_CONTEXT") or (e or {}).get("BOB_GROK_CONTEXT") or "").strip()
     if cli == "grok":
-        effort = configured_start_effort("grok", c, env=env)
-        context = configured_start_context("grok", c, env=env)
+        effort = configured_start_effort("grok", c, env=env) or effort
+        context = configured_start_context("grok", c, env=env) or context
         if not effort:
             effort = normalize_effort(efforts.get("grok")) or DEFAULT_EFFORT
         if not context:
             context = normalize_context(contexts.get("grok"))
-    else:
-        effort = ""
-        context = ""
     source = str(sources.get(cli) or "local")
     if env_model_pin(cli, env):
         source = "env-pin"
@@ -772,6 +772,32 @@ def append_launch_dryrun(
         fh.write(json.dumps(safe, sort_keys=True) + "\n")
     return dest
 
+
+
+def cursor_cli_selected_model(env: dict[str, str] | None = None) -> str:
+    """Model the Cursor CLI starts when the launcher passes no --model.
+
+    Reads selectedModel.modelId, then model.modelId, from ~/.cursor/cli-config.json.
+    Does not read auth fields.
+    """
+    e = os.environ if env is None else env
+    home = str(e.get("USERPROFILE") or e.get("HOME") or "").strip()
+    if not home:
+        return ""
+    path = Path(home) / ".cursor" / "cli-config.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("selectedModel", "model"):
+        block = data.get(key)
+        if isinstance(block, dict):
+            mid = str(block.get("modelId") or "").strip()
+            if mid:
+                return mid
+    return ""
 
 
 def concrete_model_id(raw: object) -> str:

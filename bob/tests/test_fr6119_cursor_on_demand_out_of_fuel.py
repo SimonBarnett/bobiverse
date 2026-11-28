@@ -178,7 +178,7 @@ def test_e_get_bob_agent_fuel_ps1_surfaces_on_demand():
 
 
 def test_f_skill_fr6119_contiguous():
-    raw = SKILL.read_bytes()
+    raw = SKILL.with_name("lessons.md").read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
     t = raw.decode("utf-8")
     assert "FR #6119" in t

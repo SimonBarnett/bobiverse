@@ -444,6 +444,14 @@ class ModelsRefreshController:
                     len(removed),
                     "weights-client" if client_catalog is not None else "chair",
                 )
+            if "copilot" not in successful:
+                seed_copilot_on_refresh(clis, refreshed_at)
+                results["copilot"] = {
+                    "status": "seeded",
+                    "refreshed_at": refreshed_at,
+                    "added": list(COPILOT_REFRESH_SEED),
+                    "removed": [],
+                }
             for cli, info in results.items():
                 if info.get("status") == "failed":
                     prev = clis.get(cli) if isinstance(clis.get(cli), dict) else None
@@ -581,6 +589,17 @@ def _parse_request_clis(body: bytes | str | None) -> tuple[list[str], tuple[int,
 
 def _json_bytes(obj: Any) -> bytes:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+COPILOT_REFRESH_SEED = ("claude-haiku-4.5",)
+
+
+def seed_copilot_on_refresh(clis: dict, refreshed_at: str) -> str:
+    """FR #9994: merge a maintained Copilot catalog even when the client omits it."""
+    existing = clis.get("copilot") if isinstance(clis.get("copilot"), dict) else None
+    entry, _added, _removed = merge_cli_models(existing, list(COPILOT_REFRESH_SEED), refreshed_at=refreshed_at)
+    clis["copilot"] = entry
+    return "seeded"
 
 
 def handle_models_refresh(

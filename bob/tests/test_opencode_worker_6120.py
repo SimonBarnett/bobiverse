@@ -225,7 +225,7 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
     # Fake opencode.exe: ignores args and sleeps long enough to be killed.
     fake_opencode = tmp_path / "fake-opencode.ps1"
     fake_opencode.write_text(
-        "Start-Sleep -Seconds 60; exit 0",
+        "if (($args -join ' ') -match '#8160') { Start-Sleep -Seconds 60 }; exit 0",
         encoding="utf-8",
     )
 

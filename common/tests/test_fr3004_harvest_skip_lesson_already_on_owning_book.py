@@ -14,6 +14,7 @@ from repo_layout import ROOT
 REPO = "SimonBarnett/bobiverse"
 HARVEST_SKILL = "common/.grok/skills/harvest/SKILL.md"
 WORKER_SKILL = "bob/.grok/skills/bobiverse-bob-worker/SKILL.md"
+WORKER_LESSONS = "bob/.grok/skills/bobiverse-bob-worker/lessons.md"
 HARVEST_PS1 = ROOT / "scripts" / "Invoke-BobiverseHarvest.ps1"
 
 LESSON = (
@@ -128,7 +129,7 @@ def test_fr3004_intake_routes_new_bob_worker_lesson_to_owning_book(tmp_path: Pat
     assert rec.get("skill_book") == "bobiverse-bob-worker"
     assert filer.prs
     paths = [f.get("path") for f in (filer.prs[-1].get("files") or [])]
-    assert WORKER_SKILL in paths
+    assert WORKER_LESSONS in paths
     assert HARVEST_SKILL not in paths
     assert tip in (filer.prs[-1].get("files") or [{}])[0].get("content", "")
 
