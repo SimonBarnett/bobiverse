@@ -16051,6 +16051,28 @@ class BoredEmitter:
                 return f"busy holding {self._ack_job_key}"
             return None
 
+    def outbox_free_refuse_reason(self, payload: str) -> Optional[str]:
+        """FR #9919 / #1732: drop cross-job NACK/GIVEUP on the wire while another ACK is open.
+
+        ``on_outbox`` still ignores the line for busy/harvest state; refuse here so IRC
+        never sees a spurious free-rx and ``turn_ended`` does not post ``!bored`` early
+        while a real DONE for the open job is still in the outbox.
+        """
+        p = (payload or "").strip()
+        if not _OUT_FREE_RX.match(p):
+            return None
+        job = outbox_job_key(p)
+        verb = (p.split(None, 1)[0] if p else "FREE").upper()
+        with self._cv:
+            if (
+                job
+                and self._ack_open
+                and self._ack_job_key
+                and job != self._ack_job_key
+            ):
+                return f"cross-job {verb} holding {self._ack_job_key}"
+        return None
+
     def should_forward_outbox(self, payload: str) -> bool:
         """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd.
 
@@ -18694,6 +18716,9 @@ class Supervisor:
                     error_class=error_class,
                     error_line=error_line,
                 )
+            # FR #9919: agent may append DONE after turn_ended; flush before !bored harvest fire.
+            with contextlib.suppress(Exception):
+                self.drain_run_outbox_now("turn_ended")
             # FR #2884: first turn_ended after spawn can end the startup inject/!bored hold.
             try:
                 self._maybe_ready_on_first_turn_ended(sid)
@@ -18769,6 +18794,12 @@ class Supervisor:
             return True
         if reason:
             return (False, reason)
+        try:
+            free_reason = self.bored.outbox_free_refuse_reason(payload)
+        except Exception:
+            free_reason = None
+        if free_reason:
+            return (False, free_reason)
         return True
 
     def may_send_job_outbox(self, payload: str):
@@ -18796,7 +18827,48 @@ class Supervisor:
             ack_reason = None
         if ack_reason:
             return (False, ack_reason)
+        try:
+            free_reason = self.bored.outbox_free_refuse_reason(payload)
+        except Exception:
+            free_reason = None
+        if free_reason:
+            return (False, free_reason)
         return True
+
+    def drain_run_outbox_now(self, tag: str = "") -> int:
+        """FR #9919: synchronous outbox drain (outbox loop also polls every 0.5s)."""
+        if self.irc is None or self.run_dir is None:
+            return 0
+        ob = Path(self.run_dir) / "outbox.txt"
+        n = 0
+        try:
+            n += drain_outbox(
+                ob,
+                self.irc,
+                self.log,
+                self.on_outbox_wire,
+                self.may_send_outbox,
+                enrich_line=self.enrich_done_line,
+            )
+            for extra in self.opencode_extra_outbox_paths():
+                ep = Path(extra)
+                if not ep.is_file() or ep.resolve() == ob.resolve():
+                    continue
+                n += drain_outbox(
+                    ep,
+                    self.irc,
+                    self.log,
+                    self.on_outbox_wire,
+                    self.may_send_job_outbox,
+                    enrich_line=self.enrich_done_line,
+                )
+        except Exception as e:  # pragma: no cover
+            self.log(
+                f"outbox: drain_now{(' ' + tag) if tag else ''} {type(e).__name__}"
+            )
+        if n and tag:
+            self.log(f"outbox: drain_now {tag} sent={n}")
+        return n
 
     def opencode_extra_outbox_paths(self) -> list:
         """FR #6333: active OpenCode job ``.bob/outbox.txt`` for the outbox loop."""
