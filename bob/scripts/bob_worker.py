@@ -3935,7 +3935,7 @@ def rules_text(folder: str, kind: str) -> str:
     else:
         skill_line = (
             f"Read {folder}\\AGENTS.md. CAST IRON: every CLI loads Bob skills only from https://bob.ntsa.uk/mcp "
-            f"(resolve, then get_skill). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
+            f"(list_catalog, then get_skill; resolve only if the MCP lists it). Do not run skill_dag_mcp.py and do not read {folder}\\.grok\\skills. "
             f"If that MCP is down, GIVEUP skill-dag-mcp-down — never continue FR/MRB/UAT from disk. "
         )
     return (f"{head}{skill_line}"
@@ -6131,18 +6131,30 @@ def opencode_skill_dag_mcp_document(
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with the public skill-dag MCP (FR #6898 / #10146)."""
-    del worker_cwd
+    """Project ``opencode.json`` fragment with the public skill-dag MCP (FR #6898 / #10146).
+
+    FR #7909 / #10163: when ``worker_cwd`` is given, the skill-root read allows and edit
+    denies from ``opencode_skill_read_permission_block`` are written too. Without them the
+    job config never grants skill/fleet-script reads and ``report_opencode_skill_read_gaps``
+    files ``opencode-skill-read-allow`` on every config write.
+    """
     perm: dict = {}
+    ext_allow: dict = {}
+    edit_deny: dict = {}
+    if worker_cwd:
+        skill_perm = opencode_skill_read_permission_block(worker_cwd)
+        ext_allow.update(skill_perm.get("external_directory") or {})
+        edit_deny.update(skill_perm.get("edit") or {})
     if job_worktree:
-        allow: dict = {}
         for key in opencode_job_worktree_read_patterns(job_worktree):
-            allow[key] = "allow"
+            ext_allow[key] = "allow"
         # FR #8572: linked worktree gitdir (index.lock) is outside the job cwd.
         for key in opencode_job_gitdir_read_patterns(job_worktree):
-            allow[key] = "allow"
-        if allow:
-            perm["external_directory"] = allow
+            ext_allow[key] = "allow"
+    if ext_allow:
+        perm["external_directory"] = ext_allow
+    if edit_deny:
+        perm["edit"] = edit_deny
     doc = {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -14785,6 +14797,43 @@ def opencode_typed_delivery(
     )
 
 
+def opencode_worktree_prior_work(worktree: str | Path) -> bool | None:
+    """Issue #10249: True when the job worktree already holds work.
+
+    Work means uncommitted changes or commits ahead of ``origin/main``. Returns
+    False when the tree is clean with no commits ahead, and None when git cannot
+    tell (missing dir, git error, no origin/main), so the caller never claims
+    work it did not verify.
+    """
+    import subprocess as _sp
+
+    root = Path(worktree or "")
+    if not str(worktree or "").strip() or not root.is_dir():
+        return None
+    try:
+        por = _sp.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if por.returncode != 0:
+            return None
+        if (por.stdout or "").strip():
+            return True
+        ahead = _sp.run(
+            ["git", "-C", str(root), "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if ahead.returncode != 0:
+            return None
+        return int((ahead.stdout or "0").strip() or "0") > 0
+    except Exception:
+        return None
+
+
 def opencode_job_finish_steps(
     *,
     job_key: str,
@@ -14833,13 +14882,28 @@ def opencode_job_finish_steps(
             "FR #8022/#8286: quote gh pr view headRefOid (or git -C worktree rev-parse HEAD) "
             "on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         )
+    # Issue #10249: only claim prior work when git shows it (dirty tree or commits ahead of origin/main).
+    prior = opencode_worktree_prior_work(wt)
+    if prior is True:
+        work_line = f"Prior work is in the worktree ({wt}): uncommitted changes or commits ahead of origin/main. "
+    elif prior is False:
+        work_line = (
+            f"No prior work in the worktree ({wt}): it is clean with no commits ahead of origin/main. "
+            "Implement the issue from scratch. "
+        )
+    else:
+        work_line = (
+            f"Could not verify prior work in the worktree ({wt}); check git status and "
+            "git log origin/main..HEAD before assuming any work exists. "
+        )
     return (
-        f"FINISH {key}. Work so far is already in the worktree ({wt}). "
-        "This is a NEW opencode run (no --resume/--continue). "
+        f"FINISH {key}. " + work_line
+        + "This is a NEW opencode run (no --resume/--continue). "
         + sha_line
-        + "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
+        + "Per job call skill-dag MCP list_catalog then get_skill (resolve only if the MCP lists it); file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
+        "Search with the grep tool or Select-String: ripgrep (rg) may not be on PATH on this Windows seat. "
         + opencode_typed_delivery(
             key,
             branch=branch,
@@ -15986,6 +16050,28 @@ class BoredEmitter:
             if job and self._ack_open and self._ack_job_key and job != self._ack_job_key:
                 return f"busy holding {self._ack_job_key}"
             return None
+
+    def outbox_free_refuse_reason(self, payload: str) -> Optional[str]:
+        """FR #9919 / #1732: drop cross-job NACK/GIVEUP on the wire while another ACK is open.
+
+        ``on_outbox`` still ignores the line for busy/harvest state; refuse here so IRC
+        never sees a spurious free-rx and ``turn_ended`` does not post ``!bored`` early
+        while a real DONE for the open job is still in the outbox.
+        """
+        p = (payload or "").strip()
+        if not _OUT_FREE_RX.match(p):
+            return None
+        job = outbox_job_key(p)
+        verb = (p.split(None, 1)[0] if p else "FREE").upper()
+        with self._cv:
+            if (
+                job
+                and self._ack_open
+                and self._ack_job_key
+                and job != self._ack_job_key
+            ):
+                return f"cross-job {verb} holding {self._ack_job_key}"
+        return None
 
     def should_forward_outbox(self, payload: str) -> bool:
         """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd.
@@ -18630,6 +18716,9 @@ class Supervisor:
                     error_class=error_class,
                     error_line=error_line,
                 )
+            # FR #9919: agent may append DONE after turn_ended; flush before !bored harvest fire.
+            with contextlib.suppress(Exception):
+                self.drain_run_outbox_now("turn_ended")
             # FR #2884: first turn_ended after spawn can end the startup inject/!bored hold.
             try:
                 self._maybe_ready_on_first_turn_ended(sid)
@@ -18705,6 +18794,12 @@ class Supervisor:
             return True
         if reason:
             return (False, reason)
+        try:
+            free_reason = self.bored.outbox_free_refuse_reason(payload)
+        except Exception:
+            free_reason = None
+        if free_reason:
+            return (False, free_reason)
         return True
 
     def may_send_job_outbox(self, payload: str):
@@ -18732,7 +18827,48 @@ class Supervisor:
             ack_reason = None
         if ack_reason:
             return (False, ack_reason)
+        try:
+            free_reason = self.bored.outbox_free_refuse_reason(payload)
+        except Exception:
+            free_reason = None
+        if free_reason:
+            return (False, free_reason)
         return True
+
+    def drain_run_outbox_now(self, tag: str = "") -> int:
+        """FR #9919: synchronous outbox drain (outbox loop also polls every 0.5s)."""
+        if self.irc is None or self.run_dir is None:
+            return 0
+        ob = Path(self.run_dir) / "outbox.txt"
+        n = 0
+        try:
+            n += drain_outbox(
+                ob,
+                self.irc,
+                self.log,
+                self.on_outbox_wire,
+                self.may_send_outbox,
+                enrich_line=self.enrich_done_line,
+            )
+            for extra in self.opencode_extra_outbox_paths():
+                ep = Path(extra)
+                if not ep.is_file() or ep.resolve() == ob.resolve():
+                    continue
+                n += drain_outbox(
+                    ep,
+                    self.irc,
+                    self.log,
+                    self.on_outbox_wire,
+                    self.may_send_job_outbox,
+                    enrich_line=self.enrich_done_line,
+                )
+        except Exception as e:  # pragma: no cover
+            self.log(
+                f"outbox: drain_now{(' ' + tag) if tag else ''} {type(e).__name__}"
+            )
+        if n and tag:
+            self.log(f"outbox: drain_now {tag} sent={n}")
+        return n
 
     def opencode_extra_outbox_paths(self) -> list:
         """FR #6333: active OpenCode job ``.bob/outbox.txt`` for the outbox loop."""
