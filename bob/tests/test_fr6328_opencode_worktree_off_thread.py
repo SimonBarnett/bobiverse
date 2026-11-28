@@ -110,7 +110,7 @@ def test_async_create_failure_nacks_without_ack(tmp_path: Path):
 
 
 def test_existing_project_still_acks_sync_without_pending(tmp_path: Path):
-    """When the worktree already exists, classify is project — no background hop."""
+    """When the worktree already exists and git prep is unset, deliver is synchronous (legacy)."""
     env = {"BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees")}
     line_text = "m-1: FR SimonBarnett/bobiverse#7 https://x"
     path = Path(c.project_dir_for_assign(bw.format_from("jeeves", "#marchhare", line_text), env))

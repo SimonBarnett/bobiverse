@@ -11770,7 +11770,10 @@ class Relay:
         self.opencode_job_block: Optional[Callable[[str], str]] = None
         self.opencode_job_classify: Optional[Callable[[str], str]] = None
         self.opencode_ensure_worktree: Optional[Callable[[str], str]] = None
+        # FR #10360: git verify/repair/intake for an existing job tree (off IRC read thread).
+        self.opencode_verify_job_worktree: Optional[Callable[[str], None]] = None
         self._worktree_creating_keys: set = set()
+        self._worktree_git_prep_keys: set = set()
         # FR #9228: first-seen time for parked worktree creates (stale-offer log).
         self._worktree_parked_at: dict = {}
         self._stale_offer_logged: set = set()
@@ -11845,6 +11848,8 @@ class Relay:
         with self._lock:
             if self._worktree_creating_keys:
                 return next(iter(self._worktree_creating_keys))
+            if self._worktree_git_prep_keys:
+                return next(iter(self._worktree_git_prep_keys))
             if self._acked_held_keys:
                 return next(iter(self._acked_held_keys))
         return "job"
@@ -11880,11 +11885,14 @@ class Relay:
             others_creating = {
                 k for k in self._worktree_creating_keys if k and k != key
             }
+            others_git_prep = {
+                k for k in self._worktree_git_prep_keys if k and k != key
+            }
             others_acked = {
                 k for k in self._acked_held_keys if k and k != key
             }
-            if others_creating or others_acked:
-                holding = next(iter(others_creating or others_acked))
+            if others_creating or others_git_prep or others_acked:
+                holding = next(iter(others_creating or others_git_prep or others_acked))
             else:
                 if key:
                     self._worktree_creating_keys.add(key)
@@ -12002,10 +12010,24 @@ class Relay:
                 self.log(f"relay: twin-busy NACK error {type(e).__name__}")
             self.clear_worktree_park_mark(key)
             return
+        try:
+            if self.opencode_verify_job_worktree:
+                self.opencode_verify_job_worktree(line)
+        except Exception as e:
+            self.log(
+                f"relay: job-worktree git verify after create key={key or '?'} "
+                f"err={type(e).__name__}"
+            )
         self.log(f"relay: worktree ensure ok key={key or '?'} -> resume deliver")
         try:
             # Worktree exists now. Force resume so we never park again (FR #9228).
-            status = self.deliver(nick, target, text, resume_after_worktree=True)
+            status = self.deliver(
+                nick,
+                target,
+                text,
+                resume_after_worktree=True,
+                resume_after_git_prep=True,
+            )
             self.log(
                 f"relay: worktree create resume status={status} key={key or '?'}"
             )
@@ -12032,6 +12054,132 @@ class Relay:
                     self.clear_worktree_park_mark(key)
         except Exception as e:
             self.log(f"relay: worktree create resume error {type(e).__name__}")
+
+    def _park_worktree_git_prep(self, nick: str, target: str, text: str, line: str) -> str:
+        """FR #10360: run job-worktree git verify/repair/intake off the IRC read thread."""
+        key = (assign_job_key(line) or "").strip().lower()
+        holding = ""
+        with self._lock:
+            if key and key in self._worktree_git_prep_keys:
+                self.log("relay: job-worktree git prep already in flight " + (key or "?"))
+                self._persist_last_from(line)
+                return "opencode_worktree_git_pending"
+            others_creating = {
+                k for k in self._worktree_creating_keys if k and k != key
+            }
+            others_prep = {k for k in self._worktree_git_prep_keys if k and k != key}
+            others_acked = {k for k in self._acked_held_keys if k and k != key}
+            if others_creating or others_prep or others_acked:
+                holding = next(iter(others_creating or others_prep or others_acked))
+            else:
+                if key:
+                    self._worktree_git_prep_keys.add(key)
+                    if key not in self._worktree_parked_at:
+                        self._worktree_parked_at[key] = float(self.clock())
+        if holding:
+            nack = self._nack_busy_holding(line, holding)
+            self.log(
+                "relay: refuse twin git prep while holding "
+                + holding
+                + " ("
+                + (key or "?")
+                + ")"
+            )
+            self._persist_last_from(line)
+            try:
+                return self._refuse_job_context(line, nack)
+            except Exception:
+                if self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                return "busy_holding"
+        try:
+            if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                nack = self._nack_busy_holding(line)
+                self.log("relay: refuse git prep park (turn busy) " + (key or line[:80]))
+                self._persist_last_from(line)
+                with self._lock:
+                    if key:
+                        self._worktree_git_prep_keys.discard(key)
+                        self._worktree_parked_at.pop(key, None)
+                try:
+                    return self._refuse_job_context(line, nack)
+                except Exception:
+                    if self.write_outbox:
+                        try:
+                            self.write_outbox(nack)
+                        except Exception:
+                            pass
+                    return "busy_holding"
+        except Exception:
+            pass
+        self.log("relay: park job-worktree git prep off read thread " + (key or line[:80]))
+        self._persist_last_from(line)
+        th = threading.Thread(
+            target=self._worktree_git_prep_then_deliver,
+            args=(nick, target, text, line, key),
+            name="opencode-wt-git-prep",
+            daemon=True,
+        )
+        th.start()
+        return "opencode_worktree_git_pending"
+
+    def _worktree_git_prep_then_deliver(
+        self, nick: str, target: str, text: str, line: str, key: str
+    ) -> None:
+        """Background: verify git in the job worktree, then resume deliver for ACK+inject."""
+        try:
+            fn = self.opencode_verify_job_worktree
+            if fn:
+                fn(line)
+        except Exception as e:
+            self.log(
+                f"relay: job-worktree git prep exception key={key or '?'} err={type(e).__name__}"
+            )
+        finally:
+            if key:
+                with self._lock:
+                    self._worktree_git_prep_keys.discard(key)
+        other_hold = ""
+        with self._lock:
+            others = {k for k in self._acked_held_keys if k and k != key}
+            if others:
+                other_hold = next(iter(others))
+        if not other_hold:
+            try:
+                if self.turn_busy_other_job and self.turn_busy_other_job(line):
+                    other_hold = self._holding_job_display()
+            except Exception:
+                pass
+        if other_hold:
+            twin_nack = self._nack_busy_holding(line, other_hold)
+            self.log(
+                f"relay: job-worktree git prep ok but twin-busy key={key or '?'} "
+                f"holding={other_hold}"
+            )
+            try:
+                self._refuse_job_context(line, twin_nack)
+            except Exception as e:
+                self.log(f"relay: twin-busy NACK error {type(e).__name__}")
+            self.clear_worktree_park_mark(key)
+            return
+        self.log(f"relay: job-worktree git prep ok key={key or '?'} -> resume deliver")
+        try:
+            status = self.deliver(
+                nick,
+                target,
+                text,
+                resume_after_git_prep=True,
+            )
+            self.log(
+                f"relay: job-worktree git prep resume status={status} key={key or '?'}"
+            )
+            if status in ("injected", "held", "held_until_turn_end"):
+                self.clear_worktree_park_mark(key)
+        except Exception as e:
+            self.log(f"relay: job-worktree git prep resume error {type(e).__name__}")
 
     def _force_ack_inject_after_worktree(self, line: str) -> str:
         """FR #9228: after ensure ok, ACK+inject even if deliver soft-failed."""
@@ -12155,6 +12303,7 @@ class Relay:
         text: str,
         *,
         resume_after_worktree: bool = False,
+        resume_after_git_prep: bool = False,
     ) -> str:
         nq = is_nothing_queued(text)
         if drop_text(text):
@@ -12171,7 +12320,7 @@ class Relay:
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
         # FR #9228: resume after ensure must not soft-duplicate before ACK/inject.
-        if resume_after_worktree:
+        if resume_after_worktree or resume_after_git_prep:
             with self._lock:
                 if line == self._last_line:
                     self._last_line = ""
@@ -12222,6 +12371,13 @@ class Relay:
                         return self._park_worktree_create(nick, target, text, line)
                     if nack:
                         return self._refuse_job_context(line, nack)
+                    # FR #10360: existing job tree — git verify/repair/intake off read thread.
+                    if (
+                        self.opencode_verify_job_worktree
+                        and not resume_after_git_prep
+                        and not resume_after_worktree
+                    ):
+                        return self._park_worktree_git_prep(nick, target, text, line)
                 else:
                     # Legacy sync ensure path (unit tests that bind opencode_job_block only).
                     nack = self._job_context_nack(line)
@@ -12642,6 +12798,11 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
+                if self.opencode_verify_job_worktree:
+                    try:
+                        self.opencode_verify_job_worktree(line)
+                    except Exception:
+                        pass
             else:
                 nack = self._job_context_nack(line)
                 if nack:
@@ -12832,7 +12993,7 @@ class Relay:
         not post ``!bored`` until the seat has consumed the assign (or it is dropped).
         """
         with self._lock:
-            if self._worktree_creating_keys:
+            if self._worktree_creating_keys or self._worktree_git_prep_keys:
                 return True
             for line in self._pending:
                 if assign_job_ref(line):
@@ -17956,10 +18117,12 @@ class Supervisor:
         if (self.kind or "").strip().lower() == "opencode":
             relay.opencode_job_classify = self._opencode_job_classify
             relay.opencode_ensure_worktree = self._opencode_ensure_worktree
+            relay.opencode_verify_job_worktree = self._opencode_verify_job_worktree_git
             relay.opencode_job_block = None
         else:
             relay.opencode_job_classify = None
             relay.opencode_ensure_worktree = None
+            relay.opencode_verify_job_worktree = None
             relay.opencode_job_block = None
         relay.on_refuse_assign = self._nack_assign_out_of_fuel
         # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
@@ -18308,6 +18471,23 @@ class Supervisor:
             run=subprocess.run,
             nick=nick,
         )
+
+    def _opencode_verify_job_worktree_git(self, line: str) -> None:
+        """FR #10360: verify/repair/intake for an existing job worktree (off IRC read thread)."""
+        if (self.kind or "").strip().lower() != "opencode":
+            return
+        if not assign_job_ref(line):
+            return
+        try:
+            wt = project_dir_for_assign(line, os.environ)
+        except Exception:
+            wt = ""
+        if not wt:
+            return
+        try:
+            verify_job_worktree_git(wt, log=self.log)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"job-worktree: git verify skipped {type(e).__name__}")
 
     def _opencode_job_block(self, line: str) -> str:
         """Legacy sync ensure (tests / callers that still bind opencode_job_block)."""
@@ -20246,11 +20426,7 @@ class Supervisor:
                     clear_stale_job_index_lock(prepared["path"], log_fn=self.log)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: index.lock preflight skipped {type(e).__name__}")
-                # FR #10270: seat start verifies git in the job worktree (repair or intake).
-                try:
-                    verify_job_worktree_git(prepared["path"], log=self.log)
-                except Exception as e:  # noqa: BLE001
-                    self.log(f"opencode-ready: job-worktree git check skipped {type(e).__name__}")
+                # FR #10360: git verify runs off the IRC read thread (Relay git prep) before inject.
                 # FR #6898: OpenCode --dir loads project opencode.json from the job worktree.
                 try:
                     write_opencode_skill_dag_mcp_config(
