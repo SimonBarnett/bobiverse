@@ -40,13 +40,29 @@ def inproc_digest_lock() -> threading.RLock | None:
     return _INPROC_DIGEST
 
 
-def mutex_name_for_home(home: Path) -> str:
+def resolve_instance_mutex_role(
+    *,
+    http_only: bool,
+    chair: bool,
+    chair_only: bool,
+) -> str:
+    """FR #10343 / #10096: BobWebhooks (:7700 http-only) and ircJeeves (chair) may share digest home."""
+    if http_only and not chair and not chair_only:
+        return "http"
+    if chair or chair_only:
+        return "chair"
+    return "http"
+
+
+def mutex_name_for_home(home: Path, role: str = "chair") -> str:
     raw = str(Path(home).expanduser().resolve()).lower().encode("utf-8", errors="replace")
     digest = hashlib.sha256(raw).hexdigest()[:16]
-    return f"Global\\BobiverseJeeves-{digest}"
+    role_s = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in str(role or "chair").lower())
+    role_s = role_s.strip("-") or "chair"
+    return f"Global\\BobiverseJeeves-{digest}-{role_s}"
 
 
-def try_acquire_instance_mutex(home: Path) -> bool:
+def try_acquire_instance_mutex(home: Path, role: str = "chair") -> bool:
     """Windows named mutex; True if this process owns the instance. Non-Windows: always True."""
     global _MUTEX_HANDLE
     if os.name != "nt":
@@ -56,7 +72,7 @@ def try_acquire_instance_mutex(home: Path) -> bool:
         from ctypes import wintypes
 
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        name = mutex_name_for_home(home)
+        name = mutex_name_for_home(home, role)
         handle = kernel32.CreateMutexW(None, wintypes.BOOL(True), name)
         if not handle:
             return False

@@ -1,10 +1,13 @@
 """FR #6134: OpenCode seats skip hostile MRB/UAT offers; still get FR/FIX."""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
 import pytest
+
+UNPAID = "opencode/deepseek-v4.1-flash-free"
 
 import bobreport
 import focus_ignore as fi
@@ -20,6 +23,16 @@ def _home(tmp_path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     registered_machines.save_registered(tmp_path, {"redqueen", "marchhare", "win-mpre8vi4u6u"})
     bobreport._SEAT_ROSTER_CACHE["key"] = None
+    (tmp_path / "models-catalog.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {"agent": "Opencode-Free", "cli": "Opencode", "model": UNPAID}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     return tmp_path
 
 
@@ -42,12 +55,14 @@ def _queue(home, rows):
     gitclaim._write_queue(gitclaim.queue_path(home), {"v": 1, "unaccepted": rows, "accepted": []})
 
 
-def _seed_kind(home, mid: str, pid: str, kind: str):
+def _seed_kind(home, mid: str, pid: str, kind: str, **fields):
     doc = bobreport.empty_digest()
     doc["machines"][mid] = bobreport._empty_machine(mid)
     nick = f"{mid}-{pid}"
+    worker = {"state": "idle", "nick": nick, "kind": kind}
+    worker.update(fields)
     doc["machines"][mid]["workers"] = {
-        pid: {"state": "idle", "nick": nick, "kind": kind},
+        pid: worker,
     }
     doc["machines"][mid]["worker_list"] = [
         {"nick": nick, "state": "idle", "work": "", "updated": "2026-11-06T10:00:00Z", "kind": kind},
@@ -72,7 +87,7 @@ def test_opencode_skips_mrb_offer_fr_still_ok(_home):
         ],
     )
     fi.handle_focus_cmd(_home, "hi bobiverse")
-    _seed_kind(_home, "redqueen", "1001", "opencode")
+    _seed_kind(_home, "redqueen", "1001", "opencode", start_model=UNPAID, model=UNPAID)
     # Also seed a grok sibling so live set is non-empty for other gates
     doc = bobreport.load_digest(_home)
     doc["machines"]["redqueen"]["workers"]["2002"] = {
@@ -100,7 +115,7 @@ def test_grok_seat_still_gets_mrb(_home):
 
 def test_assign_row_refuses_mrb_to_opencode(_home):
     _queue(_home, [_row("SimonBarnett/bobiverse", "MRB", 6121, 1)])
-    _seed_kind(_home, "redqueen", "1001", "opencode")
+    _seed_kind(_home, "redqueen", "1001", "opencode", start_model=UNPAID, model=UNPAID)
     st, detail = gitclaim.assign_row(
         _home, "redqueen-1001", "SimonBarnett/bobiverse", "MRB", "6121"
     )
@@ -108,8 +123,8 @@ def test_assign_row_refuses_mrb_to_opencode(_home):
     assert "OpenCode" in str(detail) or "opencode" in str(detail).lower() or "6134" in str(detail)
 
 
-def test_free_model_skips_mrb_even_when_kind_says_grok(_home):
-    """FR #7706: a free OpenCode model is not offered MRB when the digest kind is wrong."""
+def test_grok_takes_mrb_even_when_start_model_is_the_unpaid_id(_home):
+    """Grok is always paid, even when start_model equals the saved unpaid id."""
     _queue(
         _home,
         [
@@ -144,10 +159,10 @@ def test_free_model_skips_mrb_even_when_kind_says_grok(_home):
     st, job = gitclaim.offer_focus_top(_home, nick, "#marchhare")
     assert st == "ok"
     assert job is not None
-    assert str(job.get("task")).upper() == "FR"
+    assert str(job.get("task")).upper() == "MRB"
 
 
-def test_unresolved_model_template_skips_mrb(_home):
+def test_grok_dollar_model_is_paid(_home):
     _queue(_home, [_row("SimonBarnett/bobiverse", "MRB", 7706, 1)])
     fi.handle_focus_cmd(_home, "hi bobiverse")
     _seed_kind(_home, "marchhare", "28996", "grok")
@@ -155,8 +170,8 @@ def test_unresolved_model_template_skips_mrb(_home):
     doc["machines"]["marchhare"]["workers"]["28996"]["start_model"] = "$model"
     bobreport.save_digest(_home, doc)
     st, job = gitclaim.offer_focus_top(_home, "marchhare-28996", "#marchhare")
-    assert job is None or str((job or {}).get("task")).upper() != "MRB"
-    assert st != "ok" or job is None
+    assert st == "ok"
+    assert str(job.get("task")).upper() == "MRB"
 
 
 def test_unknown_kind_does_not_block_mrb(_home):
@@ -179,7 +194,7 @@ def test_opencode_skips_uat_offer_fr_still_ok(_home):
         ],
     )
     fi.handle_focus_cmd(_home, "hi bobiverse")
-    _seed_kind(_home, "redqueen", "1001", "opencode")
+    _seed_kind(_home, "redqueen", "1001", "opencode", start_model=UNPAID, model=UNPAID)
     st, job = gitclaim.offer_focus_top(_home, "redqueen-1001", "#redqueen")
     assert st == "ok"
     assert job is not None
@@ -189,7 +204,7 @@ def test_opencode_skips_uat_offer_fr_still_ok(_home):
 
 def test_assign_row_refuses_uat_to_opencode(_home):
     _queue(_home, [_row("SimonBarnett/bobiverse", "UAT", 0, 1)])
-    _seed_kind(_home, "redqueen", "1001", "opencode")
+    _seed_kind(_home, "redqueen", "1001", "opencode", start_model=UNPAID, model=UNPAID)
     st, detail = gitclaim.assign_row(
         _home, "redqueen-1001", "SimonBarnett/bobiverse", "UAT", "0"
     )
