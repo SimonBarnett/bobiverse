@@ -131,6 +131,9 @@ HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
 HARVEST_LESSONS_EOF_MARKER = "<!-- harvest-lessons-eof -->"
 # FR #8310: archive beside harvest/SKILL.md so skill-dag stays under 64KiB.
 HARVEST_LESSONS_ARCHIVE = "common/.grok/skills/harvest/lessons.md"
+# OpenCode drops a tool result over 50 KiB. Worker intake bullets live in lessons.md
+# so get_skill of bobiverse-bob-worker stays the operating manual.
+WORKER_LESSONS_ARCHIVE = "bob/.grok/skills/bobiverse-bob-worker/lessons.md"
 # FR #3299 / #3317: light triage in the owning repo (useful / generalised / vision);
 # re-file / hold-open only when ownership is wrong or the owner repo is missing.
 LESSON_PR_MRB_INSTRUCTION = (
@@ -1402,23 +1405,42 @@ def mrb_process_routing_already_covered(filer: Any, repo: str) -> bool:
     return bool(harvest_ok and mrb_ok)
 
 
+def lesson_append_path(skill_path: str) -> str:
+    """File a new intake bullet lands in.
+
+    bobiverse-bob-worker keeps the operating manual in SKILL.md. New bullets
+    append to lessons.md so the public get_skill body stays under OpenCode's
+    50 KiB tool-output cap.
+    """
+    path_n = str(skill_path or "").replace("\\", "/")
+    if path_n.endswith("bobiverse-bob-worker/SKILL.md"):
+        return WORKER_LESSONS_ARCHIVE
+    return path_n
+
+
 def harvest_book_text_for_dedupe(
     filer: Any,
     repo: str,
     skill_path: str,
     skill_md: str = "",
 ) -> str:
-    """SKILL.md plus lessons.md archive when the book is harvest (FR #8310).
+    """SKILL.md plus lessons.md when that book archives intake bullets.
 
     After the archive split, on-main / already-covered checks must still see
     the moved bullets or intake will re-tip every archived lesson.
     """
     base = skill_md if skill_md else _filer_get_file(filer, repo, skill_path)
     path_n = str(skill_path or "").replace("\\", "/")
+    archive_path = ""
     if path_n.endswith("harvest/SKILL.md") or path_n == SKILL_BOOK_PATHS.get("harvest"):
-        archive = _filer_get_file(filer, repo, HARVEST_LESSONS_ARCHIVE)
-        if archive:
-            return str(base or "") + "\n" + str(archive)
+        archive_path = HARVEST_LESSONS_ARCHIVE
+    elif path_n.endswith("bobiverse-bob-worker/SKILL.md") or path_n == WORKER_LESSONS_ARCHIVE:
+        archive_path = WORKER_LESSONS_ARCHIVE
+    if not archive_path:
+        return str(base or "")
+    archive = _filer_get_file(filer, repo, archive_path)
+    if archive and archive_path != path_n:
+        return str(base or "") + "\n" + str(archive)
     return str(base or "")
 
 
@@ -3186,8 +3208,14 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 # FR #9915: unique tip_anchor so parallel tips differ before union merge.
+                # Worker intake bullets append to lessons.md, not the operating manual.
+                append_path = lesson_append_path(skill_path)
+                if append_path != str(skill_path or "").replace("\\", "/"):
+                    append_base = _filer_get_file(filer, repo, append_path)
+                else:
+                    append_base = existing_md
                 new_md = apply_lessons_to_skill_md(
-                    existing_md,
+                    append_base,
                     new_lessons,
                     covered_md=covered_md,
                     tip_anchor=str(branch or rec.get("id") or ""),
@@ -3195,7 +3223,7 @@ def file_submission(
                 # FR #9180: SkillFile companions under .grok/skills join the tip files[].
                 # FR #9303 / SV #198: skills-visionary tips also mirror apps/mcp-catalog.
                 # FR #9329: catalog meta.json + docs/skill-sources _dag patch when readable.
-                lesson_files = merge_lesson_pr_files(skill_path, new_md, files)
+                lesson_files = merge_lesson_pr_files(append_path, new_md, files)
                 lesson_files = with_mcp_catalog_mirror(repo, skill_path, lesson_files)
                 lesson_files = with_mcp_catalog_meta(repo, skill_path, lesson_files)
                 lesson_files = with_sv_skill_sources_dag(
@@ -3204,7 +3232,7 @@ def file_submission(
                 lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
                     book=book,
-                    path=skill_path,
+                    path=append_path,
                     lessons=new_lessons,
                     original_body=body,
                 )

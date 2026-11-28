@@ -3,13 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-WORKER_SKILL = (
-    Path(__file__).resolve().parents[1]
-    / ".grok"
-    / "skills"
-    / "bobiverse-bob-worker"
-    / "SKILL.md"
+WORKER_DIR = (
+    Path(__file__).resolve().parents[1] / ".grok" / "skills" / "bobiverse-bob-worker"
 )
+WORKER_SKILL = WORKER_DIR / "SKILL.md"
+WORKER_LESSONS = WORKER_DIR / "lessons.md"
 def _utf8_no_bom(path: Path) -> str:
     raw = path.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf"), path
@@ -23,7 +21,7 @@ def _utf8_no_bom(path: Path) -> str:
 
 
 def test_mrb2799_worker_skill_has_harvested_seat_nick_lesson():
-    text = _utf8_no_bom(WORKER_SKILL)
+    text = _utf8_no_bom(WORKER_LESSONS)
     assert "## Harvested lessons (intake)" in text
     idx = text.index("## Harvested lessons (intake)")
     section = text[idx:]
@@ -40,7 +38,7 @@ def test_mrb2799_worker_skill_has_harvested_seat_nick_lesson():
 
 
 def test_mrb2799_lesson_names_invoke_harvest_and_export_both():
-    text = _utf8_no_bom(WORKER_SKILL)
+    text = _utf8_no_bom(WORKER_LESSONS)
     idx = text.index("## Harvested lessons (intake)")
     section = text[idx:]
     assert "Invoke-BobiverseHarvest" in section
@@ -49,12 +47,13 @@ def test_mrb2799_lesson_names_invoke_harvest_and_export_both():
 
 
 def test_mrb2799_hygiene_no_orphan_after_digest():
-    """New Harvested lessons section follows digest; no orphan mid-bullet splice."""
+    """Digest stays complete in the operating manual. Intake bullets are lessons.md."""
     text = _utf8_no_bom(WORKER_SKILL)
     digest = text.index("## Harvest digest")
-    harvested = text.index("## Harvested lessons (intake)")
-    assert digest < harvested
-    # Last digest bullet about Fleet identity stays complete before the new section.
-    between = text[digest:harvested]
+    assert "## Harvested lessons (intake)" not in text
+    assert "lessons.md" in text[digest:]
+    between = text[digest:]
     assert "**Fleet identity:**" in between
-    assert between.rstrip().endswith("1 held intake row)") or "held intake row)" in between[-80:]
+    assert "held intake row)" in between
+    lessons = _utf8_no_bom(WORKER_LESSONS)
+    assert "## Harvested lessons (intake)" in lessons

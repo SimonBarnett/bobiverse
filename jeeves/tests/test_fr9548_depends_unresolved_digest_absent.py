@@ -118,7 +118,8 @@ def test_fr9548_gate_allows_annotated_unheld_digest_absent_from_queue():
         issue_open=lambda r, n: str(n).lstrip("#") == "9259",
         issue_fetch=fetch,
     )
-    assert why is None
+    # FR #10059: unheld OPEN digest blocks dispatch.
+    assert why == gitclaim.DEPENDS_OPEN_REASON
 
 
 def test_fr9548_gate_held_annotated_digest_is_depends_held():
@@ -154,7 +155,9 @@ def test_fr9548_assign_annotated_digest_absent_from_queue(home: Path):
         is_pull=lambda *_a, **_k: False,
         pr_exists=lambda *_a, **_k: False,
     )
-    assert st == "ok", reason
+    # FR #10059: unheld OPEN digest refuses assign.
+    assert st == "refused", reason
+    assert "depends-on open" in str(reason)
 
 
 def test_fr9548_marker_for_monitor():

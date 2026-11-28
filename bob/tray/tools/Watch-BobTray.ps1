@@ -1826,7 +1826,21 @@ function Start-BobTrayAgentWatch {
     }
     elseif (Test-BobTrayAgentFuelExhausted -Kind $kind) {
         if ($kind -eq 'cursor') {
-            # cursor-agent supports --api-key / CURSOR_API_KEY (session BYOK).
+            # FR #10001: this machine's CURSOR_API_KEY or ~/.cursor login. Do not prompt when either is present.
+            $cred = Resolve-BobCursorSeatCredential
+            if ($cred.Source -eq 'local-env') {
+                $key = [Environment]::GetEnvironmentVariable('CURSOR_API_KEY', 'User')
+                if ([string]::IsNullOrWhiteSpace($key)) {
+                    $key = [Environment]::GetEnvironmentVariable('CURSOR_API_KEY', 'Process')
+                }
+                Write-TrayLog 'agents: cursor using local CURSOR_API_KEY (value not logged)'
+                $sessionEnv = @{ CURSOR_API_KEY = $key }
+                $key = $null
+            }
+            elseif ($cred.Source -eq 'local-login') {
+                Write-TrayLog 'agents: cursor using local login (~/.cursor); no session key dialog'
+            }
+            else {
             Write-TrayLog 'agents: cursor fuel remaining 0 - requesting session CURSOR_API_KEY dialog'
             $key = Show-BobTraySessionApiKeyDialog -Title 'Cursor session API key' -Prompt "No Cursor tokens remaining (auto / cursor_pools).`r`nEnter CURSOR_API_KEY for this start only (not saved; process-scoped for the child only)."
             if (-not $key) {
@@ -1843,6 +1857,7 @@ function Start-BobTrayAgentWatch {
                 return
             }
             $sessionEnv = @{ CURSOR_API_KEY = $key }
+            }
         }
     }
     $ps = $ps1
@@ -4813,42 +4828,20 @@ function Update-BobTrayWorkerAgentsMenu {
                     }
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'grok' -Trigger 'workers-grok' -Model $model -Context $context -Effort $effort
                 }
-                elseif ($picked -eq 'opencode' -or $picked -match '^opencode\|(free|paid)$') {
-                    # FR #9588 / FR #9263: top-level tags opencode|free / opencode|paid.
-                    # Legacy flat Tag=opencode keeps free-first (BOB-27) for older dumps.
-                    $ocSlot = 'free'
-                    if ($picked -match '^opencode\|(free|paid)$') { $ocSlot = $Matches[1] }
-                    elseif ($picked -eq 'opencode') {
-                        if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
-                            Show-BobTrayOpenCodePaidExhaustedDialog
-                            return
-                        }
-                        $ocFuel = $env:BOB_OPENCODE_FUEL_FILE
-                        if (-not $ocFuel) { $ocFuel = Join-Path $RepoRoot 'run\opencode-fuel.json' }
-                        if (Test-Path -LiteralPath $ocFuel) {
-                            $ocDoc = Get-Content -LiteralPath $ocFuel -Raw
-                            $ocFree = $null
-                            $ocPaid = $null
-                            if ($ocDoc -match '"free"\s*:\s*(-?\d+)') { $ocFree = [int]$Matches[1] }
-                            if ($ocDoc -match '"paid"\s*:\s*(-?\d+)') { $ocPaid = [int]$Matches[1] }
-                            if ($null -ne $ocFree -and $ocFree -le 0 -and $null -ne $ocPaid -and $ocPaid -gt 0) { $ocSlot = 'paid' }
-                        }
-                    }
-                    if (Test-BobTrayOpenCodePaidExhausted -InstallRoot $RepoRoot) {
-                        Show-BobTrayOpenCodePaidExhaustedDialog
-                        return
-                    }
+                elseif ($picked -match '^opencode\|(free|paid)$') {
+                    $ocSlot = $Matches[1]
                     if ($ocSlot -eq 'paid') { Write-TrayLog 'workers-opencode slot=paid' }
                     else { Write-TrayLog 'workers-opencode slot=free' }
-                    $ocModel = if ($ocSlot -eq 'paid') { 'opencode-go/deepseek-v4-pro' } else { 'opencode/deepseek-v4.1-flash-free' }
-                    # FR #9586: Weights SoT is live GET /bob/v1/models (catalog = fixture fallback).
                     $catalog = [Environment]::GetEnvironmentVariable('BOB_MODELS_CATALOG')
                     $rowAgent = if ($ocSlot -eq 'free') { 'Opencode-Free' } else { 'Opencode' }
-                    $webhook = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'model' -CatalogPath $catalog
+                    $ocModel = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'model' -CatalogPath $catalog
                     $ocContext = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'context' -CatalogPath $catalog
                     $ocEffort = Get-BobTrayWeightsLaunchField -AgentName $rowAgent -Field 'effort' -CatalogPath $catalog
-                    Write-TrayLog ('Workers Open Code: webhook model ' + $webhook + ' context=' + $ocContext + ' effort=' + $ocEffort + ' agent ' + $rowAgent + ' source=models-webhook')
-                    if (-not [string]::IsNullOrWhiteSpace($webhook)) { $ocModel = $webhook }
+                    Write-TrayLog ('Workers Open Code: webhook model ' + $ocModel + ' context=' + $ocContext + ' effort=' + $ocEffort + ' agent ' + $rowAgent + ' source=models-webhook')
+                    if ([string]::IsNullOrWhiteSpace($ocModel)) {
+                        Write-TrayLog 'workers-opencode refuse reason=weights-model-missing'
+                        return
+                    }
                     Write-TrayLog ('workers-opencode model=' + $ocModel)
                     Write-TrayLog 'Workers Open Code: opencode CLI start'
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent 'opencode' -Model $ocModel -Context $ocContext -Effort $ocEffort -Trigger 'workers-opencode'

@@ -40,9 +40,9 @@ def test_mrb2892_worker_skill_digest_mentions_2884():
     assert not raw.startswith(b"\xef\xbb\xbf")
     text = raw.decode("utf-8")
     assert text.endswith("\n")
-    assert "first grok `turn_ended` after spawn (FR #2884" in text
-    assert "`startup_grace_s` fallback" in text
-    assert "`startup_min_s` floor" in text
+    assert "first grok `turn_ended` (FR #2884" in text
+    assert "`startup_grace_s`" in text
+    assert "`startup_min_s`" in text
 
 
 def test_mrb2892_bob_worker_watcher_wires_startup_release():

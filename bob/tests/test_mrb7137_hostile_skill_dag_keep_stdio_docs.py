@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_mrb7137_worker_skill_pins_fr7120_keep_stdio_not_restart():
-    text = (ROOT / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md").read_text(encoding="utf-8")
+    text = (ROOT / ".grok" / "skills" / "bobiverse-bob-worker" / "lessons.md").read_text(encoding="utf-8")
     assert "FR #7120" in text
     assert "--job-worktree-file" in text
     assert "Do not restart mid-job" in text

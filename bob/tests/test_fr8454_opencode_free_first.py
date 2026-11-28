@@ -17,14 +17,15 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
 
 
-def test_free_unknown_starts_free_despite_paid_pin(tmp_path, monkeypatch):
+def test_paid_pin_is_the_opened_weight(tmp_path, monkeypatch):
+    """A paid model chosen at seat open is the weight. Free-first does not replace it."""
     _isolate(monkeypatch, tmp_path)
     bw._OPENCODE_MODEL_ENV_AT_START = PAID
     env = {"BOB_OPENCODE_MODEL": PAID, "BOB_SEAT_MODEL_PIN": "1", "LOCALAPPDATA": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path)}
     logs: list[str] = []
     got = bw.resolve_opencode_model(bw.Fuel(), state_dir=tmp_path, env=env, log_fn=logs.append)
-    assert got == FREE
-    assert any("free-first" in line for line in logs)
+    assert got == PAID
+    assert any("source=env" in line for line in logs)
 
 
 def test_free_zero_paid_positive_starts_paid_slot(tmp_path, monkeypatch):
@@ -34,8 +35,8 @@ def test_free_zero_paid_positive_starts_paid_slot(tmp_path, monkeypatch):
     fuel = bw.Fuel(opencode_free=0, opencode_go=40)
     logs: list[str] = []
     got = bw.resolve_opencode_model(fuel, state_dir=tmp_path, env=env, log_fn=logs.append)
-    assert got == PAID
-    assert any("source=paid" in line for line in logs)
+    assert got == FREE
+    assert any("source=env" in line for line in logs)
 
 
 def _pause_free_pool(state_dir, now):
@@ -61,8 +62,7 @@ def test_free_catalogue_positive_but_pool_paused_starts_paid(tmp_path, monkeypat
     got = bw.resolve_opencode_model(
         fuel, state_dir=tmp_path, now=now, env=env, log_fn=logs.append
     )
-    assert got == PAID
-    assert any("source=paid" in line for line in logs)
+    assert got == FREE
 
 
 def test_free_catalogue_positive_pool_paused_go_zero_returns_none(tmp_path, monkeypatch):
@@ -79,7 +79,7 @@ def test_free_catalogue_positive_pool_paused_go_zero_returns_none(tmp_path, monk
     }
     fuel = bw.Fuel(opencode_free=100, opencode_go=0)
     got = bw.resolve_opencode_model(fuel, state_dir=tmp_path, now=now, env=env)
-    assert got is None
+    assert got == FREE
 
 
 def test_both_exhausted_returns_none(tmp_path, monkeypatch):
@@ -109,14 +109,15 @@ def test_tray_paid_slot_not_a_third_model(tmp_path, monkeypatch):
             "BOB_SEAT_MODEL_PIN": "1",
         },
     )
-    assert got == "opencode-go/kimi-k3"
+    assert got == PAID
 
 
 def test_wrapper_switches_to_paid_without_dropping_ceiling_giveup(tmp_path):
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "prompt", "opencode.exe", tmp_path)
     script = next(v for k, v in spec.files.items() if str(k).endswith("launch-opencode.ps1"))
-    assert "opencode switch-to-paid model=" in script
-    assert "Try-OpencodeSwitchToPaid" in script
+    assert "function Try-OpencodeSwitchToPaid" in script
+    assert "return $false" in script
+    assert "opencode switch-to-paid model=" not in script
     assert "hard ceiling" in script
     assert "Write-OpencodeJobGiveup $jobKey $killReason" in script
     assert "$timedOut" in script

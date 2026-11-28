@@ -31,6 +31,8 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "name: build-bob-tray" in text
     assert "runs-on: windows-latest" in text
     assert "Build-BobDialogs.ps1" in text
+    build = BUILD.read_text(encoding="utf-8")
+    assert "bob\\tray\\dialogs" in build
     assert "bob/tray/**" in text
     assert "bob/tests/test_fr6285_tray_build_ci.py" in text
     assert "persist-credentials: false" in text
@@ -39,7 +41,12 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "provenance.txt" in text
     assert '"$name.sha256"' in text or "exe_sha256_" in text
     assert "Get-FileHash -Algorithm SHA256" in text
+    assert "sparse-checkout:" in text
+    assert "bob/tray" in text
+    assert '-Targets "tray,about"' in text
     assert "bob-tray.exe" in text
+    assert "bob-about.exe" in text
+    assert "bob-status.exe" not in text
     assert "xAI weekly" in text
     assert "Cursor / xAI weekly" in text  # asserted absent from the PE
     # Active throw paths (not merely commented mention of the heading strings).

@@ -1,6 +1,7 @@
 """FR #7926: idle free-model seats take FR/FIX before paid or Grok seats."""
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -21,6 +22,20 @@ def _home(tmp_path, monkeypatch):
         tmp_path, {"redqueen", "marchhare", "flamingo", "win-mpre8vi4u6u"}
     )
     bobreport._SEAT_ROSTER_CACHE["key"] = None
+    (tmp_path / "models-catalog.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "agent": "Opencode-Free",
+                        "cli": "Opencode",
+                        "model": "opencode/deepseek-v4.1-flash-free",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     return tmp_path
 
 
