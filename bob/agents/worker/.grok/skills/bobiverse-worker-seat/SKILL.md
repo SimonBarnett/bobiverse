@@ -59,6 +59,12 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 * **CAST IRON (FR #4843):** never switch branches or commit in the install root (<ai root>\bob). Create a linked job worktree (git worktree add -b fr-N ...) and work there. An install root left on fr-* means every new seat reads unreviewed skills.
 * **CAST IRON (FR #8911):** when the skill-dag MCP handshake fails (`connection closed: initialize response`) and the bound cwd only has `skill-dag-core`, run the seat `.cursor/mcp.json` command `python <scripts>/skill_dag_mcp.py --once resolve` then `get_skill`. If that CLI works, continue the job from its output. If MCP and that CLI both fail, GIVEUP `skill-dag-mcp-down`. Never read `SKILL.md` from another job worktree as a substitute.
 
+## Bob skill MCP at startup (FR #10102 / Digest #10078)
+
+The public Bob skill catalog at `https://bob.ntsa.uk/mcp` matches the **plan.ntsa.uk** MCP shape: **GET** describes the endpoint and tool names (`list_catalog`, `get_skill`); **POST** JSON-RPC `tools/call` runs those tools. No token on the public Bob MCP.
+
+Before the agent starts, `Copy-BobProjectSkills` calls `list_catalog` then `get_skill` over HTTPS and writes bodies into `~/.grok\skills`. **Do not** `git clone`, sparse-checkout, or copy `SKILL.md` from the bobiverse checkout to learn the book — git publishes the catalog; the seat reads it over HTTPS (FR #10081). Product stack: catalog builder #10092, `POST /mcp` #10093, seat loader #10094.
+
 ## What you may touch
 
 * Work in `<ai root>\bob\worker` and in the repos you are told to work on. You are NOT the ear, the chair or a service: do not restart `ircBob`, `ircJeeves`, `Airc` or any IRC server, do not close other windows, do not kill processes you did not start.
