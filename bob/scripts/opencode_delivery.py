@@ -70,7 +70,8 @@ def opencode_typed_delivery(
         br = f"fr-{num.group(1)}" if num else "the feature branch for this issue"
     return (
         f"Commit on branch {br}. git push -u origin HEAD. "
-        f"Open the PR with gh pr create --base main --body \"Closes {ref}\" "
+        f"First run gh pr list --head {br} --state all; if an OPEN pull request already exists for this branch, reuse it and do not run gh pr create. "
+        f"Otherwise open the PR with gh pr create --base main --body \"Closes {ref}\" "
         "(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
         "If gh issue view shows the issue CLOSED, do not run gh pr create. "
         "Set the PR ready for review before DONE, never leave it draft: run gh pr ready. "
