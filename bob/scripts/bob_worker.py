@@ -6570,12 +6570,19 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        [IO.File]::WriteAllText($argvFile, ($ptyArgv | ConvertTo-Json -Compress -Depth 4))",
             r"        $pyPty = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"        if (-not $pyPty) { $pyPty = 'python.exe' }",
-            # python.exe re-execs pythonw and the seat has recorded that parent as exit -1
-            # while the TUI banner was the only capture. Wait on pythonw itself.
+            # A console-subsystem python.exe steals the child's stdout. Wait on pythonw.
             r"        $pywPty = Join-Path (Split-Path -Parent $pyPty) 'pythonw.exe'",
             r"        if (Test-Path -LiteralPath $pywPty) { $pyPty = $pywPty }",
             r"        $pyErrFile = Join-Path $capDir ('bob-oc-pyerr-' + [guid]::NewGuid().ToString('n') + '.txt')",
-            r"        $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--cwd', $(if ($ocDir) { $ocDir } else { '' }), '--argv-file', $argvFile)",
+            # PS 5.1 Start-Process -ArgumentList rejects an empty element. The standing
+            # prompt has no job dir, so '--cwd', '' threw before CreateProcess. The catch
+            # recorded exit -1 and bytes=165 (CRLF + the parameter error). Omit --cwd
+            # then; opencode_conpty_run defaults it and the child inherits this process cwd.
+            r"        if ($ocDir) {",
+            r"            $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--cwd', $ocDir, '--argv-file', $argvFile)",
+            r"        } else {",
+            r"            $ptyArgs = @($conptyPy, '--out', $outFile, '--err', $errFile, '--argv-file', $argvFile)",
+            r"        }",
             r"        $proc = Start-Process -FilePath $pyPty -ArgumentList $ptyArgs -PassThru -WindowStyle Hidden -RedirectStandardError $pyErrFile",
             r"        $timedOut = $false",
             r"        $killReason = ''",

@@ -83,5 +83,7 @@ def test_fr7997_launcher_isolates_and_retries(tmp_path: Path, monkeypatch):
     assert "opencode-startup-failed exit=" in ps1
     assert "pythonw.exe" in ps1
     assert "opencode-handshake: retry" in ps1
+    assert "else { '' }" not in ps1
+    assert "'--cwd', $ocDir" in ps1
     assert "opencode-data-dir.txt" in ps1
     assert "FR #7997" in ps1
