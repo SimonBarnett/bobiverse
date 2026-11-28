@@ -106,4 +106,5 @@ Moved so SKILL.md stays under the 65536-byte skill-dag cap (MRB #8632).
 - bob-worker-net embeds SourceCommit by rewriting GeneratedSourceCommit.cs before dotnet publish and restoring the placeholder in finally (AssemblyMetadata -p alone is unreliable for --version).
 <!-- harvest-tip:intake-in_744abd2678734a5c -->
 - Hotpatch the worker wrapper by rebuilding bob-worker.exe into <install>\worker\bob-worker.exe. The tray copies that file by hash. A running seat keeps the old exe and its local skill-dag config until it is started again.
+- OpenCode drops a get_skill tool result over 50 KiB and tells the seat not to read the spill. Keep this book's SKILL.md as the operating manual under that cap. Append new intake bullets to lessons.md, never back into SKILL.md.
 <!-- harvest-lessons-eof -->
