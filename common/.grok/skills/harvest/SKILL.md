@@ -570,3 +570,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - The same issue number in two repos is not a twin. Close only the repo the operator named.
 - When a lesson tip is CONFLICTING, merge origin/main on the intake branch, keep both harvest bullets, take main for product tests the tip was only pinning, push, then gh pr merge --admin --squash. Retry once if GraphQL says the base moved.
 - FR #8865 tip overlay: worker_prompt tests must use tmp_path; ignore install tips that still say MCP resolve then get_skill (public MCP has list_catalog/get_skill only).
+- MRB: prior blocked board is not automatic FAIL when tip now meets FR acceptance and CI is green; cursor/aider turn_ended should also call drain_run_outbox_now (filed #10362)
